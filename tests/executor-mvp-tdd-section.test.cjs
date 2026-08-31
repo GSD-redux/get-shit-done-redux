@@ -700,66 +700,18 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     JSON.parse(parsedLines[0].slice(sep + 1));
   });
 
-  // ── THE SHIPPED PREDICATE, EVALUATED RATHER THAN PINNED ──────────────────
+  // ── THE SHIPPED MODULE, EVALUATED RATHER THAN PINNED ──────────────────────
   // Everything above this line proves the fence CONTAINS certain text. None of
-  // it proves what the fence DECIDES. That gap is #3770: a conjunct can be
-  // present, correctly spelled and correctly indented while the contract it
-  // composes authorizes a run it must block. The block below reads the shipped
-  // fence as STRUCTURED INPUT to an evaluator and asserts the VERDICT it
-  // computes for a table of evidence vectors, so deleting
-  // `AND id_matches(actual.subject, plan.target_test)` stops being a broken
-  // string match and becomes `different-test-failed` flipping from `block` to
-  // `authorize` — which is the defect, stated as the defect. See #3770.
-
-  /**
-   * The `### RED Predicate` fence, split into its atoms BY LINE — one atom per
-   * line, in the order the fence declares them, with the `valid_red =` header
-   * consumed and the leading `AND ` stripped from every atom but the first.
-   *
-   * Every structural expectation THROWS with the observed content rather than
-   * degrading to a permissive parse. A reader that silently accepted a
-   * disjunction, or dropped an atom, would compute a verdict for every vector
-   * below and agree with the table by accident — a green suite proving nothing.
-   * See #3770 (T-02-06-01).
-   */
-  function parsePredicateFence() {
-    const lines = soleFencedBlock(CONTRACT, 'RED Predicate')
-      .split('\n').map((line) => line.trim()).filter(Boolean);
-
-    assert.strictEqual(lines[0], 'valid_red =',
-      `the RED Predicate block must open with its \`valid_red =\` header. Observed: `
-      + `"${lines[0]}". Without the assignment the block is an expression fragment, and every `
-      + 'atom below is read from an offset that has shifted by one. See #3770.');
-
-    assert.ok(lines.every((line) => !line.endsWith('(') && line !== 'OR' && line !== ')'),
-      'the RED Predicate must be a single conjunction: no line may open a parenthesised group, '
-      + 'carry a bare `OR`, or close a group. Reintroducing a disjunction here is the SIMP-02 '
-      + 'regression. See #3770.');
-
-    const atom = (line) => line.replace(/^AND /, '');
-    return lines.slice(1).map(atom);
-  }
-
-  /** `id_matches`, exactly as the `### Evidence` blockquote at tdd.md:187-190 defines it. */
-  function idMatches(observed, declared) {
-    if (observed === declared) return true;
-    return observed.startsWith(declared) && observed.slice(declared.length).startsWith('[');
-  }
-
-  /** `expected_failure` structural equality over the three fields the schema declares. */
-  const sameTriple = (a, b) => a.phase === b.phase
-    && a.class_or_mode === b.class_or_mode
-    && a.subject === b.subject;
-
-  /**
-   * `location` equality: file compared by basename only, line compared strictly.
-   * `path.win32.basename` per D-08 — it normalizes BOTH `/` and `\` separators,
-   * so a POSIX-reported path and a Windows-reported path for the same file
-   * still compare equal; `path.posix.basename` would leave a `\`-separated
-   * path's basename as the whole string.
-   */
-  const sameLocation = (a, b) =>
-    path.win32.basename(a.file) === path.win32.basename(b.file) && a.line === b.line;
+  // it proves what the BUILT module DECIDES. That gap is #3770: a conjunct can
+  // be present, correctly spelled and correctly indented while the contract it
+  // composes authorizes a run it must block. The block below calls the
+  // shipped `evaluateRedEvidence` directly — never a second, test-local
+  // reimplementation of the predicate — and asserts the VERDICT it computes
+  // for a table of evidence vectors, so deleting
+  // `AND id_matches(actual.subject, plan.target_test)` from the module stops
+  // being a broken string match and becomes `different-test-failed` flipping
+  // from `red_commit_not_failing` to `authorize` — which is the defect,
+  // stated as the defect. See #3770 (D-5).
 
   /**
    * The set of `plan`/`trailer` top-level field names whose value differs
@@ -777,67 +729,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     }
     return [...keys].sort();
   };
-
-  /**
-   * One evaluator per DISTINCT atom, keyed by the atom's text exactly as the
-   * fence carries it with a leading `AND ` stripped. SEVEN keys for eight
-   * statement lines: `valid_red =` is the header, and each of the seven
-   * atoms below it occupies exactly one line.
-   *
-   * A key that no longer appears in the fence, or a fence atom with no key
-   * here, is caught by the set equality in its OWN test below. Separating that
-   * test from the verdict test is deliberate: node:test stops a test at its
-   * first failed assertion, so a set equality sharing a test with the case loop
-   * would mask every named case flip behind "the atom set drifted" — the same
-   * masking the byte-freeze gave, and the reason it was a poor control. Split,
-   * a deleted conjunct reports BOTH the drift and the case it flips.
-   * See #3770 (T-02-06-02).
-   */
-  const PREDICATE_ATOMS = new Map([
-    ['exit_status != 0', (v) => v.trailer.exit_status !== 0],
-    ['trailer.expected == plan.expected_failure',
-      (v) => sameTriple(v.trailer.expected, v.plan.expected_failure)],
-    ['actual.phase == expected.phase',
-      (v) => v.trailer.actual.phase === v.trailer.expected.phase],
-    ['actual.class_or_mode == expected.class_or_mode',
-      (v) => v.trailer.actual.class_or_mode === v.trailer.expected.class_or_mode],
-    ['trailer.target_test == plan.target_test',
-      (v) => v.trailer.target_test === v.plan.target_test],
-    ['location.observed == location.declared',
-      (v) => sameLocation(v.trailer.location.observed, v.trailer.location.declared)],
-    ['id_matches(actual.subject, plan.target_test)',
-      (v) => idMatches(v.trailer.actual.subject, v.plan.target_test)],
-  ]);
-
-  /**
-   * The verdict the SHIPPED fence produces for one evidence vector, with the
-   * atoms that failed, so a disagreement names the conjunct that decided it.
-   *
-   * Atoms are evaluated EAGERLY, never through a short-circuiting `every`: an
-   * unresolvable atom must always reach its `throw`. A `Map.get` miss that
-   * short-circuited past the lookup, or that defaulted to `true`, would turn
-   * every future paraphrase of this fence into a silent authorization — the
-   * exact failure #3770 documents. The throw is the fail-closed FLOOR; the set
-   * equality above it is the readable report that names both halves of the
-   * drift. See #3770 (T-02-06-02).
-   */
-  function evaluateFence(atoms, vector) {
-    const truths = atoms.map((text) => {
-      const evaluator = PREDICATE_ATOMS.get(text);
-      if (!evaluator) {
-        throw new Error(
-          `the RED Predicate carries an atom with no evaluator: "${text}". An unresolved atom `
-          + 'is never treated as satisfied — a permissive default would convert a reworded '
-          + 'conjunct into an authorization. Add the evaluator, or revert the reword. See #3770.');
-      }
-      return [text, evaluator(vector)];
-    });
-    const holds = truths.every(([, ok]) => ok);
-    return {
-      verdict: holds ? 'authorize' : 'block',
-      failed: truths.filter(([, ok]) => !ok).map(([text]) => text),
-    };
-  }
 
   /**
    * An evidence vector in the shape `### Evidence` ships — the six trailer
@@ -1118,8 +1009,8 @@ ${Array(redContractCount).fill(block).join('\n')}
   const EVIDENCE_VECTORS = [
     {
       id: 'exit-zero',
-      outcome_row: null,
-      verdict: 'block',
+      outcome_row: 'Unexpected pass',
+      verdict: 'unexpected_pass',
       why: 'isolates `exit_status != 0`. Every other conjunct holds, so deleting the first '
         + 'shared conjunct authorizes a PASSING run — the halt rule at the foot of the section '
         + 'is what catches it afterwards, and the predicate must still refuse it. This is the '
@@ -1131,7 +1022,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'trailer-expected-not-pinned',
       outcome_row: null,
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'isolates `trailer.expected == plan.expected_failure`. The trailer is internally '
         + 'consistent — `actual` agrees with the trailer\'s own `expected` — so the two '
         + 'field comparisons below it both hold and only the pin fails. Without the pin a '
@@ -1154,7 +1045,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'fixture-crash',
       outcome_row: 'Fixture or setup crashed before the target assertion',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'isolates `actual.phase == expected.phase`. The declared behavior was a call-phase '
         + 'assertion; the run died in setup, so nothing was proved about the target behavior.',
       vector: vector({
@@ -1170,7 +1061,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'collect-parse-error',
       outcome_row: 'Suite failed to collect or parse',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'isolates `actual.class_or_mode == expected.class_or_mode`. The phase is held equal '
         + 'deliberately so the class comparison alone decides: a case that blocked for two '
         + 'reasons would survive deleting either one, and would prove neither.',
@@ -1187,7 +1078,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'target-test-not-pinned',
       outcome_row: null,
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'isolates `trailer.target_test == plan.target_test`. The trailer names a shorter id '
         + 'than the plan declared while `actual.subject` still carries the full one, so every '
         + '`id_matches` conjunct holds and only the pin fails. This is the second half of the '
@@ -1199,7 +1090,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'zero-tests-selected',
       outcome_row: 'Zero tests selected',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'isolates `actual.phase == expected.phase`. The planner declared a call-phase failure '
         + 'of the target behavior; the run never got that far and reported at collection '
         + 'instead. The class is held equal deliberately — the same isolation device '
@@ -1222,7 +1113,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'different-test-failed',
       outcome_row: 'A different test failed',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: "isolates the `id_matches` anchor. Two tests ran, the declared "
         + 'target among them and passing, and a DIFFERENT test failed at the declared phase '
         + "with the declared class. This IS #3770's original defect: without the anchor the "
@@ -1240,7 +1131,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'outside-in-wrong-file',
       outcome_row: null,
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: "isolates the outside-in `id_matches` anchor. A legitimate outside-in declaration, but the "
         + 'collection failure was reported against a DIFFERENT test file. Delete the anchor and '
         + 'the predicate reduces to the declared mode alone — a declaration, not evidence, authorizing '
@@ -1318,7 +1209,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'unrelated-assertion-in-target-test',
       outcome_row: 'Unrelated assertion in the target test',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'field-identical to `genuine` on every OTHER field — the assertion that failed is not '
         + "the one the plan's <behavior> describes, an unrelated assertion earlier in the same "
         + 'test body, at the same phase with the same class. `location` is what tells the two '
@@ -1330,7 +1221,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'unrelated-missing-dep-in-target-file',
       outcome_row: 'Unrelated missing dependency in the target test file',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'field-identical to `outside-in` on every OTHER field — the import that failed is an '
         + 'unrelated third-party dependency, not the declared `implementation_target`. `location` '
         + "is what tells the two apart: the declared import line (3) is the plan's, the observed "
@@ -1341,7 +1232,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     {
       id: 'unrelated-fixture-crash',
       outcome_row: 'Unrelated fixture crash at the declared fixture phase',
-      verdict: 'block',
+      verdict: 'red_commit_not_failing',
       why: 'field-identical to `fixture-is-the-behavior` on every OTHER field — the fixture that '
         + 'crashed is an unrelated one, not the fixture the plan declared as the behavior under '
         + 'test. `location` is what tells the two apart: same line (5) but a DIFFERENT file '
@@ -1415,7 +1306,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     },
   ];
 
-  test('the five legitimate-RED cases are frozen by id and split by fence-verdict domain '
+  test('the five legitimate-RED cases are frozen by id and split by verdict domain '
     + '(REGR-04)', () => {
     const LEGITIMATE_CASE_IDS = [
       'genuine',
@@ -1437,58 +1328,95 @@ ${Array(redContractCount).fill(block).join('\n')}
     for (const id of LEGITIMATE_CASE_IDS) {
       const testCase = byId.get(id);
       if (id === 'exit-zero') {
-        assert.strictEqual(testCase.verdict, 'block',
-          'the `exit-zero` (unexpected-pass) case must declare the fence\'s only other value, '
-          + '`block` — `evaluateFence` is two-valued and carries no `halt` token, so `block` is '
-          + 'the only value a zero-exit-status vector can carry in this domain. Its halt '
-          + 'MEANING is asserted at the module level against `unexpected_pass` elsewhere, not '
-          + 'restated here.');
+        assert.strictEqual(testCase.verdict, 'unexpected_pass',
+          'the `exit-zero` case must declare the module\'s dedicated halt token, '
+          + '`unexpected_pass`: the run passed, so nothing failed to evaluate. See #3770.');
       } else {
         assert.strictEqual(testCase.verdict, 'authorize',
-          `REDC-05: the legitimate-RED case "${id}" must declare fence verdict \`authorize\`. `
+          `REDC-05: the legitimate-RED case "${id}" must declare verdict \`authorize\`. `
           + 'A block here is a REGR-04 over-strictness regression: the remedy is correcting the '
           + 'vector data against the probe transcript, never widening the location comparison.');
       }
     }
   });
 
-  test('the RED Predicate fence composes exactly the atoms this evaluator evaluates', () => {
-    const parsed = parsePredicateFence();
+  test('the RED Predicate fence is derived from what the shipped module actually decides '
+    + '(D-5, D-6)', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
 
-    // Its OWN test, not a first assertion inside the verdict test below. A
-    // REWORDED or ADDED conjunct reports here as what it is — naming the
-    // unknown text and any orphaned key — while a DELETED conjunct reports
-    // here AND flips its named case in the next test, because neither can
-    // mask the other. See #3770.
-    assert.deepStrictEqual(
-      [...new Set(parsed)].sort(),
-      [...PREDICATE_ATOMS.keys()].sort(),
-      'the RED Predicate fence carries an atom this evaluator cannot evaluate, or this '
-      + 'evaluator carries a key the fence no longer contains. Either is a semantic change to '
-      + 'the shipped contract: a reworded conjunct is a NEW conjunct as far as anything reading '
-      + 'the fence is concerned, and the four successive paraphrases that each silently dropped '
-      + 'one are why this equality exists. Update the fence and this map together, and say in '
-      + 'the plan which atom moved and why. See #3770.');
+    // A vector engineered to fail all six post-exit-status conjuncts at once,
+    // never used in EVIDENCE_VECTORS (each named scenario there isolates
+    // exactly one). Its only job is to drive `failed` to the module's full
+    // six-entry order, so the fence can be reconstructed FROM the module's
+    // own output instead of re-derived by a second parser over the module's
+    // source text — the "no second parser" constraint D-5 sets. See #3770.
+    const ALL_CONJUNCTS_FAIL = vector({
+      trailer: {
+        target_test: 'tests/test_pricing.py::test_totally_unrelated',
+        expected: {
+          phase: 'setup',
+          class_or_mode: 'TypeError',
+          subject: 'tests/test_pricing.py::test_totally_unrelated',
+        },
+        actual: {
+          phase: 'call',
+          class_or_mode: 'AssertionError',
+          subject: 'tests/test_other.py::test_unrelated_behavior',
+        },
+        location: {
+          declared: { file: 'tests/test_pricing.py', line: 8 },
+          observed: { file: 'tests/test_other.py', line: 99 },
+        },
+      },
+    });
 
-    // The set equality above passes when a conjunct is deleted from BOTH the
-    // fence and this map. The hardcoded count is what does not.
-    assert.strictEqual(PREDICATE_ATOMS.size, 7,
-      `the predicate must compose exactly seven distinct atoms; this map carries `
-      + `${PREDICATE_ATOMS.size}. Deleting a conjunct from the fence AND its evaluator here `
-      + 'satisfies the set equality above and would otherwise pass unnoticed. See #3770.');
+    const taskContent = buildTaskContent(ALL_CONJUNCTS_FAIL.plan);
+    const trailerText = `red-evidence: ${JSON.stringify(ALL_CONJUNCTS_FAIL.trailer)}`;
+    const { verdict, failed } = evaluateRedEvidence(taskContent, trailerText);
+
+    assert.strictEqual(verdict, 'red_commit_not_failing',
+      'the all-conjuncts-fail vector must still pass every shape gate and reach the checks '
+      + 'array, or this test proves nothing about the six post-exit-status conjuncts. See #3770.');
+
+    // Six failed conjuncts, not seven: the fence carries seven statement
+    // lines, but `exit_status != 0` is enforced by the module as an early
+    // return (D-5's correction), never as a `checks` array entry — so the
+    // module's `checks` array composes six. A vector that also drove
+    // `exit_status` to 0 would report `unexpected_pass` and never reach
+    // `checks` at all.
+    assert.strictEqual(failed.length, 6,
+      'the module\'s checks array composes exactly six conjuncts (the fence\'s seven lines '
+      + `minus the exit_status early return); this vector failed ${failed.length}. `
+      + 'See #3770 (D-5).');
+
+    const derivedFence = [
+      'valid_red =',
+      '  exit_status != 0',
+      ...failed.map((conjunct) => `  AND ${conjunct}`),
+    ].join('\n');
+
+    assert.strictEqual(soleFencedBlock(CONTRACT, 'RED Predicate').trim(), derivedFence,
+      'the ### RED Predicate fence must read back exactly as the shipped module\'s `checks` '
+      + 'array order and text compose it, with the exit_status early return restored as the '
+      + 'fence\'s first line. This derives the fence from the module\'s OWN verdict rather than '
+      + 're-parsing the module\'s source text a second time — the fence and the module cannot '
+      + 'drift apart, because one is read directly from the other\'s output. See #3770 (D-5, D-6).');
   });
 
-  test('the shipped predicate computes the verdict each evidence vector must receive', () => {
-    const parsed = parsePredicateFence();
+  test('the shipped module computes the verdict each evidence vector must receive', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
 
     for (const testCase of EVIDENCE_VECTORS) {
-      const { verdict, failed } = evaluateFence(parsed, testCase.vector);
+      const taskContent = buildTaskContent(testCase.vector.plan);
+      const trailerText = `red-evidence: ${JSON.stringify(testCase.vector.trailer)}`;
+      const { verdict, failed } = evaluateRedEvidence(taskContent, trailerText);
       assert.strictEqual(verdict, testCase.verdict,
-        `the shipped RED Predicate ${verdict}s the \`${testCase.id}\` evidence vector; the `
-        + `contract requires it to ${testCase.verdict}. ${testCase.why} `
-        + `Conjuncts that failed: ${failed.length ? failed.join(' | ') : '(none)'}. `
-        + 'This assertion evaluates the fence rather than matching its text, so it fails when '
-        + 'the contract\'s MEANING changes and not only when its wording does. See #3770.');
+        `the shipped module computes \`${verdict}\` for the \`${testCase.id}\` evidence `
+        + `vector; the contract requires \`${testCase.verdict}\`. ${testCase.why} `
+        + `Conjuncts that failed: ${failed && failed.length ? failed.join(' | ') : '(none)'}. `
+        + 'This assertion evaluates the BUILT module rather than matching fence text, so it '
+        + 'fails when the contract\'s MEANING changes and not only when its wording does. '
+        + 'See #3770.');
     }
   });
 
@@ -1506,9 +1434,20 @@ ${Array(redContractCount).fill(block).join('\n')}
       + 'not. See #3770 (SIMP-02).');
   });
 
-  test('every Outcomes row verdict agrees with what the shipped predicate computes', () => {
-    const parsed = parsePredicateFence();
+  test('every Outcomes row verdict agrees with what the shipped module computes', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
     const outcomes = sliceH3(CONTRACT, 'Outcomes').split('\n');
+
+    // The Outcomes table carries the FENCE's two-plus-halt vocabulary
+    // (`block` / `authorize` / `halt`); the module carries three verdict
+    // tokens (`red_commit_not_failing` / `authorize` / `unexpected_pass`).
+    // This is the one place that vocabulary crossing happens, named
+    // explicitly rather than left implicit in a string comparison.
+    const TABLE_VERDICT_FOR = {
+      authorize: 'authorize',
+      red_commit_not_failing: 'block',
+      unexpected_pass: 'halt',
+    };
 
     for (const testCase of EVIDENCE_VECTORS) {
       if (testCase.outcome_row === null) continue;
@@ -1519,35 +1458,33 @@ ${Array(redContractCount).fill(block).join('\n')}
         + 'deleted requirement, and a row title that CONTAINS another row title breaks the '
         + 'shadowed row\'s lookup rather than its own. See #3770.');
 
-      const { verdict } = evaluateFence(parsed, testCase.vector);
-      assert.ok(hits[0].trim().endsWith(`| ${verdict} |`),
-        `the "${testCase.outcome_row}" row must carry the verdict the predicate actually `
-        + `computes for it, which is \`${verdict}\`. Observed row: ${hits[0].trim()}. The row `
-        + 'verdict is COMPUTED here, not pinned as text, so the table cannot drift from the '
-        + 'predicate the way the outside-in row did. See #3770 (F-4).');
+      const taskContent = buildTaskContent(testCase.vector.plan);
+      const trailerText = `red-evidence: ${JSON.stringify(testCase.vector.trailer)}`;
+      const { verdict } = evaluateRedEvidence(taskContent, trailerText);
+      const tableVerdict = TABLE_VERDICT_FOR[verdict];
+      assert.ok(hits[0].trim().endsWith(`| ${tableVerdict} |`),
+        `the "${testCase.outcome_row}" row must carry the verdict the BUILT module actually `
+        + `computes for it, \`${verdict}\`, mapped to the table's vocabulary as \`${tableVerdict}\`. `
+        + `Observed row: ${hits[0].trim()}. The row verdict is COMPUTED here, not pinned as text, `
+        + 'so the table cannot drift from the module the way the outside-in row did. '
+        + 'See #3770 (F-4).');
     }
   });
 
   test('zero-test discovery blocks GREEN on the declared-versus-observed phase, not on a '
     + 'selection counter (REGR-02)', () => {
-    const parsed = parsePredicateFence();
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
     const zeroTestsSelected = EVIDENCE_VECTORS.find((c) => c.id === 'zero-tests-selected');
-    const { failed } = evaluateFence(parsed, zeroTestsSelected.vector);
+    const taskContent = buildTaskContent(zeroTestsSelected.vector.plan);
+    const trailerText = `red-evidence: ${JSON.stringify(zeroTestsSelected.vector.trailer)}`;
+    const { failed } = evaluateRedEvidence(taskContent, trailerText);
 
     assert.deepStrictEqual(failed, ['actual.phase == expected.phase'],
       'an honest zero-test run reports a `collection`-phase failure against a `call`-phase '
       + 'declaration; the phase conjunct must be the ONLY one that blocks it. Exact equality, '
-      + 'not membership: with no selection-counter conjuncts left in the flat fence, a second '
+      + 'not membership: with no selection-counter conjuncts left in the flat predicate, a second '
       + 'failing conjunct here would satisfy an `includes` check but not this one. See #3770 '
       + '(REGR-02).');
-
-    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
-    const taskContent = buildTaskContent(zeroTestsSelected.vector.plan);
-    const trailerText = `red-evidence: ${JSON.stringify(zeroTestsSelected.vector.trailer)}`;
-    const { verdict } = evaluateRedEvidence(taskContent, trailerText);
-    assert.strictEqual(verdict, 'red_commit_not_failing',
-      'the built module must agree with the fence that an honest zero-test run does not '
-      + 'authorize GREEN. See #3770 (REGR-02).');
   });
 
   test('the residual evidence vectors differ from the cases they shadow only on location', () => {
@@ -1575,43 +1512,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       assert.deepStrictEqual(differingTopLevelKeys(residual, twin), ['location'],
         `${label}. ${shadows}`);
     }
-  });
-
-  test('evaluateFence and the built module compute the same authorize/block verdict for '
-    + 'every evidence vector', () => {
-    // `gsd-core/bin/lib/red-evidence-predicate.cjs` does not exist while this
-    // commit is RED, so the require is inside the test body, never at file
-    // scope (D-24). See #3770 (D-22).
-    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
-    const parsed = parsePredicateFence();
-
-    for (const testCase of EVIDENCE_VECTORS) {
-      const { verdict: fenceVerdict } = evaluateFence(parsed, testCase.vector);
-      const taskContent = buildTaskContent(testCase.vector.plan);
-      const trailerText = `red-evidence: ${JSON.stringify(testCase.vector.trailer)}`;
-      const { verdict: moduleVerdict } = evaluateRedEvidence(taskContent, trailerText);
-
-      // The fence is two-valued (`authorize`/`block`); the module is
-      // three-valued (`authorize`/`unexpected_pass`/`red_commit_not_failing`),
-      // so token equality is the wrong comparison here — the `exit-zero`
-      // vector computes `block` on the fence side and `unexpected_pass` on
-      // the module side, and every other blocking vector collides the same
-      // way. Normalize both to a boolean and assert the three-token
-      // distinction separately, per token, below.
-      assert.strictEqual(moduleVerdict === 'authorize', fenceVerdict === 'authorize',
-        `evidence vector \`${testCase.id}\`: the fence computes \`${fenceVerdict}\` and the `
-        + `module computes \`${moduleVerdict}\`; normalized to authorize/not-authorize they `
-        + 'must agree. See #3770 (D-22).');
-    }
-
-    const zeroExit = EVIDENCE_VECTORS.find((c) => c.id === 'exit-zero');
-    const { verdict: zeroExitVerdict } = evaluateRedEvidence(
-      buildTaskContent(zeroExit.vector.plan),
-      `red-evidence: ${JSON.stringify(zeroExit.vector.trailer)}`,
-    );
-    assert.strictEqual(zeroExitVerdict, 'unexpected_pass',
-      'a zero-exit-status trailer must report `unexpected_pass`, not `red_commit_not_failing` '
-      + 'or `block` — the run passed, so nothing failed to evaluate. See #3770 (D-22).');
   });
 
   test('the built module fails closed on a malformed trailer or a malformed red-contract '
