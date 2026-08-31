@@ -128,8 +128,16 @@ const { phaseVariants } = validateMod;
  * does the roadmap claim, for W007) call this — one matcher, reused, per the
  * file-level comment.
  */
-function dirsForPhase(dirs: string[], phaseId: string): string[] {
-  const canonical = matchPhaseDirs(dirs, normalizePhaseName(phaseId)).matches;
+function dirsForPhase(dirs: string[], phaseId: string, convention: string | null): string[] {
+  // #612: `convention` reaches BOTH operands of this pairing or it pairs
+  // nothing. The phases come from a bracket-aware heading scan and the dirs
+  // from a bracket-aware disk scan, so a convention-less selector here leaves
+  // W006's existence check and W007's `claimedDirs` empty on exactly the repos
+  // both scans just widened — every bracket phase reads as "no directory on
+  // disk" AND every bracket directory reads as unclaimed. `matchPhaseDirs`
+  // forwards it to its primary `phaseTokenMatches`; handed nothing it is
+  // byte-identical, so no legacy repo's pairing changes.
+  const canonical = matchPhaseDirs(dirs, normalizePhaseName(phaseId), convention).matches;
   if (canonical.length > 0) return canonical;
 
   // Bug 2 (#3309 W006/W007 migration cluster, found while fixing the
@@ -151,7 +159,12 @@ function dirsForPhase(dirs: string[], phaseId: string): string[] {
   // alone misses without re-deriving a second matcher.
   const variants = phaseVariants(phaseId);
   return dirs.filter((d) => {
-    const token = extractPhaseToken(d).toUpperCase();
+    // #612: the same convention the primary matcher above got. This fallback
+    // compares a DIRECTORY-derived token against phase-id variants, so left
+    // convention-less it reads `GSD.02-05-slug` with the legacy grammar and can
+    // never agree with a bracket phase id — the fallback would then be dead on
+    // precisely the convention it is reached for.
+    const token = extractPhaseToken(d, convention).toUpperCase();
     for (const variant of variants) {
       if (token === variant.toUpperCase()) return true;
     }
@@ -187,15 +200,40 @@ function checkW006(snapshot: PlanningSnapshot): Diagnostic[] {
   if (snapshot.roadmapDeclaredPhases.scope !== SCOPE.COMPLETE) return [];
 
   const dirs = snapshot.allPhaseDirNames.value;
+  const convention = snapshot.phaseIdConvention;
   const archivedTokens = new Set(snapshot.archivedPhaseTokens.value);
+  // No separate scope guard: `roadmapSentinelPhaseTokens` and
+  // `roadmapDeclaredPhases` are produced by ONE builder call
+  // (`buildRoadmapDeclaredPhasesField`) from ONE `buildRoadmapPhaseVariants`
+  // result, so their scopes are yoked by construction — the COMPLETE check
+  // above covers both. Stated rather than left implicit, because reading the
+  // sentinel set unconditionally would be a latent bug the day the two fields
+  // acquire independent builders: an UNREADABLE sentinel set silently degrades
+  // to "nothing is a sentinel," which ADDS W006 warnings rather than dropping
+  // them.
+  const sentinelTokens = new Set(snapshot.roadmapSentinelPhaseTokens.value);
   const checkboxes = snapshot.roadmapPhaseCheckboxes.value;
   const diagnostics: Diagnostic[] = [];
 
   for (const { phaseId } of snapshot.roadmapDeclaredPhases.value) {
-    // #3225: sentinel phase ids (999.x/0.x) are never-on-roadmap by
-    // convention; a sentinel heading shouldn't demand a directory.
-    if (isSentinelPhaseId(phaseId)) continue;
-    if (dirsForPhase(dirs, phaseId).length > 0) continue;
+    // A backlog/icebox phase legitimately has no directory. The two guards are
+    // DISJOINT, which is why both are needed and neither subsumes the other:
+    //
+    //   #612  `roadmapSentinelPhaseTokens` — bracket sentinels. Under the
+    //         bracket convention the sentinel-ness lives in the MILESTONE, not
+    //         the token: the heading `### [GSD.999] 07:` yields phase id `07`,
+    //         so a bare-token test cannot see it. The snapshot's
+    //         `buildRoadmapPhaseVariants` call carries the bracket id alongside
+    //         and reports the token here. Empty unless the bracket convention
+    //         is active, so no legacy repo's reading changes.
+    //   #3225 `isSentinelPhaseId` — the legacy/bare leading-int rule (999.x/0.x),
+    //         which sees `### Phase 999:` and is blind to `[GSD.999] 07`.
+    //
+    // Upstream's call is kept one-arg verbatim: every `phaseId` here is a bare
+    // token, never a `{CODE}.{MM}`-qualified id, so a convention argument could
+    // not change its result.
+    if (sentinelTokens.has(phaseId) || isSentinelPhaseId(phaseId)) continue;
+    if (dirsForPhase(dirs, phaseId, convention).length > 0) continue;
     // Bug 1 (#3309 W006/W007 migration cluster): a phase whose ONLY
     // directory lives under a milestone archive
     // (`.planning/milestones/vX.Y-phases/<phase>/`, shipped OR the current
@@ -225,10 +263,11 @@ function checkW006(snapshot: PlanningSnapshot): Diagnostic[] {
 function computeClaimedDirs(
   dirs: string[],
   declaredPhases: { phaseId: string; milestone: string | null }[],
+  convention: string | null,
 ): Set<string> {
   const claimed = new Set<string>();
   for (const { phaseId } of declaredPhases) {
-    for (const dir of dirsForPhase(dirs, phaseId)) claimed.add(dir);
+    for (const dir of dirsForPhase(dirs, phaseId, convention)) claimed.add(dir);
   }
   return claimed;
 }
@@ -238,7 +277,8 @@ function checkW007(snapshot: PlanningSnapshot): Diagnostic[] {
   if (snapshot.roadmapDeclaredPhases.scope !== SCOPE.COMPLETE) return [];
 
   const dirs = snapshot.allPhaseDirNames.value;
-  const claimedDirs = computeClaimedDirs(dirs, snapshot.roadmapDeclaredPhases.value);
+  const convention = snapshot.phaseIdConvention;
+  const claimedDirs = computeClaimedDirs(dirs, snapshot.roadmapDeclaredPhases.value, convention);
   const diagnostics: Diagnostic[] = [];
 
   for (const dirName of dirs) {
@@ -246,7 +286,11 @@ function checkW007(snapshot: PlanningSnapshot): Diagnostic[] {
     // (`src/validate.cts:73-76`) is documented to match exactly
     // (verify.cts's original `p` key from `collectDiskPhaseEntries`,
     // `verify.cts:1373-1397`) — same token, relocated read, not reinvented.
-    const token = extractPhaseToken(dirName);
+    // #612: `collectDiskPhaseEntries` keyed that map through the
+    // convention-aware extractor, so the token this message names must be
+    // derived the same way — otherwise a bracket repo's unclaimed
+    // `GSD.02-05-slug` is reported as phase `GSD.02` rather than `05`.
+    const token = extractPhaseToken(dirName, convention);
     // #3225: a sentinel dir on disk (999-interim, 0-drafts) is defined as
     // never-on-roadmap; it must not trigger W007. #3639: judged on the DIR
     // NAME via the dir-aware recognizer — the extracted token is

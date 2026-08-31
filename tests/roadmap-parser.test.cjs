@@ -3382,7 +3382,10 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
         fs3.readFileSync(path3.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8'),
         tmpDir,
       );
-      const ids = rp3.scanMilestonePhaseIds(scoped.value);
+      // #612: pass the resolved convention explicitly. The public owner stays
+      // a directly iterable Set; qualified bracket ids remain internal to the
+      // milestone directory filter.
+      const ids = rp3.scanMilestonePhaseIds(scoped.value, undefined);
       a3.ok(ids.has('20') || [...ids].some((i) => i.replace(/^0+/, '') === '20'), `ids must contain 20; got ${[...ids]}`);
       a3.ok(ids.has('21') || [...ids].some((i) => i.replace(/^0+/, '') === '21'), `ids must contain 21; got ${[...ids]}`);
     });
@@ -3416,7 +3419,8 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
         fs3.readFileSync(path3.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8'),
         tmpDir,
       );
-      const ids = [...rp3.scanMilestonePhaseIds(scoped.value)].map((i) => i.replace(/^0+/, ''));
+      // #612: same explicit convention as the table-declared-ids test above.
+      const ids = [...rp3.scanMilestonePhaseIds(scoped.value, undefined)].map((i) => i.replace(/^0+/, ''));
       a3.ok(!ids.includes('3'), `a RoadmapProgress row is a progress marker, not a declaration; got ${ids}`);
       a3.ok(!ids.includes('77'), `a fenced table example must not count; got ${ids}`);
       const p77 = rp3.getRoadmapPhaseInternal(tmpDir, '77');

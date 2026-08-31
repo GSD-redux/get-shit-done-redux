@@ -28,8 +28,12 @@ const {
   PHASE_NUMBER_TOKEN_SOURCE,
   phaseKeyFromToken,
   phaseKeyFromDir,
+  phaseHeadingPrefixSrcFor,
+  PHASE_HEADING_BASELINE,
   isSentinelPhaseId,
   scopeToPhase,
+  // #2761 M3: owns the bracket milestone intro and canonical pad2 spelling.
+  bracketMilestoneIntroSrcFor,
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -38,7 +42,7 @@ const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, 
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath, execGit } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, planningPaths } = planningWorkspace;
+const { planningDir, planningPaths, resolvePhaseIdConvention } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
@@ -116,7 +120,7 @@ import {
   stateReplaceFieldIfTemplate,
   stateCurrentPositionSlice,
 } from './state-document.cjs';
-import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sectionizer.cjs';
+import { tokenizeHeadings, collectSection, replaceSection, stripFencedCode } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
@@ -1158,7 +1162,39 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     // excluded sentinels, unlike the owner). The owner already handles an
     // absent phasesDir as a real empty, so the fs.existsSync guard folds
     // into it.
-    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    //
+    // #2761 (round-11 BLOCKER, single-derivation hygiene): `phaseIdConvention`
+    // threaded explicitly (resolved ambiently off `cwd` — this call site has
+    // no `ws` of its own, same contract `resolvePhaseIdConvention` uses
+    // elsewhere in this file, e.g. the `phaseConvention` ONCE-and-THREAD
+    // pattern at ~:2267/:2300) rather than left `undefined`.
+    //
+    // This does NOT change `phaseScope` — `scope` (roadmap-parser.cts
+    // `getMilestonePhaseFilter`) is assigned at :1979/:2030, both BEFORE
+    // `headingConvention` resolves at ~:2048, so the #3217 withhold gate a
+    // few lines below is convention-independent either way (verified
+    // empirically: forcing `phaseIdConvention: null` here left every
+    // `state update-progress` assertion in
+    // tests/adr-612-bracket-phase-counting.test.cjs's round-11 BLOCKER block
+    // unchanged). What DOES depend on convention is `phaseDirs`/`totalPlans`
+    // — the enumerated `.value` these two lines feed into the #3233
+    // zero-plans no-op check just below. The actual `percent` this command
+    // reports/writes comes from a separate, already-correctly-threaded scan
+    // (`computeUpdateProgressPreview` -> `buildStateFrontmatter`, which
+    // resolves its own `phaseConvention` at :2267). Threading here removes a
+    // second, silent, lazily-resolved answer for the SAME question that scan
+    // already answers explicitly — the single-derivation discipline this
+    // file's own :2300 comment states as a rule — rather than fixing an
+    // observed defect. #2761 round-12: the #3233 gate IS the one place this
+    // is observable, so it — not the reported percent — is what
+    // tests/adr-612-bracket-phase-counting.test.cjs's round-12 addition to
+    // the round-11 BLOCKER block pins: a bracket milestone with no plans on
+    // disk versus a decoy directory outside the milestone window that must
+    // not be swept in by a pass-all degrade.
+    const { value: phaseDirs, scope } = listMilestonePhaseDirs(phasesDir, {
+      cwd,
+      phaseIdConvention: cwd ? resolvePhaseIdConvention(cwd) : null,
+    });
     phaseScope = scope;
     for (const dir of phaseDirs) {
       const { planCount } = scanPhasePlans(path.join(phasesDir, dir));
@@ -2155,7 +2191,56 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
 // ROADMAP phase token against an on-disk phase directory — moved to the
 // phase-id owner module in #2562 so every consumer derives BOTH sides of a
 // phase comparison from the same function (see phase-id.cts). Imported at the
-// top of this file; call sites below are unchanged.
+// top of this file; call sites below are unchanged. #612 threads the optional
+// `convention` through that owner's `phaseKeyFromDir` (see phase-id.cts) rather
+// than re-deriving a bracket-aware key here.
+
+/**
+ * #612: is the asserted milestone bounded to a heading in this ROADMAP?
+ *
+ * The legacy rule matches STATE's milestone STRING (`v2.0`) inside a heading.
+ * The ADR-canonical bracket milestone heading is `## [GSD.02] Foundation` — a
+ * name, no version — so that rule finds nothing, the milestone reads as
+ * unbounded, and total_phases falls back to the on-disk directory count. Under
+ * the bracket convention the milestone integer in the bracket is matched against
+ * the `vN` of the milestone string instead (READING-B parity). Gated, and only
+ * consulted after the legacy rule has already failed, so no non-bracket repo
+ * changes answer.
+ */
+function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: string | null): boolean {
+  // #3184: preserve roadmap-parser's canonical legacy answer and compose the
+  // gated bracket extension on top of it. Re-deriving the version-heading
+  // grammar here would restore the boundary drift that #3184 removed.
+  if (isMilestoneBoundedInRoadmap(roadmapRaw, String(milestone).trim())) return true;
+  if (convention !== 'bracket') return false;
+  const vMatch = String(milestone).trim().match(/^v(\d+)/i);
+  const milestoneInt = vMatch ? parseInt(vMatch[1], 10) : NaN;
+  if (!Number.isSafeInteger(milestoneInt)) return false;
+  // Canonical spelling only — see the note in roadmap-parser's scoping branch.
+  // Accepting `0*N` here bounded a milestone whose phases were invisible, which
+  // un-suppressed a progress percent computed off an unscoped disk count.
+  // #2761 M3: that padding rule and the grammar both come from the owner's
+  // `bracketMilestoneIntroSrcFor`. This line and roadmap-parser's selector were
+  // character-identical re-typings of one pattern, so "canonical spelling only"
+  // was a convention two files had to keep agreeing on by hand — and the drift
+  // guard could not see either copy.
+  // #612 round-4 (Major 1, F12): fence-aware via tokenizeHeadings, not a raw
+  // `.test(roadmapRaw)` — a FENCED `[GSD.02]` example heading (the ONLY one
+  // in the document, with no real section for the asserted milestone at
+  // all) previously bounded a milestone that isn't actually in the roadmap,
+  // un-suppressing a percent computed off the wrong (prior-milestone-plus-
+  // whole-disk) phase set. tokenizeHeadings never produces a token for a
+  // fenced line, so a fenced-only example can no longer satisfy this test.
+  const bracketMilestoneHeadingRe = new RegExp(`^${bracketMilestoneIntroSrcFor(milestoneInt)}`, 'i');
+  // #612 round-5 (Minor 1): skip ≤3-space-indented tokens — `h.offset` is
+  // tokenizeHeadings' LINE-START offset, not the `#` character, so an
+  // indented heading here would bound a milestone the line-start-anchored
+  // raw predecessor never matched. Restores raw parity; see roadmap-parser's
+  // matching selector-reconstruction comment for the full rationale.
+  return tokenizeHeadings(roadmapRaw).some(
+    (h) => h.level <= 3 && roadmapRaw[h.offset] === '#' && bracketMilestoneHeadingRe.test(h.text),
+  );
+}
 
 /**
  * Extract the set of retired/folded phase keys from a ROADMAP milestone scope
@@ -2178,20 +2263,123 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
  * decimal, and project-code IDs are detected alike. Returns canonical keys
  * (see phaseKeyFromToken).
  */
-function extractRetiredPhaseNumbers(scope: string): Set<string> {
+function extractRetiredPhaseNumbers(scope: string, convention?: string | null): Set<string> {
   const retired = new Set<string>();
   const isChecklistOrHeading = /^\s*(?:[-*+]\s*\[[ xX]\]|#{1,6}\s)/;
-  for (const line of scope.split(/\r?\n/)) {
+  // #612: the retirement filter has to widen with the counter it protects. The
+  // canonical #1514 gesture strikes the checklist BULLET and leaves the detail
+  // heading intact, so a bracket-form retirement went undetected and the phase
+  // stayed in the denominator forever — a shipped bracket milestone could never
+  // reach 100%. Same selection rule as the counter: a non-bracket repo compiles
+  // the bare `Phase\s+` this line spelled before.
+  const introSrc = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention);
+  const phaseRefRe = new RegExp(`^[\\s*_]*${introSrc}([\\w][\\w.-]*)`, 'i');
+  // #612 round-5 (Major 1): fence-aware on the BRACKET path only — a fenced
+  // AUTHORING EXAMPLE of the #1514 retirement gesture, spelled in bracket
+  // form, must not retire a real phase. Reuses markdown-sectionizer's
+  // single-owner stripFencedCode rather than a second fence parser. Legacy
+  // stays the raw `scope`, byte-identical — its own fenced-example hazard is
+  // pre-existing and out of scope.
+  const scanScope = convention === 'bracket' ? stripFencedCode(scope).text : scope;
+  for (const line of scanScope.split(/\r?\n/)) {
     if (!isChecklistOrHeading.test(line)) continue;
     const strikeSpan = /~~([^~]*?)~~/g;
     let s: RegExpExecArray | null;
     while ((s = strikeSpan.exec(line)) !== null) {
-      const phaseRef = /^[\s*_]*Phase\s+([\w][\w.-]*)/i.exec(s[1]);
+      const phaseRef = phaseRefRe.exec(s[1]);
       // Require a digit so struck prose like ~~Phase Overview~~ is ignored.
       if (phaseRef && /\d/.test(phaseRef[1])) retired.add(phaseKeyFromToken(phaseRef[1]));
     }
   }
   return retired;
+}
+
+/**
+ * #612 (round-4 fix): the single shared implementation for the phase-heading
+ * counter `buildStateFrontmatter` (read path) and `cmdStateSync` (write
+ * path) each built inline as an independent copy. The comment at each call
+ * site already claimed "the two counters must see the same phases or
+ * `state json` and `state sync` report different totals for one repo
+ * (#3242 Bug B)" — this makes that invariant STRUCTURAL (one implementation,
+ * two call sites) instead of two copies a future edit could silently
+ * diverge.
+ *
+ * Two DELIBERATELY DIFFERENT counting strategies, selected by `convention`:
+ *
+ * - BRACKET: counts via `tokenizeHeadings(scope)` at levels 2-4 (mirroring
+ *   `getMilestonePhaseFilter`'s own level bound, `roadmap-parser.cts:1090`),
+ *   testing each heading's (hash-stripped, fence-STRIPPED-by-construction)
+ *   text against the phase-heading-intro grammar directly. Fence-aware by
+ *   construction — `tokenizeHeadings` never produces a token for a fenced
+ *   line — closing round-4's Major 1: a fenced EXAMPLE phase heading in the
+ *   preamble (`` ### [GSD.02] 05: Example phase `` inside a
+ *   ` ```markdown ` block) previously inflated this count via the raw regex
+ *   below, which ran over the whole scope STRING with no fence awareness at
+ *   all (F9, F10 — `total_phases` read 3 where the milestone has 2 real
+ *   phases). The producer (`extractCurrentMilestone`'s returned scope
+ *   string) is deliberately NOT changed — every other consumer of that
+ *   string needs its full content fidelity, and the legacy path's identity
+ *   forbids touching the string all consumers share; this fixes the
+ *   COUNTING, not the scope.
+ *
+ * - LEGACY (any non-bracket convention, including unresolved/null): retain
+ *   the existing raw `content.exec()` counting strategy. On the read path,
+ *   route sentinel exclusion through #3185's canonical predicate; the sync
+ *   path intentionally retains its pre-existing absence of that exclusion.
+ *
+ * `applyConventionTokenSentinelRules` makes the remaining convention-specific
+ * asymmetry explicit. Both read and sync exclude bare bracket token 999; only
+ * the read path excludes canonical legacy sentinels. Both bracket paths also
+ * retain the bracket-id and bare-0 rules. Sharing the implementation therefore
+ * cannot silently move either convention's total.
+ */
+function countRoadmapPhaseHeadings(
+  scope: string,
+  convention: string | null | undefined,
+  retiredPhaseNums: Set<string>,
+  applyConventionTokenSentinelRules: boolean,
+): number {
+  let count = 0;
+  if (convention === 'bracket') {
+    const introSrc = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true);
+    const phaseHeadingPattern = new RegExp(`^${introSrc}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'i');
+    for (const h of tokenizeHeadings(scope)) {
+      if (h.level < 2 || h.level > 4) continue;
+      const m = phaseHeadingPattern.exec(h.text);
+      if (!m) continue;
+      const bracketId = m[1];
+      const token = m[2];
+      // Only count tokens that contain at least one digit — excludes
+      // pure-word section headings (Overview, Details) while keeping
+      // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
+      if (!/\d/.test(token)) continue;
+      // #612 READING-B: a bracket heading carries its sentinel in the
+      // bracket, so `### [GSD.999] 01:` is an icebox item even though its
+      // token is `01`.
+      if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+      // #612: under bracket the token rule composes with the bracket-id
+      // check as the engine's {0, 999} sentinel set.
+      if (bracketId && /^0\b/.test(token)) continue;
+      if (applyConventionTokenSentinelRules && /^999\b/.test(token)) continue;
+      // #1514: retired/folded phases are struck through in the ROADMAP;
+      // exclude them from the denominator (they can never be completed).
+      if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
+      count++;
+    }
+    return count;
+  }
+  // LEGACY stays on the pre-round-4 raw exec loop. #3185 owns the read-path
+  // sentinel predicate; sync deliberately preserves its prior behavior.
+  const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = phaseHeadingPattern.exec(scope)) !== null) {
+    const token = m[1];
+    if (!/\d/.test(token)) continue;
+    if (applyConventionTokenSentinelRules && isSentinelPhaseId(token)) continue;
+    if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
+    count++;
+  }
+  return count;
 }
 
 /**
@@ -2292,6 +2480,11 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   // does not touch and which predates listMilestonePhaseDirs entirely.
   let diskScope: Scope = SCOPE.COMPLETE;
 
+  // #612: resolved ONCE per call, federated workstream -> root, and shared by
+  // the heading counter, the retirement filter and the retired-directory skip so
+  // no two of them can split on different answers.
+  const phaseConvention = cwd ? resolvePhaseIdConvention(cwd) : null;
+
   if (cwd) {
     try {
       const phasesDir = planningPaths(cwd).phases;
@@ -2312,7 +2505,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             roadmapRaw = platformReadSync(roadmapPath);
             if (roadmapRaw !== null) {
               roadmapScope = extractCurrentMilestone(roadmapRaw, cwd);
-              retiredPhaseNums = extractRetiredPhaseNumbers(roadmapScope);
+              retiredPhaseNums = extractRetiredPhaseNumbers(roadmapScope, phaseConvention);
             }
           } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
@@ -2323,7 +2516,11 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
           // CURRENT (stored) milestone" — routed through the canonical owner
           // instead of a hand-rolled readdirSync + isDirInMilestone filter
           // (which also never excluded sentinels, unlike the owner).
-          const { value: allMatchingDirs, scope: phaseDirScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null });
+          const { value: allMatchingDirs, scope: phaseDirScope } = listMilestonePhaseDirs(phasesDir, {
+            cwd,
+            versionOverride: storedMilestone ?? null,
+            phaseIdConvention: phaseConvention,
+          });
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
@@ -2336,7 +2533,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // artifact; drop it from the disk phase set so it counts toward
             // neither the denominator nor the numerator (mirrors the heading
             // exclusion below). Project-code-aware via phaseKeyFromDir.
-            if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir))) continue;
+            if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir, phaseConvention))) continue;
             // #3185: dedup grouping routed through the canonical phaseKeyFromDir
             // (src/phase-id.cts) instead of a local leading-digits regex that
             // diverged from extractPhaseToken/phaseKeyFromDir on
@@ -2344,7 +2541,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // so a `PROJ-05`/`PROJ-05-slug` pair never deduped) and on
             // multi-segment milestone dirs. Same key surface used two lines
             // above for the retiredPhaseNums exclusion, so both filters agree.
-            const key = phaseKeyFromDir(dir);
+            const key = phaseKeyFromDir(dir, phaseConvention);
             if (!seenPhaseNums.has(key)) {
               seenPhaseNums.set(key, dir);
             } else {
@@ -2390,29 +2587,15 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // leave the third" gap §7.4's forcing function rules out.
             if (isPhaseComplete(phaseDir).value.complete) diskCompletedPhases++;
           }
-          // Count phase headings from ROADMAP using a digit-containing pattern
-          // that matches both numeric phases (01, 05.1) and project-code phases
-          // (PROJ-42, CK-05) but excludes pure-word section headers like
-          // `## Phase Overview:` or `## Phase Details:` — single source of
-          // truth for total_phases (#549).
-          let roadmapPhaseCount = 0;
-          if (roadmapScope !== null) {
-            // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-            const phaseHeadingPattern = /#{2,4}\s*Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/gi;
-            let m: RegExpExecArray | null;
-            while ((m = phaseHeadingPattern.exec(roadmapScope)) !== null) {
-              // Only count tokens that contain at least one digit — excludes
-              // pure-word section headings (Overview, Details) while keeping
-              // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-              // Also exclude sentinel phases (0 and 999.x backlog).
-              // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
-              if (!/\d/.test(m[1]) || isSentinelPhaseId(m[1])) continue;
-              // #1514: retired/folded phases are struck through in the ROADMAP;
-              // exclude them from the denominator (they can never be completed).
-              if (retiredPhaseNums.has(phaseKeyFromToken(m[1]))) continue;
-              roadmapPhaseCount++;
-            }
-          }
+          // Count phase headings from ROADMAP — single source of truth for
+          // total_phases (#549). #612 round-4: shared with cmdStateSync's
+          // identical-purpose counter via countRoadmapPhaseHeadings (above
+          // extractRetiredPhaseNumbers). The shared helper composes its
+          // fence-aware bracket strategy with #3185's canonical legacy
+          // sentinel predicate for this read-path call.
+          const roadmapPhaseCount = roadmapScope !== null
+            ? countRoadmapPhaseHeadings(roadmapScope, phaseConvention, retiredPhaseNums, true)
+            : 0;
 
           cached = (() => {
             // #1761 read-path: mirror the cmdStateSync guard (#1794). When the
@@ -2438,7 +2621,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
               // the prior inline regex had no boundary assertion after the
               // version token, so `v2.0` matched inside `v2.0.1` (#2562-class
               // defect, design row 17).
-              milestoneBounded = isMilestoneBoundedInRoadmap(roadmapRaw, String(assertedMilestoneVersion).trim());
+              milestoneBounded = isMilestoneBounded(roadmapRaw, String(assertedMilestoneVersion).trim(), phaseConvention);
             }
             // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
             // at all — only Phase headings) from a MILESTONED-but-unbounded one
@@ -5005,10 +5188,28 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
     emit({ valid: false, warnings, scope });
     return;
   }
+  // #612: #3208 replaced this lookup's `startsWith` prefix test with the
+  // canonical key comparison — which is the right surface, and is exactly why it
+  // now needs the convention. `phaseKeyFromDir` refuses to read a bracket
+  // directory without an explicit signal (a bracket dir is string-
+  // indistinguishable from the legacy letter-prefixed-decimal family, ADR-2121),
+  // so un-threaded it returns the WHOLE dir name as the key —
+  // `GSD.02-05-delta` -> `GSD.02-5-DELTA` — while `selectedPhaseKey` is the bare
+  // `05` that `parsePhaseFromProse` yields. The two sides of one comparison were
+  // derived under different conventions, which is #2562's defect class and the
+  // thing this file's other three `phaseKeyFromDir` call sites already thread
+  // against. Un-threaded, a bracket repo whose phase directory plainly exists
+  // reports `no phase directory matches phase 05` and `valid: false` — a
+  // wrong-and-confident answer on precisely the repos this convention supports.
+  // Resolved here rather than reusing a caller's value because cmdStateValidate
+  // has no other convention-dependent read. Non-bracket conventions (null,
+  // 'milestone-prefixed', unresolvable) are byte-identical to the un-threaded
+  // call by construction: `extractPhaseToken` branches only on `=== 'bracket'`.
+  const validateConvention = resolvePhaseIdConvention(cwd);
   let phaseDirPath: string;
   try {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name) === selectedPhaseKey);
+    const phaseDir = entries.find(entry => entry.isDirectory() && phaseKeyFromDir(entry.name, validateConvention) === selectedPhaseKey);
     if (!phaseDir) {
       warnings.push(stateDiagnostic(
         'S004',
@@ -5227,14 +5428,43 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   let syncRoadmapScope: string | null = null;
   let syncRoadmapRaw: string | null = null;
   let syncRetiredPhaseNums = new Set<string>();
+  const syncConvention = resolvePhaseIdConvention(cwd);
   try {
     const roadmapRaw = platformReadSync(path.join(planningDir(cwd), 'ROADMAP.md'));
     if (roadmapRaw !== null) {
       syncRoadmapRaw = roadmapRaw;
       syncRoadmapScope = extractCurrentMilestone(roadmapRaw, cwd);
-      syncRetiredPhaseNums = extractRetiredPhaseNumbers(syncRoadmapScope);
+      syncRetiredPhaseNums = extractRetiredPhaseNumbers(syncRoadmapScope, syncConvention);
     }
   } catch { /* fall through: no roadmap scope → no retired exclusion */ }
+
+  // #2761 Major 1 (round-2 adversarial review): this disk scan fed
+  // totalDiskPlans/totalDiskSummaries/diskCompletedPhases/syncTotalPhases
+  // below UNFILTERED — no milestone-window filter, unlike
+  // buildStateFrontmatter's identical-purpose scan a few hundred lines above
+  // (`:1698`). One command (`state sync`) therefore wrote TWO contradictory
+  // numbers into the same STATE.md: frontmatter total_phases/completed_phases
+  // milestone-scoped correctly (via the READ derivation), body Progress
+  // percent computed from the whole disk. On the ADR-canonical version-less
+  // bracket fixture (4 dirs, 3 complete; asserted milestone = 2 phases, both
+  // complete): body wrote 75% where 100% is true (repro3).
+  //
+  // GATED on `syncConvention === 'bracket'` — an unconditional filter would
+  // ALSO move LEGACY sync percents, since the milestone-scoping-vs-whole-disk
+  // divergence this fixes is engine-wide, not bracket-specific; the gate
+  // keeps legacy byte-identical, which is the binding constraint here. This
+  // is a DEVIATION from an earlier "mirror :1698 unconditionally" phrasing —
+  // deliberate, not an oversight: legacy repos are DOWNSTREAM of a Progress
+  // percent that has read this way for a long time, and moving it as a side
+  // effect of a bracket-only PR is out of this fix's scope.
+  // Upstream #3185 made `listMilestonePhaseDirs` the sole phase-directory
+  // enumeration owner; it delegates window membership to
+  // getMilestonePhaseFilter. Cache that owner's bracket result as a set and
+  // compose it with this scan, rather than restoring the retired direct
+  // parser dependency. Legacy retains this scan's prior pass-all behavior.
+  const syncMilestonePhaseDirs = syncConvention === 'bracket'
+    ? new Set(listMilestonePhaseDirs(phasesDir, { cwd, phaseIdConvention: syncConvention }).value)
+    : null;
 
   // Scan all phases
   let entries: string[];
@@ -5242,7 +5472,8 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     entries = fs.readdirSync(phasesDir, { withFileTypes: true })
       .filter(e => e.isDirectory())
       .map(e => e.name)
-      .filter(name => !(syncRetiredPhaseNums.size > 0 && syncRetiredPhaseNums.has(phaseKeyFromDir(name))))
+      .filter(name => !(syncRetiredPhaseNums.size > 0 && syncRetiredPhaseNums.has(phaseKeyFromDir(name, syncConvention))))
+      .filter(name => syncMilestonePhaseDirs === null || syncMilestonePhaseDirs.has(name))
       .sort();
   } catch {
     output({ synced: true, changes: [], dry_run: !!verify }, raw, undefined);
@@ -5291,26 +5522,18 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   }
 
   // Determine total phases from ROADMAP (may be larger than realized disk dirs).
-  // Mirrors the logic in buildStateFrontmatter so both report consistent percents (#3242 Bug B).
-  // DEAD catch removed (#2245 audit): every operation in this block is a regex
-  // exec/test over an already-read string plus pure Set/Math ops — none of
-  // which can throw — so the try/catch could never be triggered.
+  // #612 round-4: shares countRoadmapPhaseHeadings with buildStateFrontmatter
+  // (defined just above extractRetiredPhaseNumbers) so both report
+  // consistent totals off the SAME implementation, not two independently
+  // maintained copies (#3242 Bug B).
+  // #612 round-5: bracket sync enables the same bare-token 999 exclusion as
+  // the read path and getMilestonePhaseFilter, preventing frontmatter/body
+  // disagreement. Non-bracket conventions still pass false, preserving the
+  // pre-existing legacy sync behavior while #3185 remains the read-path owner.
   let syncTotalPhases: number | null = null;
-  let roadmapPhaseCount = 0;
-  if (syncRoadmapScope !== null) {
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const phaseHeadingPattern = /#{2,4}\s*Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/gi;
-    let m: RegExpExecArray | null;
-    while ((m = phaseHeadingPattern.exec(syncRoadmapScope)) !== null) {
-      // Only count tokens that contain at least one digit — excludes
-      // pure-word section headings (Overview, Details) while keeping
-      // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-      if (!/\d/.test(m[1])) continue;
-      // #1514: retired/folded phases are struck through; exclude from total.
-      if (syncRetiredPhaseNums.has(phaseKeyFromToken(m[1]))) continue;
-      roadmapPhaseCount++;
-    }
-  }
+  const roadmapPhaseCount = syncRoadmapScope !== null
+    ? countRoadmapPhaseHeadings(syncRoadmapScope, syncConvention, syncRetiredPhaseNums, syncConvention === 'bracket')
+    : 0;
   if (roadmapPhaseCount > 0) {
     syncTotalPhases = Math.max(entries.length, roadmapPhaseCount);
   } else {
@@ -5330,8 +5553,9 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   if (versionStr !== null && syncRoadmapRaw !== null) {
     // #3184: routed through the single owner (roadmap-parser.cjs) instead of
     // a hand-rolled, unbounded-substring re-derivation — see the identical
-    // fix in buildStateFrontmatter above.
-    milestoneBounded = isMilestoneBoundedInRoadmap(syncRoadmapRaw, versionStr);
+    // fix in buildStateFrontmatter above. #612 composes its gated bracket
+    // extension on top inside isMilestoneBounded.
+    milestoneBounded = isMilestoneBounded(syncRoadmapRaw, versionStr, syncConvention);
   }
   let percent: number | null = null;
   if (!milestoneBounded) {
@@ -5348,6 +5572,20 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     // it here (discarding `.value`, which duplicates `entries`'s own
     // retired-phase-filtered listing) gets the real scope without changing
     // the disk-scan totals computed above.
+    //
+    // #2761 (round-11 M2 follow-up): deliberately NOT threading
+    // `phaseIdConvention` here, unlike the other call sites this same PR
+    // converts. Only `.scope` is consumed (the `.value` directory list is
+    // thrown away), and inside `getMilestonePhaseFilter` `scope` is computed
+    // from `extractCurrentMilestoneScoped`/`classifyMilestoneWindow` BEFORE
+    // `headingConvention` is resolved — `phaseIdConvention` only reaches the
+    // heading/dir MEMBERSHIP scan (`scanMilestonePhaseIds`, `isDirInMilestone`)
+    // that produces `.value`, never the scope discriminator itself. So the
+    // `undefined` default here (lazy resolve-from-config) and an explicitly
+    // threaded `syncConvention` would compute the identical `scope` either
+    // way — there is no silent-inherit exposure to close at this site, only
+    // at sites (milestone.cts, cmdStateUpdateProgress above) that also
+    // consume `.value`.
     const syncScope: Scope = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: versionStr }).scope;
     if (syncScope !== SCOPE.COMPLETE) {
       changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)`);

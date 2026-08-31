@@ -170,7 +170,170 @@ const BRACKET_PHASE_TOKEN_SOURCE =
 // followed by a `Phase ` label) or a bare `Phase ` label; a bare number is NOT
 // a phase-heading intro. The `[^\]]{1,200}` bound mirrors the existing
 // roadmap-parser heading regexes (ReDoS-safe: a header is one short line).
+//
+// Retained as PR-1 shipped it. PR-2 does not consume it — see the gated
+// selector below, which supersedes it — and it is left byte-identical so an
+// already-merged epic export does not change its accepted language.
 const PHASE_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*(?:Phase\\s+)?|Phase\\s+)';
+
+// ── #612 PR-2: the ONE bracket identity grammar ─────────────────────────────
+// A bracket phase-ID prefix is `{CODE}.{MM}`. Before this, three spellings of
+// that shape lived in this file and disagreed: extractPhaseToken's bracket
+// branch (`\d+`, case-sensitive), bracketQualifiedKey (`\d+`, mixed-case), and
+// the dir prefix (`\d{2,}`). `GSD.2-05-feature` was simultaneously "not a phase
+// directory" and "phase 05", depending on which one a caller reached. They are
+// now one source.
+//
+// The milestone width mirrors the EMIT grammar rather than accepting any digit
+// run: pad2() emits at least two digits, so two digits — or three-plus with no
+// leading zero — is what toDir can produce. A bare `0` is NOT admitted: the
+// padded `00` is the backlog sentinel's canonical identity and `\d{2}` already
+// covers it, so nothing needs the unpadded spelling. (An earlier revision of
+// this comment claimed the opposite; the constant below has always rejected it
+// — #2867 review, Minor 2.) `[GSD.2] 05:` is therefore NOT a bracket id —
+// which is the point: it is the shape that made the three spellings disagree.
+// Reconciled with BRACKET_CANONICAL_NUMERIC_SOURCE above — the width toDir
+// actually emits (pad2: 2 digits, or 3+ with no leading zero). The earlier
+// `(?:\d{2,}|0)` diverged from it in both directions: it admitted `002`, which
+// the emit validator rejects, and a bare `0` that pad2 never produces. Every
+// bracket-milestone recognizer now derives from this one constant — the section
+// recognizers previously spelled `0*N` or `\d+` and accepted `[GSD.2]`, which
+// SCOPED a milestone no phase heading could then resolve into, recreating the
+// on-disk-count fallback this PR exists to remove.
+//
+// An unpadded bracket is therefore MALFORMED, uniformly: it scopes nothing,
+// bounds nothing, sections nothing, and is not a phase id. W005 on its
+// directories is the signal that surfaces it.
+const BRACKET_MILESTONE_NUMERIC_SRC = BRACKET_CANONICAL_NUMERIC_SOURCE;
+
+// #2761 M3 (trek-e review): the bracket PROJECT-CODE class, as a named source
+// rather than a class this file (and three readers outside it) each re-typed.
+// The re-typed copies were the exact drift #2761's own gate forbids — "no token
+// literal outside src/phase-id.cts" — and `check:phase-id-drift` did not see
+// them, because its detector only knew the phase-NUMBER token grammar. The
+// guard now carries a bracket rule too (scripts/lint-phase-id-drift.cjs).
+const BRACKET_PROJECT_CODE_SRC = '[A-Z][A-Z0-9_]*';
+const BRACKET_ID_SRC = `${BRACKET_PROJECT_CODE_SRC}\\.${BRACKET_MILESTONE_NUMERIC_SRC}`;
+
+// The bracket MILESTONE INTRO — `[CODE.MM]` — in the two shapes its readers
+// need. Both were re-typed verbatim outside this module before #2761 M3:
+//
+//   * PINNED, to one already-resolved milestone integer. This owns the pad2
+//     spelling rule as well as the grammar, so "canonical spelling only, not
+//     `0*N`" (the rule that keeps `[GSD.2]` from scoping a milestone no phase
+//     heading can resolve into) lives in ONE place instead of being restated
+//     beside every regex. `roadmap-parser`'s bracket-fallback selector and
+//     `state`'s `isMilestoneBounded` both consume this.
+//
+//   * CAPTURING, over any milestone, putting the milestone digits in a group.
+//     `validate`'s `checkBracketCoherence` consumes this.
+//
+// The milestone argument is expected to be a safe integer — every caller
+// resolves it through `Number.isSafeInteger` first. A non-integer yields a
+// regex source that is still well-formed and simply matches nothing, which is
+// the same safe degrade the callers' own guards produce.
+function bracketMilestoneIntroSrcFor(milestone: number): string {
+  return `\\[${BRACKET_PROJECT_CODE_SRC}\\.${String(milestone).padStart(2, '0')}\\]`;
+}
+const BRACKET_MILESTONE_INTRO_CAPTURING_SRC =
+  `\\[${BRACKET_PROJECT_CODE_SRC}\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\]`;
+
+// Recognition is case-INSENSITIVE (every reader compiles `/i`), but the identity
+// helpers this file owns — isSentinelPhaseId, getMilestoneFromPhaseId,
+// bracketQualifiedKey — match `[A-Z]` case-SENSITIVELY. A lowercase bracket id
+// captured by a reader and handed straight to them silently fails every identity
+// test, which is how `### [gsd.999] 07:` leaked into phase counts as a real
+// phase. Fold before any identity operation; never fold for display.
+function foldBracketId(bracketId: unknown): string {
+  return String(bracketId).toUpperCase();
+}
+
+// The identity recognizers every bracket helper in this file shares.
+// `BRACKET_ID_PREFIX_RE` is applied to an ALREADY-FOLDED string, so it needs no
+// `/i`; the other two see raw dir names and carry it.
+// The milestone field must END at the phase separator. Without the boundary the
+// width alternation matched a PREFIX of a malformed run — `GSD.002-01` matched
+// its leading `00` and read as a sentinel.
+const BRACKET_ID_PREFIX_RE = new RegExp(`^${BRACKET_PROJECT_CODE_SRC}\\.(${BRACKET_MILESTONE_NUMERIC_SRC})(?=-|$)`);
+const BRACKET_DIR_PREFIX_SRC = `${BRACKET_ID_SRC}-`;
+// The trailing `(?=-|$)` is what makes the recognizer and the resolver agree on
+// REJECTED input, not just accepted input. Without it `GSD.02-12A-hotfix`
+// resolves to token `12` here while the directory recognizer calls the name
+// malformed — so W005 reports it malformed in the same run that the
+// milestone-complete check treats it as a real phase directory.
+const BRACKET_DIR_TOKEN_RE = new RegExp(`^${BRACKET_DIR_PREFIX_SRC}(\\d+(?:\\.\\d+)?)(?=-|$)`, 'i');
+// Same width rule, same `(?=-|$)` boundary and same single-sub-phase shape as
+// BRACKET_DIR_TOKEN_RE. Without them a qualified query `GSD.02-12` matched the
+// directory `GSD.02-12A-hotfix` — which isPhaseDirName calls malformed — and
+// phaseTokenMatches returns UNCONDITIONALLY on a qualified hit, so that
+// disagreement would have been final rather than a fall-through.
+const BRACKET_QUALIFIED_KEY_RE = new RegExp(
+  `^(${BRACKET_PROJECT_CODE_SRC})\\.(${BRACKET_MILESTONE_NUMERIC_SRC})-(\\d+(?:\\.\\d+)?)(?=-|$)`, 'i',
+);
+
+// ── #612 PR-2: gated heading-intro selection ────────────────────────────────
+// The two intro spellings that exist upstream TODAY, transcribed verbatim from
+// the call sites. A repo that has not opted into the bracket convention
+// compiles exactly these — not a superset of them, THEM — so its reads are
+// structurally identical to the base build rather than argued equivalent.
+// tests/adr-612-bracket-heading-selection.test.cjs asserts that byte-equality
+// against its own independently transcribed copies of the call-site literals.
+const BASE_ANY_BRACKET_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+';
+const BASE_PHASE_LABEL_PREFIX_SRC = 'Phase\\s+';
+
+// Which of those two a site spells at base. Passed explicitly rather than
+// inferred, because the choice is a fact about the call site's history that no
+// amount of looking at the widened pattern can recover.
+const PHASE_HEADING_BASELINE = Object.freeze({
+  /** Site already tolerates `[anything] Phase N` — roadmap headings, validate's heading scanner. */
+  ANY_BRACKET: 'any-bracket',
+  /** Site spells a bare `Phase N` with no bracket tolerance — checklist bullets, the counters. */
+  LABEL_ONLY: 'label-only',
+});
+
+/**
+ * The heading-intro source a site should compile, given the resolved
+ * `phase_id_convention`.
+ *
+ * NON-bracket conventions (null, undefined, 'milestone-prefixed', or any
+ * unrecognized value) return the site's BASE spelling unchanged. This is the
+ * whole design: PR-2 originally widened these reads ungated and argued the new
+ * shape "cannot occur in a legacy ROADMAP", which is false — `### [RFC.2119] 5:`,
+ * `### [v1.0] 2024:` and `### [ADR.612] 3:` are all legal legacy headings that
+ * the widened form claims as phases, moving phase_count, total_phases and W006
+ * on repos that never opted in. Selection at construction time removes the
+ * argument entirely: there is nothing to reason about, because a non-bracket
+ * repo compiles the same source string it compiled before.
+ *
+ * `capturing` adds EXACTLY ONE group, at position 1, holding the bracket id —
+ * `undefined` whenever a non-bracket alternative matched. Sites that filter
+ * sentinels need it: READING-B puts the sentinel milestone in the bracket, so
+ * testing the phase token alone is blind to `### [GSD.999] 01:`.
+ *
+ * Pure: takes the resolved convention, never reads config.
+ */
+function phaseHeadingPrefixSrcFor(
+  baseline: string,
+  convention?: string | null,
+  capturing = false,
+): string {
+  const base = baseline === PHASE_HEADING_BASELINE.ANY_BRACKET
+    ? BASE_ANY_BRACKET_HEADING_PREFIX_SRC
+    : BASE_PHASE_LABEL_PREFIX_SRC;
+  if (convention !== 'bracket') return base;
+  const id = capturing ? `(${BRACKET_ID_SRC})` : BRACKET_ID_SRC;
+  // `[ \t]*` not `\s*`: `\s` spans newlines, so a bracket-terminated heading
+  // followed by a blank line and a digit-leading prose line read as one phase.
+  // BOTH bracket forms are admitted at both baselines, and both CAPTURE. The
+  // any-bracket base already matches `[GSD.999] Phase 07:` on its own — but
+  // through the base alternative, which captures nothing, so the reader saw
+  // `bracketId === undefined`, fell back to the legacy leading-integer rule, and
+  // counted a labeled icebox heading as a real phase while the label-less form
+  // beside it was excluded. Two derivations of one ROADMAP disagreed. The
+  // bracket alternative is tried FIRST so it wins the capture.
+  const bracketAlt = `\\[${id}\\][ \\t]*(?:Phase\\s+|(?=\\d))`;
+  return `(?:${bracketAlt}|${base})`;
+}
 
 function stripProjectCodePrefix(value: unknown, caseInsensitive = true): string {
   const input = String(value);
@@ -216,9 +379,9 @@ function getMilestoneFromPhaseId(phaseId: unknown, convention?: string): string 
   // pure (no config read) and backward-compatible: every existing single-arg
   // caller resolves to the unchanged READING-A body.
   if (convention === 'bracket') {
-    const b = String(phaseId).match(/^([A-Z][A-Z0-9_]*)\.(\d+)/);
+    const b = foldBracketId(phaseId).match(BRACKET_ID_PREFIX_RE);
     if (!b) return null;
-    const mm = parseInt(b[2], 10);
+    const mm = parseInt(b[1], 10);
     if (SENTINEL_RANGES.includes(mm)) return null; // sentinel milestones have no real milestone
     return `v${mm}.0`;
   }
@@ -438,8 +601,35 @@ function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
   // convention-less caller uses the legacy/bare leading-int rule below, so no
   // existing reader gains a false positive; the bracket reading is opt-in.
   if (convention === 'bracket') {
-    const bracket = s.match(/^[A-Z][A-Z0-9_]*\.(\d+)/); // bracket: milestone in the prefix
+    // #612 PR-2: fold before matching. Readers recognize headings under `/i`, so
+    // a lowercase `[gsd.999]` arrives verbatim; the case-sensitive class below
+    // then failed to match and an icebox item counted as a real phase.
+    const bracket = foldBracketId(s).match(BRACKET_ID_PREFIX_RE);
     if (bracket) return SENTINEL_RANGES.includes(parseInt(bracket[1], 10));
+    // #2761 round-12: NO bracket tag matched — a bare/untagged id under
+    // bracket convention (`0-bootstrap`, a directory with no `{CODE}.{MM}-`
+    // prefix, or a legacy-spelled `### Phase 0:` heading routed here without
+    // its own bracketId guard). Falling through to the LEGACY leading-int rule
+    // below would read this bare `0` as sentinel milestone 0 — but under
+    // bracket convention milestone 0 is expressed ONLY via an explicit
+    // bracket tag, so an untagged leading `0` is a real phase token, not a
+    // sentinel. This mirrors the two HEADING-side counters that already carry
+    // this exact carve-out: state.cts's `countRoadmapPhaseHeadings` guards its
+    // bare-0 exclusion with `bracketId &&` (so an untagged `Phase 0:` heading
+    // is counted), and roadmap-parser.cts's `scanMilestonePhaseIds` composes
+    // the bare-token rule as 999-only, deliberately NOT this predicate, for
+    // the identical reason (#3185: the leading-int rule also swallows the
+    // #2554 decimal ids — `0.5-bootstrap` is a real phase, not milestone 0).
+    // The 999/icebox reading stays universal either way — an untagged `999`
+    // is still backlog under every convention — so only that half of
+    // SENTINEL_RANGES applies here.
+    //
+    // `isSentinelPhaseDir` remains deliberately convention-blind for its
+    // warning-only disk guards and may conservatively classify a bare `0`
+    // directory as sentinel. This branch has an explicit resolved convention
+    // and feeds counts/archives, so it must retain the more precise reading.
+    const bare = stripProjectCodePrefix(s).match(/^0*(\d+)/);
+    return bare !== null && parseInt(bare[1], 10) === 999;
   }
   const legacy = stripProjectCodePrefix(s).match(/^0*(\d+)/); // legacy/bare: leading int
   if (!legacy) return false;
@@ -639,7 +829,7 @@ function derivePhaseTokenSegments(
 /**
  * Extract the phase token from a directory name.
  */
-function extractPhaseToken(dirName: string, convention?: string): string {
+function extractPhaseToken(dirName: string, convention?: string | null): string {
   // #612 bracket dir form `{CODE}.{MM}-{PP}[.{SS}]-slug` → phase token `PP[.SS]`.
   // GATED on convention === 'bracket' (mirrors getMilestoneFromPhaseId's READING-B
   // decision above). A bracket dir `{CODE}.{MM}-{PP}` is string-INDISTINGUISHABLE
@@ -654,7 +844,10 @@ function extractPhaseToken(dirName: string, convention?: string): string {
   // config read). The captured token is dot-only (`PP[.SS]`); the milestone↔phase
   // hyphen and any trailing plan/slug are excluded.
   if (convention === 'bracket') {
-    const bracketDir = dirName.match(/^[A-Z][A-Z0-9_]*\.\d+-(\d+(?:\.\d+)?)/);
+    // #612 PR-2: built from the ONE bracket identity grammar, not a private
+    // spelling. Case-insensitive to match how the readers recognize headings and
+    // directories; the milestone width is the emit grammar's.
+    const bracketDir = dirName.match(BRACKET_DIR_TOKEN_RE);
     if (bracketDir) return bracketDir[1];
   }
 
@@ -932,9 +1125,46 @@ function scopeToPhase(fileNames: string[], phaseDirName: string): string[] {
 }
 
 /**
- * Check if a directory name's phase token matches the normalized phase exactly.
+ * Canonical comparable key for a milestone-qualified bracket id or dir name.
+ * Lifts the milestone out of the `{CODE}.{MM}-` prefix so a flat multi-milestone
+ * layout disambiguates: `CK.03-02` resolves to its OWN milestone's directory,
+ * never the first same-numbered directory of another milestone.
+ *
+ * Returns null for UNQUALIFIED ids (`02`, `HQ-11`, `11.01`) so callers fall back
+ * to bare-token matching unchanged, and GATED on convention === 'bracket' for
+ * the same reason as extractPhaseToken: the qualified key is padding-
+ * INSENSITIVE where the legacy token path is padding-SENSITIVE, so ungated it
+ * silently widens matching on legacy repos.
  */
-function phaseTokenMatches(dirName: string, normalized: string): boolean {
+function bracketQualifiedKey(s: string, convention?: string | null): string | null {
+  if (convention !== 'bracket') return null;
+  const m = String(s).match(BRACKET_QUALIFIED_KEY_RE);
+  if (!m) return null;
+  const milestone = parseInt(m[2], 10);
+  // A milestone integer past Number's exact range collapses to Infinity, and
+  // every such id would then share one key. Refuse rather than collide.
+  if (!Number.isSafeInteger(milestone)) return null;
+  const phase = m[3].split('.').map(n => parseInt(n, 10));
+  if (phase.some(n => !Number.isSafeInteger(n))) return null;
+  return `${foldBracketId(m[1])}.${milestone}-${phase.join('.')}`;
+}
+
+/**
+ * Check if a directory name's phase token matches the normalized phase exactly.
+ *
+ * The optional `convention` is the ADR-2121 additive shape: every existing
+ * two-argument call site resolves to the unchanged legacy body.
+ */
+function phaseTokenMatches(dirName: string, normalized: string, convention?: string | null): boolean {
+  if (convention === 'bracket') {
+    // A milestone-qualified query compares on the full qualified key, and
+    // returns unconditionally: falling through on a miss would re-admit the
+    // cross-milestone match the qualification exists to prevent.
+    const qKey = bracketQualifiedKey(normalized, convention);
+    if (qKey) return bracketQualifiedKey(dirName, convention) === qKey;
+    const bracketToken = extractPhaseToken(dirName, convention);
+    if (bracketToken.toUpperCase() === normalized.toUpperCase()) return true;
+  }
   const token = extractPhaseToken(dirName);
   if (token.toUpperCase() === normalized.toUpperCase()) return true;
   const stripped = stripProjectCodePrefix(dirName);
@@ -1032,8 +1262,8 @@ const unpad = (digits: string): string => digits.replace(/^0+(?=\d)/, '');
  * the directory's leading digit run instead of `extractPhaseToken` (whose
  * token for these dirs is the mis-absorbed multi-segment form).
  */
-function matchPhaseDirs(dirs: string[], normalized: string): { matches: string[]; usedBareFallback: boolean } {
-  const primary = dirs.filter(d => phaseTokenMatches(d, normalized));
+function matchPhaseDirs(dirs: string[], normalized: string, convention?: string | null): { matches: string[]; usedBareFallback: boolean } {
+  const primary = dirs.filter(d => phaseTokenMatches(d, normalized, convention));
   if (primary.length > 0) return { matches: primary, usedBareFallback: false };
 
   const bare = String(normalized);
@@ -1096,9 +1326,18 @@ function phaseKeyFromToken(token: unknown): string {
 /**
  * Canonical key for a phase DIRECTORY name (`"05-schedule-8"` → `"05"`,
  * `"PROJ-5-x"` → `"05"`, `"30.1-follow-up"` → `"30.1"`).
+ *
+ * #612: `convention` is forwarded to `extractPhaseToken`, which needs that signal
+ * to read a bracket directory (`"GSD.02-05-delta"` → `"05"`) — a bracket dir is
+ * string-indistinguishable from the legacy letter-prefixed-decimal family, so the
+ * extractor refuses to guess. Optional and defaulted-absent, so every pre-#612
+ * call site resolves byte-identically to prior behaviour. Without it a bracket dir
+ * yields its whole name as the key and never matches the ROADMAP entry it names —
+ * #2562's own defect class reached from the other side: both sides of a comparison
+ * must be derived not merely by the same function but under the same convention.
  */
-function phaseKeyFromDir(dirName: string): string {
-  return phaseKeyFromToken(extractPhaseToken(dirName));
+function phaseKeyFromDir(dirName: string, convention?: string | null): string {
+  return phaseKeyFromToken(extractPhaseToken(dirName, convention));
 }
 
 /**
@@ -1254,6 +1493,18 @@ export = {
   isPhaseContinuationSegment,
   BRACKET_PHASE_TOKEN_SOURCE,
   PHASE_HEADING_PREFIX_SRC,
+  BRACKET_ID_SRC,
+  BRACKET_PROJECT_CODE_SRC,
+  bracketMilestoneIntroSrcFor,
+  BRACKET_MILESTONE_INTRO_CAPTURING_SRC,
+  BRACKET_MILESTONE_NUMERIC_SRC,
+  BRACKET_DIR_PREFIX_SRC,
+  BASE_ANY_BRACKET_HEADING_PREFIX_SRC,
+  BASE_PHASE_LABEL_PREFIX_SRC,
+  PHASE_HEADING_BASELINE,
+  phaseHeadingPrefixSrcFor,
+  foldBracketId,
+  bracketQualifiedKey,
   stripProjectCodePrefix,
   normalizePhaseName,
   getMilestoneFromPhaseId,
