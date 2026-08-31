@@ -201,8 +201,8 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
     BASE_BRANCH=$(gsd_run query git.base-branch 2>/dev/null || echo "")
     RED_RANGE=""
-    # Prefer origin/<base>: a stale local base branch widens the range and
-    # re-admits older commits as RED evidence (see gsd-core/references/tdd.md).
+    # Prefer origin/<base>: a stale local base widens the range (see
+    # gsd-core/references/tdd.md).
     if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="origin/${BASE_BRANCH}..HEAD"
     elif [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "${BASE_BRANCH}" >/dev/null 2>&1; then
@@ -214,10 +214,8 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
       exit 1
     fi
 TAB=$(printf '\t')
-    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject, newest
-    # SUBJECT match wins regardless of trailer contents — selection is
-    # indifferent to the trailer, and the verdict verb judges it AFTER
-    # selection (below) — see gsd-core/references/tdd.md.
+    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject; newest
+    # SUBJECT match wins, trailer judged AFTER (see gsd-core/references/tdd.md).
     RED_RECORD=$(git log "$RED_RANGE" --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
       | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]*${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
     RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1)
@@ -232,7 +230,7 @@ TAB=$(printf '\t')
       echo "MVP+TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
-    # quotePath=false: git's default escapes non-ASCII paths (#3770 G9).
+    # quotePath=false: escapes non-ASCII paths (#3770 G9).
     RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --changed-files "$(git -c core.quotePath=false show --name-only --format= "$RED_SHA")" --pick verdict) || exit 1
     if [ "$RED_VERDICT" != "authorize" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
