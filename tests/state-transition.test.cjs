@@ -1284,6 +1284,30 @@ describe('#3791 review round 6 (B1/M1): every spelling advances from its own tex
     assert.strictEqual(stateExtractField(result.content, 'Plan'), 'TBD');
   });
 
+  test('a Current Plan with no readable number is left alone, and not reported as updated', () => {
+    // The mirror of the case above: `Plan` is the parse source and the legacy
+    // field is the unreadable one. It exercises the other arm of the same skip,
+    // and it is the fixture where an unconditional `updated.push('Current Plan')`
+    // would claim a write that never happened.
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** TBD',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 5',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 5');
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), 'TBD');
+    assert.ok(!result.updated.includes('Current Plan'),
+      'must not report a field it did not write');
+    assert.ok(result.updated.includes('Status'), 'the fields it did write are still reported');
+  });
+
   // ─── M2: the bare `Plan: N` + sibling shape is not accepted ────────────────
 
   test('a bare Plan: N with a Total sibling and no Current Plan is refused', () => {

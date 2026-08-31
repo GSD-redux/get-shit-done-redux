@@ -1772,7 +1772,15 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     plan: planDisplayValue,
     currentPlan: currentPlanDisplayValue,
   }, statusDefaults, lastActivityDefaults);
-  updated.push('Current Plan', 'Status', 'Last Activity', 'Current Position');
+  // Report `Current Plan` only when it actually moved. The write above is
+  // conditional now — a `Current Plan:` that is present but unreadable is left
+  // as authored — so an unconditional push here would report progress this
+  // transition had not made, which is the same sin `bumpLeadingNumber` returns
+  // null to avoid. `reconcileReportedFields` at the `state.cts` caller would
+  // catch it against the persisted bytes, but `transitionCore`'s own `updated`
+  // is consumed directly too and has to be true on its own.
+  if (currentPlanDisplayValue !== undefined) updated.push('Current Plan');
+  updated.push('Status', 'Last Activity', 'Current Position');
 
   return {
     content: reassemble(body),
