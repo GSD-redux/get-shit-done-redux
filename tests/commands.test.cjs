@@ -5737,6 +5737,53 @@ describe('#3859: the empty-diff probe is pinned against diff-only configuration'
       gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir }), 'B\n',
       'the new content must actually be recorded');
   });
+
+  // #3859 follow-up (e935694fc/b3d37b929): the actual `git commit` call now
+  // carries a `commitEnv` GIT_CONFIG_* override (forcing
+  // `diff.ignoreSubmodules=dirty`) — but ONLY when `canScope` is true (a
+  // pathspec-limited `git commit -- <paths>`), because only that git internal
+  // path consults `diff.ignoreSubmodules` when deciding whether a bumped
+  // submodule gitlink is a real change to record. A whole-index commit or
+  // `--amend` never appends a pathspec, so git never runs that check and the
+  // override is never applied there. These two tests pin that scoping
+  // boundary directly and independently of git version: both canScope=false
+  // shapes must keep recording a bumped submodule gitlink under
+  // `diff.ignoreSubmodules=all` with no override in play, proving the
+  // `canScope` gate on `commitEnv` was not needed — and is not silently
+  // relied on — outside the pathspec-limited path.
+  test('a whole-index commit (no --files, canScope=false) still records a bumped submodule under diff.ignoreSubmodules=all', () => {
+    bumpedSubmodule();
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: tmpDir });
+    gitOrThrow(['add', '--', 'sub'], { cwd: tmpDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim();
+
+    const result = runGsdTools('commit "m"', tmpDir);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    const output = JSON.parse(payload);
+
+    assert.strictEqual(output.committed, true,
+      'a whole-index commit never carries a pathspec, so it needs no GIT_CONFIG_* override to record the bumped gitlink');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
+
+  test('an --amend commit (canScope=false) still records a bumped submodule under diff.ignoreSubmodules=all', () => {
+    bumpedSubmodule();
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: tmpDir });
+    gitOrThrow(['add', '--', 'sub'], { cwd: tmpDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim();
+
+    const result = runGsdTools('commit "m" --amend', tmpDir);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    const output = JSON.parse(payload);
+
+    assert.strictEqual(output.committed, true,
+      '--amend never carries a pathspec either, so it needs no GIT_CONFIG_* override to record the bumped gitlink');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
 });
 
 
