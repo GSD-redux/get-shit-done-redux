@@ -128,8 +128,10 @@
  *     `--include-archived` merge are phase LOCATION and archive
  *     enumeration, not current-milestone enumeration; both legitimately
  *     read the physical set. Its ENUMERATION path routes through the owner.
- *   - `src/roadmap-parser.cts` `getMilestonePhaseFilter` and its #3262-extracted
- *     set-building owner `scanMilestonePhaseIds` (the same two heading/
+ *   - `src/roadmap-parser.cts` `getMilestonePhaseFilter` and its shared
+ *     set-building implementation `scanMilestonePhaseIdSets` (the public
+ *     `scanMilestonePhaseIds` wrapper remains a directly iterable Set; the
+ *     same two heading/
  *     #3577 `collectTablePhaseRows` — the table-scan sibling feeding the same
  *     membership set; its local 999-only exclusion mirrors the owner's
  *     deliberate NOT-isSentinelPhaseId choice (a leading 0 is a real decimal
@@ -142,6 +144,18 @@
  *     ("00.1" is a real phase, not milestone 0). This scan asks a narrower
  *     question — "which phase ids does this milestone's window declare" —
  *     where only the 999 icebox range is excluded.
+ *   - `src/state.cts` `countRoadmapPhaseHeadings`: its bracket branch composes
+ *     bracket-milestone sentinel detection through `isSentinelPhaseId`, but
+ *     retains a separate bare-token `999` rule. That rule intentionally does
+ *     NOT use the convention-blind canonical predicate: the latter also reads
+ *     leading `0`/`00.1` as milestone-0 sentinels, while a legacy-spelled bare
+ *     zero token inside an opted-in bracket project is a real mid-migration
+ *     phase. This is the state-counter twin of the roadmap-parser exemption.
+ *     The guard has no per-detector exemption scope: it ORs the enumeration
+ *     and sentinel detectors before consulting this function-only map. The
+ *     whole-function exemption is therefore accepted; it is bounded because
+ *     this counter performs no phases-directory `readdirSync` and needs the
+ *     exemption only for its intentional bare-token `999` sentinel literal.
  *   - `src/state.cts` `cmdStateValidate` ("Gate 1: Validate STATE.md against
  *     filesystem"): resolves ONE directory — the disk match for STATE.md's
  *     own `Current Phase` field — by prefix, a single-phase LOOKUP, not an
@@ -300,10 +314,10 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases', 'collectSiblingWorktreePhaseNums'])],
   [path.join('src', 'audit.cts'), new Set(['listAuditPhaseTargets'])],
   [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
-  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild'])],
+  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild', 'countRoadmapPhaseHeadings'])],
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
   [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
-  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIds', 'collectTablePhaseRows'])],
+  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIdSets', 'collectTablePhaseRows'])],
   [path.join('src', 'planning-snapshot.cts'), new Set(['buildAllPhaseDirNamesField'])],
 ]);
 
