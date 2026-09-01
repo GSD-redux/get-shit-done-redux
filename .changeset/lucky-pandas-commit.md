@@ -11,10 +11,14 @@ abbreviated spellings of it (`--cle=verbatim` and anything else that is an unamb
 a message argument claimed by a bundled short option, since git reads `-am 'first'` as `-a -m` and
 takes that first message as the subject; a `cat` reached by a relative path; a substitution composed with more text on either side of the terminator; and a `"` inside the subject line itself, which the quote-bounded capture cannot span.
 
-Option names are matched against the command as bash hands it to git, with quote characters
-and syntactic backslashes removed, so a spliced spelling like `--clean""up=verbatim`, `-""m`,
-`--clean\up=verbatim` or `-\m` is recognised as the option it actually is rather than slipping
-past a literal match. A message option is also recognised when its value is attached (`-mWIP`,
+Option names are matched against the command with the three things bash removes before git sees
+an argument taken out of it: quote characters, syntactic backslashes, and the `$` that introduces
+a dollar-quote. A spliced spelling like `--clean""up=verbatim`, `-""m`, `--clean\up=verbatim`,
+`-\m`, `-$"m"` or `--mes$'sage'=WIP` is therefore recognised as the option it actually is rather
+than slipping past a literal match. Where an option NAME is finished by a command substitution
+instead — `--clean$(printf up)=verbatim` — the argv git receives cannot be derived from the
+command line at all, so resolution is refused rather than guessed; a substitution supplying an
+option VALUE, as in the ordinary `--author="$(git config user.name)"`, is unaffected. A message option is also recognised when its value is attached (`-mWIP`,
 which git reads as `-m WIP`) and when its name is abbreviated (`--mes=WIP`), and a newline is
 treated as a command separator alongside `;`, `&` and `|`, so a later command's `-m` is never
 mistaken for this commit's message. Where more than one `cleanup` directive appears, resolution

@@ -204,6 +204,25 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # second pass so the class is unambiguous.
       MSG_PREFIX_DEQ="${MSG_PREFIX_DEQ//\\/}"
       MSG_SUFFIX_DEQ="${MSG_SUFFIX_DEQ//\\/}"
+      # DOLLAR-QUOTED SPELLINGS (independent review of #3816, round 8). The two
+      # passes above still were not "the command as bash hands it to git": bash
+      # has TWO more quoting forms whose introducer is a `$`, and removing the
+      # quote characters alone leaves that `$` stranded in the middle of the
+      # option name. `-$"m"` became `-$m` here while bash passes a real `-m` to
+      # git, and `--mes$'sage'=WIP` became `--mes$sage=WIP`; neither matched any
+      # literal, so the first-message guard below never fired. Measured on bash
+      # 3.2.57 and 5.3.15 against a real repository: the hook allowed
+      # `-$"m" WIP -m <conforming heredoc>` (exit 0) while `git cat-file -p`
+      # recorded the subject `WIP` — the same command spelled `-m WIP` is
+      # refused (exit 2). Stripping `$` closes both dollar-quote forms.
+      #
+      # RESIDUAL, and not fixable from a string: an option name assembled by an
+      # EXPANSION — `-${x}m`, `-$(printf m)` — is not knowable without running
+      # the command, the same limit this file already documents for expanded
+      # heredoc bodies. Stripping `$` makes those spellings collapse toward the
+      # literal too, which over-matches, and over-matching only refuses more.
+      MSG_PREFIX_DEQ="${MSG_PREFIX_DEQ//\$/}"
+      MSG_SUFFIX_DEQ="${MSG_SUFFIX_DEQ//\$/}"
 
       # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
       # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
@@ -266,6 +285,27 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # than git's own abbreviation set on purpose — over-matching only refuses
       # more, which is the recoverable direction.
       # Variable-held for the same bash-3.2 reason as GLUE_CLASS above.
+      # AN OPTION NAME BUILT BY A COMMAND SUBSTITUTION IS UNRESOLVABLE
+      # (independent review of #3816, round 8). Stripping `$` above collapses the
+      # two dollar-QUOTE forms onto their literals, but `--clean$(printf up)=`
+      # is a different thing: bash RUNS a program to finish the option name, so
+      # the argv git receives is not derivable from this string at all. Measured
+      # accepting a 75-byte subject the length gate had recorded as 72.
+      #
+      # SCOPED TO THE NAME, NOT THE VALUE. The class is a `-`-leading token whose
+      # characters up to the substitution contain no `=` — an option NAME being
+      # assembled. `--author="$(git config user.name)"` and `--author "$(…)"`
+      # both put the substitution in the VALUE, which this file never models and
+      # which stays allowed; only `-…$(` before any `=` refuses. Scanned on the
+      # RAW windows on purpose: the dequoted copies have had their `$` removed,
+      # so the shape is no longer visible there.
+      #
+      # This is a SHAPE, not a segmentation: it never tries to decide where
+      # git's own command ends. Two attempts at that were reverted for opening
+      # accept-direction holes, and the reasoning above still stands.
+      SUBST_NAME_CLASS='(^|[[:space:]])-[^[:space:]=]*[$]\('
+      if [[ "$MSG_PREFIX" =~ $SUBST_NAME_CLASS ]] \
+        || [[ "$MSG_SUFFIX" =~ $SUBST_NAME_CLASS ]]; then RESOLVE=0; fi
       SEP_CLASS='[;&|]'
       if [[ "$MSG_PREFIX_DEQ" =~ (^|[[:space:]])(-[a-zA-Z]*m|--m[a-z]*([=[:space:]]|$)) ]] \
         || [[ "$MSG_PREFIX" =~ (^|[[:space:]])--([[:space:]]|$) ]] \

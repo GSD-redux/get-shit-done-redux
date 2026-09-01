@@ -1058,6 +1058,56 @@ EOF
     assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0, 'non-vacuity: canonical form still resolves');
   });
 
+  test('option-name scans remove the $ of a dollar-quote, as bash does (round 8)', () => {
+    // Round 7 removed quotes and backslashes and the changeset again claimed the
+    // windows are matched "as bash hands it to git". Still not true: bash has two
+    // more quoting forms, $'…' and $"…", whose introducer is a `$`. Removing the
+    // quote characters alone left that `$` stranded INSIDE the option name, so
+    // `-$"m"` dequoted to `-$m` and matched no literal while bash passed a real
+    // `-m` to git. Measured on bash 3.2.57 and 5.3.15 against a real repository:
+    // the hook allowed the command (exit 0) and `git cat-file -p` recorded the
+    // subject `WIP`, while the same command spelled `-m WIP` was refused.
+    for (const [label, cmd] of [
+      ['locale-quoted short option', `git commit -$"m" WIP -m ${HD_OK}`],
+      ['ANSI-quoted short option', `git commit -$'m' WIP -m ${HD_OK}`],
+      ['locale-spliced --message', `git commit --mes$"sage"=WIP -m ${HD_OK}`],
+      ['ANSI-spliced --cleanup', `git commit --allow-empty -m ${HD_LONG_DIRTY} --clean$'up'=verbatim`],
+    ]) {
+      const r = runHookCmd(cmd);
+      assert.strictEqual(r.status, 2,
+        `${label}: a dollar-quote is removed by bash before git sees the argument, so it does not `
+        + 'stop the option claiming the message');
+    }
+    assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0, 'non-vacuity: canonical form still resolves');
+  });
+
+  test('an option NAME built by a command substitution is unresolvable (round 8)', () => {
+    // Stripping `$` collapses the dollar-QUOTE forms onto their literals, but
+    // `--clean$(printf up)=verbatim` is a different thing: bash RUNS a program to
+    // finish the option name, so the argv git receives is not derivable from this
+    // string at all. Measured accepting a 75-byte subject recorded as 72.
+    assert.strictEqual(
+      runHookCmd(`git commit --allow-empty -m ${HD_LONG_DIRTY} --clean$(printf up)=verbatim`).status, 2,
+      'an option name finished by running a program cannot be read off the command line');
+    assert.strictEqual(runHookCmd(`git commit -$(printf m) WIP -m ${HD_OK}`).status, 2,
+      'the same applies to a short option name');
+
+    // SCOPE, in both directions. The class is a `-`-leading token whose characters
+    // up to the substitution contain no `=` — an option NAME being assembled. A
+    // substitution in the VALUE is something this file never models and must stay
+    // allowed, or the guard refuses the ordinary `--author="$(git config …)"`
+    // idiom. Without these rows the assertions above would also pass for a guard
+    // that simply refuses every `$(`.
+    for (const [label, cmd] of [
+      ['spaced value', `git commit --author "$(git config user.name)" -m ${HD_OK}`],
+      ['glued value', `git commit --author="$(git config user.name)" -m ${HD_OK}`],
+      ['value in the suffix window', `git commit -m ${HD_OK} --author="$(id -un)"`],
+    ]) {
+      assert.strictEqual(runHookCmd(cmd).status, 0,
+        `${label}: a substitution AFTER the \`=\` builds an option value, not an option name`);
+    }
+  });
+
   test('a newline is a command separator for the first-message guard (round 7)', () => {
     // The separator scan covered `;`, `&` and `|` but not a literal newline, so
     // a LATER command's heredoc-shaped -m was taken for this commit's message.
