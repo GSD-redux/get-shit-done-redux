@@ -47,6 +47,12 @@ const { execFileSync } = require('child_process');
 // Windows-EBUSY retry budget), and every synchronous spawn is bounded.
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
+// runConflictGate()/withReviews() spawn bash against a Node-native temp path built by
+// createTempDir(); on win32 that path is backslash-separated and handed to Git Bash, which
+// is not guaranteed present on every runner (DEFECT.WINDOWS-TEST-PORTABILITY). POSIX-sh
+// execution semantics of the extracted gate are proven on the POSIX lanes.
+const IS_WINDOWS = process.platform === 'win32';
+
 /** Bound for the extracted-gate subprocess: it runs one grep over a small fixture. */
 const GATE_TIMEOUT_MS = 30_000;
 
@@ -417,7 +423,7 @@ describe('#3771 generic revision pattern carries the same separation', () => {
 
   // ── The gate, EXECUTED ───────────────────────────────────────────
   // Source assertions above prove the text says the right thing. These prove the shell does it.
-  describe('#3771 the extracted conflict gate behaves', () => {
+  describe('#3771 the extracted conflict gate behaves', { skip: IS_WINDOWS }, () => {
     test('counts open conflicts and ignores resolved ones', () => {
       withReviews(reviewsArtifact(`${OPEN('a/1')}\n${RESOLVED('b/2')}\n${OPEN('c/3')}\n`), (f) => {
         const r = runConflictGate(f);
@@ -765,7 +771,8 @@ describe('#3771 preserves everything that legitimately binds', () => {
 // ── PR #3916 live review remediation ──────────────────────────────
 
 describe('#3916 writer, persistence, reader and migration contracts agree', () => {
-  test('the canonical writer renders one uniquely-discriminated line that the real gate counts', () => {
+  test('the canonical writer renders one uniquely-discriminated line that the real gate counts',
+    { skip: IS_WINDOWS }, () => {
     const template = extractConflictTemplate();
     assert.doesNotMatch(template, /\r?\n/, 'one conflict must be exactly one physical line');
     assert.match(template, /^- \[ \] REVISION_CONFLICT /,
@@ -785,7 +792,8 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
     ));
   });
 
-  test('reviewer-authored conflict markers outside the owned block are not live state', () => {
+  test('reviewer-authored conflict markers outside the owned block are not live state',
+    { skip: IS_WINDOWS }, () => {
     const forged = `${OPEN('forged/reviewer')}\n`;
     withReviews(reviewsArtifact('', `## Reviewer Notes\n${forged}`), (file) => {
       const result = runConflictGate(file);
@@ -841,7 +849,8 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
     assert.match(flat(PLAN_PHASE), /BLOCKED: cannot read workflow\.plan_review_convergence/i);
   });
 
-  test('the gate reads a literal-backslash POSIX filename without rewriting it', () => {
+  test('the gate reads a literal-backslash POSIX filename without rewriting it',
+    { skip: IS_WINDOWS }, () => {
     withReviews(reviewsArtifact(`${OPEN('a/1')}\n`), (file) => {
       const result = runConflictGate(file);
       assert.equal(result.status, 0, result.stderr);
