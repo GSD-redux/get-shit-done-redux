@@ -93,6 +93,7 @@ const {
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
 const {
+  comparePhaseNum,
   normalizePhaseName,
   matchPhaseDirs,
   stripProjectCodePrefix,
@@ -3233,9 +3234,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     }
   }
 
-  phases.sort(
-    (a, b) => parseInt(a['number'] as string, 10) - parseInt(b['number'] as string, 10),
-  );
+  phases.sort((a, b) => comparePhaseNum(a['number'], b['number']));
 
   // #3581: the frontier is ROADMAP ORDER, not artifact presence. The disk loop
   // above could claim nextPhase from a stray out-of-order artifact directory
