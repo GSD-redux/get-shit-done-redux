@@ -830,6 +830,45 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
 // ─── State Progression Engine ────────────────────────────────────────────────
 
 /**
+ * The "I could not read the plan position" message, DERIVED from
+ * `STATE_FIELD_SCHEMA.current_plan.acceptedShapes` rather than transcribed
+ * beside it.
+ *
+ * The accepted-shape set had two owners: the parser branches in
+ * `advancePlanCore` and an English list hand-written here. Nothing coupled
+ * them, so adding a branch left this message stale and removing one left it
+ * advertising a shape that errors — and no test could see either. ADR-3473
+ * §8.3 is "one implementation per rule"; the schema row is that one owner, and
+ * rows 23/24/25 already hold the parser to it.
+ *
+ * `Plan: N of M` is spelled out separately because there is no schema row for
+ * the body-only `Plan` field: `buildStateFrontmatter` never reads it into
+ * frontmatter, so it has no `current_*` key to hang a row on. That asymmetry is
+ * the schema's, not this function's.
+ */
+function advancePlanShapeError(): string {
+  const shapes = stateMdSchemaMod.STATE_FIELD_SCHEMA['current_plan']?.acceptedShapes ?? [];
+  const spellings = shapes.map((shape) => (
+    shape === 'N'
+      ? '`Current Plan: N` with `Total Plans in Phase: M`'
+      : `\`Current Plan: ${shape}\``
+  ));
+  // The body-only `Plan` field has no schema row to derive from:
+  // `buildStateFrontmatter` never reads it into frontmatter, so there is no
+  // `current_*` key to hang a row on. Its ONE accepted spelling is named here.
+  //
+  // `Plan: N` with a `Total Plans in Phase: M` sibling is deliberately NOT
+  // listed (#3791 review round 6, M2): the parser does not accept it. A
+  // revision of this PR added both the branch and this spelling together, on
+  // the reasoning that the message must advertise exactly what the parser
+  // accepts. That reasoning still holds — which is why removing the branch
+  // removes the spelling in the same commit. The invariant is the lockstep,
+  // not the length of the list.
+  spellings.push('`Plan: N of M`');
+  return `Cannot read the plan position from STATE.md. Expected one of: ${spellings.join(', ')}.`;
+}
+
+/**
  * Replace a STATE.md field with fallback field name support.
  * Tries `primary` first, then `fallback` (if provided), returns content unchanged
  * if neither matches. This consolidates the replaceWithFallback pattern that was
@@ -897,6 +936,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     return result.content;
   }, cwd, { divergedFields, preWriteState });
 
+  // `!resultData` is a type guard, not a second failure mode: the callback
+  // above assigns it unconditionally and only runs once STATE.md is known to
+  // exist (the missing-file case returns "STATE.md not found" earlier), and
+  // every `advancePlanCore` return path sets `data`. So the message below is
+  // the one a caller can actually receive.
   if (!resultData || resultData['error']) {
     // #3807: a multi-`Phase:` Current Position section carries its own cause
     // and its own remedy (name the candidates; the caller resolves them).
@@ -908,7 +952,19 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }, raw, undefined);
       return;
     }
-    output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
+    // #3791 review round 6 (B1): the document carries both plan-position
+    // spellings with DIFFERENT numbers. Same posture as the case above — name
+    // the candidates and let the caller resolve them. Advancing either one
+    // would write a number into the other that nothing derived for it.
+    if (resultData && resultData['reason'] === 'ambiguous_plan_position') {
+      output({
+        error: 'STATE.md carries two plan positions with different numbers — refusing to advance either. Resolve them to a single current plan and re-run.',
+        reason: resultData['reason'],
+        plan_candidates: resultData['plan_candidates'],
+      }, raw, undefined);
+      return;
+    }
+    output({ error: advancePlanShapeError() }, raw, undefined);
     return;
   }
 
