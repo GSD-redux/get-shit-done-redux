@@ -15,13 +15,13 @@ Determine what kind of work is being paused and set the handoff destination acco
 
 ```bash
 # Check for active phase
-phase=$(( ls -lt .planning/phases/*/PLAN.md 2>/dev/null || true ) | head -1 | grep -oP 'phases/\K[^/]+' || true)
+phase=$(ls -lt .planning/phases/*/PLAN.md 2>/dev/null | head -1 | grep -oP 'phases/\K[^/]+' || true)
 
 # Check for active spike
-spike=$(( ls -lt .planning/spikes/*/SPIKE.md .planning/spikes/*/DESIGN.md .planning/spikes/*/README.md 2>/dev/null || true ) | head -1 | grep -oP 'spikes/\K[^/]+' || true)
+spike=$(ls -lt .planning/spikes/*/SPIKE.md .planning/spikes/*/DESIGN.md .planning/spikes/*/README.md 2>/dev/null | head -1 | grep -oP 'spikes/\K[^/]+' || true)
 
 # Check for active sketch
-sketch=$(( ls -lt .planning/sketches/*/README.md .planning/sketches/*/index.html 2>/dev/null || true ) | head -1 | grep -oP 'sketches/\K[^/]+' || true)
+sketch=$(ls -lt .planning/sketches/*/README.md .planning/sketches/*/index.html 2>/dev/null | head -1 | grep -oP 'sketches/\K[^/]+' || true)
 
 # Check for active deliberation
 deliberation=$(ls .planning/deliberations/*.md 2>/dev/null | head -1 || true)
