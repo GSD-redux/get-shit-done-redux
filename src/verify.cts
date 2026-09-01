@@ -2457,13 +2457,17 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
     // three. Derived from planningRoot() rather than a hardcoded literal so a
     // repoint of the planning root cannot leave this filter behind.
     //
-    // Anchored to the git toplevel, not to cwd: `git diff --name-status` always
-    // prints repo-root-relative paths, so a cwd below the root would otherwise
-    // compute `.planning/` while git prints `sub/.planning/` and the filter
-    // would silently match nothing.
-    const topProbe = execGit(['rev-parse', '--show-toplevel'], { cwd }) as unknown as { exitCode: number; stdout: string };
-    const repoRoot = topProbe.exitCode === 0 && topProbe.stdout.trim() ? topProbe.stdout.trim() : cwd;
-    const planningPrefix = path.relative(repoRoot, planningRoot(cwd)).split(path.sep).join('/') + '/';
+    // `git diff --name-status` always prints repo-root-relative paths, so a cwd
+    // below the root needs the `sub/` prefix or the filter matches nothing.
+    // That prefix comes from git (`--show-prefix`: root-relative, forward
+    // slashes, trailing slash, empty at the root) rather than from
+    // path.relative() against `--show-toplevel`, because the two sides would
+    // then come from different path producers: on Windows os.tmpdir() hands
+    // back the 8.3 short form while git resolves the long one, and relative()
+    // between them yields a `../..` chain that matches nothing.
+    const prefixProbe = execGit(['rev-parse', '--show-prefix'], { cwd }) as unknown as { exitCode: number; stdout: string };
+    const repoPrefix = prefixProbe.exitCode === 0 ? prefixProbe.stdout.trim() : '';
+    const planningPrefix = repoPrefix + path.relative(cwd, planningRoot(cwd)).split(path.sep).join('/') + '/';
     const isPlanningArtifact = (file: string) => file.split('\\').join('/').startsWith(planningPrefix);
 
     const added: string[] = [];
