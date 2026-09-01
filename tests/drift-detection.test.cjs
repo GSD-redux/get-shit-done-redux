@@ -1238,6 +1238,29 @@ describe('stamp-codebase-map CLI (#3418)', () => {
       'the map documents are planning artifacts, not codebase structure');
     assert.deepStrictEqual(data.affected_paths, []);
   });
+
+  test('the planning-artifact filter holds when cwd is below the repo root (#4124 review)', () => {
+    // `git diff --name-status` prints repo-root-relative paths whatever the
+    // cwd, so a prefix computed against cwd would read `.planning/` while git
+    // prints `sub/.planning/` and the filter would silently match nothing.
+    const sub = path.join(tmp, 'packages', 'app');
+    const subCodebase = path.join(sub, '.planning', 'codebase');
+    fs.mkdirSync(subCodebase, { recursive: true });
+    for (const doc of CODEBASE_MAP_DOCS) {
+      fs.writeFileSync(path.join(subCodebase, doc), `# ${doc}\n\nBody.\n`);
+    }
+
+    const r1 = runGsdTools(['stamp-codebase-map'], sub);
+    assert.strictEqual(r1.success, true, r1.error);
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase from a subdirectory');
+
+    const data = JSON.parse(runGsdTools(['verify', 'codebase-drift'], sub).output);
+    assert.strictEqual(data.skipped, false);
+    assert.strictEqual(data.action_required, false,
+      'the map documents under sub/.planning are still planning artifacts');
+    assert.deepStrictEqual(data.elements, []);
+  });
 });
 
 describe('verify codebase-drift: an absent baseline is not total drift (#3418)', () => {

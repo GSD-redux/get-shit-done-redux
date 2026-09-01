@@ -2456,7 +2456,14 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
     // documents as seven new directories, back over the default threshold of
     // three. Derived from planningRoot() rather than a hardcoded literal so a
     // repoint of the planning root cannot leave this filter behind.
-    const planningPrefix = path.relative(cwd, planningRoot(cwd)).split(path.sep).join('/') + '/';
+    //
+    // Anchored to the git toplevel, not to cwd: `git diff --name-status` always
+    // prints repo-root-relative paths, so a cwd below the root would otherwise
+    // compute `.planning/` while git prints `sub/.planning/` and the filter
+    // would silently match nothing.
+    const topProbe = execGit(['rev-parse', '--show-toplevel'], { cwd }) as unknown as { exitCode: number; stdout: string };
+    const repoRoot = topProbe.exitCode === 0 && topProbe.stdout.trim() ? topProbe.stdout.trim() : cwd;
+    const planningPrefix = path.relative(repoRoot, planningRoot(cwd)).split(path.sep).join('/') + '/';
     const isPlanningArtifact = (file: string) => file.split('\\').join('/').startsWith(planningPrefix);
 
     const added: string[] = [];
