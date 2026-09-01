@@ -291,7 +291,7 @@ If `section_manifest` is `null` or `"research-phase"` is in its `included` list:
 PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
 ```
 
-**Contribution dispatch (#3778):** inject every `kind == "contribution"` fragment from `PLAN_PRE_HOOKS_JSON` per @gsd-core/references/loop-hook-dispatch.md, in array order, into the role each entry's `into` names. `activeHooks` is read directly in-context (no shell pipeline); the `rendered` digest must not be pasted because it is unfiltered across kinds and roles. When no active planner contributions exist, the injection block below is omitted entirely.
+**Contribution dispatch (#3778):** read `PLAN_PRE_HOOKS_JSON.activeHooks` directly in context. In registry order, inject only active entries with `kind == "contribution"` and `into == "planner"` into each Quick planner prompt below, using `fragment.inline` verbatim plus resolved `configValues`. Do not paste `rendered`. Empty, inactive, incompatible, or non-planner entries inject nothing and do not error. Reuse this snapshot for revisions; do not render again.
 
 **If `$VALIDATE_MODE`:** Use `quick-full` mode with stricter constraints.
 

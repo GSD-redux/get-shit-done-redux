@@ -194,7 +194,7 @@ Planning is driven by a slash command, not a `gsd` subcommand. In your AI assist
 
 When the planner runs — whether from `/gsd-plan-phase` or `/gsd-quick` — the active planner-targeted `plan:pre` contributions are injected into its prompt, so it receives `hello-note` and, following the fragment's instruction, records a one-line note in `HELLO.md`. In `/gsd-quick --full` and `/gsd-quick --validate`, the same rendered hook snapshot is reused if the plan checker sends the plan back to the planner for revision.
 
-The first-party security capability is enabled by default and also contributes at `plan:pre` into the planner role. Its guidance requires generated plans to include `<threat_model>` blocks and carries the configured ASVS level and blocking threshold. Disable `workflow.security_enforcement` if that behavior is not wanted. Contributions targeting other roles, such as `researcher` or `checker`, are not inserted into Quick's planner prompts.
+The first-party security capability is enabled by default and also contributes at `plan:pre` into the planner role. Its guidance requires generated plans to include `<threat_model>` blocks and carries the configured ASVS level and blocking threshold. Disable `workflow.security_enforcement` if that behavior is not wanted. Contributions targeting any non-planner role are not inserted into Quick's planner prompts.
 
 You do not need to run a full planning session to confirm the wiring, though. The `loop render-hooks` command shows exactly what the loop would hand the planner — the same output you saw in Step 5:
 

@@ -40,7 +40,7 @@ function initialPlannerPrompt(quick) {
 function revisionPlannerPrompt(revision) {
   return sliceBetween(
     revision,
-    'Revision prompt:\n\n```markdown\n',
+    'Revision prompt:\n\nReuse the `PLAN_PRE_HOOKS_JSON` snapshot captured by Quick Step 5; do not render hooks again.\n\n```markdown\n',
     '\n```\n\n```\nAgent(\n  prompt=revision_prompt',
     'revision planner prompt',
   );
@@ -92,33 +92,15 @@ describe('quick workflow: plan:pre planner contributions (#3778)', () => {
       contributionInstruction(initialPrompt, 'initial planner'),
       'both planner paths must apply the byte-identical filtering and injection contract',
     );
-  });
-
-  test('Quick renders plan:pre once and both planner prompts consume that snapshot', () => {
-    const quick = readFileNormalized(QUICK_PATH);
-    const revision = readFileNormalized(REVISION_PATH);
     assert.equal((quick.match(/loop render-hooks plan:pre --raw/g) || []).length, 1);
     assert.equal((revision.match(/loop render-hooks plan:pre --raw/g) || []).length, 0);
-    assert.match(initialPlannerPrompt(quick), /PLAN_PRE_HOOKS_JSON/);
-    assert.match(revisionPlannerPrompt(revision), /PLAN_PRE_HOOKS_JSON/);
-  });
-
-  test('standard Quick uses the initial planner; --full and --validate can reach the revision planner', () => {
-    const quick = readFileNormalized(QUICK_PATH);
-    const revision = readFileNormalized(REVISION_PATH);
     const initialStep = quick.indexOf('**Step 5: Spawn planner (quick mode)**');
     const revisionGate = quick.indexOf('<!-- gsd:section id="plan-checker-loop" when="flag:--validate" -->');
-
     assert.notEqual(initialStep, -1, 'standard initial planner step must exist');
     assert.ok(initialStep < revisionGate, 'initial planner must run before the optional revision gate');
     assert.match(quick, /--full.*\$VALIDATE_MODE=true/, '--full must enable the validate path');
     assert.match(quick, /--validate.*\$VALIDATE_MODE=true/, '--validate must enable the validate path');
     assert.match(revision, /Revision loop \(max 2 iterations\)/, 'validate path must contain revision loop');
-  });
-
-  test('the installed workflow contains exactly one initial and one revision planner spawn', () => {
-    const quick = readFileNormalized(QUICK_PATH);
-    const revision = readFileNormalized(REVISION_PATH);
     assert.equal((quick.match(/subagent_type="gsd-planner"/g) || []).length, 1);
     assert.equal((revision.match(/subagent_type="gsd-planner"/g) || []).length, 1);
   });

@@ -68,6 +68,8 @@ Display: `Sending back to planner for revision... (iteration ${N}/2)`
 
 Revision prompt:
 
+Reuse the `PLAN_PRE_HOOKS_JSON` snapshot captured by Quick Step 5; do not render hooks again.
+
 ```markdown
 <revision_context>
 **Mode:** quick-full (revision)
