@@ -5189,6 +5189,557 @@ describe('query commit --files scoping (#2269)', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3776: `query commit --files` must report an empty diff as `nothing_to_commit`
+// even when a pre-commit hook would reject.
+//
+// `stagedPaths` records paths whose `git add` exited 0 — "did staging succeed",
+// not "is there anything to commit". Staging an already-committed, unmodified
+// file succeeds and contributes nothing, so the old `stagedPaths.length === 0`
+// guard was reachable only when EVERY named path was missing from disk. The
+// ordinary empty-diff case fell through to `git commit`, where the sole rescue
+// was a string match on git's "nothing to commit" output — and git runs the
+// pre-commit hook BEFORE deciding there is nothing to commit, so a rejecting
+// hook pre-empted the match and the caller was handed `commit_failed` carrying
+// a gate message about a commit that had nothing to gate.
+//
+// The residual sibling of #2608/#2693, which covered `git add` FAILING; this
+// covers `git add` succeeding and contributing nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3776: query commit --files reports an empty diff as nothing_to_commit', () => {
+  const { createTempGitProject } = require('./helpers.cjs');
+  // runGit (never gitOrThrow) for the conflicting merge below — that merge is
+  // MEANT to exit non-zero, and the throwing wrapper would fail the fixture.
+  const { runGit } = require('./helpers/process-seam.cjs');
+  let tmpDir;
+
+  const REJECTING_HOOK = '#!/bin/sh\necho "gate: BACKLOG.md is stale" >&2\nexit 1\n';
+  const PASSING_HOOK = '#!/bin/sh\nexit 0\n';
+
+  // Writes .git/hooks/pre-commit. Every arm below drives the real hook, not a
+  // stub of it: the defect lives in git's own hook-before-empty-diff ordering,
+  // so a faked rejection would not exercise the mechanism under test.
+  function installHook(body) {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+    fs.writeFileSync(hookPath, body);
+    fs.chmodSync(hookPath, 0o755);
+  }
+
+  // A tracked, committed, unmodified file — `git add` on it succeeds and
+  // contributes no diff. This is the exact shape the guard used to miss.
+  function commitFixtureFile(name = 'doc.md', body = 'hello\n') {
+    const rel = path.posix.join('.planning', name);
+    fs.writeFileSync(path.join(tmpDir, '.planning', name), body);
+    gitOrThrow(['add', '--', rel], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'fixture: ' + name], { cwd: tmpDir });
+    return rel;
+  }
+
+  // The command emits its JSON payload on either stream depending on outcome;
+  // read whichever carries it rather than assuming success.
+  function commitFiles(rel, extra = '') {
+    const result = runGsdTools('commit "m"' + extra + ' --files ' + rel, tmpDir);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    return JSON.parse(payload);
+  }
+
+  beforeEach(() => {
+    tmpDir = createTempGitProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // AC1 — the defect. Pre-fix this returned commit_failed + the hook's message.
+  test('AC1: empty diff + rejecting pre-commit hook reports nothing_to_commit, not the hook rejection', () => {
+    const rel = commitFixtureFile();
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'nothing_to_commit',
+      'an empty-diff --files call must not be reported as a failed commit');
+    assert.ok(!output.error,
+      'no hook message may be surfaced for a call that had nothing to gate');
+  });
+
+  // AC2 — the two controls that isolate the hook as the only variable.
+  test('AC2: empty diff + no hook still reports nothing_to_commit', () => {
+    const rel = commitFixtureFile();
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'nothing_to_commit');
+  });
+
+  test('AC2: empty diff + passing hook still reports nothing_to_commit', () => {
+    const rel = commitFixtureFile();
+    installHook(PASSING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'nothing_to_commit');
+  });
+
+  // AC3 — the all-missing short-circuit must not regress.
+  test('AC3: every named path missing from disk still reports nothing_to_commit', () => {
+    const rel = commitFixtureFile();
+    fs.unlinkSync(path.join(tmpDir, rel));
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'nothing_to_commit');
+  });
+
+  // AC3, sharp edge: the `stagedPaths.length === 0` short-circuit is
+  // load-bearing, not defensive noise. Without it an all-missing call spreads
+  // an empty array into the pathspec, and a pathspec-less `git diff HEAD`
+  // tests the WHOLE tree — so unrelated work would suppress the guard and turn
+  // this arm into a commit of somebody else's changes.
+  test('AC3: all named paths missing does not consult unrelated staged work', () => {
+    const rel = commitFixtureFile();
+    fs.unlinkSync(path.join(tmpDir, rel));
+    const unrelated = path.posix.join('.planning', 'unrelated.md');
+    fs.writeFileSync(path.join(tmpDir, unrelated), 'staged by the caller\n');
+    gitOrThrow(['add', '--', unrelated], { cwd: tmpDir });
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'nothing_to_commit');
+
+    const staged = gitOrThrow(['diff', '--cached', '--name-only'], { cwd: tmpDir });
+    assert.match(staged, /unrelated\.md/,
+      "the caller's own staged work must be left in the index, not swept into a commit");
+  });
+
+  // AC4 — a genuine rejection must still be reported. The goal is to stop
+  // reporting a rejection for a call that never had anything to gate, not to
+  // stop reporting rejections.
+  test('AC4: a real diff rejected by the hook still reports commit_failed with the hook message', () => {
+    const rel = commitFixtureFile();
+    fs.writeFileSync(path.join(tmpDir, rel), 'hello\nmodified\n');
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'commit_failed');
+    assert.match(String(output.error), /BACKLOG\.md is stale/,
+      "the hook's own message must still reach the caller");
+  });
+
+  test('AC4: a real diff with no hook still commits', () => {
+    const rel = commitFixtureFile();
+    fs.writeFileSync(path.join(tmpDir, rel), 'hello\nmodified\n');
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, true);
+    assert.strictEqual(output.reason, 'committed');
+    assert.ok(output.hash, 'a successful commit must carry its hash');
+  });
+
+  // AC5 — amending has a different empty-diff meaning; the guard stays exempt.
+  test('AC5: --amend remains exempt from the empty-diff guard', () => {
+    const rel = commitFixtureFile();
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel, ' --amend');
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'commit_failed',
+      '--amend must still reach git, where the hook governs the rewrite');
+  });
+
+  // Beyond the brief's ACs: during a merge git refuses a partial commit, so the
+  // commit runs WITHOUT the pathspec and the named paths describe nothing about
+  // what would land. Deciding "nothing to commit" from them would abandon the
+  // merge — which is why the empty-diff probe is gated on !isMergeInProgress.
+  // Sets up a conflicted history and leaves the caller mid-sequence. `rel` (the
+  // file the commit call names) is never touched by the conflict, so it always
+  // contributes no diff of its own — which is what puts these arms on the
+  // empty-diff branch under test.
+  function conflictedSequence(kind) {
+    const shared = path.posix.join('.planning', 'shared.md');
+    fs.writeFileSync(path.join(tmpDir, shared), 'base\n');
+    gitOrThrow(['add', '--', shared], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'shared base'], { cwd: tmpDir });
+    const trunk = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+
+    if (kind === 'revert') {
+      fs.writeFileSync(path.join(tmpDir, shared), 'second\n');
+      gitOrThrow(['commit', '-am', 'second'], { cwd: tmpDir });
+      fs.writeFileSync(path.join(tmpDir, shared), 'third\n');
+      gitOrThrow(['commit', '-am', 'third'], { cwd: tmpDir });
+      runGit(['revert', '--no-edit', 'HEAD~1'], { cwd: tmpDir });
+    } else {
+      gitOrThrow(['checkout', '-b', 'side'], { cwd: tmpDir });
+      fs.writeFileSync(path.join(tmpDir, shared), 'side\n');
+      gitOrThrow(['commit', '-am', 'side edit'], { cwd: tmpDir });
+      gitOrThrow(['checkout', trunk], { cwd: tmpDir });
+      fs.writeFileSync(path.join(tmpDir, shared), 'trunk\n');
+      gitOrThrow(['commit', '-am', 'trunk edit'], { cwd: tmpDir });
+      runGit([kind === 'merge' ? 'merge' : 'cherry-pick', 'side'], { cwd: tmpDir });
+    }
+    fs.writeFileSync(path.join(tmpDir, shared), 'resolved\n');
+    gitOrThrow(['add', '--', shared], { cwd: tmpDir });
+  }
+
+  // The one state where `git diff` and `git commit -- <path>` genuinely
+  // disagree. `--assume-unchanged` makes `git add` stage nothing and BOTH diff
+  // forms (`--cached` and `HEAD`) report no difference, while
+  // `git commit -- <path>` reads the working tree directly and records it. The
+  // pre-#3776 build therefore COMMITTED this, and the guard must not turn a
+  // purely diagnostic fix into a silent drop of content the caller named in
+  // `--files`. Asking `git commit --dry-run` preserves the pre-fix outcome
+  // exactly, because it is the same decision the real commit makes.
+  test('a modified assume-unchanged path is still committed, not swallowed by the guard', () => {
+    const rel = commitFixtureFile();
+    gitOrThrow(['update-index', '--assume-unchanged', '--', rel], { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, rel), 'hello\nmodified under assume-unchanged\n');
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, true,
+      'git commit -- <path> reads the working tree and records it; the guard must not pre-empt that');
+    assert.strictEqual(
+      gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir }),
+      'hello\nmodified under assume-unchanged\n',
+      'and the content it records must be the working-tree content');
+  });
+
+  // THE OTHER DIRECTION, and the reason the check compares CONTENT rather than
+  // stopping at the `ls-files -v` tag. An unmodified assume-unchanged path has
+  // nothing to record; falling through on the tag alone would hand it to
+  // `git commit`, which — with any unrelated modified file present — prints
+  // `no changes added to commit`, a string the fallback does not match, and
+  // returns `commit_failed`. That is #3776 re-entered from the other side, the
+  // same shape `--ignore-submodules=none` would have re-entered it. Pinned so a
+  // later simplification to a tag-only test cannot pass.
+  test('an UNMODIFIED assume-unchanged path still reports nothing_to_commit, even with unrelated dirt', () => {
+    const rel = commitFixtureFile();
+    const unrelated = path.posix.join('.planning', 'unrelated.md');
+    fs.writeFileSync(path.join(tmpDir, unrelated), 'seed\n');
+    gitOrThrow(['add', '--', unrelated], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'seed unrelated'], { cwd: tmpDir });
+    gitOrThrow(['update-index', '--assume-unchanged', '--', rel], { cwd: tmpDir });
+    // Unrelated modified work present — this is what turns git's answer from
+    // `nothing to commit` into `no changes added to commit`.
+    fs.writeFileSync(path.join(tmpDir, unrelated), 'unrelated edit\n');
+
+    assert.strictEqual(commitFiles(rel).reason, 'nothing_to_commit',
+      'nothing would land for the named path, so the guard must still answer nothing_to_commit');
+  });
+
+  // `--skip-worktree` is NOT a second instance of the above, and the PR body
+  // used to group them. `git add` exits 1 under it (the path reads as outside
+  // the sparse-checkout definition), so it fails closed as `staging_failed`
+  // ABOVE this guard and never reaches the empty-diff decision at all.
+  test('a modified skip-worktree path fails closed as staging_failed, never reaching the guard', () => {
+    const rel = commitFixtureFile();
+    gitOrThrow(['update-index', '--skip-worktree', '--', rel], { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, rel), 'hello\nmodified under skip-worktree\n');
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'staging_failed',
+      'git add refuses the path, so the staging-failure block above the guard owns this case');
+  });
+
+  // The same flag with the path ABSENT from disk — the canonical sparse shape —
+  // takes a DIFFERENT route, and the distinction is worth pinning because the
+  // obvious reading of the arm above ("skip-worktree never reaches the guard")
+  // is too strong. A missing path is skipped before `git add` runs at all
+  // (#2014), so `stagedPaths` is empty and the guard's own
+  // `stagedPaths.length === 0` arm answers it. `nothing_to_commit` is the
+  // correct answer there — the file does not exist, so a commit would record
+  // nothing — and it is the PRE-FIX answer too, unchanged by this PR.
+  test('a skip-worktree path absent from disk reports nothing_to_commit via the missing-path arm', () => {
+    const rel = commitFixtureFile();
+    gitOrThrow(['update-index', '--skip-worktree', '--', rel], { cwd: tmpDir });
+    fs.unlinkSync(path.join(tmpDir, rel));
+
+    assert.strictEqual(commitFiles(rel).reason, 'nothing_to_commit',
+      'a missing path is skipped before git add, so the length === 0 arm owns this — not staging_failed');
+  });
+
+  // THREE ARMS PINNING WHY THE PROBE ASKS GIT RATHER THAN RECONSTRUCTING ITS
+  // ANSWER. Each one reds if the dry run is replaced by a
+  // `hash-object` vs `HEAD:<path>` blob comparison, and each is a silent drop
+  // of content the caller named — the exact class this whole guard is careful
+  // about.
+
+  // A mode-only change leaves the blob identical, so a content comparison sees
+  // nothing — while `git commit -- <path>` records the new mode.
+  test('a mode-only change to an assume-unchanged path is still committed', (t) => {
+    const rel = commitFixtureFile('exec.md');
+    // Windows, and any checkout with `core.filemode=false`, cannot represent
+    // the bit — `chmodSync` would then be a no-op and this arm would pass while
+    // pinning nothing. Assert the precondition and skip loudly instead.
+    gitOrThrow(['config', 'core.filemode', 'true'], { cwd: tmpDir });
+    gitOrThrow(['update-index', '--assume-unchanged', '--', rel], { cwd: tmpDir });
+    fs.chmodSync(path.join(tmpDir, rel), 0o755);
+    if (!/^100755 /.test(gitOrThrow(['ls-files', '-s', '--', rel], { cwd: tmpDir }))
+      && (fs.statSync(path.join(tmpDir, rel)).mode & 0o111) === 0) {
+      t.skip('filesystem cannot represent the executable bit — nothing to pin here');
+      return;
+    }
+
+    assert.strictEqual(commitFiles(rel).committed, true,
+      'the mode moved and git would record it, so the guard must not report nothing_to_commit');
+    assert.match(
+      gitOrThrow(['ls-tree', 'HEAD', '--', rel], { cwd: tmpDir }), /^100755 /,
+      'and the recorded mode must actually be the executable one');
+  });
+
+  // A non-ASCII path is rendered QUOTED by `git ls-files -v` under the default
+  // `core.quotePath` (`"caf\303\251.md"`), so any probe that parses the path
+  // out of that output reads a filename that does not exist and silently
+  // concludes there is nothing to commit.
+  test('a modified assume-unchanged path with a non-ASCII name is still committed', () => {
+    const rel = commitFixtureFile('caf\u00e9.md');
+    // PIN the quoting explicitly. This arm's whole point is that a probe
+    // parsing the path out of `ls-files -v` reads `"caf\303\251.md"` and finds
+    // no such file; under an ambient `core.quotePath=false` the rejected
+    // implementation would pass here and the arm would be vacuous.
+    gitOrThrow(['config', 'core.quotePath', 'true'], { cwd: tmpDir });
+    gitOrThrow(['update-index', '--assume-unchanged', '--', rel], { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, rel), 'modified\n');
+
+    assert.strictEqual(commitFiles(rel).committed, true,
+      'core.quotePath must not be able to hide a real change from the probe');
+    assert.strictEqual(gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir }), 'modified\n');
+  });
+
+  // The probe compares the WORKING TREE to HEAD, so an unborn HEAD makes it
+  // fatal (rc 128). That must fall through to the commit rather than be read as
+  // "nothing to commit" — there is plenty to commit in a repo with no commits.
+  test('an unborn HEAD falls through to the commit rather than reporting nothing_to_commit', (t) => {
+    const fresh = createTempDir();
+    // REGISTERED teardown, not a trailing statement: `fresh` lives outside
+    // `tmpDir`, so afterEach does not reach it and any failing assertion below
+    // would leak a git repo into the temp root.
+    t.after(() => cleanup(fresh));
+    fs.mkdirSync(path.join(fresh, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.planning', 'config.json'), '{}\n');
+    fs.writeFileSync(path.join(fresh, '.planning', 'doc.md'), 'first content\n');
+    gitOrThrow(['init', '-q', '.'], { cwd: fresh });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: fresh });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: fresh });
+
+    const result = runGsdTools('commit "m" --files .planning/doc.md', fresh);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    const output = JSON.parse(payload);
+    assert.strictEqual(output.committed, true,
+      'the very first commit in a repo must not be swallowed by the empty-diff guard');
+  });
+
+  // git refuses a partial commit during a cherry-pick exactly as it does during
+  // a merge, so the guard must stay out of the way there too — this arm pins
+  // that the pre-fix outcome is preserved rather than turned into a silent
+  // no-op. Driven, not assumed: the three sequencer states disagree.
+  test('a cherry-pick in progress keeps its pre-existing outcome', () => {
+    const rel = commitFixtureFile();
+    conflictedSequence('cherry-pick');
+    assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'CHERRY_PICK_HEAD')),
+      'fixture must leave a cherry-pick in progress');
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'commit_failed',
+      'git refuses the partial commit here; that must not become a silent nothing_to_commit');
+    assert.match(String(output.error), /partial commit/,
+      "git's own refusal must reach the caller");
+  });
+
+  // REVERT_HEAD is deliberately NOT in the refusal set: a revert permits partial
+  // commits, so the fix must still apply there. Including it would suppress the
+  // fix during a revert and reintroduce the misreport.
+  test('a revert in progress still reports nothing_to_commit, not the hook rejection', () => {
+    const rel = commitFixtureFile();
+    conflictedSequence('revert');
+    assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'REVERT_HEAD')),
+      'fixture must leave a revert in progress');
+    installHook(REJECTING_HOOK);
+
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, false);
+    assert.strictEqual(output.reason, 'nothing_to_commit',
+      'a revert permits partial commits, so the empty-diff guard must still apply');
+  });
+
+  test('a merge in progress is still concluded when the named paths carry no diff', () => {
+    const shared = path.posix.join('.planning', 'shared.md');
+    fs.writeFileSync(path.join(tmpDir, shared), 'base\n');
+    gitOrThrow(['add', '--', shared], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'shared base'], { cwd: tmpDir });
+    const rel = commitFixtureFile();
+
+    const trunk = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    gitOrThrow(['checkout', '-b', 'side'], { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, shared), 'side\n');
+    gitOrThrow(['commit', '-am', 'side edit'], { cwd: tmpDir });
+    gitOrThrow(['checkout', trunk], { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, shared), 'trunk\n');
+    gitOrThrow(['commit', '-am', 'trunk edit'], { cwd: tmpDir });
+
+    // Conflicting merge, then resolve it so the index carries real content.
+    runGit(['merge', 'side'], { cwd: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, shared), 'resolved\n');
+    gitOrThrow(['add', '--', shared], { cwd: tmpDir });
+    assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'MERGE_HEAD')),
+      'fixture must leave a merge in progress');
+
+    // `rel` is committed and unmodified — it contributes no diff of its own.
+    const output = commitFiles(rel);
+    assert.strictEqual(output.committed, true,
+      'the merge must still be concluded, not reported as nothing to commit');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.git', 'MERGE_HEAD')),
+      'MERGE_HEAD must be gone once the merge commit lands');
+  });
+});
+
+// #3859: the empty-diff probe must answer the question `git commit -- <paths>`
+// asks. `git diff` is porcelain and honours user configuration the commit does
+// not, so an unpinned probe lets a caller's config decide whether the guard
+// fires — and every arm below was driven against git 2.54 by confirming that
+// `git commit -- <path>` records exactly the change the unpinned probe reports
+// as absent.
+describe('#3859: the empty-diff probe is pinned against diff-only configuration', () => {
+  const { createTempGitProject } = require('./helpers.cjs');
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempGitProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function commitFiles(rel) {
+    const result = runGsdTools('commit "m" --files ' + rel, tmpDir);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    return JSON.parse(payload);
+  }
+
+  // Sub-repos created by `bumpedSubmodule()` are SIBLINGS of `tmpDir`, so the
+  // `afterEach` above does not reach them. Registering them here cleans every
+  // caller at once and — unlike a trailing `cleanup(subSrc)` in each test body
+  // — survives a failing assertion, which would otherwise leak a git repo into
+  // the temp root.
+  const strayRepos = [];
+  afterEach(() => {
+    while (strayRepos.length > 0) cleanup(strayRepos.pop());
+  });
+
+  // A submodule whose recorded gitlink is AHEAD of what the superproject has
+  // committed — i.e. `git commit -- <sub>` has something real to record.
+  function bumpedSubmodule() {
+    const subSrc = path.join(tmpDir, '..', path.basename(tmpDir) + '-sub');
+    strayRepos.push(subSrc);
+    fs.mkdirSync(subSrc, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subSrc });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subSrc });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subSrc });
+    fs.writeFileSync(path.join(subSrc, 'f.txt'), 'v1\n');
+    gitOrThrow(['add', 'f.txt'], { cwd: subSrc });
+    gitOrThrow(['commit', '-m', 'v1'], { cwd: subSrc });
+
+    gitOrThrow(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSrc, 'sub'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'add submodule'], { cwd: tmpDir });
+
+    fs.writeFileSync(path.join(subSrc, 'f.txt'), 'v2\n');
+    gitOrThrow(['add', 'f.txt'], { cwd: subSrc });
+    gitOrThrow(['commit', '-m', 'v2'], { cwd: subSrc });
+    gitOrThrow(['-c', 'protocol.file.allow=always', 'submodule', 'update', '--remote', '--', 'sub'], { cwd: tmpDir });
+  }
+
+  // `diff.ignoreSubmodules=all` is local config; `.gitmodules` `ignore = all` is
+  // CHECKED IN and so arrives with a clone, needing no local setting at all —
+  // which makes it the stronger of the two vectors, and the one a reviewer
+  // reading only `diff.ignoreSubmodules` would not reach.
+  for (const vector of ['diff.ignoreSubmodules', '.gitmodules ignore']) {
+    test(`a submodule bump is not reported as nothing_to_commit under ${vector}=all`, () => {
+      bumpedSubmodule();
+      if (vector === 'diff.ignoreSubmodules') {
+        gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: tmpDir });
+      } else {
+        gitOrThrow(['config', '-f', '.gitmodules', 'submodule.sub.ignore', 'all'], { cwd: tmpDir });
+        gitOrThrow(['add', '--', '.gitmodules'], { cwd: tmpDir });
+        gitOrThrow(['commit', '-m', 'gitmodules ignore=all'], { cwd: tmpDir });
+      }
+
+      const before = gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim();
+      const output = commitFiles('sub');
+
+      assert.notStrictEqual(output.reason, 'nothing_to_commit',
+        'the gitlink moved and `git commit -- sub` records it, so the probe must not say there is nothing');
+      assert.strictEqual(output.committed, true);
+      assert.notStrictEqual(
+        gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
+        'the recorded gitlink must actually advance');
+    });
+  }
+
+  // A submodule path cannot be hashed at all (`fatal: Unable to hash sub`),
+  // while `git commit -- sub` advances the recorded gitlink.
+  test('an assume-unchanged submodule with an advanced gitlink is still committed', () => {
+    bumpedSubmodule();
+    const before = gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim();
+    gitOrThrow(['update-index', '--assume-unchanged', '--', 'sub'], { cwd: tmpDir });
+
+    assert.notStrictEqual(commitFiles('sub').reason, 'nothing_to_commit',
+      'the gitlink would advance, so the guard must stand aside');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
+      'and the recorded gitlink must actually advance');
+  });
+
+  // The other direction, and the reason the pin is `=dirty` rather than `=none`.
+  // A partial commit of a submodule path records the GITLINK, which moves only
+  // when the submodule's HEAD does — so a merely dirty submodule WORKTREE would
+  // land nothing. Under `--ignore-submodules=none` the probe reports a
+  // difference there and sends an empty call back to `git commit`, which is the
+  // #3776 misreport re-entered from the other side. Pinned so a later widening
+  // to `=none` cannot pass.
+  test('a dirty submodule worktree with an unchanged gitlink still reports nothing_to_commit', () => {
+    bumpedSubmodule();
+    gitOrThrow(['add', '--', 'sub'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'bump sub'], { cwd: tmpDir });
+    fs.appendFileSync(path.join(tmpDir, 'sub', 'f.txt'), 'dirty\n');
+
+    assert.strictEqual(commitFiles('sub').reason, 'nothing_to_commit',
+      'nothing would land, so nothing_to_commit is the correct answer, not a misreport');
+  });
+
+  // No submodule involved. A textconv driver maps two different blobs to the
+  // same text, so `git diff --quiet HEAD` reports no difference while
+  // `git commit -- <path>` records the new blob.
+  test('a change hidden by a textconv driver is not reported as nothing_to_commit', () => {
+    const rel = path.posix.join('.planning', 'binaryish.md');
+    fs.writeFileSync(path.join(tmpDir, rel), 'A\n');
+    fs.writeFileSync(path.join(tmpDir, '.gitattributes'), 'binaryish.md diff=flat\n');
+    gitOrThrow(['add', '--', rel, '.gitattributes'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: tmpDir });
+    // A textconv that collapses every input to one constant. `#` swallows the
+    // filename git appends, so the driver ignores its argument entirely.
+    gitOrThrow(['config', 'diff.flat.textconv', 'echo CONSTANT #'], { cwd: tmpDir });
+
+    fs.writeFileSync(path.join(tmpDir, rel), 'B\n');
+    const output = commitFiles(rel);
+
+    assert.notStrictEqual(output.reason, 'nothing_to_commit',
+      'the blob changed and the commit would record it — textconv only changes how the DIFF renders');
+    assert.strictEqual(output.committed, true);
+    assert.strictEqual(
+      gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir }), 'B\n',
+      'the new content must actually be recorded');
+  });
+});
+
+
 describe('#2279: map-codebase date stamp instructions overwrite existing dates', () => {
   const REPO_ROOT = path.join(__dirname, '..');
 
