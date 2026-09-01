@@ -2341,7 +2341,19 @@ function cmdPrSubrepo(
 
   // 1. Collect changed files via porcelain status — explicit, never git add -A.
   //    ?? (untracked) lines are excluded — only stage tracked modifications.
-  const statusResult = execGit(['-c', 'core.quotePath=false', 'status', '--porcelain'], { cwd: repoCwd });
+  // #3859 follow-up: `git status --porcelain` honors `diff.ignoreSubmodules`
+  // the same way the empty-diff probe fixed for cmdCommit did — under a local
+  // `diff.ignoreSubmodules=all`, a genuinely bumped submodule gitlink is
+  // invisible here too, so `changedFiles` comes back empty and the function
+  // reports `nothing_to_commit` before ever reaching the (now-fixed) commit
+  // call. `--ignore-submodules=dirty` pins this the same way, reported
+  // verbatim: `git -C repo status --porcelain` (no flag) shows nothing for a
+  // pure gitlink bump under `diff.ignoreSubmodules=all`, while
+  // `--ignore-submodules=dirty` reports ` M nested` (reproduced directly).
+  const statusResult = execGit(
+    ['-c', 'core.quotePath=false', 'status', '--porcelain', '--ignore-submodules=dirty'],
+    { cwd: repoCwd },
+  );
   if (statusResult.exitCode !== 0) {
     error(`git status failed in ${repo}: ${statusResult.stderr}`);
   }
