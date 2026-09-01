@@ -169,8 +169,16 @@ describe('verify context-drift CLI', () => {
     try {
       const dir = path.join(plain, '.planning', 'phases', '01-setup');
       fs.mkdirSync(dir, { recursive: true });
+      // Deterministic mtimes (CONTRIBUTING.md: never assert elapsed wall-clock
+      // time) — two back-to-back writeFileSync calls can land in the SAME
+      // mtime granularity tick on a fast filesystem, producing a tie that
+      // computeContextDrift's strict `<` correctly treats as not-stale. Set
+      // distinct mtimes explicitly instead of relying on real timing.
+      const now = Date.now();
       fs.writeFileSync(path.join(dir, '01-RESEARCH.md'), '# research\n');
+      fs.utimesSync(path.join(dir, '01-RESEARCH.md'), new Date(now - 5000), new Date(now - 5000));
       fs.writeFileSync(path.join(dir, '01-CONTEXT.md'), '# context\n');
+      fs.utimesSync(path.join(dir, '01-CONTEXT.md'), new Date(now), new Date(now));
       const r = runGsdTools(['verify', 'context-drift', '01-setup'], plain);
       assert.strictEqual(r.success, true, r.error);
       const data = JSON.parse(r.output);
@@ -184,8 +192,13 @@ describe('verify context-drift CLI', () => {
   test('degrades to mtime comparison in a repo with no commits', () => {
     const dir = phaseDirPath('01-setup');
     fs.mkdirSync(dir, { recursive: true });
+    // Deterministic mtimes — see the identical rationale in 'degrades to mtime
+    // comparison outside a git repo' above.
+    const now = Date.now();
     fs.writeFileSync(path.join(dir, '01-RESEARCH.md'), '# research\n');
+    fs.utimesSync(path.join(dir, '01-RESEARCH.md'), new Date(now - 5000), new Date(now - 5000));
     fs.writeFileSync(path.join(dir, '01-CONTEXT.md'), '# context\n');
+    fs.utimesSync(path.join(dir, '01-CONTEXT.md'), new Date(now), new Date(now));
     const r = runGsdTools(['verify', 'context-drift', '01-setup'], tmp);
     assert.strictEqual(r.success, true, r.error);
     const data = JSON.parse(r.output);
@@ -347,9 +360,12 @@ describe('verify context-drift CLI', () => {
   });
 
   test('always exits 0 (query command contract)', () => {
+    // Only cases that are legitimately part of the "always exits 0" JSON-output
+    // contract belong here — a missing phase arg is a DIFFERENT, already-covered
+    // contract ('errors with usage message on missing phase arg' above correctly
+    // asserts exitCode !== 0 / r.success === false for exactly that case).
     const cases = [
       ['verify', 'context-drift', '99'],
-      ['verify', 'context-drift'],
     ];
     for (const args of cases) {
       const r = runGsdTools(args, tmp);
