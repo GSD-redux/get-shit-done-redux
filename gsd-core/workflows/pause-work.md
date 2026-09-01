@@ -15,15 +15,15 @@ Determine what kind of work is being paused and set the handoff destination acco
 
 ```bash
 # Check for active phase
-phase=$(ls -lt .planning/phases/*/PLAN.md 2>/dev/null | head -1 || true)
+phase=$(ls -t .planning/phases/*/PLAN.md 2>/dev/null | head -1 || true)
 phase=${phase:+$(basename "$(dirname "$phase")")}
 
 # Check for active spike
-spike=$(ls -lt .planning/spikes/*/SPIKE.md .planning/spikes/*/DESIGN.md .planning/spikes/*/README.md 2>/dev/null | head -1 || true)
+spike=$(ls -t .planning/spikes/*/SPIKE.md .planning/spikes/*/DESIGN.md .planning/spikes/*/README.md 2>/dev/null | head -1 || true)
 spike=${spike:+$(basename "$(dirname "$spike")")}
 
 # Check for active sketch
-sketch=$(ls -lt .planning/sketches/*/README.md .planning/sketches/*/index.html 2>/dev/null | head -1 || true)
+sketch=$(ls -t .planning/sketches/*/README.md .planning/sketches/*/index.html 2>/dev/null | head -1 || true)
 sketch=${sketch:+$(basename "$(dirname "$sketch")")}
 
 # Check for active deliberation
