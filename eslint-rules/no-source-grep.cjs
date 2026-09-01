@@ -21,6 +21,12 @@
  * call that originated the tracked value -- so annotating the read directly
  * (the intuitive placement) suppresses the violation just as well as
  * annotating the search call (adversarial-review fix, epic #3464 phase 4).
+ *
+ * A `readFileSync(...)` path argument that is a bare Identifier is resolved
+ * ONE hop back to its `VariableDeclarator` initializer before classification,
+ * so a path built once and passed by reference is recognized the same as an
+ * inline path expression; `hooks` is also a recognized source directory
+ * alongside `bin`/`lib`/`gsd-core`/`src` (#3545 / epic #3464 phase 7).
  */
 
 // How many derivation hops from the original readFileSync() binding to
@@ -326,9 +332,27 @@ const rule = {
       return identifierVariableMap.get(identifierNode) || null;
     }
 
+    // WIDENING (fold, #3545/epic #3464 phase 7): resolve a bare Identifier
+    // path argument back to its variable initializer, ONE hop, before
+    // text-matching it -- so `const p = path.join(__dirname, '..', 'src',
+    // 'x.cjs'); readFileSync(p)` is classified the same as an inline
+    // `readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'))`. Only
+    // resolves a `VariableDeclarator`'s `init` (not an `AssignmentExpression`
+    // — an assignment-bound identifier is a documented, deliberate miss, see
+    // 40-design.md "Known limits"), and only ONE hop (a chain of two or more
+    // indirections stays invisible -- also documented).
+    function resolveOneHopText(node) {
+      if (node.type !== 'Identifier') return sourceCode.getText(node);
+      const v = resolveVariable(node);
+      if (!v) return sourceCode.getText(node);
+      const def = v.defs.find((d) => d.type === 'Variable' && d.node && d.node.init);
+      if (!def) return sourceCode.getText(node);
+      return sourceCode.getText(def.node.init);
+    }
+
     // Detect if a node represents a readFileSync call on a source file
     // (.cjs/.cts/.js/.mjs/.mts/.ts) that lives in a source directory
-    // (bin, lib, gsd-core, src).
+    // (bin, lib, gsd-core, hooks, src).
     function isSourceReadFileSync(node) {
       if (!node || node.type !== 'CallExpression') return false;
 
@@ -345,7 +369,7 @@ const rule = {
       if (!args || args.length === 0) return false;
 
       const firstArg = args[0];
-      const fullSrc = sourceCode.getText(firstArg);
+      const fullSrc = resolveOneHopText(firstArg);
 
       return looksLikeSourcePath(fullSrc);
     }
@@ -359,8 +383,9 @@ const rule = {
       const hasSourceExt = /['"`.][^'"`.]*\.(?:cts|mts|mjs|cjs|js|ts)['"`)]/i.test(src);
       if (!hasSourceExt) return false;
 
-      // Must reference a source directory indicator somewhere in the expression
-      const hasSourceDir = /['"](?:bin|lib|gsd-core|src)['"]/i.test(src);
+      // Must reference a source directory indicator somewhere in the
+      // expression (bin, lib, gsd-core, hooks, src).
+      const hasSourceDir = /['"](?:bin|lib|gsd-core|hooks|src)['"]/i.test(src);
       return hasSourceDir;
     }
 
