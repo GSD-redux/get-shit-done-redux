@@ -5737,8 +5737,180 @@ describe('#3859: the empty-diff probe is pinned against diff-only configuration'
       gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir }), 'B\n',
       'the new content must actually be recorded');
   });
+
+  // #3859 follow-up (e935694fc/b3d37b929, widened after a canScope gap found
+  // reproducing live against the pinned CI tester image,
+  // ghcr.io/open-gsd/gsd-tester-linux:v1.8.0-node24, which runs git 2.39.5):
+  // the actual `git commit` call carries a `commitEnv` GIT_CONFIG_* override
+  // forcing `diff.ignoreSubmodules=dirty`. This was originally scoped to only
+  // fire when `canScope` was true (a pathspec-limited `git commit --
+  // <paths>`), on the assumption that only a pathspec-limited commit
+  // consults `diff.ignoreSubmodules` when deciding whether a bumped
+  // submodule gitlink is a real change to record. That assumption was wrong:
+  // on git 2.39.5 a bare WHOLE-INDEX `git commit -m ...` (no pathspec at
+  // all, canScope=false) is refused identically when the only staged change
+  // is a submodule gitlink under `diff.ignoreSubmodules=all` — git's
+  // "nothing to commit" check is a real diff (HEAD vs. index) that honours
+  // `diff.ignoreSubmodules` regardless of pathspec. The override is now
+  // applied unconditionally (no `canScope` gate) to cover this shape too.
+  // `--amend` is the one shape confirmed NOT to hit the refusal at all
+  // (reproduced directly: it succeeds identically with or without the
+  // override, since amend never runs the empty-diff check a plain `git
+  // commit` does) — its test below pins that the override being applied
+  // unconditionally is still harmless there.
+  test('a whole-index commit (no --files, canScope=false) still records a bumped submodule under diff.ignoreSubmodules=all', () => {
+    bumpedSubmodule();
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: tmpDir });
+    gitOrThrow(['add', '--', 'sub'], { cwd: tmpDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim();
+
+    const result = runGsdTools('commit "m"', tmpDir);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    const output = JSON.parse(payload);
+
+    assert.strictEqual(output.committed, true,
+      'a whole-index commit hits the same git 2.39.5 refusal as a pathspec-limited one, so it needs the ' +
+      'GIT_CONFIG_* override applied unconditionally, not gated on canScope, to record the bumped gitlink');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
+
+  test('an --amend commit (canScope=false) still records a bumped submodule under diff.ignoreSubmodules=all', () => {
+    bumpedSubmodule();
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: tmpDir });
+    gitOrThrow(['add', '--', 'sub'], { cwd: tmpDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim();
+
+    const result = runGsdTools('commit "m" --amend', tmpDir);
+    const payload = (result.output && result.output.trim()) ? result.output : result.error;
+    const output = JSON.parse(payload);
+
+    assert.strictEqual(output.committed, true,
+      '--amend never hits the empty-diff refusal, so the now-unconditional GIT_CONFIG_* override must remain ' +
+      'a harmless no-op here');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
 });
 
+// #3859 follow-up: `cmdCommitToSubrepo` and `cmdPrSubrepo` carry the identical
+// structurally-shaped `canScope*`-branched `git commit` call as `cmdCommit`
+// above (see `COMMIT_TIMEOUT_MS`'s "three commit sites" comment in
+// src/commands.cts) and were missing the same `diff.ignoreSubmodules=dirty`
+// GIT_CONFIG_* override, applied unconditionally for the same reason.
+describe('#3859 follow-up: commit-to-subrepo and pr-subrepo also need the diff.ignoreSubmodules override', () => {
+  const { createTempGitProject } = require('./helpers.cjs');
+  let rootDir;
+  let nestedSubmoduleSrc;
+
+  afterEach(() => {
+    if (rootDir) cleanup(rootDir);
+    if (nestedSubmoduleSrc) cleanup(nestedSubmoduleSrc);
+    rootDir = undefined;
+    nestedSubmoduleSrc = undefined;
+  });
+
+  // A submodule nested inside `repoDir` whose recorded gitlink is AHEAD of
+  // what `repoDir` has committed — same shape as `bumpedSubmodule()` above,
+  // scoped to an arbitrary sub-repo directory instead of the project root.
+  function bumpedSubmoduleIn(repoDir) {
+    const subSrc = path.join(repoDir, '..', path.basename(repoDir) + '-nested-sub');
+    nestedSubmoduleSrc = subSrc;
+    fs.mkdirSync(subSrc, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subSrc });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subSrc });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subSrc });
+    fs.writeFileSync(path.join(subSrc, 'f.txt'), 'v1\n');
+    gitOrThrow(['add', 'f.txt'], { cwd: subSrc });
+    gitOrThrow(['commit', '-m', 'v1'], { cwd: subSrc });
+
+    gitOrThrow(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSrc, 'nested'], { cwd: repoDir });
+    gitOrThrow(['commit', '-m', 'add nested submodule'], { cwd: repoDir });
+
+    fs.writeFileSync(path.join(subSrc, 'f.txt'), 'v2\n');
+    gitOrThrow(['add', 'f.txt'], { cwd: subSrc });
+    gitOrThrow(['commit', '-m', 'v2'], { cwd: subSrc });
+    gitOrThrow(['-c', 'protocol.file.allow=always', 'submodule', 'update', '--remote', '--', 'nested'], { cwd: repoDir });
+  }
+
+  test('commit-to-subrepo records a bumped nested submodule under diff.ignoreSubmodules=all', () => {
+    rootDir = createTempGitProject();
+    fs.writeFileSync(
+      path.join(rootDir, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: ['backend'] } }, null, 2),
+    );
+    const subDir = path.join(rootDir, 'backend');
+    fs.mkdirSync(subDir, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subDir });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subDir });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subDir });
+    fs.writeFileSync(path.join(subDir, 'seed.js'), '// seed\n');
+    gitOrThrow(['add', 'seed.js'], { cwd: subDir });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: subDir });
+
+    bumpedSubmoduleIn(subDir);
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: subDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim();
+
+    const res = runGsdTools(
+      ['commit-to-subrepo', 'chore: bump nested submodule', '--files', 'backend/nested'],
+      rootDir,
+    );
+    assert.ok(res.success, `commit-to-subrepo failed: ${res.error}`);
+    const result = JSON.parse(res.output);
+
+    assert.strictEqual(result.repos.backend.committed, true,
+      `the gitlink moved and \`git commit -- nested\` records it on git 2.39.5 only with the ` +
+      `GIT_CONFIG_* override applied, got ${JSON.stringify(result.repos.backend)}`);
+    assert.notStrictEqual(result.repos.backend.reason, 'error');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
+
+  test('pr-subrepo records a bumped nested submodule under diff.ignoreSubmodules=all', () => {
+    rootDir = createTempGitProject();
+    fs.writeFileSync(
+      path.join(rootDir, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: ['backend'] } }, null, 2),
+    );
+    const subDir = path.join(rootDir, 'backend');
+    const bareDir = path.join(rootDir, '_bare-backend.git');
+    fs.mkdirSync(subDir, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subDir });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subDir });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subDir });
+    fs.writeFileSync(path.join(subDir, 'seed.js'), '// seed\n');
+    gitOrThrow(['add', 'seed.js'], { cwd: subDir });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: subDir });
+    fs.mkdirSync(bareDir, { recursive: true });
+    gitOrThrow(['init', '--bare', '-q'], { cwd: bareDir });
+    gitOrThrow(['remote', 'add', 'origin', bareDir], { cwd: subDir });
+    const branch = gitOrThrow(['branch', '--show-current'], { cwd: subDir }).trim();
+    gitOrThrow(['push', 'origin', branch], { cwd: subDir });
+
+    bumpedSubmoduleIn(subDir);
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: subDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim();
+
+    const res = runGsdTools(
+      ['query', 'pr-subrepo', 'fix(backend): bump nested submodule',
+       '--repo', 'backend', '--branch', 'fix-3859-nested-submodule-pr'],
+      rootDir,
+    );
+    assert.ok(res.success, `pr-subrepo failed: ${res.error}`);
+    const result = JSON.parse(res.output);
+
+    assert.strictEqual(result.committed, true,
+      `the gitlink moved and \`git commit -- nested\` records it on git 2.39.5 only with the ` +
+      `GIT_CONFIG_* override applied, got ${JSON.stringify(result)}`);
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
+});
 
 describe('#2279: map-codebase date stamp instructions overwrite existing dates', () => {
   const REPO_ROOT = path.join(__dirname, '..');
