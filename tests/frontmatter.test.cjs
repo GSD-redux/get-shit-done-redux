@@ -249,6 +249,60 @@ describe('reconstructFrontmatter', () => {
     assert.ok(hashResult.includes('"value # note"'), 'should quote value with hash');
   });
 
+  // #4053 — A decimal-shaped identifier (e.g. a phase id like `22.10`) was
+  // emitted BARE, because scalarNeedsDoubleQuoting only asks "can this OPEN a
+  // plain scalar", which `22.10` can. But a YAML-SPEC reader (js-yaml, the
+  // statusline, any external tooling) then reloads bare `22.10` as the float
+  // 22.1 — colliding with `22.1` and dropping the trailing zero. gsd's own
+  // tolerant line-scanner hides this; a spec reader does not. The fix quotes
+  // numeric-looking scalars that are not plain integers, so they reload as the
+  // exact string, while leaving integer counts/phase numbers bare (the
+  // state-rebuild idempotency baseline pins those unquoted).
+  describe('#4053 — decimal-shaped numeric scalars survive a spec YAML reader', () => {
+    const yaml = require('js-yaml');
+    const lineFor = (obj, key) =>
+      reconstructFrontmatter(obj).split('\n').find((l) => l.startsWith(`${key}:`));
+
+    test('a decimal phase id is quoted so js-yaml keeps it a string', () => {
+      assert.strictEqual(lineFor({ current_phase: '22.1' }, 'current_phase'), 'current_phase: "22.1"');
+      assert.strictEqual(lineFor({ current_phase: '22.10' }, 'current_phase'), 'current_phase: "22.10"');
+      assert.strictEqual(lineFor({ current_phase: '22.0' }, 'current_phase'), 'current_phase: "22.0"');
+    });
+
+    test('"22.1" and "22.10" no longer collide under js-yaml', () => {
+      const load = (v) => yaml.load(reconstructFrontmatter({ current_phase: v })).current_phase;
+      const a = load('22.1');
+      const b = load('22.10');
+      assert.strictEqual(a, '22.1');
+      assert.strictEqual(b, '22.10'); // was the float 22.1 before the fix
+      assert.notStrictEqual(a, b);
+      assert.strictEqual(typeof b, 'string'); // was 'number' before the fix
+    });
+
+    test('a nested decimal value is also quoted', () => {
+      assert.strictEqual(
+        reconstructFrontmatter({ progress: { ratio: '1.10' } }),
+        'progress:\n  ratio: "1.10"',
+      );
+    });
+
+    test('plain integer phase ids and counts stay bare — no idempotency churn', () => {
+      assert.strictEqual(lineFor({ current_phase: '3' }, 'current_phase'), 'current_phase: 3');
+      assert.strictEqual(lineFor({ current_phase: '10' }, 'current_phase'), 'current_phase: 10');
+      assert.strictEqual(
+        reconstructFrontmatter({ progress: { completed_phases: '2', percent: '40' } }),
+        'progress:\n  completed_phases: 2\n  percent: 40',
+      );
+    });
+
+    test('free-text with no YAML-special characters stays unquoted — no blanket quoting', () => {
+      assert.strictEqual(
+        lineFor({ current_phase_name: 'Test Phase' }, 'current_phase_name'),
+        'current_phase_name: Test Phase',
+      );
+    });
+  });
+
   test('serializes nested objects with proper indentation', () => {
     const result = reconstructFrontmatter({ tech: { added: 'prisma', patterns: 'repo' } });
     assert.ok(result.includes('tech:'), 'should have parent key');
@@ -311,8 +365,11 @@ describe('reconstructFrontmatter', () => {
       reconstructed.includes('# NOTE: current_phase is hand-maintained here'),
       `comment should survive reconstruct; got:\n${reconstructed}`,
     );
-    // data identity preserved alongside the comment.
-    assert.ok(reconstructed.includes('gsd_state_version: 1.0'));
+    // data identity preserved alongside the comment. #4053: the version value
+    // `1.0` is numeric-looking and non-integer, so it is now quoted on write
+    // (matching the authoritative STATE.md template, which emits it quoted) so a
+    // spec YAML reader keeps it the string "1.0" rather than the float 1.
+    assert.ok(reconstructed.includes('gsd_state_version: "1.0"'));
     assert.ok(reconstructed.includes('current_phase: 3'));
     assert.ok(reconstructed.includes('status: executing'));
     // the reconstructed output re-parses to the same data (idempotent round-trip).

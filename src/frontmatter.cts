@@ -822,6 +822,40 @@ function agentScalarNeedsDoubleQuoting(s: string): boolean {
   return false;
 }
 
+/**
+ * #4053 — Does this GENERAL frontmatter scalar need quoting to survive a
+ * YAML-SPEC reader, over and above `scalarNeedsDoubleQuoting`'s "can it open a
+ * plain scalar" test?
+ *
+ * The bug: a decimal-shaped phase identifier (`current_phase: 22.10`) opens a
+ * plain scalar fine, so it was emitted BARE — and a spec reader (js-yaml, the
+ * statusline, any external tool) then reloads it as the float 22.1, colliding
+ * with `22.1` and dropping the trailing zero. gsd's own tolerant line-scanner
+ * (`extractFrontmatter`) round-trips the raw text and so hid this; a spec
+ * reader does not.
+ *
+ * This is deliberately NARROWER than `agentScalarNeedsDoubleQuoting`, which
+ * quotes EVERY numeric (and word, and non-alphanumeric-first) value because an
+ * agent `model:`/`variant:` must round-trip string-typed. STATE.md is not like
+ * that: the state-rebuild idempotency baseline pins integer counts and phase
+ * numbers UNQUOTED (`current_phase: 3`, `completed_phases: 2`, `percent: 40`),
+ * and the fixtures also carry leading-zero phase ids bare (`current_phase: 02`).
+ * Blanket-quoting all numerics would churn every state writer's output. So the
+ * line is drawn precisely at the non-integer numeric FORMS a phase id takes when
+ * it collides: decimals like `22.10`, plus exponents, sexagesimal and
+ * hex/oct/bin. EVERY all-digit string (`3`, `10`, `02`) stays bare, because a
+ * plain integer round-trips harmlessly and a decimal is the only shape observed
+ * to collide (#4053).
+ */
+function generalScalarNeedsNumericQuoting(s: string): boolean {
+  if (!YAML_NUMERIC_RE.test(s)) return false;
+  // Every all-digit string (`3`, `10`, and leading-zero fixtures like `02`)
+  // stays bare — the state corpus pins those unquoted. Only non-integer numeric
+  // FORMS (decimals, exponents, sexagesimal, hex/oct/bin) — the shapes a phase
+  // id takes when it collides (#4053) — are quoted.
+  return !/^\d+$/.test(s);
+}
+
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
   // #3257: read the full-line-comment channel (set by parseGuardedYamlRegion when comments
@@ -887,12 +921,12 @@ function reconstructFrontmatter(obj: Frontmatter): string {
         } else {
           // eslint-disable-next-line @typescript-eslint/no-base-to-string
           const sv = String(subval);
-          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
+          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) || generalScalarNeedsNumericQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
         }
       }
     } else {
       const sv = String(value);
-      if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv)) {
+      if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv) || generalScalarNeedsNumericQuoting(sv)) {
         lines.push(`${key}: "${escapeDoubleQuotedScalar(sv)}"`);
       } else {
         lines.push(`${key}: ${sv}`);
