@@ -76,6 +76,34 @@ describe('#3185 phase-enumeration drift scanner: findPhaseEnumerationDrift (pure
       [],
     );
   });
+
+  test('#2761 narrow 999-only rules are exempt only inside their named owners', () => {
+    const roadmapSource = [
+      'function scanMilestonePhaseIdSets() {',
+      '  return /^999\\b/.test(token);',
+      '}',
+      'function unrelatedRoadmapReader() {',
+      '  return /^999\\b/.test(token);',
+      '}',
+    ].join('\n');
+    assert.deepEqual(
+      findPhaseEnumerationDrift(roadmapSource, path.join('src', 'roadmap-parser.cts')),
+      [{ line: 5, found: '/^999\\b/' }],
+    );
+
+    const stateSource = [
+      'function countRoadmapPhaseHeadings() {',
+      '  return /^999\\b/.test(token);',
+      '}',
+      'function unrelatedStateReader() {',
+      '  return /^999\\b/.test(token);',
+      '}',
+    ].join('\n');
+    assert.deepEqual(
+      findPhaseEnumerationDrift(stateSource, path.join('src', 'state.cts')),
+      [{ line: 5, found: '/^999\\b/' }],
+    );
+  });
 });
 
 describe('#3185 phase-enumeration drift scanner: stripComments (pure)', () => {

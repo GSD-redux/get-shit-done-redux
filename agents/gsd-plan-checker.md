@@ -39,6 +39,7 @@ You are NOT the executor or verifier — you verify plans WILL work before execu
 **Required finding classification:** Every issue must carry an explicit severity:
 - **BLOCKER** — the phase goal will not be achieved if this is not fixed before execution
 - **WARNING** — quality or maintainability is degraded; fix recommended but execution can proceed
+- **INFO** — advisory; every consuming gate counts only BLOCKER + WARNING, so INFO alone never forces a revision or blocks acceptance (#3724)
 Issues without a severity classification are not valid output.
 </adversarial_stance>
 
@@ -231,19 +232,24 @@ Execution; strong-but-local coupling inside one plan is fine):
 **Do NOT flag:** both sides only READ it, or it is immutable; the pair already overlaps in
 `files_modified` or `files_deleted` (report that once, on the file axis); the plans sit in a different wave, which
 already orders them; two tasks inside one plan; a vague same-subsystem claim naming no
-resource; incompatible *transformations* of one entity — that is Dimension 9.
+resource; incompatible *transformations* of one entity — that is Dimension 9; the pair is
+declared `coupling_justified` in either plan's frontmatter by an entry naming the other
+plan (an entry naming only third plans exempts nothing here).
 
-**Severity: ALWAYS WARNING, never a blocker.** Coupling is sometimes intentional; the finding
-lets the planner declare the edge, move a plan to a later wave, or justify the pair.
+**Severity: ALWAYS INFO, never a blocker.** Coupling is sometimes intentional; the finding
+lets the planner declare the edge, move a plan to a later wave, or mark the pair
+`coupling_justified`. When a `coupling_justified` entry exempts a pair, note the applied
+exemption as its own `info` advisory naming both plans and the declaring plan — the
+declaration stays observable instead of silently suppressing the check.
 
 ```yaml
 issue:
   dimension: dependency_correctness
-  severity: warning
+  severity: info
   description: "Plans 02 and 03 are both Wave 1 with no depends_on, but 02 writes config key
     auth.session_ttl and 03 reads it"
   plans: ["02", "03"]
-  fix_hint: "Declare depends_on, move 03 to a later wave, or justify either order"
+  fix_hint: "Declare depends_on, move 03 to a later wave, or set coupling_justified"
 ```
 
 ## Dimension 4: Key Links Planned
@@ -861,9 +867,9 @@ Thresholds: 2-3 tasks/plan good, 4 warning, 5+ blocker (split required).
 
 ## Step 10: Determine Overall Status
 
-**passed:** All requirements covered, all tasks complete, dependency graph valid, key links planned, scope within budget, must_haves properly derived.
+**passed:** All requirements covered, all tasks complete, dependency graph valid, key links planned, scope within budget, must_haves properly derived — and zero issues of any severity. An INFO-only result is NOT `passed`.
 
-**issues_found:** One or more blockers or warnings. Plans need revision.
+**issues_found:** One or more issues of ANY severity, including INFO-only. Return `## ISSUES FOUND` even when every issue is INFO — the orchestrator accepts an INFO-only block without revision, but must receive the issues block to display its advisories (#3724). Plans need revision only when blockers or warnings are present.
 
 Severities: `blocker` (must fix), `warning` (should fix), `info` (suggestions).
 
@@ -871,40 +877,7 @@ Severities: `blocker` (must fix), `warning` (should fix), `info` (suggestions).
 
 <examples>
 
-## Scope Exceeded (most common miss)
-
-**Plan 01 analysis:**
-```
-Tasks: 5
-Files modified: 12
-  - prisma/schema.prisma
-  - src/app/api/auth/login/route.ts
-  - src/app/api/auth/logout/route.ts
-  - src/app/api/auth/refresh/route.ts
-  - src/middleware.ts
-  - src/lib/auth.ts
-  - src/lib/jwt.ts
-  - src/components/LoginForm.tsx
-  - src/components/LogoutButton.tsx
-  - src/app/login/page.tsx
-  - src/app/dashboard/page.tsx
-  - src/types/auth.ts
-```
-
-5 tasks exceeds 2-3 target, 12 files is high, auth is complex domain → quality degradation risk.
-
-```yaml
-issue:
-  dimension: scope_sanity
-  severity: blocker
-  description: "Plan 01 has 5 tasks with 12 files - exceeds context budget"
-  plan: "01"
-  metrics:
-    tasks: 5
-    files: 12
-    estimated_context: "~80%"
-  fix_hint: "Split into: 01 (schema + API), 02 (middleware + lib), 03 (UI components)"
-```
+@~/.claude/gsd-core/references/plan-checker-examples.md
 
 </examples>
 
@@ -993,13 +966,20 @@ Plans verified. Run `/gsd:execute-phase {phase}` to proceed.
 - Plan: {plan}
 - Fix: {fix_hint}
 
+### Advisories (info)
+
+**1. [{dimension}] {description}**
+- Plan: {plan}
+- Fix: {fix_hint}
+
 ### Structured Issues
 
 (YAML issues list using format from Issue Format above)
 
 ### Recommendation
 
-{N} blocker(s) require revision. Returning to planner with feedback.
+{N} blocker(s), {M} warning(s) require revision. Returning to planner with feedback.
+(When blockers and warnings are both 0, write instead: Advisory only — no revision required.)
 ```
 
 </structured_returns>

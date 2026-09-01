@@ -64,7 +64,13 @@ type Rule = healthDiagnosticMod.Rule;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import validateMod = require('../validate.cjs');
-const { phaseDirNameRe } = validateMod;
+// #612: `isPhaseDirName` is the convention-SELECTED shape test wrapping
+// `phaseDirNameRe`. Handed no convention it delegates to that very regex, so a
+// legacy repo's W005 reading is byte-identical; handed 'bracket' it also
+// recognizes `{CODE}.{MM}-{PP}-slug`, which `phaseDirNameRe` rejects outright —
+// left un-threaded, W005 fires on EVERY phase directory of a repo that opted
+// into the convention, i.e. the check inverts on exactly the repos PR-2 widens.
+const { isPhaseDirName } = validateMod;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('../phase-id.cjs');
@@ -75,7 +81,7 @@ const { extractPhaseToken, normalizePhaseName, comparePhaseNum } = phaseIdMod;
 function checkW005(snapshot: PlanningSnapshot): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const name of snapshot.phaseDirs.value) {
-    if (!name.match(phaseDirNameRe)) {
+    if (!isPhaseDirName(name, snapshot.phaseIdConvention)) {
       diagnostics.push({
         code: 'W005',
         severity: SEVERITY.WARNING,

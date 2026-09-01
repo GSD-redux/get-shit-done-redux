@@ -285,3 +285,157 @@ describe('#3262 phase add-batch milestone-scope heading guard', () => {
     }
   });
 });
+
+// ─── #612 / #2761: the bracket-convention arm of the same guard ──────────────
+
+/**
+ * The #3262 guard is defined as a MIRROR of the parser's terminator vocabulary.
+ * On a bracket-convention repo this branch teaches `computeMilestoneSectionEnd`'s
+ * bracket extension a terminator the legacy vocabulary has no word for: the
+ * ADR-canonical `## [GSD.09] Hidden` carries no vN.N token, no ✅/📋/🚧/🔄
+ * marker, and not the word "Milestone". Unmirrored, the guard accepted exactly
+ * the description that narrows the window — measured at this CLI seam: two
+ * `phase add` calls, the second phase present in ROADMAP.md and absent from
+ * `roadmap milestone-scope`'s phase set.
+ *
+ * Every case below has a NON-bracket control, because the whole contract is
+ * that a project which has not opted in behaves byte-identically to base.
+ */
+
+const BRACKET_ROADMAP = [
+  '# Roadmap',
+  '',
+  '## [GSD.02] Foundation',
+  '',
+  '### [GSD.02] 01: One',
+  '',
+  '**Goal:** one',
+  '',
+].join('\n');
+
+function writeBracketProject(tmpDir) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'),
+    JSON.stringify({ project_code: 'GSD', phase_id_convention: 'bracket' }, null, 2)
+  );
+  writeStateMilestone(tmpDir, 'v2.0');
+  writeRoadmap(tmpDir, BRACKET_ROADMAP);
+}
+
+function writeLegacyTwinProject(tmpDir) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'),
+    JSON.stringify({ project_code: 'GSD' }, null, 2)
+  );
+  writeStateMilestone(tmpDir, 'v2.0');
+  writeRoadmap(tmpDir, BRACKET_ROADMAP);
+}
+
+describe('#2761 milestone-scope guard — bracket convention arm (#612)', () => {
+  test('roadmap milestone-scope reports the bracket window phase set instead of an empty one', () => {
+    const tmp = createTempProject('gsd-2761-scope-');
+    try {
+      writeBracketProject(tmp);
+      writeRoadmap(tmp, [
+        BRACKET_ROADMAP,
+        '### [GSD.02] 02: Two',
+        '',
+        '**Goal:** two',
+        '',
+        '## [GSD.03] Later',
+        '',
+        '### [GSD.03] 01: Later one',
+        '',
+        '**Goal:** later',
+        '',
+      ].join('\n'));
+      const result = runMilestoneScope(tmp);
+      // Blind, this probe returns [] on a bracket ROADMAP — before AND after any
+      // write — so the workflow's equality check can never fail.
+      assert.deepEqual(result.phases, ['01', '02'], 'bracket phase ids must be visible to the probe');
+      assert.equal(result.phase_count, 2, "the sibling milestone's phase must stay out of the window");
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('phase add rejects a bracket milestone heading in the description; ROADMAP and phase dirs untouched', () => {
+    const tmp = createTempProject('gsd-2761-add-');
+    try {
+      writeBracketProject(tmp);
+      const before = readRoadmap(tmp);
+      const dirsBefore = listPhaseDirs(tmp);
+      const res = runGsdTools(['phase', 'add', 'Sneaky\n## [GSD.09] Hidden'], tmp);
+      assert.equal(res.success, false, 'phase add must reject a bracket milestone heading on a bracket repo');
+      assert.match(res.error || res.output, /\[GSD\.09\] Hidden/, 'error must name the offending line');
+      assert.equal(readRoadmap(tmp), before, 'ROADMAP.md must be byte-unchanged');
+      assert.deepEqual(listPhaseDirs(tmp), dirsBefore, 'no phase directory may be created');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('the same description is ACCEPTED on a non-bracket twin (opt-in only, base behaviour preserved)', () => {
+    const tmp = createTempProject('gsd-2761-add-legacy-');
+    try {
+      writeLegacyTwinProject(tmp);
+      const res = runGsdTools(['phase', 'add', 'Sneaky\n## [GSD.09] Hidden'], tmp);
+      assert.equal(res.success, true, `a project that has not opted in must be unaffected: ${res.error || ''}`);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('phase insert and add-batch reject the same shape on a bracket repo', () => {
+    const tmp = createTempProject('gsd-2761-batch-');
+    try {
+      writeBracketProject(tmp);
+      const before = readRoadmap(tmp);
+      const batch = runGsdTools(
+        ['phase', 'add-batch', '--descriptions', JSON.stringify(['Good phase', 'Bad\n## [GSD.09] Hidden'])],
+        tmp
+      );
+      assert.equal(batch.success, false, 'add-batch must reject the bracket shape');
+      assert.equal(readRoadmap(tmp), before, 'ROADMAP.md must be byte-unchanged (all-or-nothing)');
+
+      const insert = runGsdTools(['phase', 'insert', '1', 'Sneaky\n## [GSD.09] Hidden'], tmp);
+      assert.equal(insert.success, false, 'phase insert must reject the bracket shape');
+      assert.equal(readRoadmap(tmp), before, 'ROADMAP.md must be byte-unchanged');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('a bracket PHASE heading and a FENCED bracket milestone heading are not violations', () => {
+    const tmp = createTempProject('gsd-2761-nofalse-');
+    try {
+      writeBracketProject(tmp);
+      const phaseHeading = runGsdTools(['phase', 'add', 'Refs\n### [GSD.02] 07: cross ref'], tmp);
+      assert.equal(
+        phaseHeading.success,
+        true,
+        `a bracket PHASE heading never terminates a window and must not be flagged: ${phaseHeading.error || ''}`
+      );
+
+      const fenced = runGsdTools(['phase', 'add', 'Docs\n\n```markdown\n## [GSD.09] Example\n```\n'], tmp);
+      assert.equal(
+        fenced.success,
+        true,
+        `a FENCED bracket milestone heading must not be flagged (parser is fence-aware): ${fenced.error || ''}`
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('ordinary bracket-repo descriptions still succeed (no false rejection)', () => {
+    const tmp = createTempProject('gsd-2761-ok-');
+    try {
+      writeBracketProject(tmp);
+      const res = runGsdTools(['phase', 'add', 'Authentication and sessions'], tmp);
+      assert.equal(res.success, true, `ordinary add must keep working on a bracket repo: ${res.error || ''}`);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+});
