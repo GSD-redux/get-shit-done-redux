@@ -3,11 +3,26 @@
 /**
  * pause-work-context-detection.test.cjs — regression coverage for #4112.
  *
- * gsd-core/workflows/pause-work.md's "Context Detection" step opened its
- * phase/spike/sketch assignments with `$((`, which bash/zsh parse as
- * ARITHMETIC expansion, not the intended command-substitution-wrapping-a-
- * subshell. That is a hard shell syntax error, not a warning, and it fires
- * on every `/gsd:pause-work` invocation (this is that workflow's first step).
+ * gsd-core/workflows/pause-work.md's "Context Detection" step opens its
+ * phase/spike/sketch assignments with `$((`. That is genuinely ambiguous in
+ * POSIX-family shell grammar between arithmetic expansion and a command
+ * substitution wrapping a subshell. bash and zsh silently fall back to the
+ * command-substitution reading when the arithmetic parse fails (undocumented
+ * but real — verified empirically), so this construct does NOT throw under
+ * bash/zsh. It DOES throw a hard "Syntax error: Missing '))'" under POSIX
+ * `sh` (dash), which does not implement that fallback and is the default
+ * `/bin/sh` on Debian/Ubuntu (including the CI/bench hosts this repo tests
+ * on, and a common default shell for `child_process.exec()`-style spawns
+ * with no explicit `shell:` override).
+ *
+ * An earlier version of this test asserted `bash -n` syntax validity and
+ * wrapped a plain `bash -c` execution in assert.doesNotThrow(). Both were
+ * wrong: `bash -n` never evaluates arithmetic-context content at parse time,
+ * and bash's runtime fallback means a bare `bash -c` execution never throws
+ * either. That version passed a full `gsd-test` run (41594/41594, 0
+ * failures) against the UNFIXED file — a false green. This version fixes
+ * that by asserting on the real, verified failure mode: execution under
+ * `dash`/`sh`.
  *
  * These tests execute the real fenced bash block extracted from the shipped
  * workflow file against real temp-directory filesystem states — not a mock,
@@ -38,14 +53,37 @@ function extractBashBlockAfterHeading(markdown, heading) {
   return fenceMatch[1];
 }
 
+/**
+ * Resolve a POSIX shell binary that does NOT implement bash's permissive
+ * `$((` -> command-substitution fallback, so it can actually distinguish
+ * broken from fixed. Plain `/bin/sh` is unreliable for this: on macOS it is
+ * bash-compatible and does not reproduce the defect. Prefer `dash` (the
+ * default `/bin/sh` on Debian/Ubuntu, including this repo's gsd-test Linux
+ * bench); fall back to `sh` only if `dash` is not on PATH.
+ */
+function resolvePosixShell() {
+  for (const candidate of ['dash', 'sh']) {
+    try {
+      execFileSync(candidate, ['-c', 'true'], { encoding: 'utf8' });
+      return candidate;
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      return candidate;
+    }
+  }
+  return null;
+}
+
 let contextDetectionBlock;
+let posixShell;
 
 before(() => {
   const markdown = fs.readFileSync(WORKFLOW_PATH, 'utf8');
   contextDetectionBlock = extractBashBlockAfterHeading(markdown, '## Context Detection');
+  posixShell = resolvePosixShell();
 });
 
-/** Run the block in a fresh temp cwd, returning parsed var assignments. */
+/** Run the block in a fresh temp cwd under bash, returning parsed var assignments. */
 function runBlock(setup) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pause-work-context-'));
   try {
@@ -66,12 +104,14 @@ function runBlock(setup) {
 }
 
 describe('regression #4112: pause-work.md Context Detection block', () => {
-  test('is syntactically valid bash (bash -n) — the arithmetic-context misparse is gone', () => {
-    // A bare `bash -n` on the fragment alone is enough to prove parse validity
-    // without touching the filesystem at all.
+  test('does not throw a "Missing \'))\'" syntax error under POSIX sh/dash', (t) => {
+    if (!posixShell) {
+      t.skip('neither dash nor sh is available on this host');
+      return;
+    }
     assert.doesNotThrow(() => {
-      execFileSync('bash', ['-n', '-c', contextDetectionBlock], { encoding: 'utf8' });
-    }, /syntax error/);
+      execFileSync(posixShell, ['-c', contextDetectionBlock], { encoding: 'utf8' });
+    });
   });
 
   test('no active phase/spike/sketch/deliberation resolves all four vars to empty string, no abort', () => {
@@ -118,3 +158,5 @@ describe('regression #4112: pause-work.md Context Detection block', () => {
     assert.match(result.deliberation, /\.planning\/deliberations\/topic\.md$/);
   });
 });
+</content>
+</invoke>
