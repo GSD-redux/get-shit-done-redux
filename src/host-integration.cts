@@ -326,6 +326,21 @@ interface NegotiationResult {
 }
 
 // ---------------------------------------------------------------------------
+// isPositiveSafeInteger — shared predicate (#3673)
+// ---------------------------------------------------------------------------
+
+/**
+ * True iff `v` is a positive (>0) JS safe integer. Single source of truth for
+ * the dispatch.maxConcurrency contract: used by negotiateHostCapabilities
+ * below, and by gsd-core/bin/gsd-tools.cjs's routeDispatchCapacity (which
+ * requires this module's compiled output rather than reimplementing the
+ * predicate), so the two consumers cannot silently diverge.
+ */
+function isPositiveSafeInteger(v: unknown): boolean {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+}
+
+// ---------------------------------------------------------------------------
 // negotiateHostCapabilities
 // ---------------------------------------------------------------------------
 
@@ -520,12 +535,8 @@ function negotiateHostCapabilities(
     if (hostMaxConcurrency === UNDOCUMENTED) {
       warnings.push(`dispatch.maxConcurrency is undocumented — degraded closed (1)`);
       effectiveMaxConcurrency = 1;
-    } else if (
-      typeof hostMaxConcurrency === 'number' &&
-      Number.isSafeInteger(hostMaxConcurrency) &&
-      hostMaxConcurrency > 0
-    ) {
-      effectiveMaxConcurrency = hostMaxConcurrency;
+    } else if (isPositiveSafeInteger(hostMaxConcurrency)) {
+      effectiveMaxConcurrency = hostMaxConcurrency as number;
     } else if (hostMaxConcurrency === undefined) {
       warnings.push(`host did not declare 'dispatch.maxConcurrency' — treating as 1`);
       effectiveMaxConcurrency = 1;
@@ -982,6 +993,7 @@ export = {
   EXTENSION_EVENT_SURFACES,
   degradationFor,
   profileOf,
+  isPositiveSafeInteger,
   negotiateHostCapabilities,
   shouldFlattenDispatch,
   resolveDispatchType,

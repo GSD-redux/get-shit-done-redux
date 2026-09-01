@@ -1904,12 +1904,11 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
    *      to tier 3.
    *   3. 1 (the fail-closed floor) → source: "fallback".
    *
-   * `isPositiveSafeInteger` below is the SAME predicate
-   * (`typeof v === 'number' && Number.isSafeInteger(v) && v > 0`)
-   * src/host-integration.cts's negotiateHostCapabilities applies to the
-   * descriptor value, applied identically to both the env value and the
-   * descriptor value here so the two tiers can never silently disagree on
-   * what counts as valid.
+   * `isPositiveSafeInteger`, required below from `./lib/host-integration.cjs`,
+   * is the SAME exported predicate src/host-integration.cts's
+   * negotiateHostCapabilities applies to the descriptor value — applied
+   * identically to both the env value and the descriptor value here so the
+   * two tiers can never silently disagree on what counts as valid.
    *
    * `reason` names why the WINNING tier (or the fallback) was chosen: "ok" on
    * the happy path (live or descriptor honored), else "missing" (descriptor
@@ -1926,8 +1925,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
    *   default → same as --raw
    */
   function routeDispatchCapacity({ args, cwd, raw }) {
-    const isPositiveSafeInteger = (v) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
-    const { UNDOCUMENTED } = require('./lib/host-integration.cjs');
+    const { UNDOCUMENTED, isPositiveSafeInteger } = require('./lib/host-integration.cjs');
 
     let runtimeId = null;
     let runtimeEntry = null;

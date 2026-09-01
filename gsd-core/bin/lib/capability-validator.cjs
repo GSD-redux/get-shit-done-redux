@@ -1645,8 +1645,8 @@ function validateRuntimeBody(cap) {
       }
 
       // maxConcurrency — ADR-1239 Phase 1 (#3673). A numeric dispatch
-      // sub-field (not a closed-vocabulary enum member — same "numeric
-      // dispatch sub-field" treatment as maxDepth above; unlike maxDepth,
+      // sub-field (not a closed-vocabulary enum member — same numeric
+      // dispatch sub-field treatment as maxDepth above; unlike maxDepth,
       // 0 and negative values are invalid — 1 is the fail-closed floor, not
       // a legitimate "no concurrency" declaration).
       // OPTIONAL, like isolation: added after existing descriptors, so an
@@ -1656,8 +1656,6 @@ function validateRuntimeBody(cap) {
       // checked against the positive-safe-integer contract.
       if (d.maxConcurrency === undefined) {
         // absent — nothing to validate; negotiateHostCapabilities fails it closed.
-      } else if (d.maxConcurrency === '__proto__' || d.maxConcurrency === 'constructor' || d.maxConcurrency === 'prototype') {
-        errors.push('runtime.hostIntegration.dispatch.maxConcurrency "' + d.maxConcurrency + '" is a reserved name');
       } else if (
         d.maxConcurrency !== 'undocumented' &&
         (!Number.isSafeInteger(d.maxConcurrency) || d.maxConcurrency < 1)
