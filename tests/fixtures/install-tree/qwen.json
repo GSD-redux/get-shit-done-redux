@@ -438,6 +438,7 @@
   "scripts/lib/drift-scan.cjs",
   "scripts/lib/exit-code-registry.cjs",
   "scripts/lib/ndjson-reporter.cjs",
+  "scripts/lib/shellcheck-fetch.cjs",
   "skills/gsd-ns-context/SKILL.md",
   "skills/gsd-ns-context/skills/docs-update/SKILL.md",
   "skills/gsd-ns-context/skills/extract-learnings/SKILL.md",
