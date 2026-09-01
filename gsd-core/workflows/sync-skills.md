@@ -30,14 +30,14 @@ IS_APPLY=false
 
 # Parse --from
 if [[ "$@" == *"--from"* ]]; then
-  FROM_RUNTIME=$(echo "$@" | grep -oP '(?<=--from )\S+')
+  FROM_RUNTIME=$(echo "$@" | sed -E 's/.*--from[[:space:]]+([^[:space:]]+).*/\1/')
 fi
 
 # Parse --to
 if [[ "$@" == *"--to all"* ]]; then
   TO_RUNTIMES=(antigravity augment claude cline codebuddy codex copilot cursor grok hermes kilo kimi kimi-code opencode pi qwen trae windsurf zcode)
 elif [[ "$@" == *"--to"* ]]; then
-  TO_RUNTIMES=( $(echo "$@" | grep -oP '(?<=--to )\S+') )
+  TO_RUNTIMES=( $(echo "$@" | sed -E 's/.*--to[[:space:]]+([^[:space:]]+).*/\1/') )
 fi
 
 # Parse --apply
