@@ -78,6 +78,8 @@ Revision prompt:
 
 ${AGENT_SKILLS_PLANNER}
 
+{For each active entry in `PLAN_PRE_HOOKS_JSON` where `kind == "contribution"` and `into == "planner"` (in array order): inject the entry's `fragment.inline` verbatim here, plus its resolved `configValues` when the entry carries them. If no active planner contributions exist, omit this block entirely.}
+
 **Checker issues:** ${structured_issues_from_checker}
 
 </revision_context>
