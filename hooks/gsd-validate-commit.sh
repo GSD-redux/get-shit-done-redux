@@ -220,7 +220,17 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # The separators and redirections are excluded because bash does NOT
       # concatenate across them: in `-m "msg"&& echo hi` the argument ends at
       # the quote, so there is no truncated capture to defend against.
-      if [[ "$MSG_SUFFIX" =~ ^[^[:space:]\;\&\|\(\)\<\>] ]]; then RESOLVE=0; fi
+      # The class is held in a VARIABLE, not written inline. Inline, every
+      # member needs a backslash to get past the `[[ ]]` parser (`;`, `&` and
+      # `|` are metacharacters there) — and on bash 3.2, the system /bin/bash on
+      # macOS, those backslashes are passed THROUGH to the regex engine instead
+      # of being consumed by the shell, silently adding a literal `\` to the
+      # class. Unquoted expansion of a variable on the right of `=~` is the one
+      # spelling that is a plain regex on 3.2 and 5.x alike (review of #3816,
+      # round 8). Writing `[^[:space:];&|()<>]` inline is NOT the fix: it is a
+      # bash syntax error on both versions.
+      GLUE_CLASS='^[^[:space:];&|()<>]'
+      if [[ "$MSG_SUFFIX" =~ $GLUE_CLASS ]]; then RESOLVE=0; fi
 
       # FIRST-MESSAGE GUARD (Codex review of #3816, round 4 — BLOCKER). The
       # capture is a SEARCH over the whole command and the double-quoted arm is
@@ -255,9 +265,11 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # letters ending in `m` claims the message however it is spelled. Wider
       # than git's own abbreviation set on purpose — over-matching only refuses
       # more, which is the recoverable direction.
+      # Variable-held for the same bash-3.2 reason as GLUE_CLASS above.
+      SEP_CLASS='[;&|]'
       if [[ "$MSG_PREFIX_DEQ" =~ (^|[[:space:]])(-[a-zA-Z]*m|--m[a-z]*([=[:space:]]|$)) ]] \
         || [[ "$MSG_PREFIX" =~ (^|[[:space:]])--([[:space:]]|$) ]] \
-        || [[ "$MSG_PREFIX" =~ [\;\&\|] ]] \
+        || [[ "$MSG_PREFIX" =~ $SEP_CLASS ]] \
         || [[ "$MSG_PREFIX" == *$'\n'* ]]; then RESOLVE=0; fi
       # NEWLINE IS A COMMAND SEPARATOR TOO (independent review of #3816, round
       # 7) — the test above. The separator scan covered `;`, `&` and `|` but not

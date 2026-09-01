@@ -26,7 +26,18 @@ Whether text is glued to the message argument is judged against the one characte
 follows it, so a glued `-m` belonging to a command chained after this one no longer
 refuses a message that was never truncated.
 
-Known limits that fail closed — the commit is blocked, never wrongly allowed: the `<<"EOF"` delimiter spelling and a closing `)` on its own line remain false positives; a `--cleanup=` carried by a command chained after the commit refuses it as though it were git's own; and a leading assignment followed by a separator, as in `FOO=bar; git commit …`, is read as an assignment prefix, so the commit is recognised and then refused for the separator in its prefix. Which argument the hook captures as the message is unchanged.
+The character classes those scans use are held in variables rather than written inline. Inline,
+each of `;`, `&` and `|` needs a backslash to get past the `[[ ]]` parser, and a POSIX bracket
+expression has no escape mechanism of its own — so on bash 3.2, the system `/bin/bash` on macOS,
+those backslashes reach the regex engine and add a literal `\` to the class. One cause, both
+directions: the separator scan refused a conforming commit whose pre-`-m` text merely contained a
+backslash, and the glue scan, whose class is negated, resolved a heredoc whose suffix was glued
+with a backslash rather than declining it. The second is the fail-open direction and is the reason
+this is fixed rather than documented. Every row covering it runs under each bash on the machine,
+because a row run only under bash 4+ — where the shell consumes the backslashes and the classes are
+already correct — passes with or without the fix.
+
+Known limits that fail closed — the commit is blocked, never wrongly allowed: the `<<"EOF"` delimiter spelling and a closing `)` on its own line remain false positives; a `--cleanup=` carried by a command chained after the commit refuses it as though it were git's own; and a leading assignment followed by a separator, as in `FOO=bar; git commit …`, is read as an assignment prefix, so the commit is recognised and then refused for the separator in its prefix. A `\`-newline line continuation before `-m` is refused for the same reason: a newline is a command separator here, and a substring scan cannot tell a continuation from a separator, because an escaped backslash sitting immediately before a real newline looks identical to one. Which argument the hook captures as the message is unchanged.
 
 Two limits fail OPEN, and are called out separately because they are the direction that matters:
 a `cleanup` mode set persistently in git config is invisible to the hook, so under

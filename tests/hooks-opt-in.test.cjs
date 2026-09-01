@@ -367,6 +367,107 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
   });
 
+
+  // ─── #3816 round 8 (Major): bracket classes must not smuggle a literal `\` ───
+  //
+  // `;`, `&` and `|` are shell metacharacters inside `[[ ]]`, so an inline
+  // bracket class has to escape each one: `[\;\&\|]`. POSIX bracket expressions
+  // have no escape mechanism of their own, and on bash 3.2 — the system
+  // /bin/bash on macOS, already a supported target here (see the `declare -A`
+  // ban in tests/install.test.cjs) — those backslashes reach the regex engine
+  // instead of being consumed by the shell, so the class silently gains a
+  // literal `\` as a member. bash 4+ consumes them, which is why this is
+  // invisible on a modern bash. The escape is only a hazard INSIDE a bracket
+  // expression: `\(` outside one is made literal correctly on every version.
+  //
+  // One root cause, consequences in BOTH directions:
+  //   the SEPARATOR scan (positive class) OVER-BLOCKED — a conforming commit
+  //     whose pre-`-m` text held a `\` was refused outright;
+  //   the GLUE scan (NEGATED class) UNDER-REFUSED — a `\` glued to the message
+  //     span fell inside the exclusion, so the hook resolved a heredoc it
+  //     should have declined. That is the accept direction, and it is the row
+  //     that matters most below.
+  //
+  // The fix holds each class in a variable expanded unquoted on the right of
+  // `=~`, which is a plain regex on 3.2 and 5.x alike. Writing the class inline
+  // without the backslashes is NOT the fix: `[[ x =~ [;&|] ]]` is a bash syntax
+  // error on both versions.
+  //
+  // Every row runs under each bash on the machine, because a row run only under
+  // bash 4+ passes with or without the fix — vacuous, and silently so. Where
+  // 3.2 is absent the row simply does not appear; that is disclosed here rather
+  // than papered over.
+  const BASHES = (() => {
+    const seen = new Set();
+    const found = [];
+    for (const candidate of ['/bin/bash', '/usr/local/bin/bash', '/opt/homebrew/bin/bash']) {
+      if (!fs.existsSync(candidate)) continue;
+      const probe = runHook('-c', ['printf %s "$BASH_VERSION"'], {
+        interpreter: candidate, env: hookEnv, timeoutMs: HOOK_TIMEOUT_MS,
+      });
+      const version = (probe.stdout || '').trim();
+      if (probe.exitCode !== 0 || !version || seen.has(version)) continue;
+      seen.add(version);
+      found.push({ path: candidate, version });
+    }
+    return found;
+  })();
+
+  const underBash = (bashPath, command) => runHook(
+    path.join(HOOKS_DIR, 'gsd-validate-commit.sh'), [],
+    {
+      interpreter: bashPath,
+      env: hookEnv,
+      timeoutMs: HOOK_TIMEOUT_MS,
+      input: JSON.stringify({ tool_input: { command } }),
+      cwd: tmpDir,
+    },
+  );
+
+  for (const bash of BASHES) {
+    // ACCEPT DIRECTION — the one that cannot be recovered from. Before the fix,
+    // bash 3.2 measured exit 0 here: the backslash sat inside the negated glue
+    // class, so the guard never fired and the heredoc was resolved anyway.
+    test(`a backslash-glued suffix is still refused (bash ${bash.version})`, () => {
+      const glued = `${heredoc('fix: a perfectly ordinary conforming subject')}\\zzz`;
+      const result = underBash(bash.path, glued);
+      assert.strictEqual(result.exitCode, 2,
+        `bash ${bash.version}: a suffix glued to the message span with a backslash must be `
+        + 'refused exactly like any other glued suffix — resolving it is the accept direction. '
+        + `stdout: ${result.stdout}`);
+    });
+
+    test(`a letter-glued suffix is still refused (bash ${bash.version})`, () => {
+      // Non-vacuity control for the row above: proves the glue guard is
+      // reachable at all under this interpreter, so a refusal there is the
+      // guard firing rather than the hook refusing everything.
+      const glued = `${heredoc('fix: a perfectly ordinary conforming subject')}zzz`;
+      assert.strictEqual(underBash(bash.path, glued).exitCode, 2,
+        `bash ${bash.version}: the established glued-suffix refusal must be unchanged`);
+    });
+
+    // OVER-BLOCK DIRECTION — the reported half. The backslash sits in the text
+    // BEFORE `-m`, and deliberately with no newline anywhere before it: a
+    // newline is refused by the separator guard on every bash, which would make
+    // this row pass for the wrong reason and prove nothing about the class.
+    test(`a backslash before -m does not block a conforming commit (bash ${bash.version})`, () => {
+      const command = `git commit --allow-empty --author=a\\,b -m "$(cat <<'EOF'\n`
+        + `fix: a perfectly ordinary conforming subject\nEOF\n)"`;
+      const result = underBash(bash.path, command);
+      assert.strictEqual(result.exitCode, 0,
+        `bash ${bash.version}: a conforming commit must not be refused merely because its `
+        + `pre-message text contains a backslash. stdout: ${result.stdout}`);
+    });
+
+    test(`a non-conforming subject is still blocked (bash ${bash.version})`, () => {
+      // Second non-vacuity control: proves this interpreter reaches the
+      // validator rather than passing everything — the failure mode that makes
+      // an allow-row look green for the wrong reason.
+      const result = underBash(bash.path, 'git commit -m "nope not conventional"');
+      assert.strictEqual(result.exitCode, 2,
+        `bash ${bash.version}: the validator must still be reached and still refuse`);
+    });
+  }
   test('validate-commit measures subject length against the RESOLVED heredoc subject', () => {
     // RULESET.TESTS.boundary-coverage: N at {limit-1, limit, limit+1}, not merely
     // "very long". The limit is 72, and the gate is `> 72`, so 72 must PASS and
