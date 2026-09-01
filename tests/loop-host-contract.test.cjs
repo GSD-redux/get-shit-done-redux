@@ -74,6 +74,11 @@ function makeValidWorkflowFiles() {
       // Cross-check content: must contain the agent names
       'gsd-phase-researcher gsd-planner gsd-plan-checker',
     ),
+    'quick.md': [
+      'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)',
+      'For each active entry where `kind == "contribution"`: inject.',
+      '',
+    ].join('\n'),
     'execute-phase.md': makeWorkflow(
       'execute', ['execute:pre', 'execute:wave:pre', 'execute:wave:post', 'execute:post'],
       ['executor', 'verifier'],
@@ -438,13 +443,13 @@ describe('module exports', () => {
   });
 });
 
-// ─── #3778 — quick.md must never become a 6th loop-host file ──────────────────
+// ─── #3778 — quick.md is auxiliary without becoming a 6th serialized step ────
 
-describe('quick.md is not a loop-host file (D-09 regression pin, #3778)', () => {
-  function makeQuickWorkflow({ includePoint = true, includeKind = true } = {}) {
+describe('Quick auxiliary loop-host contract (#3778)', () => {
+  function makeQuickWorkflow({ includePoint = true, includeKind = true, into = 'planner' } = {}) {
     return [
       includePoint ? 'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)' : '',
-      includeKind ? 'For each active entry where `kind == "contribution"`: inject.' : '',
+      includeKind ? `For each active entry where \`kind == "contribution"\` and \`into == "${into}"\`: inject.` : '',
       '',
     ].join('\n');
   }
@@ -452,7 +457,7 @@ describe('quick.md is not a loop-host file (D-09 regression pin, #3778)', () => 
   test('Quick is a generator-owned plan auxiliary host with its own contribution expectation', () => {
     const plan = STEP_WORKFLOWS.find((workflow) => workflow.step === 'plan');
     assert.deepEqual(plan.auxiliaryHosts, [
-      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'] },
+      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'], into: 'planner' },
     ]);
 
     const files = makeValidWorkflowFiles();
@@ -488,6 +493,20 @@ describe('quick.md is not a loop-host file (D-09 regression pin, #3778)', () => 
   test('buildContract rejects Quick without its contribution dispatch', () => {
     const files = makeValidWorkflowFiles();
     files['quick.md'] = makeQuickWorkflow({ includeKind: false });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host point "plan:pre" missing expected kind "contribution"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('buildContract rejects a Quick contribution dispatch targeting the wrong role', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ into: 'orchestrator' });
     const tmpDir = makeTempWorkflowsDir(files);
     try {
       assert.throws(

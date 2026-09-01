@@ -918,7 +918,7 @@ describe('#3778 — plan:pre contribution set feeding the quick.md planner dispa
   test('Quick host registration is generator-owned without changing canonical contract shape', () => {
     const plan = STEP_WORKFLOWS.find((workflow) => workflow.step === 'plan');
     assert.deepEqual(plan.auxiliaryHosts, [
-      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'] },
+      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'], into: 'planner' },
     ]);
     assert.ok(
       HOST_LOOP_FILES.includes('gsd-core/workflows/quick.md'),
@@ -5335,12 +5335,15 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       }
     });
 
-    test('HOST_LOOP_FILES matches STEP_WORKFLOWS (single source of truth)', () => {
-      const expectedFromStepWorkflows = STEP_WORKFLOWS.map((w) => 'gsd-core/workflows/' + w.file);
+    test('HOST_LOOP_FILES matches STEP_WORKFLOWS rows and auxiliary hosts', () => {
+      const expectedFromStepWorkflows = STEP_WORKFLOWS.flatMap(({ file, auxiliaryHosts = [] }) => [
+        'gsd-core/workflows/' + file,
+        ...auxiliaryHosts.map((host) => 'gsd-core/workflows/' + host.file),
+      ]);
       assert.deepEqual(
         HOST_LOOP_FILES,
         expectedFromStepWorkflows,
-        'HOST_LOOP_FILES must be derived from STEP_WORKFLOWS, not a separate hardcoded list',
+        'HOST_LOOP_FILES must be derived from STEP_WORKFLOWS rows and their auxiliary hosts',
       );
     });
 
