@@ -115,6 +115,19 @@ describe('verify context-drift CLI', () => {
     assert.strictEqual(data.reason, 'phase-not-found');
   });
 
+  test('does not escape phasesDir via a deep traversal payload that would otherwise resolve to a real path', () => {
+    // Deep enough that path.join's .. collapsing would reach outside the temp
+    // sandbox entirely (unlike a shallow '../../etc', which lands harmlessly
+    // inside the sandbox as a nonexistent path and would pass for the wrong
+    // reason). validatePath must reject this by real-path containment, not by
+    // accidental non-existence.
+    const r = runGsdTools(['verify', 'context-drift', '../../../../../../../../../../etc'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.reason, 'phase-not-found');
+  });
+
   test('skips when no CONTEXT.md exists', () => {
     const dir = phaseDirPath('01-setup');
     fs.mkdirSync(dir, { recursive: true });

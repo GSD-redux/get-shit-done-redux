@@ -1763,8 +1763,8 @@ function resolvePhaseDirByToken(phasesDir: string, phaseArg: string): string | n
   const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
   const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
   if (matched) return path.join(phasesDir, matched);
-  const exact = path.join(phasesDir, phaseArg);
-  if (fs.existsSync(exact)) return exact;
+  const check = validatePath(phaseArg, phasesDir);
+  if (check.safe && fs.existsSync(check.resolved)) return check.resolved;
   return null;
 }
 
