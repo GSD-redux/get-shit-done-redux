@@ -58,7 +58,7 @@ const { scanPhasePlans } = planScanMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { listMilestonePhaseDirs } = phaseLocatorMod;
-const { planningPaths } = planningWorkspace;
+const { planningPaths, resolvePhaseIdConvention } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
 // ADR-3408 §8.3 / #3469: `writeStateMd` gets sync and NO preservation — the
 // same #3374-shaped exposure the milestone-complete write used to carry (a
@@ -791,6 +791,23 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   let totalTasks = 0;
   const accomplishments: string[] = [];
 
+  // #2761 (round-11 BLOCKER): resolved ONCE, ambiently (no explicit `ws` —
+  // this function has none of its own and already resolves everything else
+  // off `cwd` via planningPaths(cwd), matching the ambient-workstream
+  // contract `resolvePhaseIdConvention`/`planningDir` share), and threaded
+  // into the single `listMilestonePhaseDirs` call directly below. Left
+  // unthreaded, `phaseIdConvention` stays `undefined` and
+  // `getMilestonePhaseFilter` silently resolves it FROM CONFIG itself —
+  // which is exactly the behavior the changeset originally (and wrongly)
+  // claimed this PR does not reach: on a bracket-convention project that
+  // lazily-resolved convention changes `milestonePhaseDirs`/
+  // `milestonePhaseScope` below, and this function goes on to ARCHIVE
+  // (rename/move) whatever that set names. Resolving explicitly here removes
+  // the silent-inherit path without changing behavior for `null` /
+  // `milestone-prefixed` projects, whose resolved convention is the same
+  // value `undefined` would have lazily produced anyway.
+  const phaseConvention = resolvePhaseIdConvention(cwd);
+
   // #3597 (ADR-3180 Decision 2): SINGLE resolution of "which phase
   // directories belong to the current milestone" AND the SCOPE discriminator
   // that resolution came from — shared verbatim by the read-only stats loop
@@ -804,7 +821,11 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // disk, same as before #3597. Only the destructive archive pass (and its
   // --dry-run preview) refuses to act on a non-COMPLETE (non-answer) scope;
   // see the guard built from `milestonePhaseScope` further down.
-  const { value: milestonePhaseDirs, scope: milestonePhaseScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version });
+  const { value: milestonePhaseDirs, scope: milestonePhaseScope } = listMilestonePhaseDirs(phasesDir, {
+    cwd,
+    versionOverride: version,
+    phaseIdConvention: phaseConvention,
+  });
 
   try {
     for (const dir of milestonePhaseDirs) {

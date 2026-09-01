@@ -28,6 +28,10 @@
  *   5. roadmap-parser.cjs getMilestonePhaseFilter → isDirInMilestone (hyphenated mode)
  *   6. phase-id.cjs      BRACKET_PHASE_TOKEN_SOURCE (slug-adjacent position only —
  *                        see the divergence block at the foot of this file)
+ *   7. validate.cjs      buildRoadmapPhaseVariants (#2761 bracket heading read)
+ *   8. validate.cjs      phaseTokenFromDir vs phase-id.cjs extractPhaseToken
+ *                        (#2761 bracket DIRECTORY read — the two readers that
+ *                        resolve a phase directory on the `validate health` path)
  */
 
 const { test, describe } = require('node:test');
@@ -370,6 +374,81 @@ describe('#2232 continuation-grammar parity — roadmap isDirInMilestone (hyphen
 // dot no slug can contain), not heuristically recognized, so they carry the
 // canonical width toDir emits — while #2232's cap defends the one position that
 // sits against a slug.
+// ── Surface 7: the heading read agrees with the dir read about WHICH phase ──
+describe('#2761 surface 7 — heading read and dir read name the same phase', () => {
+  for (const { seg, absorbed, note } of WIDTH_CORPUS) {
+    test(`width ${seg.length} (${JSON.stringify(seg)}): absorbed=${absorbed} — ${note}`, () => {
+      const owner = phaseId.isPhaseContinuationSegment(seg);
+      const headingToken = `14-${seg}`;
+      const dir = `14-${seg}-photos-performance`;
+      // A heading token carries no slug, so its grammar is the letter-tolerant
+      // one, NOT the continuation grammar. What must hold is that the two agree
+      // about which phase a `MM-<seg>` pair names — otherwise a phase named in
+      // the ROADMAP resolves to the wrong directory, or to none.
+      const { roadmapPhases } = validate.buildRoadmapPhaseVariants(`### Phase ${headingToken}: Photos`);
+      assert.ok(roadmapPhases.has(headingToken), `heading token dropped: ${headingToken}`);
+      assert.strictEqual(
+        phaseId.extractPhaseToken(dir) === headingToken, owner,
+        `heading/dir disagreement on ${JSON.stringify(headingToken)}`,
+      );
+      // The BRACKET spelling of the same heading must yield the same phase set:
+      // the widened intro changes which SPELLINGS are seen, never which TOKEN a
+      // heading yields.
+      const bracket = validate.buildRoadmapPhaseVariants(
+        `### [GSD.01] ${headingToken}: Photos`, 'bracket');
+      assert.deepEqual([...bracket.roadmapPhases], [...roadmapPhases],
+        'bracket and legacy spellings of one heading must yield the same phase set');
+    });
+  }
+});
+
+// ── Surface 8: the two bracket DIRECTORY readers, both directions ───────────
+// `validate health` resolves a bracket phase directory twice in one run: W005 /
+// W006 / W007 through validate.phaseTokenFromDir, and the W021
+// milestone-complete check through phaseTokenMatches -> extractPhaseToken. A
+// disagreement makes the run contradict itself — W007 resolving a directory that
+// W021 simultaneously reports as an unstarted phase.
+describe('#2761 surface 8 — one bracket directory token rule, two call paths', () => {
+  const ACCEPTED = [
+    'GSD.02-05-feature', 'GSD.02-05.03-feature', 'GSD.02-05', 'CK.01-12.04-feature',
+    'GSD_X2.100-05-feature', 'GSD.02-05-2026-photos', 'GSD.999-01-icebox',
+    // DISCLOSED: string-indistinguishable from a padded bracket dir, so a repo
+    // that has opted into bracket reads it as one. Listed here because the point
+    // of this surface is that BOTH readers do the same thing with it.
+    'P0.34-56-name',
+  ];
+  // Shapes outside the emit grammar (CANONICAL_NUMERIC_RE is digits-only with at
+  // most one sub-phase), plus legacy and ambiguous forms.
+  const REJECTED = [
+    'GSD.02-12A-hotfix', 'GSD.02-05.03.07-x', 'GSD.2-05-x', 'GSD.02',
+    '02-01-setup', 'GSD-02-01-setup', 'not-a-phase', 'P0.3-2-tenant', 'P0.16-gate',
+  ];
+
+  for (const dir of ACCEPTED) {
+    test(`accepted: ${dir} — both readers agree`, () => {
+      assert.ok(validate.BRACKET_PHASE_DIR_RE.test(dir), 'precondition: recognized');
+      assert.strictEqual(
+        validate.phaseTokenFromDir(dir, 'bracket'),
+        phaseId.extractPhaseToken(dir, 'bracket'),
+      );
+    });
+  }
+
+  for (const dir of REJECTED) {
+    test(`rejected: ${dir} — the owner does not bracket-resolve it either`, () => {
+      assert.strictEqual(validate.BRACKET_PHASE_DIR_RE.test(dir), false, 'precondition: rejected');
+      // The half that was previously unpinned: agreement on REJECTED input. The
+      // owner must fall through to its legacy reading rather than produce a
+      // bracket token the recognizer refuses.
+      assert.strictEqual(
+        phaseId.extractPhaseToken(dir, 'bracket'),
+        phaseId.extractPhaseToken(dir),
+        'owner bracket-resolved a directory the recognizer rejects',
+      );
+    });
+  }
+});
+
 describe('#612 bracket divergence — wider only where the delimiter disambiguates', () => {
   const tokenOf = (s) => s.match(new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE))?.[0];
 
@@ -465,5 +544,79 @@ describe('#2528 grammar edges without production consumers', () => {
     } finally {
       cleanup(tmpDir);
     }
+  });
+});
+
+// ─── #2761 M3: the BRACKET MILESTONE INTRO grammar — one owner, two shapes ──
+//
+// trek-e's finding: this grammar was re-typed in roadmap-parser (the
+// bracket-fallback selector), state (`isMilestoneBounded`) and verify
+// (`checkBracketCoherence`), which #2761's own gate forbids, and
+// `check:phase-id-drift` could not see it. All three now consume
+// `phase-id.cjs`, so the LITERAL divergence is closed and
+// tests/phase-id-drift-guard.test.cjs proves the guard now fails on each
+// shipped copy.
+//
+// This is the behavioral half: the owner exports the intro in TWO shapes —
+// PINNED to one milestone, and CAPTURING over any — and nothing structurally
+// forces them to agree about what a milestone intro IS. They are two doors onto
+// one rule, so a corpus drives both and requires the same verdict. Widening
+// either one alone (the `0*N` acceptance that reopened the unscoped-milestone
+// defect) fails here.
+describe('#2761 bracket milestone intro — the pinned and capturing shapes agree', () => {
+  // Stated as POLICY, independently of either regex: the canonical spelling is
+  // exactly what toDir emits — pad2 for 0-99, no leading zero beyond that.
+  // Anything else is malformed and scopes nothing.
+  const INTRO_CORPUS = [
+    { text: '[GSD.00] Zero', milestone: 0, canonical: true, note: 'pad2 lower bound' },
+    { text: '[GSD.02] Foundation', milestone: 2, canonical: true, note: 'the ADR example' },
+    { text: '[GSD.99] Late', milestone: 99, canonical: true, note: 'pad2 upper bound' },
+    { text: '[GSD.100] Later', milestone: 100, canonical: true, note: '3-digit, no leading zero' },
+    { text: '[GSD.999] Icebox', milestone: 999, canonical: true, note: 'the backlog sentinel' },
+    { text: '[A_B9.02] Underscored', milestone: 2, canonical: true, note: 'the full code class' },
+    { text: '[gsd.02] Lowercased', milestone: 2, canonical: true, note: 'readers compile /i' },
+    { text: '[GSD.2] Unpadded', milestone: 2, canonical: false, note: 'unpadded scopes nothing' },
+    { text: '[GSD.002] Overpadded', milestone: 2, canonical: false, note: 'over-padded is malformed' },
+    { text: '[9SD.02] Digit-led code', milestone: 2, canonical: false, note: 'a code starts with a letter' },
+    { text: '[GSD-02] Hyphenated', milestone: 2, canonical: false, note: 'the separator is a dot' },
+    { text: '[GSD.] Empty milestone', milestone: 0, canonical: false, note: 'the milestone field is required' },
+  ];
+
+  const capturing = new RegExp(`^${phaseId.BRACKET_MILESTONE_INTRO_CAPTURING_SRC}`, 'i');
+
+  for (const { text, milestone, canonical, note } of INTRO_CORPUS) {
+    test(`${JSON.stringify(text)}: both shapes say canonical=${canonical} — ${note}`, () => {
+      const pinned = new RegExp(`^${phaseId.bracketMilestoneIntroSrcFor(milestone)}`, 'i');
+      const byPinned = pinned.test(text);
+      const byCapturing = capturing.test(text);
+      assert.strictEqual(
+        byPinned, byCapturing,
+        `the pinned and capturing shapes disagreed on ${JSON.stringify(text)} — ` +
+        'they are two doors onto one rule and must never diverge',
+      );
+      assert.strictEqual(byPinned, canonical, `verdict must match the locked policy — ${note}`);
+    });
+  }
+
+  test('the capturing shape reports the milestone the pinned shape was built for', () => {
+    // Beyond agreeing on accept/reject: when both accept, they must be talking
+    // about the SAME milestone. A capture-group or padding slip shows up here.
+    for (const { text, milestone, canonical } of INTRO_CORPUS) {
+      if (!canonical) continue;
+      assert.strictEqual(
+        parseInt(text.match(capturing)[1], 10), milestone,
+        `${text}: the captured milestone must be ${milestone}`,
+      );
+    }
+  });
+
+  test('a milestone intro is not confused with a phase id sharing its code', () => {
+    // `[GSD.02]` is a MILESTONE intro; `GSD.02-01` is a phase DIRECTORY. Both
+    // are built from BRACKET_PROJECT_CODE_SRC, so this pins that sharing one
+    // code class does not collapse the two readings.
+    const pinned = new RegExp(`^${phaseId.bracketMilestoneIntroSrcFor(2)}`, 'i');
+    assert.ok(!pinned.test('GSD.02-01-setup'), 'a directory name is not a bracket intro');
+    assert.ok(pinned.test('[GSD.02] 01: Setup'), 'a bracket PHASE heading still carries the intro');
+    assert.strictEqual(phaseId.bracketQualifiedKey('GSD.02-01', 'bracket'), 'GSD.2-1');
   });
 });

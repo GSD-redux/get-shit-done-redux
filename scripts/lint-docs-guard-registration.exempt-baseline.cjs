@@ -31,6 +31,7 @@
  * `docs-guard-exempt:` marker for its specific reason.
  */
 const DOCS_GUARD_EXEMPT_BASELINE = [
+  'adr-612-bracket-phase-counting.test.cjs',
   'adr-parser.test.cjs',
   'adr-parser.unit.test.cjs',
   'agent-marker-documentation-guard.test.cjs',
@@ -103,6 +104,10 @@ const DOCS_GUARD_EXEMPT_BASELINE = [
  * exact same scan.
  */
 const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
+  // #2761: cites docs/adr/612-bracket-phase-id-convention.md in an explanatory
+  // comment describing ADR-612's Decision 1; the file never reads that (or any)
+  // docs/ file — every read call it makes targets a tmpdir .planning fixture.
+  'adr-612-bracket-phase-counting.test.cjs': ['docs/adr/612-bracket-phase-id-convention.md'],
   'adr-parser.test.cjs': ['docs/adr/0001.md', 'docs/adr/0002.md', 'docs/adr/0010.md', 'docs/adr/NNNN.md'],
   'adr-parser.unit.test.cjs': ['docs/adr/0001.md', 'docs/adr/0099.md', 'docs/adr/NNNN.md'],
   'agent-marker-documentation-guard.test.cjs': ['docs/reference', 'docs/reference/workflow-fragments.md'],

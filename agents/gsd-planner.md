@@ -754,6 +754,8 @@ for each plan B in plan_order:
 ```
 
 **Rule:** Same-wave plans must have zero `files_modified`/`files_deleted` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
+
+Non-file coupling: @~/.claude/gsd-core/references/planner-coupling.md
 </step>
 
 <step name="group_into_plans">

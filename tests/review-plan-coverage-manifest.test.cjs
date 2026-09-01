@@ -44,7 +44,18 @@ const REPO_ROOT = path.join(__dirname, '..');
 function detectShells() {
   const shells = [{ name: 'bash', cmd: 'bash' }];
   const probe = spawnSync('zsh', ['-c', 'exit 0'], { timeout: PROBE_TIMEOUT_MS, windowsHide: true });
-  if (!probe.error && probe.status === 0) shells.push({ name: 'zsh', cmd: 'zsh' });
+  if (!probe.error && probe.status === 0) {
+    shells.push({ name: 'zsh', cmd: 'zsh' });
+  } else {
+    // gsd-core#4109: a skipped zsh lane reads identically to a passing one in
+    // this suite's own output, which is exactly why the bash/zsh
+    // word-splitting bug class went undetected in CI as long as it did. Make
+    // the skip loud so a zsh-less run (e.g. some ubuntu CI images) reads as
+    // "zsh coverage unknown", not "all lanes green".
+    console.warn(
+      '[review-plan-coverage-manifest.test.cjs] zsh not available — zsh-lane tests SKIPPED, coverage for this shell is UNKNOWN, not verified',
+    );
+  }
   return shells;
 }
 const SHELLS = detectShells();
@@ -184,6 +195,101 @@ function buildCoverageFixture(planIds, lanes) {
 function readCoverageJson(runDir, slug) {
   const p = path.join(runDir, `.plan-coverage-${slug}.json`);
   return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null;
+}
+
+/**
+ * #4109 — extract the write_reviews gate-check block that counts dispatched
+ * vs skipped lanes and sets ALL_LANES_SKIPPED / TOTAL_LANE_FAILURE. Anchored
+ * on the JSONL variable at the top of that block (distinct from, and earlier
+ * than, the .plans-manifest.md anchor extractCoverageCheckBlock() uses).
+ */
+function extractGateCheckBlock() {
+  const content = readWorkflowCombined(REVIEW_WORKFLOW);
+  const anchorIdx = content.indexOf('JSONL="$RUN_DIR/gsd-review-lane-results.jsonl"');
+  assert.notEqual(anchorIdx, -1, 'write_reviews must reference gsd-review-lane-results.jsonl — the gate-check block is missing');
+  const before = content.slice(0, anchorIdx);
+  const fenceOpenRe = /```bash\r?\n/g;
+  let lastOpen = -1;
+  let m;
+  while ((m = fenceOpenRe.exec(before)) !== null) lastOpen = m.index + m[0].length;
+  assert.notEqual(lastOpen, -1, 'gsd-review-lane-results.jsonl reference is not inside a ```bash fence of write_reviews');
+  const after = content.slice(lastOpen);
+  const closeIdx = after.indexOf('\n```');
+  assert.notEqual(closeIdx, -1, 'unterminated ```bash fence around the gate-check block');
+  const body = after.slice(0, closeIdx);
+  assert.ok(
+    body.includes('ALL_LANES_SKIPPED'),
+    'extracted block references JSONL but not ALL_LANES_SKIPPED — wrong block',
+  );
+  return body;
+}
+
+/**
+ * #4109 — extract the invoke_reviewers dispatch + join loops, from the
+ * "Split ONCE, de-duplicated" comment (immediately before the DISPATCH_SLUGS
+ * accumulator at this site) through the block's own closing fence. This span
+ * references run_review_lane() and PARALLEL_LANES, both defined earlier in
+ * the SAME fence but out of scope for this extractor — callers must prepend
+ * a stub (see buildDispatchFixture / DISPATCH_JOIN_STUB below).
+ */
+function extractDispatchJoinBlock() {
+  const content = readWorkflowCombined(REVIEW_WORKFLOW);
+  const anchorIdx = content.indexOf('# Split ONCE, de-duplicated');
+  assert.notEqual(anchorIdx, -1, 'invoke_reviewers must contain the "Split ONCE, de-duplicated" comment anchor');
+  const after = content.slice(anchorIdx);
+  const closeIdx = after.indexOf('\n```');
+  assert.notEqual(closeIdx, -1, 'unterminated ```bash fence after the dispatch/join anchor');
+  const body = after.slice(0, closeIdx);
+  assert.ok(body.includes('DISPATCH_SLUGS='), 'extracted span does not include the DISPATCH_SLUGS accumulator — wrong anchor');
+  assert.ok(body.includes('wait'), 'extracted span does not include the join `wait` — anchor did not reach the join loop');
+  return body;
+}
+
+const DISPATCH_JOIN_STUB = 'run_review_lane() { echo "$1" >> "$RUN_DIR/dispatch-log.txt"; }\nPARALLEL_LANES="false"\n';
+
+/** Fixture for the gate-check block: a RUN_DIR with per-slug stub files, no aggregate JSONL. */
+function buildGateCheckFixture(slugs, skippedSlugs) {
+  const root = createTempDir('gsd-4109-gate-');
+  const runDir = path.join(root, 'run');
+  fs.mkdirSync(runDir);
+  for (const slug of slugs) {
+    if (skippedSlugs.includes(slug)) {
+      fs.writeFileSync(
+        path.join(runDir, `gsd-review-${slug}.md`),
+        `${slug} review skipped: prompt budget (500 tokens) too small for the minimum review set.\n`,
+      );
+    }
+  }
+  return {
+    root,
+    runDir,
+    env: { SELECTED_REVIEWERS: slugs.join(',') },
+  };
+}
+
+/**
+ * Fixture for the dispatch/join loops: a RUN_DIR and SELECTED_REVIEWERS.
+ * RUN_DIR is passed as an env var (not the `{run_dir}` placeholder) because
+ * extractDispatchJoinBlock() starts at the "Split ONCE" comment, AFTER the
+ * `RUN_DIR="{run_dir}"` assignment earlier in the same real fence — the
+ * aggregate/join loop still references `$RUN_DIR` directly, so it must come
+ * from the environment here.
+ */
+function buildDispatchFixture(selectedReviewersCsv) {
+  const root = createTempDir('gsd-4109-dispatch-');
+  const runDir = path.join(root, 'run');
+  fs.mkdirSync(runDir);
+  return {
+    root,
+    runDir,
+    env: { SELECTED_REVIEWERS: selectedReviewersCsv, RUN_DIR: runDir },
+  };
+}
+
+function readDispatchLog(runDir) {
+  const content = readIfPresent(path.join(runDir, 'dispatch-log.txt'));
+  if (content === null) return [];
+  return content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
 }
 
 describe('#3301 build_prompt derives and appends a plan coverage manifest', () => {
@@ -357,6 +463,11 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
     const offenders = extractAllBashBlocks().filter((b) => /\[\s*"\$SLUG"\s*=\s*"(?!coderabbit)/.test(b));
     assert.deepEqual(offenders, [], 'only the coderabbit exemption may hardcode a slug comparison');
   });
+
+  test('structural: no bare-unquoted DISPATCH_SLUGS consumption remains (#4109)', () => {
+    const offenders = extractAllBashBlocks().filter((b) => /for SLUG in \$DISPATCH_SLUGS;/.test(b));
+    assert.deepEqual(offenders, [], 'DISPATCH_SLUGS must be quoted or word-split explicitly, not consumed bare — zsh does not IFS-split an unquoted scalar');
+  });
 });
 
 describe('#3301 REVIEWS.md documents the plan_coverage frontmatter key', () => {
@@ -369,4 +480,110 @@ describe('#3301 REVIEWS.md documents the plan_coverage frontmatter key', () => {
       'plan_coverage must be documented as present only when at least one graded lane is incomplete',
     );
   });
+});
+
+/**
+ * #4109 — a zsh word-splitting bug: DISPATCH_SLUGS is built as a
+ * space-separated scalar accumulator and consumed via unquoted
+ * `for SLUG in $DISPATCH_SLUGS; do`. Bash IFS-splits an unquoted scalar by
+ * default; zsh does not, so the entire accumulator (leading space and all)
+ * collapses onto ONE bogus iteration under zsh whenever 2+ reviewers are
+ * selected. These rows extract the REAL shipped bash from the two remaining
+ * untested sites (write_reviews' gate-check block, and invoke_reviewers'
+ * dispatch + join loops) and execute it under both shells.
+ */
+describe('#4109 gate-check counts every dispatched reviewer under both shells', () => {
+  for (const shell of SHELLS) {
+    test(`[${shell.name}] 2 reviewers both skipped: dispatched=2 skipped=2 all_lanes_skipped=true`, (t) => {
+      const fx = buildGateCheckFixture(['claude', 'codex'], ['claude', 'codex']);
+      t.after(() => cleanup(fx.root));
+      const body = extractGateCheckBlock()
+        + '\necho "{\\"dispatched_count\\":${DISPATCHED_COUNT:-0},\\"skipped_count\\":${SKIPPED_COUNT:-0},'
+        + '\\"all_lanes_skipped\\":\\"${ALL_LANES_SKIPPED:-false}\\",\\"total_lane_failure\\":\\"${TOTAL_LANE_FAILURE:-false}\\"}"\n';
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const out = JSON.parse(res.stdout.trim());
+      assert.strictEqual(out.dispatched_count, 2, `expected 2 dispatched slugs, got ${res.stdout}`);
+      assert.strictEqual(out.skipped_count, 2, `expected 2 skipped slugs, got ${res.stdout}`);
+      assert.strictEqual(out.all_lanes_skipped, 'true');
+      assert.strictEqual(out.total_lane_failure, 'false');
+    });
+
+    test(`[${shell.name}] mixed skip and total failure: dispatched=2 skipped=1 total_lane_failure=true`, (t) => {
+      const fx = buildGateCheckFixture(['claude', 'codex'], ['claude']);
+      t.after(() => cleanup(fx.root));
+      const body = extractGateCheckBlock()
+        + '\necho "{\\"dispatched_count\\":${DISPATCHED_COUNT:-0},\\"skipped_count\\":${SKIPPED_COUNT:-0},'
+        + '\\"all_lanes_skipped\\":\\"${ALL_LANES_SKIPPED:-false}\\",\\"total_lane_failure\\":\\"${TOTAL_LANE_FAILURE:-false}\\"}"\n';
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const out = JSON.parse(res.stdout.trim());
+      assert.strictEqual(out.dispatched_count, 2, `expected 2 dispatched slugs, got ${res.stdout}`);
+      assert.strictEqual(out.skipped_count, 1, `expected 1 skipped slug, got ${res.stdout}`);
+      assert.strictEqual(out.all_lanes_skipped, 'false');
+      assert.strictEqual(out.total_lane_failure, 'true');
+    });
+
+    test(`[${shell.name}] single reviewer still counts correctly (boundary)`, (t) => {
+      const fx = buildGateCheckFixture(['claude'], ['claude']);
+      t.after(() => cleanup(fx.root));
+      const body = extractGateCheckBlock()
+        + '\necho "{\\"dispatched_count\\":${DISPATCHED_COUNT:-0},\\"skipped_count\\":${SKIPPED_COUNT:-0},'
+        + '\\"all_lanes_skipped\\":\\"${ALL_LANES_SKIPPED:-false}\\",\\"total_lane_failure\\":\\"${TOTAL_LANE_FAILURE:-false}\\"}"\n';
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const out = JSON.parse(res.stdout.trim());
+      assert.strictEqual(out.dispatched_count, 1, `expected 1 dispatched slug, got ${res.stdout}`);
+      assert.strictEqual(out.skipped_count, 1, `expected 1 skipped slug, got ${res.stdout}`);
+      assert.strictEqual(out.all_lanes_skipped, 'true');
+    });
+
+    test(`[${shell.name}] 3 reviewers all skipped (boundary)`, (t) => {
+      const fx = buildGateCheckFixture(['claude', 'codex', 'gemini'], ['claude', 'codex', 'gemini']);
+      t.after(() => cleanup(fx.root));
+      const body = extractGateCheckBlock()
+        + '\necho "{\\"dispatched_count\\":${DISPATCHED_COUNT:-0},\\"skipped_count\\":${SKIPPED_COUNT:-0},'
+        + '\\"all_lanes_skipped\\":\\"${ALL_LANES_SKIPPED:-false}\\",\\"total_lane_failure\\":\\"${TOTAL_LANE_FAILURE:-false}\\"}"\n';
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const out = JSON.parse(res.stdout.trim());
+      assert.strictEqual(out.dispatched_count, 3, `expected 3 dispatched slugs, got ${res.stdout}`);
+      assert.strictEqual(out.skipped_count, 3, `expected 3 skipped slugs, got ${res.stdout}`);
+      assert.strictEqual(out.all_lanes_skipped, 'true');
+    });
+  }
+});
+
+describe('#4109 invoke_reviewers dispatches every deduped reviewer exactly once under both shells', () => {
+  for (const shell of SHELLS) {
+    test(`[${shell.name}] 2 reviewers each dispatched exactly once`, (t) => {
+      const fx = buildDispatchFixture('claude,codex');
+      t.after(() => cleanup(fx.root));
+      const body = DISPATCH_JOIN_STUB + '\n' + extractDispatchJoinBlock();
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const lines = readDispatchLog(fx.runDir);
+      assert.deepEqual(lines, ['claude', 'codex']);
+    });
+
+    test(`[${shell.name}] duplicate slug in SELECTED_REVIEWERS deduped, dispatched once`, (t) => {
+      const fx = buildDispatchFixture('claude,codex,claude');
+      t.after(() => cleanup(fx.root));
+      const body = DISPATCH_JOIN_STUB + '\n' + extractDispatchJoinBlock();
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const lines = readDispatchLog(fx.runDir);
+      assert.deepEqual(lines, ['claude', 'codex']);
+    });
+
+    test(`[${shell.name}] 3 reviewers each dispatched exactly once (boundary)`, (t) => {
+      const fx = buildDispatchFixture('claude,codex,gemini');
+      t.after(() => cleanup(fx.root));
+      const body = DISPATCH_JOIN_STUB + '\n' + extractDispatchJoinBlock();
+      const res = runScript(shell, body, fx.root, fx.runDir, fx.env, REPO_ROOT);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const lines = readDispatchLog(fx.runDir);
+      assert.deepEqual(lines, ['claude', 'codex', 'gemini']);
+    });
+  }
 });
