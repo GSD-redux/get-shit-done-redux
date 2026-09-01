@@ -54,22 +54,53 @@ function extractBashBlockAfterHeading(markdown, heading) {
 }
 
 /**
+ * A code review of this test (2026-09-01) found a real gap: falling back to
+ * plain `sh` when `dash` is unavailable can silently produce a
+ * non-discriminating test. If the resolved shell is actually bash-compatible
+ * (macOS `/bin/sh`, for example), it implements the same permissive `$((`
+ * fallback as bash — it will never throw on the broken construct either, so
+ * the "regression" test would pass identically whether the bug were present
+ * or not. That is the exact false-green failure class this file's header
+ * comment already documents being rewritten away from once; the fix here is
+ * to verify discrimination explicitly instead of trusting the shell name.
+ */
+const KNOWN_AMBIGUOUS_ARITHMETIC_SNIPPET =
+  'x=$(( ls -lt /tmp 2>/dev/null || true ) | head -1 || true)';
+
+/**
+ * True if `shell` rejects the known-ambiguous `$((` construct above (i.e. it
+ * does NOT implement bash's permissive arithmetic-expansion-or-subshell
+ * fallback, so it can actually tell broken from fixed for this bug).
+ */
+function shellRejectsAmbiguousArithmetic(shell) {
+  try {
+    execFileSync(shell, ['-c', KNOWN_AMBIGUOUS_ARITHMETIC_SNIPPET], { encoding: 'utf8' });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Resolve a POSIX shell binary that does NOT implement bash's permissive
  * `$((` -> command-substitution fallback, so it can actually distinguish
  * broken from fixed. Plain `/bin/sh` is unreliable for this: on macOS it is
  * bash-compatible and does not reproduce the defect. Prefer `dash` (the
  * default `/bin/sh` on Debian/Ubuntu, including this repo's gsd-test Linux
- * bench); fall back to `sh` only if `dash` is not on PATH.
+ * bench); fall back to `sh` only if `dash` is not on PATH — and even then,
+ * only if `sh` actually discriminates the two cases (verified below, not
+ * assumed from the binary name).
  */
 function resolvePosixShell() {
   for (const candidate of ['dash', 'sh']) {
     try {
       execFileSync(candidate, ['-c', 'true'], { encoding: 'utf8' });
-      return candidate;
     } catch (err) {
       if (err.code === 'ENOENT') continue;
-      return candidate;
+      // Present but errored on a trivial command; fall through and still
+      // check discrimination below rather than assuming it is unusable.
     }
+    if (shellRejectsAmbiguousArithmetic(candidate)) return candidate;
   }
   return null;
 }
@@ -106,7 +137,9 @@ function runBlock(setup) {
 describe('regression #4112: pause-work.md Context Detection block', () => {
   test('does not throw a "Missing \'))\'" syntax error under POSIX sh/dash', (t) => {
     if (!posixShell) {
-      t.skip('neither dash nor sh is available on this host');
+      t.skip('no POSIX shell on this host actually rejects the ambiguous $(( construct ' +
+        '(dash unavailable and the resolved /bin/sh is bash-compatible) — cannot prove the ' +
+        'regression here; this is still proven on the gsd-test Linux bench, where /bin/sh is dash');
       return;
     }
     assert.doesNotThrow(() => {
