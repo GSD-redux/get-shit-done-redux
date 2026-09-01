@@ -2519,7 +2519,7 @@ describe('evaluateUpdateCache lineage guard', () => {
     deriveStateFreshness, formatStateFreshness, resolveStatuslineOptions,
   } = require('../hooks/gsd-statusline.js');
   const { createTempGitProject, createTempProject } = require('./helpers.cjs');
-  const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+  const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
   const { runHook: runHookSeam, OUTCOME } = require('./helpers/process-seam.cjs');
   const childProcess = require('node:child_process');
 
@@ -2549,8 +2549,8 @@ describe('evaluateUpdateCache lineage guard', () => {
     for (let i = 0; i < n; i++) {
       const marker = `freshness-filler-${Date.now()}-${Math.random().toString(36).slice(2)}-${i}.txt`;
       fs.writeFileSync(path.join(dir, marker), String(i));
-      gitOrThrow(['add', '-A'], { cwd: dir });
-      gitOrThrow(['commit', '-m', `filler ${i}`], { cwd: dir });
+      gitOrThrow(['add', '-A'], { cwd: dir, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', `filler ${i}`], { cwd: dir, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
     }
     return sha;
   }
