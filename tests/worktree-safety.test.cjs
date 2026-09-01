@@ -5490,6 +5490,10 @@ describe('install.js guard for gsd-worktree-path-guard.js', () => {
   before(() => {
     // ADR-857 phase 5f-1b: hook registration moved to runtime-hooks-surface.cts.
     // Concatenate both sources so structural assertions find patterns in either file.
+    // allow-test-rule: structural install.js guard (#3545) — install.js has side
+    // effects on require and no exported symbol for hook-registration wiring;
+    // every src.includes()/indexOf() and block.includes() call below traces
+    // back to this read
     const installSrc = fs.readFileSync(INSTALL_SRC, 'utf-8');
     let hooksSurfaceSrc = '';
     try { hooksSurfaceSrc = fs.readFileSync(HOOKS_SURFACE_SRC, 'utf-8'); } catch { /* ok */ }

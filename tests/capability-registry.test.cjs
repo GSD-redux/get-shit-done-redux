@@ -764,6 +764,10 @@ describe('--check drift detection', () => {
     // helpers the CLI uses, applied to in-memory strings — giving identical coverage
     // without touching the filesystem.
     const originalContent = fs.readFileSync(REGISTRY_PATH, 'utf8');
+    // allow-test-rule: source-text-is-the-product (#3545) — checkPipeline() below is a
+    // raw-text diffing pipeline; this .replace() builds an in-memory tampered
+    // TEXT fixture to drive that real pipeline call, not a text-grep proxy for
+    // module behavior
     const tamperedContent = originalContent.replace(
       "version: '" + SCHEMA_VERSION + "'",
       "version: '0-stale'",
@@ -789,6 +793,8 @@ describe('--check drift detection', () => {
     // Also verify the tampered content contains the stale marker (so the above
     // assertion is meaningful and not vacuously true due to other diff).
     assert.ok(
+      // allow-test-rule: source-text-is-the-product (#3545) — sanity check on the
+      // same in-memory tampered TEXT fixture, not a proxy for module behavior
       tamperedContent.includes("version: '0-stale'"),
       'precondition: tampered content must contain the stale version marker',
     );

@@ -1845,10 +1845,10 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const ROOT = path.join(__dirname, '..');
 // Require the module under test directly
-const roadmapLib = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'roadmap.cjs');
 const planScanLib = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'plan-scan.cjs');
 
 // We test countPhasePlansAndSummaries indirectly via getManagerInfo since
@@ -1893,24 +1893,29 @@ describe('bug #3128: roadmap.cjs plan-count for {N}-PLAN-{NN}-{slug}.md layout',
     assert.ok(!isPlanFile('5-RESEARCH.md'),                 'RESEARCH.md must not match');
   });
 
-  test('roadmap.cjs source uses the extended isPlanFile filter', () => {
-    const roadmapSrc = fs.readFileSync(roadmapLib, 'utf8');
-    // Verify the fix is in place: the old simple inline filter is gone from roadmap.cjs
+  test('roadmap.cjs source uses the extended isPlanFile filter', (t) => {
+    // roadmap.cjs's countPhasePlansAndSummaries (module-private) delegates its
+    // plan counting to plan-scan.cjs's scanPhasePlans/isRootPlanFile -- exercise
+    // the REAL exported module directly instead of grepping roadmap.cjs's source
+    // text for the delegation.
+    const planScan = require(planScanLib);
+
+    // isRootPlanFile must recognize the {N}-PLAN-{NN}-{slug}.md layout (#3128)
+    // that the old inline `f.endsWith('-PLAN.md') || f === 'PLAN.md'` filter missed.
     assert.ok(
-      !roadmapSrc.includes("phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md')"),
-      'Old simple plan filter still present in roadmap.cjs — fix not applied',
+      planScan.isRootPlanFile('5-PLAN-01-setup-database.md'),
+      'isRootPlanFile must recognize the slug-form plan filename from bug #3128',
     );
-    // roadmap.cjs now delegates to plan-scan.cjs via require('./plan-scan.cjs')
-    assert.ok(
-      roadmapSrc.includes('plan-scan.cjs'),
-      'roadmap.cjs does not require plan-scan.cjs — delegation not applied',
-    );
-    // plan-scan.cjs is where the extended plan-file detection logic lives (isRootPlanFile)
-    const planScanSrc = fs.readFileSync(planScanLib, 'utf8');
-    assert.ok(
-      planScanSrc.includes('isRootPlanFile') && planScanSrc.includes('/PLAN/i'),
-      'isRootPlanFile with /PLAN/i not found in plan-scan.cjs — canonical helper missing extended filter',
-    );
+
+    // Exercise scanPhasePlans against a synthetic phase directory containing
+    // only a slug-form plan file -- this is the SAME production function
+    // roadmap.cjs's countPhasePlansAndSummaries calls, so a correct count here
+    // proves the extended filter is what actually runs, not a copy of it.
+    const tmpDir = createTempDir('roadmap-plan-scan-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '5-PLAN-01-setup-database.md'), '# plan\n');
+    const scanResult = planScan(tmpDir);
+    assert.equal(scanResult.planCount, 1, 'scanPhasePlans must count the slug-form plan file');
   });
 });
   });

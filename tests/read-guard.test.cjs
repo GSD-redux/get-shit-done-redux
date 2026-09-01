@@ -215,11 +215,12 @@ describe('gsd-read-guard hook', () => {
   });
 
   test('hook is registered in install.js uninstall hook list', () => {
-    const installPath = path.join(__dirname, '..', 'bin', 'install.js');
-    const content = fs.readFileSync(installPath, 'utf8');
+    // Check the actual exported uninstall hook list instead of grepping
+    // install.js source text.
+    const { GSD_UNINSTALL_HOOKS } = require('../bin/install.js');
     assert.ok(
-      content.includes("'gsd-read-guard.js'"),
-      'gsd-read-guard.js must be in the uninstall gsdHooks list'
+      GSD_UNINSTALL_HOOKS.includes('gsd-read-guard.js'),
+      'gsd-read-guard.js must be in the uninstall GSD_UNINSTALL_HOOKS list'
     );
   });
 

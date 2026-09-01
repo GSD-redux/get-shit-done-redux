@@ -3314,32 +3314,36 @@ test('writeNonClaudeDefaults is called before installCodexConfig in the Codex in
   const src = fs.readFileSync(INSTALL_JS, 'utf8');
 
   // Find the call to writeNonClaudeDefaults that precedes installCodexConfig.
-  const writeIdx = src.indexOf('writeNonClaudeDefaults(runtime);');
+  const writeIdx = src.indexOf('writeNonClaudeDefaults(runtime);'); // allow-test-rule: structural-implementation-guard (#2834)
   assert.ok(writeIdx !== -1, 'writeNonClaudeDefaults(runtime) must be called in the install flow');
 
   // Find the FIRST installCodexConfig call AFTER the writeNonClaudeDefaults call.
-  const codexGenIdx = src.indexOf('installCodexConfig(targetDir', writeIdx);
+  const codexGenIdx = src.indexOf('installCodexConfig(targetDir', writeIdx); // allow-test-rule: structural-implementation-guard (#2834)
   assert.ok(codexGenIdx !== -1 && codexGenIdx > writeIdx,
     'installCodexConfig must be called AFTER writeNonClaudeDefaults so defaults.json ' +
     '(resolve_model_ids + runtime) exists before agent TOML generation reads it (#2834)');
 
   // The #2834 comment must be present at the call site.
   const callSite = src.slice(writeIdx - 300, writeIdx + 100);
-  assert.ok(/#2834/.test(callSite), 'the writeNonClaudeDefaults call must carry the #2834 rationale comment');
+  assert.ok(/#2834/.test(callSite), 'the writeNonClaudeDefaults call must carry the #2834 rationale comment'); // allow-test-rule: structural-implementation-guard (#2834)
 });
 
 test('writeNonClaudeDefaults function exists and is a no-op for Claude (#2834)', () => {
   const src = fs.readFileSync(INSTALL_JS, 'utf8');
-  const fnIdx = src.indexOf('function writeNonClaudeDefaults(');
+  const fnIdx = src.indexOf('function writeNonClaudeDefaults('); // allow-test-rule: structural-implementation-guard (#2834)
   assert.ok(fnIdx !== -1, 'writeNonClaudeDefaults must be defined as a function');
   // Bound the slice by the next top-level declaration rather than a fixed
   // character count, so adding a comment or a guard inside the function cannot
   // push the asserted tokens out of the window and red this test spuriously.
-  const nextFnIdx = src.indexOf('\nfunction ', fnIdx + 1);
+  const nextFnIdx = src.indexOf('\nfunction ', fnIdx + 1); // allow-test-rule: structural-implementation-guard (#2834)
   const fnBody = src.slice(fnIdx, nextFnIdx === -1 ? undefined : nextFnIdx);
-  assert.ok(/nativeModelAliases/.test(fnBody), 'writeNonClaudeDefaults must early-return for Claude (nativeModelAliases check)');
-  assert.ok(/resolve_model_ids/.test(fnBody), 'writeNonClaudeDefaults must write resolve_model_ids');
-  assert.ok(/defaults\.runtime/.test(fnBody), 'writeNonClaudeDefaults must write runtime');
+  // Source-text guard, not a behavioral call: writeNonClaudeDefaults() early-returns
+  // as a no-op whenever process.env.GSD_TEST_MODE is set (see its own body), and this
+  // suite sets GSD_TEST_MODE='1' file-wide (line 14), so invoking it here could never
+  // observe the resolve_model_ids/runtime writes it is supposed to make (#2834).
+  assert.ok(/nativeModelAliases/.test(fnBody), 'writeNonClaudeDefaults must early-return for Claude (nativeModelAliases check)'); // allow-test-rule: structural-implementation-guard (#2834)
+  assert.ok(/resolve_model_ids/.test(fnBody), 'writeNonClaudeDefaults must write resolve_model_ids'); // allow-test-rule: structural-implementation-guard (#2834)
+  assert.ok(/defaults\.runtime/.test(fnBody), 'writeNonClaudeDefaults must write runtime'); // allow-test-rule: structural-implementation-guard (#2834)
 });
   });
 }
@@ -6254,16 +6258,18 @@ const src = fs.readFileSync(INSTALL_JS, 'utf8');
 
 describe('bug #279: Codex adapter documents Agent() and deferred tool discovery', () => {
   test('adapter mapping section includes explicit Agent(...) -> spawn_agent mapping', () => {
+    // allow-test-rule: source-text-is-the-product [adapter header contract in bin/install.js] (see #279)
     assert.ok(
-      /Task\(subagent_type="X", prompt="Y"\).*spawn_agent\(agent_type="X", message="Y"\)/.test(src) &&
-      /Agent\(subagent_type="X", prompt="Y"\).*spawn_agent\(agent_type="X", message="Y"\)/.test(src),
+      /Task\(subagent_type="X", prompt="Y"\).*spawn_agent\(agent_type="X", message="Y"\)/.test(src) && // allow-test-rule: source-text-is-the-product [adapter header contract in bin/install.js] (see #279)
+      /Agent\(subagent_type="X", prompt="Y"\).*spawn_agent\(agent_type="X", message="Y"\)/.test(src), // allow-test-rule: source-text-is-the-product [adapter header contract in bin/install.js] (see #279)
       'Codex adapter must explicitly map both Task(...) and Agent(...) to spawn_agent',
     );
   });
 
   test('adapter includes deferred tool_search discovery guidance before inline fallback', () => {
+    // allow-test-rule: source-text-is-the-product [adapter header contract in bin/install.js] (see #279)
     assert.ok(
-      src.includes('deferred') && src.includes('tool_search') && src.includes('spawn_agent'),
+      src.includes('deferred') && src.includes('tool_search') && src.includes('spawn_agent'), // allow-test-rule: source-text-is-the-product [adapter header contract in bin/install.js] (see #279)
       'Codex adapter must instruct deferred tool discovery via tool_search before deciding to run inline',
     );
   });
@@ -10089,9 +10095,10 @@ const src = fs.readFileSync(INSTALL_JS, 'utf8');
 // Helper: extract Section C from the raw source text.
 // Anchors on the heading and ends at </codex_skill_adapter>.
 function getSectionC() {
-  const headingIdx = src.indexOf('## C. Task() → spawn_agent Mapping');
+  // allow-test-rule: source-text-is-the-product (see #851)
+  const headingIdx = src.indexOf('## C. Task() → spawn_agent Mapping'); // allow-test-rule: source-text-is-the-product (see #851)
   assert.ok(headingIdx >= 0, 'Section C heading must exist in bin/install.js');
-  const closeTag = src.indexOf('</codex_skill_adapter>', headingIdx);
+  const closeTag = src.indexOf('</codex_skill_adapter>', headingIdx); // allow-test-rule: source-text-is-the-product (see #851)
   assert.ok(closeTag >= 0, 'Section C must be followed by </codex_skill_adapter>');
   return src.slice(headingIdx, closeTag);
 }
@@ -10281,8 +10288,9 @@ describe('bug #851: Codex adapter documents multi_agent_v1 schema limitation and
   // Regression guard: deferred tool discovery must remain (bug-279 contract).
   test('adapter deferred tool discovery instruction is preserved', () => {
     // The pre-existing bug-279 contract must remain intact
+    // allow-test-rule: source-text-is-the-product (see #851)
     assert.ok(
-      src.includes('deferred') && src.includes('tool_search') && src.includes('spawn_agent'),
+      src.includes('deferred') && src.includes('tool_search') && src.includes('spawn_agent'), // allow-test-rule: source-text-is-the-product (see #851)
       'Adapter must still instruct deferred tool discovery via tool_search before deciding to run inline',
     );
   });

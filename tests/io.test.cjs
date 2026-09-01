@@ -533,6 +533,10 @@ describe('bug #1891: @file: resolution in gsd-tools.cjs', () => {
   let src;
 
   before(() => {
+    // allow-test-rule: structural-implementation-guard (see #1891) — gsd-tools.cjs's
+    // stdout @file: interception has no exported symbol to assert on directly; every
+    // src.includes()/indexOf()/match() call in this describe block traces back to this
+    // read (#3545)
     src = fs.readFileSync(GSD_TOOLS_SRC, 'utf-8');
   });
 
