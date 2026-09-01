@@ -13,7 +13,7 @@ import { escapeRegex } from './pattern.cjs';
 import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error, formatDiagnosticToken } = ioMod;
+const { output, error, formatDiagnosticToken, declineNoOp } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase, bracketQualifiedKey, foldBracketId } = phaseIdMod;
@@ -943,7 +943,13 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   const summaryCount = countMatchedSummaries(phaseInfo!.plans, phaseInfo!.summaries);
 
   if (planCount === 0) {
-    output({ updated: false, reason: 'No plans found', plan_count: 0, summary_count: 0 }, raw, 'no plans');
+    declineNoOp(
+      raw,
+      'updated',
+      'No plans found',
+      'roadmap update-plan-progress skipped — no plans found for this phase. ROADMAP.md was left unchanged.',
+      { plan_count: 0, summary_count: 0 },
+    );
     return;
   }
 
@@ -987,13 +993,26 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   const today = realClock.localToday();
 
   if (!fs.existsSync(roadmapPath)) {
-    output({ updated: false, reason: 'ROADMAP.md not found', plan_count: planCount, summary_count: summaryCount }, raw, 'no roadmap');
+    declineNoOp(
+      raw,
+      'updated',
+      'ROADMAP.md not found',
+      'roadmap update-plan-progress skipped — ROADMAP.md not found.',
+      { plan_count: planCount, summary_count: summaryCount },
+    );
     return;
   }
 
   // Wrap entire read-modify-write in lock to prevent concurrent corruption
+  let updated = false;
   withPlanningLock(cwd, () => {
-    let roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+    // #3957 (B9.4): captured BEFORE any transform runs, so the write/report
+    // decision below reflects whether the transforms actually changed
+    // anything — not just that they ran. Every transform below still runs
+    // unconditionally exactly as before; only the final write-and-report
+    // step becomes conditional on `roadmapContent !== originalContent`.
+    const originalContent = fs.readFileSync(roadmapPath, 'utf-8');
+    let roadmapContent = originalContent;
     const phasePattern = phaseMarkdownRegexSource(phaseNum);
 
     // Progress table row: update Plans Complete/Status/Completed columns BY
@@ -1217,17 +1236,36 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
       }
     }
 
-    platformWriteSync(roadmapPath, roadmapContent);
+    // #3957 (B9.4): write and report an update only when the transforms
+    // above actually produced different bytes — mirroring the sibling
+    // `cmdRoadmapAnnotateDependencies`'s existing `nextContent !== content`
+    // gate. Previously this wrote and reported `updated: true`
+    // unconditionally, even on an idempotent re-run that changed nothing.
+    if (roadmapContent !== originalContent) {
+      platformWriteSync(roadmapPath, roadmapContent);
+      updated = true;
+    }
   });
-  output({
-    updated: true,
+
+  const computed = {
     phase: phaseNum,
     plan_count: planCount,
     summary_count: summaryCount,
     status,
     complete: isComplete,
     verification_stale_check_indeterminate: verificationStaleCheckIndeterminate,
-  }, raw, `${summaryCount}/${planCount} ${status}`);
+  };
+  if (updated) {
+    output({ updated: true, ...computed }, raw, `${summaryCount}/${planCount} ${status}`);
+  } else {
+    declineNoOp(
+      raw,
+      'updated',
+      "no changes were needed — ROADMAP.md already reflects this phase's plan/summary counts and status",
+      "roadmap update-plan-progress skipped — no changes were needed; ROADMAP.md already reflects this phase's plan/summary counts and status.",
+      computed,
+    );
+  }
 }
 
 // ─── cmdRoadmapAnnotateDependencies ───────────────────────────────────────────
@@ -1252,13 +1290,33 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
 
   const roadmapPath = planningPaths(cwd).roadmap;
   if (!fs.existsSync(roadmapPath)) {
-    output({ updated: false, reason: 'ROADMAP.md not found' }, raw, 'no roadmap');
+    declineNoOp(raw, 'updated', 'ROADMAP.md not found', 'roadmap annotate-dependencies skipped — ROADMAP.md not found.');
     return;
   }
 
   const phaseInfo = findPhaseInternal(cwd, phaseNum);
-  if (!phaseInfo || phaseInfo.plans.length === 0) {
-    output({ updated: false, reason: 'no plans found for phase', phase: phaseNum }, raw, 'no plans');
+  // #3957 (B9.1): distinguish "phase does not resolve at all" from "phase
+  // resolves but has zero plans" — previously both collapsed into the same
+  // 'no plans found for phase' reason, which is simply false for the first
+  // case (there IS no such phase to have plans).
+  if (!phaseInfo) {
+    declineNoOp(
+      raw,
+      'updated',
+      `phase ${phaseNum} not found`,
+      `roadmap annotate-dependencies skipped — phase ${formatDiagnosticToken(String(phaseNum))} not found.`,
+      { phase: phaseNum },
+    );
+    return;
+  }
+  if (phaseInfo.plans.length === 0) {
+    declineNoOp(
+      raw,
+      'updated',
+      `phase ${phaseNum} has no plans`,
+      `roadmap annotate-dependencies skipped — phase ${formatDiagnosticToken(String(phaseNum))} has no plans.`,
+      { phase: phaseNum },
+    );
     return;
   }
 
@@ -1277,7 +1335,12 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
   }
 
   if (planData.length === 0) {
-    output({ updated: false, reason: 'could not read plan frontmatter' }, raw, 'no frontmatter');
+    declineNoOp(
+      raw,
+      'updated',
+      'could not read plan frontmatter',
+      'roadmap annotate-dependencies skipped — could not read plan frontmatter for any plan in this phase.',
+    );
     return;
   }
 
