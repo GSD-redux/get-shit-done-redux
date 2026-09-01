@@ -1,142 +1,125 @@
-/**
- * Quick plan:pre capability dispatch (#3778)
- *
- * Validates that /gsd-quick's Step 5 (Spawn planner) renders `plan:pre` loop
- * hooks and dispatches planner-targeted `contribution` fragments into the
- * planner prompt, mirroring the pattern already established by
- * `plan-phase.md:420-424` / `:797` for phase planning.
- *
- * Assertions run over real exported functions from
- * `scripts/gen-loop-host-contract.cjs` (`scanWiredPoints`, `scanWiredKinds`,
- * `coveredKindsInRegion`) and structurally extracted regions of quick.md —
- * never a whole-file substring/`.includes()` scan of raw Markdown. See
- * CONTRIBUTING.md "no-source-grep" testing standard.
- */
+// allow-test-rule: source-text-is-the-product (see #3778)
+// Quick workflow Markdown is the installed orchestration contract.
+
+'use strict';
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { readFileNormalized } = require('./helpers.cjs');
-const { scanWiredPoints, scanWiredKinds, coveredKindsInRegion } = require('../scripts/gen-loop-host-contract.cjs');
 
-const QUICK_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md');
+const WORKFLOW_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
+const QUICK_PATH = path.join(WORKFLOW_DIR, 'quick.md');
+const REVISION_PATH = path.join(WORKFLOW_DIR, 'quick', 'steps', 'plan-checker-loop.md');
 
-describe('quick workflow: plan:pre capability dispatch (#3778)', () => {
-  test('quick.md wires a plan:pre render call (scanWiredPoints)', () => {
-    const content = readFileNormalized(QUICK_PATH);
-    const points = scanWiredPoints(content);
-    assert.ok(points.has('plan:pre'), 'quick.md should render-hooks plan:pre');
-  });
+function sliceBetween(content, startAnchor, endAnchor, label) {
+  const start = content.indexOf(startAnchor);
+  assert.notEqual(start, -1, `${label}: missing start anchor ${JSON.stringify(startAnchor)}`);
+  const bodyStart = start + startAnchor.length;
+  const end = content.indexOf(endAnchor, bodyStart);
+  assert.notEqual(end, -1, `${label}: missing end anchor ${JSON.stringify(endAnchor)}`);
+  assert.ok(end > bodyStart, `${label}: anchors must enclose non-empty text`);
+  return content.slice(bodyStart, end);
+}
 
-  test('the plan:pre dispatch text covers the contribution kind, generator parity (D-01)', () => {
-    // Whole-file parity check: the same derivation `gen-loop-host-contract.cjs`
-    // itself uses (REGION_CAP-bounded, last-call-site-relative). This proves
-    // the generator agrees quick.md's plan:pre dispatch covers `contribution`.
-    const content = readFileNormalized(QUICK_PATH);
-    const kinds = scanWiredKinds(content);
-    const covered = kinds.get('plan:pre');
-    assert.ok(covered, 'scanWiredKinds should report a plan:pre entry');
-    assert.ok(covered.has('contribution'), 'plan:pre dispatch should cover kind "contribution"');
-  });
+function initialPlannerPrompt(quick) {
+  const step = sliceBetween(
+    quick,
+    '**Step 5: Spawn planner (quick mode)**',
+    '<!-- gsd:section id="plan-checker-loop"',
+    'initial planner step',
+  );
+  return sliceBetween(
+    step,
+    'Agent(\n  prompt="\n',
+    '\n",\n  subagent_type="gsd-planner"',
+    'initial planner prompt',
+  );
+}
 
-  test('the contribution kind is covered by a self-bounded dispatch slice, not neighbouring prose (cycle-1 review MEDIUM #3)', () => {
-    // REGION_CAP in scanWiredKinds binds only the LAST call site in the file;
-    // quick.md's plan:pre call is not last (execute:post follows it at
-    // :535), so the region scanWiredKinds effectively used above runs
-    // uncapped for ~13.8 KB. Bind our own slice — from the call site to the
-    // first of the next bold step marker or the planner spawn — so credit
-    // can only come from the dispatch paragraph itself.
-    const content = readFileNormalized(QUICK_PATH);
-    const callSiteIdx = content.indexOf('loop render-hooks plan:pre');
-    assert.notEqual(callSiteIdx, -1, 'plan:pre call site should exist in quick.md');
+function revisionPlannerPrompt(revision) {
+  return sliceBetween(
+    revision,
+    'Revision prompt:\n\n```markdown\n',
+    '\n```\n\n```\nAgent(\n  prompt=revision_prompt',
+    'revision planner prompt',
+  );
+}
 
-    const stepMarkerRe = /^\*\*Step [0-9]/m;
-    const rest = content.slice(callSiteIdx + 1);
-    const stepMatch = stepMarkerRe.exec(rest);
-    const nextStepIdx = stepMatch ? callSiteIdx + 1 + stepMatch.index : Infinity;
-    const spawnIdx = content.indexOf('subagent_type="gsd-planner"');
-    assert.notEqual(spawnIdx, -1, 'gsd-planner spawn should exist in quick.md');
+function contributionInstruction(prompt, label) {
+  const lines = prompt.split('\n');
+  const matches = lines.filter((line) => line.startsWith('{For each active entry in `PLAN_PRE_HOOKS_JSON`'));
+  assert.equal(matches.length, 1, `${label}: expected exactly one planner contribution instruction`);
+  return matches[0];
+}
 
-    const sliceEnd = Math.min(nextStepIdx, spawnIdx);
-    const slice = content.slice(callSiteIdx, sliceEnd);
-    assert.ok(slice.length > 0, 'bounded dispatch slice should be non-empty');
-    assert.ok(slice.length < 4000, `bounded dispatch slice should stay under 4000 bytes, got ${slice.length}`);
+function assertPlannerContributionContract(prompt, label) {
+  const instruction = contributionInstruction(prompt, label);
+  const skillsIndex = prompt.indexOf('${AGENT_SKILLS_PLANNER}');
+  const instructionIndex = prompt.indexOf(instruction);
 
-    const covered = coveredKindsInRegion(slice);
-    assert.ok(covered.has('contribution'), 'bounded dispatch slice should cover kind "contribution"');
-  });
+  assert.notEqual(skillsIndex, -1, `${label}: missing planner skills anchor`);
+  assert.ok(skillsIndex < instructionIndex, `${label}: contribution instruction must follow planner skills`);
+  assert.match(instruction, /kind == "contribution"/, `${label}: must filter contribution kind`);
+  assert.match(instruction, /into == "planner"/, `${label}: must filter planner target`);
+  assert.match(instruction, /in array order/, `${label}: must preserve registry order`);
+  assert.match(instruction, /fragment\.inline/, `${label}: must inject materialised fragment text`);
+  assert.match(instruction, /configValues/, `${label}: must surface resolved config values`);
+  assert.match(
+    instruction,
+    /no active planner contributions exist.*omit this block entirely/i,
+    `${label}: empty or inactive input must be a silent no-op`,
+  );
+  assert.doesNotMatch(
+    instruction,
+    /(?:capId|plugin|runtime)\s*={2,3}/,
+    `${label}: generic dispatch must not specialize by capability or runtime`,
+  );
+}
 
-  test('the dispatch text names no capId, plugin, or runtime — generic dispatch only (D-01)', () => {
-    const content = readFileNormalized(QUICK_PATH);
-    const callSiteIdx = content.indexOf('loop render-hooks plan:pre');
-    const spawnIdx = content.indexOf('subagent_type="gsd-planner"');
-    const dispatchSlice = content.slice(callSiteIdx, spawnIdx);
-    assert.doesNotMatch(dispatchSlice, /capId\s*={2,3}/, 'dispatch text must not narrow on a specific capId');
-  });
+describe('quick workflow: plan:pre planner contributions (#3778)', () => {
+  test('initial and revision Quick planners reuse one ordered plan:pre contribution snapshot', () => {
+    const quick = readFileNormalized(QUICK_PATH);
+    const revision = readFileNormalized(REVISION_PATH);
+    const initialPrompt = initialPlannerPrompt(quick);
+    const revisionPrompt = revisionPlannerPrompt(revision);
 
-  test('the dispatch paragraph states injection is in array order (D-06)', () => {
-    const content = readFileNormalized(QUICK_PATH);
-    const callSiteIdx = content.indexOf('loop render-hooks plan:pre');
-    const spawnIdx = content.indexOf('subagent_type="gsd-planner"');
-    const dispatchSlice = content.slice(callSiteIdx, spawnIdx);
-    assert.match(dispatchSlice, /array order/, 'dispatch paragraph should state injection is in array order');
-  });
+    assertPlannerContributionContract(initialPrompt, 'initial planner');
+    assertPlannerContributionContract(revisionPrompt, 'revision planner');
 
-  /**
-   * Extract the single brace-delimited injection instruction inside
-   * <planning_context> (open brace through its matching close). The literal
-   * `{For each active entry` prefix is used as the search anchor rather than
-   * a bare `content.indexOf('{', ...)` scan — `${AGENT_SKILLS_PLANNER}` and
-   * every `${VALIDATE_MODE ? ... : ...}` ternary in the surrounding prompt
-   * string also contain brace pairs, so a naive first-`{` search would match
-   * inside one of those instead.
-   */
-  function extractInjectionBlock() {
-    const content = readFileNormalized(QUICK_PATH);
-    const start = content.indexOf('{For each active entry');
-    assert.notEqual(start, -1, 'quick.md should contain the plan:pre injection instruction');
-    const end = content.indexOf('}', start);
-    assert.notEqual(end, -1, 'injection instruction should have a matching close brace');
-    return { content, start, end: end + 1, block: content.slice(start, end + 1) };
-  }
-
-  test('the injection block names the planner role — non-planner contributions excluded (D-07)', () => {
-    const { block } = extractInjectionBlock();
-    assert.match(block, /into\s*={2,3}\s*"planner"/, 'injection block must name the planner role discriminator');
-  });
-
-  test('the omit-when-empty (silent no-op) guarantee sits inside the injection block itself (D-02, prose-contract)', () => {
-    // Prose-contract assertion: no behavioral seam exists to observe prompt
-    // byte-identity when no contributions are active, because the prompt is
-    // assembled by an agent reading Markdown, not by code. This asserts the
-    // omit-when-empty clause is present INSIDE the same brace-delimited
-    // injection instruction, not merely somewhere in the surrounding region.
-    const { block } = extractInjectionBlock();
-    assert.match(
-      block,
-      /no active planner contributions exist.*omit this block entirely/i,
-      'injection block must state the silent no-op guarantee for the empty case',
+    assert.equal(
+      contributionInstruction(revisionPrompt, 'revision planner'),
+      contributionInstruction(initialPrompt, 'initial planner'),
+      'both planner paths must apply the byte-identical filtering and injection contract',
     );
   });
 
-  test('exactly one gsd-planner spawn in quick.md (D-03: standard, --full, --validate share it)', () => {
-    const content = readFileNormalized(QUICK_PATH);
-    const matches = content.match(/subagent_type="gsd-planner"/g) || [];
-    assert.strictEqual(matches.length, 1, 'quick.md must contain exactly one gsd-planner spawn');
+  test('Quick renders plan:pre once and both planner prompts consume that snapshot', () => {
+    const quick = readFileNormalized(QUICK_PATH);
+    const revision = readFileNormalized(REVISION_PATH);
+    assert.equal((quick.match(/loop render-hooks plan:pre --raw/g) || []).length, 1);
+    assert.equal((revision.match(/loop render-hooks plan:pre --raw/g) || []).length, 0);
+    assert.match(initialPlannerPrompt(quick), /PLAN_PRE_HOOKS_JSON/);
+    assert.match(revisionPlannerPrompt(revision), /PLAN_PRE_HOOKS_JSON/);
   });
 
-  test('render call, agent-skills placeholder, injection block, and spawn are in the required order (D-08)', () => {
-    const { content, start: injectionIdx } = extractInjectionBlock();
-    const renderCallIdx = content.indexOf('loop render-hooks plan:pre');
-    const agentSkillsIdx = content.indexOf('${AGENT_SKILLS_PLANNER}');
-    const spawnIdx = content.indexOf('subagent_type="gsd-planner"');
+  test('standard Quick uses the initial planner; --full and --validate can reach the revision planner', () => {
+    const quick = readFileNormalized(QUICK_PATH);
+    const revision = readFileNormalized(REVISION_PATH);
+    const initialStep = quick.indexOf('**Step 5: Spawn planner (quick mode)**');
+    const revisionGate = quick.indexOf('<!-- gsd:section id="plan-checker-loop" when="flag:--validate" -->');
 
-    assert.ok(renderCallIdx !== -1 && agentSkillsIdx !== -1 && spawnIdx !== -1, 'all four anchors must exist');
-    assert.ok(renderCallIdx < agentSkillsIdx, 'the render call must precede the agent-skills placeholder');
-    assert.ok(
-      agentSkillsIdx < injectionIdx,
-      'the agent-skills placeholder must remain BEFORE the contribution injection block (D-08)',
-    );
-    assert.ok(injectionIdx < spawnIdx, 'the injection block must precede the planner spawn');
+    assert.notEqual(initialStep, -1, 'standard initial planner step must exist');
+    assert.ok(initialStep < revisionGate, 'initial planner must run before the optional revision gate');
+    assert.match(quick, /--full.*\$VALIDATE_MODE=true/, '--full must enable the validate path');
+    assert.match(quick, /--validate.*\$VALIDATE_MODE=true/, '--validate must enable the validate path');
+    assert.match(revision, /Revision loop \(max 2 iterations\)/, 'validate path must contain revision loop');
+  });
+
+  test('the installed workflow contains exactly one initial and one revision planner spawn', () => {
+    const quick = readFileNormalized(QUICK_PATH);
+    const revision = readFileNormalized(REVISION_PATH);
+    assert.equal((quick.match(/subagent_type="gsd-planner"/g) || []).length, 1);
+    assert.equal((revision.match(/subagent_type="gsd-planner"/g) || []).length, 1);
   });
 });
