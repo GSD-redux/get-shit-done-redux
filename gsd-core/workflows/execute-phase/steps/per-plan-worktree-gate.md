@@ -48,12 +48,18 @@ if [ -n "$SUBMODULE_PATHS" ] && [ "$USE_WORKTREES_FOR_PLAN" != "false" ]; then
     # submodule "vendor/foo".
     INTERSECT=""
     set -f  # disable globbing while iterating literal patterns
-    for sm_raw in $SUBMODULE_PATHS; do
+    # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+    # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+    # one iteration there.
+    for sm_raw in $(printf '%s' "$SUBMODULE_PATHS"); do
       # Normalize submodule path: strip ./ prefix and trailing /
       sm="${sm_raw#./}"
       sm="${sm%/}"
       [ -z "$sm" ] && continue
-      for pf_raw in $PLAN_SCOPE_PATHS; do
+      # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+      # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+      # one iteration there.
+      for pf_raw in $(printf '%s' "$PLAN_SCOPE_PATHS"); do
         # Normalize planned path the same way
         pf="${pf_raw#./}"
         pf="${pf%/}"

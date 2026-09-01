@@ -261,7 +261,10 @@ if [ "$PR_STRICT" = "true" ]; then
   FILTER_PATHS=".planning/"
   FORBIDDEN_RE="^\.planning/"
 else
-  FILTER_PATHS=$(for d in $TRANSIENT_DIRS; do printf '.planning/%s/ ' "$d"; done)
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  FILTER_PATHS=$(for d in $(printf '%s' "$TRANSIENT_DIRS"); do printf '.planning/%s/ ' "$d"; done)
   FORBIDDEN_RE="^\.planning/($(echo "$TRANSIENT_DIRS" | tr ' ' '|'))/"
 fi
 ```
@@ -322,12 +325,15 @@ touching the same planning path makes `git cherry-pick` abort with *"untracked w
 files would be overwritten by merge"*, and every remaining commit is silently dropped.
 
 ```bash
-for HASH in $INCLUDED_COMMITS; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$VAR` word-splits under bash but not zsh, collapsing every element onto
+# one iteration there.
+for HASH in $(printf '%s' "$INCLUDED_COMMITS"); do
   # A modify/delete conflict on a filtered path is EXPECTED and is resolved below — the
   # filtered path is absent from HEAD by construction. Do not treat it as a failure here.
   git cherry-pick --no-commit "$HASH" || true
 
-  for P in $FILTER_PATHS; do
+  for P in $(printf '%s' "$FILTER_PATHS"); do
     git rm -r -f -q --ignore-unmatch -- "$P" 2>/dev/null || true
     git checkout HEAD -- "$P" 2>/dev/null || true
   done

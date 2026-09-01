@@ -85,7 +85,7 @@ const readWorkflow = () => parseWorkflow(fs.readFileSync(WORKFLOW_PATH, 'utf-8')
 
 const BASH_FENCE_OPEN_RE = /^```bash\s*$/;
 const BASH_FENCE_CLOSE_RE = /^```\s*$/;
-const PICK_LOOP_MARKER = 'for HASH in $INCLUDED_COMMITS';
+const PICK_LOOP_MARKER = 'for HASH in $(printf \'%s\' "$INCLUDED_COMMITS")';
 
 // Scans `text` for fenced ```bash blocks and returns the verbatim body
 // (fence markers stripped, lines rejoined with '\n') of the single block
@@ -119,7 +119,7 @@ const extractPickLoop = (text) => {
   }
 
   if (matches.length === 0) {
-    throw new Error('pr-branch.md: no create_pr_branch cherry-pick loop found (expected a bash block containing "for HASH in $INCLUDED_COMMITS")');
+    throw new Error(`pr-branch.md: no create_pr_branch cherry-pick loop found (expected a bash block containing "${PICK_LOOP_MARKER}")`);
   }
   if (matches.length > 1) {
     throw new Error(`pr-branch.md: cherry-pick loop found in ${matches.length} bash blocks — the recipe must have exactly one canonical form`);
