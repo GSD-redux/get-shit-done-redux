@@ -512,9 +512,11 @@ const HOOK_KINDS = ['contribution', 'step', 'gate'];
  * - A deferral line (one carrying an `@`-included path to the generic
  *   contract, e.g. `@gsd-core/references/loop-hook-dispatch.md`) that names a
  *   kind (`kind == "step"`) covers that kind; a deferral line with no kind
- *   discriminator ("apply each entry") covers every kind. A bare §-citation
- *   of the reference (validation guidance only, no `@`) covers nothing —
- *   plan-phase cites the gate-validation section while dispatching only gates.
+ *   discriminator ("apply each entry") covers every kind only when no role
+ *   target is required. With `expectedInto`, the same segment must explicitly
+ *   name both the kind and that exact `into` target. A bare §-citation of the
+ *   reference (validation guidance only, no `@`) covers nothing — plan-phase
+ *   cites the gate-validation section while dispatching only gates.
  * - Otherwise a kind is covered when some LINE dispatches it unconditionally:
  *   a `kind == "<kind>"` discriminator with NO same-line narrowing to one
  *   hook (`ref.skill ==`, `ref.agent ==`, `ref.command ==`). A narrowed line
@@ -528,6 +530,7 @@ const HOOK_KINDS = ['contribution', 'step', 'gate'];
  * Pure: same input, same output; CRLF-safe (line splitting tolerates \r).
  *
  * @param {string} region  Dispatch text following one call site.
+ * @param {string} [expectedInto]  Optional role target required in the same segment.
  * @returns {Set<string>}
  */
 function coveredKindsInRegion(region, expectedInto) {
