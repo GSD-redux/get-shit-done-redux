@@ -20,6 +20,8 @@ import stateMod = require('./state.cjs');
 import modelProfilesMod = require('./model-profiles.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import planScanMod = require('./plan-scan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
+import verificationMod = require('./verification.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
 const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
@@ -56,6 +58,7 @@ import planningSnapshotMod = require('./planning-snapshot.cjs');
 const { buildPlanningSnapshot } = planningSnapshotMod;
 
 const { planningDir } = planningWorkspace;
+const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { readStateHeadFreshness } = stateMod;
 
@@ -1746,16 +1749,35 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
 
 // ─── Context drift (#3348) ───────────────────────────────────────────────────
 
+/**
+ * Resolve a phase directory under `phasesDir` from a user-supplied `phaseArg`,
+ * via the canonical phase-directory matcher (phase-id.cjs::matchPhaseDirs) rather
+ * than a naive substring test — a bare `.includes(phaseArg)` lets a non-existent
+ * phase silently match a different phase whose directory name merely contains the
+ * requested token (e.g. "1" matching "11-expansion"). Falls back to an exact
+ * directory-name match. Returns null if neither resolves. (#1571, #2528)
+ */
+function resolvePhaseDirByToken(phasesDir: string, phaseArg: string): string | null {
+  const normalizedPhase = normalizePhaseName(phaseArg);
+  const dirEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
+  const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+  const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+  if (matched) return path.join(phasesDir, matched);
+  const exact = path.join(phasesDir, phaseArg);
+  if (fs.existsSync(exact)) return exact;
+  return null;
+}
+
 interface ContextDriftEntry {
   file: string;
   effectiveMs: number;
 }
 
 /**
- * Pure comparator: which of `entries` have an effective last-changed time at or
- * before `contextEffectiveMs` (CONTEXT.md's own effective time)? Strict `<=` is
- * "stale" (matches findStaleVerificationSummary's own strict `>` convention for
- * "newer than" elsewhere in this codebase — an artifact committed in the SAME
+ * Pure comparator: which of `entries` have an effective last-changed time
+ * STRICTLY BEFORE `contextEffectiveMs` (CONTEXT.md's own effective time)? Strict
+ * `<` is "stale" (matches findStaleVerificationSummary's own strict `>` convention
+ * for "newer than" elsewhere in this codebase — an artifact committed in the SAME
  * commit/second as CONTEXT.md is in sync, not stale).
  */
 function computeContextDrift(contextEffectiveMs: number, entries: ContextDriftEntry[]): string[] {
@@ -1800,16 +1822,7 @@ function cmdVerifyContextDrift(cwd: string, phaseArg: string | undefined, raw: b
 
   // Same phase-directory resolution rule cmdVerifySchemaDrift uses (#1571, #2528):
   // matchPhaseDirs, never a naive substring test.
-  let phaseDir: string | null = null;
-  const normalizedPhase = normalizePhaseName(phaseArg);
-  const dirEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
-  const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
-  const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
-  if (matched) phaseDir = path.join(phasesDir, matched);
-  if (!phaseDir) {
-    const exact = path.join(phasesDir, phaseArg);
-    if (fs.existsSync(exact)) phaseDir = exact;
-  }
+  const phaseDir = resolvePhaseDirByToken(phasesDir, phaseArg);
   if (!phaseDir) {
     emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
     return;
@@ -1844,12 +1857,8 @@ function cmdVerifyContextDrift(cwd: string, phaseArg: string | undefined, raw: b
     return;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
-  const verificationMod = require('./verification.cjs') as {
-    defaultPhaseCleanCommitTimesMs: (dir: string, files: string[]) => Map<string, number>;
-  };
   const allFiles = [contextFile, ...upstreamFiles];
-  const cleanCommitMs = verificationMod.defaultPhaseCleanCommitTimesMs(phaseDir, allFiles);
+  const cleanCommitMs = defaultPhaseCleanCommitTimesMs(phaseDir, allFiles);
   const effectiveTimeMs = (file: string): number =>
     cleanCommitMs.has(file)
       ? (cleanCommitMs.get(file) as number)
@@ -1907,17 +1916,7 @@ function cmdVerifySchemaDrift(
   // matching "11-expansion"), making the drift gate inspect the wrong phase.
   // This shares the one selection rule with find-phase / verify
   // phase-completeness rather than restating it. (#1571, #2528)
-  let phaseDir: string | null = null;
-  const normalizedPhase = normalizePhaseName(phaseArg);
-  const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-  const dirNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-  const drift = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
-  if (drift) phaseDir = path.join(phasesDir, drift);
-
-  if (!phaseDir) {
-    const exact = path.join(phasesDir, phaseArg);
-    if (fs.existsSync(exact)) phaseDir = exact;
-  }
+  const phaseDir = resolvePhaseDirByToken(phasesDir, phaseArg);
 
   if (!phaseDir) {
     output(

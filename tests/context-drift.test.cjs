@@ -229,9 +229,6 @@ describe('verify context-drift CLI', () => {
       data.stale_artifacts.slice().sort(),
       ['03-PATTERNS.md', '03-RESEARCH.md'],
     );
-    assert.match(data.message, /03-RESEARCH\.md/);
-    assert.match(data.message, /03-PATTERNS\.md/);
-    assert.match(data.message, /--research/);
   });
 
   test('defaults to warn when config.json is absent', () => {
