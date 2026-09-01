@@ -1744,6 +1744,144 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
   );
 }
 
+// ─── Context drift (#3348) ───────────────────────────────────────────────────
+
+interface ContextDriftEntry {
+  file: string;
+  effectiveMs: number;
+}
+
+/**
+ * Pure comparator: which of `entries` have an effective last-changed time at or
+ * before `contextEffectiveMs` (CONTEXT.md's own effective time)? Strict `<=` is
+ * "stale" (matches findStaleVerificationSummary's own strict `>` convention for
+ * "newer than" elsewhere in this codebase — an artifact committed in the SAME
+ * commit/second as CONTEXT.md is in sync, not stale).
+ */
+function computeContextDrift(contextEffectiveMs: number, entries: ContextDriftEntry[]): string[] {
+  return entries.filter((e) => e.effectiveMs < contextEffectiveMs).map((e) => e.file);
+}
+
+function buildContextDriftMessage(staleArtifacts: string[], phaseArg: string): string {
+  const parts = [`CONTEXT.md decisions are newer than: ${staleArtifacts.join(', ')}.`];
+  if (staleArtifacts.some((f) => f.endsWith('-RESEARCH.md'))) {
+    parts.push(`Regenerate research: /gsd:plan-phase ${phaseArg} --research.`);
+  }
+  if (staleArtifacts.some((f) => f.endsWith('-PATTERNS.md'))) {
+    parts.push('Regenerate patterns: delete the PATTERNS.md file, then re-run /gsd:plan-phase.');
+  }
+  if (
+    staleArtifacts.some(
+      (f) => f.endsWith('-VALIDATION.md') || (f.endsWith('-SPEC.md') && !f.endsWith('-AI-SPEC.md') && !f.endsWith('-UI-SPEC.md')),
+    )
+  ) {
+    parts.push('Regenerate or manually reconcile VALIDATION.md / SPEC.md against the current decisions.');
+  }
+  parts.push('Do not hand-inject the newer decisions into a prompt as a substitute for regenerating — that carries the staleness forward.');
+  return parts.join(' ');
+}
+
+function cmdVerifyContextDrift(cwd: string, phaseArg: string | undefined, raw: boolean): void {
+  if (!phaseArg) {
+    error('Usage: verify context-drift <phase>');
+    return;
+  }
+
+  const pDir = planningDir(cwd);
+  const phasesDir = path.join(pDir, 'phases');
+  const emitSkip = (reason: string, message = ''): void => {
+    output({ block: false, skipped: true, reason, stale_artifacts: [], message }, raw);
+  };
+
+  if (!fs.existsSync(phasesDir)) {
+    emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
+    return;
+  }
+
+  // Same phase-directory resolution rule cmdVerifySchemaDrift uses (#1571, #2528):
+  // matchPhaseDirs, never a naive substring test.
+  let phaseDir: string | null = null;
+  const normalizedPhase = normalizePhaseName(phaseArg);
+  const dirEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
+  const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+  const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+  if (matched) phaseDir = path.join(phasesDir, matched);
+  if (!phaseDir) {
+    const exact = path.join(phasesDir, phaseArg);
+    if (fs.existsSync(exact)) phaseDir = exact;
+  }
+  if (!phaseDir) {
+    emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
+    return;
+  }
+
+  let phaseFiles: string[];
+  try {
+    phaseFiles = fs.readdirSync(phaseDir).slice().sort();
+  } catch {
+    emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
+    return;
+  }
+
+  const contextFile = phaseFiles.find((f) => f.endsWith('-CONTEXT.md'));
+  if (!contextFile) {
+    emitSkip('no-context-md');
+    return;
+  }
+
+  const researchFile = phaseFiles.find((f) => f.endsWith('-RESEARCH.md'));
+  const patternsFile = phaseFiles.find((f) => f.endsWith('-PATTERNS.md'));
+  const validationFile = phaseFiles.find((f) => f.endsWith('-VALIDATION.md'));
+  const specFile = phaseFiles.find(
+    (f) => f.endsWith('-SPEC.md') && !f.endsWith('-AI-SPEC.md') && !f.endsWith('-UI-SPEC.md'),
+  );
+  const upstreamFiles = [researchFile, patternsFile, validationFile, specFile].filter(
+    (f): f is string => !!f,
+  );
+
+  if (upstreamFiles.length === 0) {
+    emitSkip('no-upstream-artifacts');
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
+  const verificationMod = require('./verification.cjs') as {
+    defaultPhaseCleanCommitTimesMs: (dir: string, files: string[]) => Map<string, number>;
+  };
+  const allFiles = [contextFile, ...upstreamFiles];
+  const cleanCommitMs = verificationMod.defaultPhaseCleanCommitTimesMs(phaseDir, allFiles);
+  const effectiveTimeMs = (file: string): number =>
+    cleanCommitMs.has(file)
+      ? (cleanCommitMs.get(file) as number)
+      : fs.statSync(path.join(phaseDir, file)).mtimeMs;
+
+  const contextMs = effectiveTimeMs(contextFile);
+  const driftEntries: ContextDriftEntry[] = upstreamFiles.map((f) => ({ file: f, effectiveMs: effectiveTimeMs(f) }));
+  const staleArtifacts = computeContextDrift(contextMs, driftEntries);
+
+  let wf: Record<string, unknown> | undefined;
+  try {
+    const rawCfg = JSON.parse(fs.readFileSync(path.join(pDir, 'config.json'), 'utf-8')) as Record<string, unknown>;
+    wf = rawCfg['workflow'] as Record<string, unknown> | undefined;
+  } catch {
+    wf = undefined;
+  }
+  const action = wf?.context_drift_action === 'block' ? 'block' : 'warn';
+  const block = staleArtifacts.length > 0 && action === 'block';
+  const message = staleArtifacts.length > 0 ? buildContextDriftMessage(staleArtifacts, phaseArg) : '';
+
+  output(
+    {
+      block,
+      skipped: false,
+      stale_artifacts: staleArtifacts,
+      action,
+      message,
+    },
+    raw,
+  );
+}
+
 function cmdVerifySchemaDrift(
   cwd: string,
   phaseArg: string,
@@ -2000,5 +2138,7 @@ export = {
   cmdValidateAgents,
   cmdVerifySchemaDrift,
   cmdVerifyCodebaseDrift,
+  computeContextDrift,
+  cmdVerifyContextDrift,
   STATE_HEAD_ADVISORY_COMMITS,
 };
