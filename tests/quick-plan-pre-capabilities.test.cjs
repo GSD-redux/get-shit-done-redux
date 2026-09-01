@@ -1,4 +1,3 @@
-// allow-test-rule: source-text-is-the-product (see #3778)
 // Quick workflow Markdown is the installed orchestration contract.
 
 'use strict';
