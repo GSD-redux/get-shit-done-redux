@@ -183,7 +183,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -437,7 +438,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -581,7 +583,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": 20
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -828,7 +831,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -1011,7 +1015,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1162,7 +1167,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1325,7 +1331,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1424,7 +1431,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1906,7 +1914,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -2074,7 +2083,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -2173,7 +2183,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -2288,7 +2299,8 @@ const capabilities = {
             "explore",
             "plan"
           ],
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -2933,7 +2945,8 @@ const capabilities = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -3123,7 +3136,8 @@ const capabilities = {
           "background": false,
           "backgroundDispatch": false,
           "subagentToolkit": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -3307,7 +3321,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -3765,7 +3780,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "engine",
@@ -3922,7 +3938,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "engine",
@@ -4007,7 +4024,8 @@ const capabilities = {
           "background": "undocumented",
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -4121,7 +4139,8 @@ const capabilities = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5455,7 +5474,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5626,7 +5646,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5724,7 +5745,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": 20
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5883,7 +5905,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6005,7 +6028,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6106,7 +6130,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6269,7 +6294,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6368,7 +6394,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6546,7 +6573,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6662,7 +6690,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6761,7 +6790,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6876,7 +6906,8 @@ const runtimes = {
             "explore",
             "plan"
           ],
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7052,7 +7083,8 @@ const runtimes = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -7188,7 +7220,8 @@ const runtimes = {
           "background": false,
           "backgroundDispatch": false,
           "subagentToolkit": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -7295,7 +7328,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7436,7 +7470,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "engine",
@@ -7498,7 +7533,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "engine",
@@ -7583,7 +7619,8 @@ const runtimes = {
           "background": "undocumented",
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7697,7 +7734,8 @@ const runtimes = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",

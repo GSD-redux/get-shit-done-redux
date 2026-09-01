@@ -1643,6 +1643,30 @@ function validateRuntimeBody(cap) {
           ' (or "undocumented") (got: ' + JSON.stringify(d.isolation) + ')',
         );
       }
+
+      // maxConcurrency — ADR-1239 Phase 1 (#3673). A numeric dispatch
+      // sub-field (not a closed-vocabulary enum member — same "numeric
+      // dispatch sub-field" treatment as maxDepth above; unlike maxDepth,
+      // 0 and negative values are invalid — 1 is the fail-closed floor, not
+      // a legitimate "no concurrency" declaration).
+      // OPTIONAL, like isolation: added after existing descriptors, so an
+      // omitted maxConcurrency is legitimate — negotiateHostCapabilities
+      // degrades it to 1 (the safe floor) and warns, exactly as for any
+      // other undeclared dispatch sub-field. Only a PRESENT value is
+      // checked against the positive-safe-integer contract.
+      if (d.maxConcurrency === undefined) {
+        // absent — nothing to validate; negotiateHostCapabilities fails it closed.
+      } else if (d.maxConcurrency === '__proto__' || d.maxConcurrency === 'constructor' || d.maxConcurrency === 'prototype') {
+        errors.push('runtime.hostIntegration.dispatch.maxConcurrency "' + d.maxConcurrency + '" is a reserved name');
+      } else if (
+        d.maxConcurrency !== 'undocumented' &&
+        (!Number.isSafeInteger(d.maxConcurrency) || d.maxConcurrency < 1)
+      ) {
+        errors.push(
+          'runtime.hostIntegration.dispatch.maxConcurrency must be a positive safe integer or "undocumented" ' +
+          '(got: ' + JSON.stringify(d.maxConcurrency) + ')',
+        );
+      }
     }
   }
 

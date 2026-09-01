@@ -99,6 +99,13 @@ interface DispatchCapability {
   subagentToolkit: SubagentToolkit;
   backgroundDispatch: boolean;
   isolation: DispatchIsolation;
+  // ADR-1239 Phase 1 (#3673): a numeric dispatch sub-field — not an enum axis
+  // member (same "numeric dispatch sub-field, excluded from
+  // HOST_INTEGRATION_AXES" precedent as maxDepth above). How many same-wave
+  // executors this host can run concurrently. Fail-closed floor is 1
+  // (strictly sequential); there is no engine-side ceiling to reduce
+  // against (unlike maxDepth) — see negotiateHostCapabilities below.
+  maxConcurrency: number;
 }
 
 interface HostIntegrationAxes {
@@ -127,7 +134,7 @@ interface DegradationResult {
 const SAFE_DEFAULTS: HostIntegrationAxes = {
   embeddingMode:  'declarative',
   commandSurface: 'prose-only',
-  dispatch: { namedDispatch: false, nested: false, maxDepth: 0, background: false, subagentToolkit: 'read-only', backgroundDispatch: false, isolation: 'none' },
+  dispatch: { namedDispatch: false, nested: false, maxDepth: 0, background: false, subagentToolkit: 'read-only', backgroundDispatch: false, isolation: 'none', maxConcurrency: 1 },
   modelMode:      'passive',
   hookBus:        'none',
   stateIO:        'session-log-append',
@@ -141,7 +148,7 @@ const PROFILE_BASELINES: Readonly<Record<'programmatic-cli' | 'declarative-cli' 
     'programmatic-cli': Object.freeze({
       embeddingMode:  'imperative',
       commandSurface: 'slash-file',
-      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none' }),
+      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none', maxConcurrency: 1 }),
       modelMode:      'passive',
       hookBus:        'host',
       stateIO:        'filesystem',
@@ -152,7 +159,7 @@ const PROFILE_BASELINES: Readonly<Record<'programmatic-cli' | 'declarative-cli' 
     'declarative-cli': Object.freeze({
       embeddingMode:  'declarative',
       commandSurface: 'slash-file',
-      dispatch: Object.freeze({ namedDispatch: true, nested: false, maxDepth: 1, background: false, subagentToolkit: 'full', backgroundDispatch: false, isolation: 'none' }),
+      dispatch: Object.freeze({ namedDispatch: true, nested: false, maxDepth: 1, background: false, subagentToolkit: 'full', backgroundDispatch: false, isolation: 'none', maxConcurrency: 1 }),
       modelMode:      'passive',
       hookBus:        'host',
       stateIO:        'filesystem',
@@ -163,7 +170,7 @@ const PROFILE_BASELINES: Readonly<Record<'programmatic-cli' | 'declarative-cli' 
     'ide': Object.freeze({
       embeddingMode:  'imperative',
       commandSurface: 'palette',
-      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: 5, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none' }),
+      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: 5, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none', maxConcurrency: 1 }),
       modelMode:      'active',
       hookBus:        'engine',
       stateIO:        'sandboxed-storage',
@@ -296,7 +303,7 @@ const DEFAULT_ENGINE: EngineCapabilities = {
   axes: {
     embeddingMode:  'imperative',
     commandSurface: 'slash-file',
-    dispatch: { namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none' },
+    dispatch: { namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none', maxConcurrency: 1 },
     modelMode:      'active',
     hookBus:        'host',
     stateIO:        'filesystem',
@@ -423,6 +430,7 @@ function negotiateHostCapabilities(
   let effectiveSubagentToolkit: SubagentToolkit;
   let effectiveMaxDepth: number;
   let effectiveIsolation: DispatchIsolation;
+  let effectiveMaxConcurrency: number;
 
   if (hostDispatch === null) {
     // Host didn't declare dispatch at all — fail-closed to most-restrictive values
@@ -434,6 +442,7 @@ function negotiateHostCapabilities(
     effectiveSubagentToolkit    = 'read-only';
     effectiveMaxDepth           = 0;
     effectiveIsolation          = 'none';
+    effectiveMaxConcurrency     = 1;
   } else {
     // N1: observability warnings for 'undocumented' sentinel on dispatch fields
     if (hostDispatch.namedDispatch === 'undocumented') {
@@ -501,6 +510,40 @@ function negotiateHostCapabilities(
     const minDepth  = Math.min(hDepthNum, eDepthNum);
     effectiveMaxDepth = minDepth === Infinity ? -1 : minDepth;
 
+    // maxConcurrency (#3673, ADR-1239 Phase 1): a positive-safe-integer
+    // passthrough with a fail-closed floor of 1. UNLIKE maxDepth, there is no
+    // min(host, engine) reduction here — the design doc explicitly rejects an
+    // engine-side ceiling for this field (no competing intrinsic worker
+    // ceiling to cap against at the negotiation layer); a `--jobs N` cap is
+    // applied later, at the Phase 4 scheduler.
+    const hostMaxConcurrency = hostDispatch.maxConcurrency;
+    if (hostMaxConcurrency === UNDOCUMENTED) {
+      warnings.push(`dispatch.maxConcurrency is undocumented — degraded closed (1)`);
+      effectiveMaxConcurrency = 1;
+    } else if (
+      typeof hostMaxConcurrency === 'number' &&
+      Number.isSafeInteger(hostMaxConcurrency) &&
+      hostMaxConcurrency > 0
+    ) {
+      effectiveMaxConcurrency = hostMaxConcurrency;
+    } else if (hostMaxConcurrency === undefined) {
+      warnings.push(`host did not declare 'dispatch.maxConcurrency' — treating as 1`);
+      effectiveMaxConcurrency = 1;
+    } else if (typeof hostMaxConcurrency !== 'number') {
+      warnings.push(`host dispatch.maxConcurrency is not a number — treating as 1`);
+      effectiveMaxConcurrency = 1;
+    } else if (!Number.isSafeInteger(hostMaxConcurrency)) {
+      if (Number.isInteger(hostMaxConcurrency)) {
+        warnings.push(`host dispatch.maxConcurrency is an unsafe integer — treating as 1`);
+      } else {
+        warnings.push(`host dispatch.maxConcurrency is not an integer — treating as 1`);
+      }
+      effectiveMaxConcurrency = 1;
+    } else {
+      warnings.push(`host dispatch.maxConcurrency is non-positive — treating as 1`);
+      effectiveMaxConcurrency = 1;
+    }
+
     // If namedDispatch is false, cap maxDepth/nested/background/backgroundDispatch to 0/false/false/false (struct consistency)
     if (!effectiveNamedDispatch) {
       effectiveMaxDepth           = 0;
@@ -518,6 +561,7 @@ function negotiateHostCapabilities(
     subagentToolkit:    effectiveSubagentToolkit,
     backgroundDispatch: effectiveBackgroundDispatch,
     isolation:          effectiveIsolation,
+    maxConcurrency:     effectiveMaxConcurrency,
   };
 
   // ---------------------------------------------------------------------------

@@ -95,7 +95,8 @@
         "background": false,
         "subagentToolkit": "full",
         "backgroundDispatch": false,
-        "isolation": "none"
+        "isolation": "none",
+        "maxConcurrency": "undocumented"
       },
       "modelMode": "passive",
       "hookBus": "host",

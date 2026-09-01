@@ -86,7 +86,8 @@
           "explore",
           "plan"
         ],
-        "isolation": "orchestrator-worktree"
+        "isolation": "orchestrator-worktree",
+        "maxConcurrency": "undocumented"
       },
       "modelMode": "passive",
       "hookBus": "host",
