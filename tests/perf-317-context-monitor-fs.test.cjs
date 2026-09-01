@@ -2008,6 +2008,51 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         + 'and not crashed on');
     }
   });
+
+  // Round 8 (Minor): the 4096-byte bound on the round-7 sentinel READ
+  // (gsd-context-monitor.js:335), at its fence. The row above proves an
+  // OVERSIZED file is refused, but it pads to 8192 — a full 4096 bytes clear of
+  // the boundary — so `>` vs `>=`, or an off-by-one in the limit itself, is
+  // invisible to it.
+  test('round 8: the sentinel size bound is exact at 4095/4096/4097', (t) => {
+    const s = makeSession(t);
+    // Sized by MEASUREMENT, not by arithmetic on an assumed prefix width: 'x'
+    // is one UTF-8 byte and never JSON-escaped, and the assertion below pins
+    // the result so a change to the skeleton cannot slide the fence.
+    const sentinelOfExactBytes = (bytes) => {
+      const skeleton = JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning', pad: '' });
+      const pad = bytes - Buffer.byteLength(skeleton, 'utf8');
+      assert.ok(pad >= 0, `${bytes} is smaller than the un-padded sentinel skeleton`);
+      const out = JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning', pad: 'x'.repeat(pad) });
+      assert.strictEqual(Buffer.byteLength(out, 'utf8'), bytes,
+        'the padding arithmetic must land exactly on the size under test');
+      return out;
+    };
+
+    // The discriminator is the DEBOUNCE ARM, not an error: an honored
+    // `{callsSinceWarn:1, lastLevel:'warning'}` keeps the arm taken at
+    // remaining=30 (the counter goes 1→2, still under DEBOUNCE_CALLS=5, and
+    // warning→warning is not a severity escalation), so nothing is emitted —
+    // while a REFUSED sentinel falls back to first-warn defaults and emits.
+    // Both directions therefore assert on observable hook output, and the 4097
+    // row is the non-vacuity control for the two accept rows.
+    for (const [bytes, honored] of [[4095, true], [4096, true], [4097, false]]) {
+      fs.writeFileSync(s.warnPath, sentinelOfExactBytes(bytes));
+      assert.strictEqual(fs.lstatSync(s.warnPath).size, bytes,
+        `${bytes}: the planted sentinel must be exactly the size under test`);
+      const { stdout, exitCode } = s.call('PostToolUse', 30);
+      assert.strictEqual(exitCode, 0, `${bytes}: a size verdict must never fail the hook`);
+      if (honored) {
+        assert.doesNotMatch(stdout, /CONTEXT WARNING/,
+          `${bytes}: at or under the bound the sentinel must be HONORED — its taken debounce arm `
+          + 'suppresses the warning; a warning here means the read refused a legal sentinel');
+      } else {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `${bytes}: one byte over the bound must be REFUSED and fall back to first-warn defaults`);
+      }
+    }
+  });
+
 });
 
 // ─── #3709 round 3 (Major 2): the thresholds this fix turns on, at their limits ───
@@ -2210,4 +2255,49 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
         + 'primitive, and a symlink to a FIFO is a stall primitive on this synchronous read');
     }
   });
+
+  // Round 8 (class sweep): the SAME 4096-byte bound guards the round-4
+  // WATERMARK read at gsd-context-monitor.js:278, and its refusal row above
+  // pads to 8192 exactly as the sentinel's did. Round 8's Minor was raised
+  // against the round-7 sentinel bound only — this trio applies the identical
+  // reasoning to its twin, so one constant is not held to this file's boundary
+  // convention while the other, byte-for-byte the same check, is not. The bound
+  // is pre-existing and this addition is test-only; say the word and it comes
+  // out without touching the rest.
+  test('round 8: the watermark size bound is exact at 4095/4096/4097', () => {
+    // 'x' is one UTF-8 byte and never JSON-escaped, so the serialized length
+    // moves one byte per padding character — but the payload is still sized by
+    // MEASUREMENT below, not by arithmetic on an assumed prefix width, so a
+    // change to the skeleton cannot silently move the fence off the boundary.
+    const watermarkOfExactBytes = (bytes) => {
+      const skeleton = JSON.stringify({ at: NOW_S, pad: '' });
+      const pad = bytes - Buffer.byteLength(skeleton, 'utf8');
+      assert.ok(pad >= 0, `${bytes} is smaller than the un-padded watermark skeleton`);
+      const out = JSON.stringify({ at: NOW_S, pad: 'x'.repeat(pad) });
+      assert.strictEqual(Buffer.byteLength(out, 'utf8'), bytes,
+        'the padding arithmetic must land exactly on the size under test');
+      return out;
+    };
+
+    // `st.size > 4096`: 4095 and 4096 are legal and must be HONORED (and so
+    // mute the monitor), 4097 is one byte over and must be REFUSED. The 4097
+    // row is the non-vacuity control for the two accept rows — without it,
+    // a read that refused everything would still pass them.
+    for (const [bytes, honored] of [[4095, true], [4096, true], [4097, false]]) {
+      const { stdout, exitCode } = drive({
+        remaining: 30, timestamp: NOW_S, nowMs: NOW_MS,
+        plantWatermark: (wp) => fs.writeFileSync(wp, watermarkOfExactBytes(bytes)),
+      });
+      assert.strictEqual(exitCode, 0, `${bytes}: a size verdict must never fail the hook`);
+      if (honored) {
+        assert.strictEqual(stdout, '',
+          `${bytes}: at or under the bound the watermark must be HONORED and mute the monitor; `
+          + 'a warning here means the read refused a legal watermark');
+      } else {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `${bytes}: one byte over the bound must be REFUSED, leaving the monitor unmuted`);
+      }
+    }
+  });
+
 });
