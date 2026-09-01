@@ -375,6 +375,11 @@ The command is non-blocking: it emits `skipped` with a `reason` outside a git
 repo or when no documents exist. Report `stamped` and `commit` in the summary
 if any entry in `failed` is non-empty; otherwise continue silently.
 
+Run in this position, before `commit_codebase_map`, the stamp lands on
+documents the mapper just wrote, so its markdown whitespace normalization is
+folded into the same commit. Running `stamp-codebase-map` by hand against an
+already-committed map reflows that map's whitespace as a side effect.
+
 Continue to scan_for_secrets.
 </step>
 
