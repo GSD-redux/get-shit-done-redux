@@ -123,20 +123,72 @@ const decisionBulletStartRe = /^\s*-\s+\*\*D-/;
 
 /**
  * A line that opens a new BLOCK-LEVEL construct, and therefore terminates the
- * bullet above it: a list marker of any family (`-`, `*`, `+`, `1.`, `1)` — the
- * same families the sectionizer seam's `iterateBullets` recognises), an ATX
- * heading, a blockquote, or a table row. Joining never reaches across one of
+ * bullet above it: a list marker of any family (`-`, `*`, `+`, `1.`, `1)`), an
+ * ATX heading, a blockquote, or a table row. Joining never reaches across one of
  * these (nor across a blank/whitespace-only line, checked separately), so a
  * declaration whose bold run genuinely never closes cannot absorb the block
  * below it and get "closed" by an unrelated inline `**` — it stays a parse-miss
  * and still fails loud, which #1365's contract requires.
  *
- * The marker families all demand trailing whitespace so that a continuation
+ * The four MARKER families demand trailing whitespace so that a continuation
  * line opening with emphasis (`*in* the header.** …`) is text, not a bullet.
+ * The table-row alternative deliberately does not: CommonMark tables may open
+ * flush (`|Col1|Col2|`), and a leading `|` is never ordinary decision prose.
  * A `- ` line at ANY indent stops the join: a deeper one is #3169 nested
  * elaboration, which the main loop folds into the open decision itself.
+ *
+ * DELIBERATE DIVERGENCE from the sectionizer seam (ADR-1372): `iterateBullets`
+ * recognises only the `N. ` ordered-list form (`numberedRe`,
+ * src/markdown-sectionizer.cts), while this set also stops at the `N) ` form.
+ * That is intentional and one-directional — this regex answers "may the join
+ * cross this line?", where recognising MORE block openers is the conservative
+ * answer (a missed terminator can manufacture a decision; a spare one can only
+ * make a malformed bullet fail loud, which #1365 already wants). `N)` is a
+ * CommonMark ordered-list marker, so a join must not reach across it whether or
+ * not the seam's own bullet iterator yields it. Both forms are pinned by tests,
+ * and a drift test asserts the seam still does NOT treat `N)` as a bullet, so
+ * this divergence stays visible if either side moves.
+ *
+ * Accepted over-termination: continuation prose that happens to open with
+ * digits-then-`.`/`)` ("10. really keeps going") or a literal `|` stops the join
+ * early, so such a bullet fails loud rather than parsing. That is the same
+ * markdown ambiguity every line-oriented reader carries, and this direction of
+ * the trade is the one #1365 asks for — fail loud, never guess.
  */
 const blockConstructRe = /^(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|>\s|\|)/;
+
+/**
+ * The declaration line ends while the OPTIONAL `[tags]` bracket that sits
+ * immediately after the decision id is still open. Capture group 1 is the
+ * bracket content seen so far.
+ *
+ * Only the ID-ADJACENT bracket matters: that is the one the three grammars turn
+ * into `tags` (and therefore into `trackable`). A `[` further along the title is
+ * ordinary text and does not restrict the join.
+ */
+const tagBracketOpenAtEolRe = /^\s*-\s+\*\*D-[A-Za-z0-9][A-Za-z0-9_-]*\s*\[([^\]]*)$/;
+
+/**
+ * #3939 (review): would folding `next` onto a lead-in whose `[tags]` bracket is
+ * still open splice the inserted space INTO a tag token?
+ *
+ * Tags are comma-split and trimmed, so a space landing next to a delimiter
+ * (`[`, `,`, `]`) changes nothing — `[informational,` + `deferred]` is still
+ * exactly `[informational, deferred]`. A space landing anywhere else splits one
+ * token into two (`[defer` + `red]` → `defer red`), which would not fail; it
+ * would parse to a DIFFERENT tag, silently flipping `trackable` on a gate that
+ * decides whether a decision must be covered. Refusing to join there leaves the
+ * bullet unchanged, so it reaches the #1365 parse-miss guard and fails loud —
+ * a wrong answer about coverage is worse than a blocked gate.
+ *
+ * `tail` is the bracket content accumulated so far, `next` the trimmed
+ * continuation line.
+ */
+function wouldSpliceTagToken(tail: string, next: string): boolean {
+  const before = tail.trimEnd();
+  if (before === '' || before.endsWith(',') || before.endsWith('[')) return false;
+  return !(next.startsWith(',') || next.startsWith(']'));
+}
 
 /**
  * True when the bullet's own bold lead-in — the FIRST bold run on the line —
@@ -165,7 +217,15 @@ function boldLeadInIsUnterminated(text: string): boolean {
  * cross-reference bullets (#3169) are handled by the main loop as before.
  *
  * The joined line keeps the FIRST physical line's leading whitespace, so the
- * `indentWidth` signal #3169 depends on is unchanged.
+ * `indentWidth` signal #3169 depends on is unchanged. Absorbed lines are
+ * trimmed and re-joined with a single space, which is what a soft line break
+ * means in markdown — so the join reproduces the rendered one-line text rather
+ * than concatenating the raw bytes.
+ *
+ * One place that equivalence does not hold is inside the id-adjacent `[tags]`
+ * bracket, where an inserted space can split a tag token and silently flip
+ * `trackable`. The join stops there instead (`wouldSpliceTagToken`), leaving the
+ * bullet to fail loud.
  *
  * Absorption stops at the first `**` on a continuation line, so an inline
  * `**bold**` INSIDE a wrapped title closes the run early. That is deliberate:
@@ -192,13 +252,21 @@ function joinWrappedBoldLeadIns(lines: string[]): string[] {
     // accumulated string, which forces a rope flatten every iteration) keeps a
     // long unterminated run linear on the plan gate's hot path.
     const segments = [line];
+    // Bracket content accumulated while the id-adjacent `[tags]` bracket is
+    // still open; null once it has closed (or never opened). O(1) per segment.
+    const tagOpen = tagBracketOpenAtEolRe.exec(line);
+    let tagTail: string | null = tagOpen === null ? null : tagOpen[1];
     let scan = i + 1;
     let closed = false;
     while (scan < lines.length) {
       const trimmed = lines[scan].trim();
       if (trimmed === '' || blockConstructRe.test(trimmed)) break;
+      if (tagTail !== null && wouldSpliceTagToken(tagTail, trimmed)) break;
       segments.push(trimmed);
       scan += 1;
+      if (tagTail !== null) {
+        tagTail = trimmed.indexOf(']') === -1 ? trimmed : null;
+      }
       if (trimmed.indexOf('**') !== -1) {
         closed = true;
         break;
