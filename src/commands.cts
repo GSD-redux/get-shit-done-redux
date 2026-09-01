@@ -2248,7 +2248,12 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
     const commitArgs = canScopeSub
       ? ['commit', '-m', message as string, '--', ...stagedRelPaths]
       : ['commit', '-m', message as string];
-    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
+    // #3859 follow-up fix as cmdCommit above (line ~2081) — git 2.39.5 needs
+    // this override for pathspec-scoped AND whole-index commits alike.
+    const commitEnvSub: Record<string, string> = {
+      GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_0: 'dirty',
+    };
+    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS, env: commitEnvSub });
     if (commitResult.exitCode !== 0) {
       if (isSpawnTimeout(commitResult)) {
         // #3886 (subrepo counterpart): timeout ≠ error; surface the stale-lock
@@ -2416,7 +2421,12 @@ function cmdPrSubrepo(
   const commitArgs = canScopePr
     ? ['commit', '-m', commitMessage as string, '--', ...changedFiles]
     : ['commit', '-m', commitMessage as string];
-  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
+  // #3859 follow-up fix as cmdCommit above (line ~2081) — git 2.39.5 needs
+  // this override for pathspec-scoped AND whole-index commits alike.
+  const commitEnvPr: Record<string, string> = {
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_0: 'dirty',
+  };
+  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS, env: commitEnvPr });
   if (commitResult.exitCode !== 0) {
     rollback();
     if (isSpawnTimeout(commitResult)) {

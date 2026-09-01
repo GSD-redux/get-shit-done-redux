@@ -5795,6 +5795,122 @@ describe('#3859: the empty-diff probe is pinned against diff-only configuration'
   });
 });
 
+// #3859 follow-up: `cmdCommitToSubrepo` and `cmdPrSubrepo` carry the identical
+// structurally-shaped `canScope*`-branched `git commit` call as `cmdCommit`
+// above (see `COMMIT_TIMEOUT_MS`'s "three commit sites" comment in
+// src/commands.cts) and were missing the same `diff.ignoreSubmodules=dirty`
+// GIT_CONFIG_* override, applied unconditionally for the same reason.
+describe('#3859 follow-up: commit-to-subrepo and pr-subrepo also need the diff.ignoreSubmodules override', () => {
+  const { createTempGitProject } = require('./helpers.cjs');
+  let rootDir;
+  let nestedSubmoduleSrc;
+
+  afterEach(() => {
+    if (rootDir) cleanup(rootDir);
+    if (nestedSubmoduleSrc) cleanup(nestedSubmoduleSrc);
+    rootDir = undefined;
+    nestedSubmoduleSrc = undefined;
+  });
+
+  // A submodule nested inside `repoDir` whose recorded gitlink is AHEAD of
+  // what `repoDir` has committed — same shape as `bumpedSubmodule()` above,
+  // scoped to an arbitrary sub-repo directory instead of the project root.
+  function bumpedSubmoduleIn(repoDir) {
+    const subSrc = path.join(repoDir, '..', path.basename(repoDir) + '-nested-sub');
+    nestedSubmoduleSrc = subSrc;
+    fs.mkdirSync(subSrc, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subSrc });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subSrc });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subSrc });
+    fs.writeFileSync(path.join(subSrc, 'f.txt'), 'v1\n');
+    gitOrThrow(['add', 'f.txt'], { cwd: subSrc });
+    gitOrThrow(['commit', '-m', 'v1'], { cwd: subSrc });
+
+    gitOrThrow(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSrc, 'nested'], { cwd: repoDir });
+    gitOrThrow(['commit', '-m', 'add nested submodule'], { cwd: repoDir });
+
+    fs.writeFileSync(path.join(subSrc, 'f.txt'), 'v2\n');
+    gitOrThrow(['add', 'f.txt'], { cwd: subSrc });
+    gitOrThrow(['commit', '-m', 'v2'], { cwd: subSrc });
+    gitOrThrow(['-c', 'protocol.file.allow=always', 'submodule', 'update', '--remote', '--', 'nested'], { cwd: repoDir });
+  }
+
+  test('commit-to-subrepo records a bumped nested submodule under diff.ignoreSubmodules=all', () => {
+    rootDir = createTempGitProject();
+    fs.writeFileSync(
+      path.join(rootDir, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: ['backend'] } }, null, 2),
+    );
+    const subDir = path.join(rootDir, 'backend');
+    fs.mkdirSync(subDir, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subDir });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subDir });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subDir });
+    fs.writeFileSync(path.join(subDir, 'seed.js'), '// seed\n');
+    gitOrThrow(['add', 'seed.js'], { cwd: subDir });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: subDir });
+
+    bumpedSubmoduleIn(subDir);
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: subDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim();
+
+    const res = runGsdTools(
+      ['commit-to-subrepo', 'chore: bump nested submodule', '--files', 'backend/nested'],
+      rootDir,
+    );
+    assert.ok(res.success, `commit-to-subrepo failed: ${res.error}`);
+    const result = JSON.parse(res.output);
+
+    assert.strictEqual(result.repos.backend.committed, true,
+      `the gitlink moved and \`git commit -- nested\` records it on git 2.39.5 only with the ` +
+      `GIT_CONFIG_* override applied, got ${JSON.stringify(result.repos.backend)}`);
+    assert.notStrictEqual(result.repos.backend.reason, 'error');
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
+
+  test('pr-subrepo records a bumped nested submodule under diff.ignoreSubmodules=all', () => {
+    rootDir = createTempGitProject();
+    fs.writeFileSync(
+      path.join(rootDir, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: ['backend'] } }, null, 2),
+    );
+    const subDir = path.join(rootDir, 'backend');
+    const bareDir = path.join(rootDir, '_bare-backend.git');
+    fs.mkdirSync(subDir, { recursive: true });
+    gitOrThrow(['init', '-q', '.'], { cwd: subDir });
+    gitOrThrow(['config', 'user.email', 't@t'], { cwd: subDir });
+    gitOrThrow(['config', 'user.name', 't'], { cwd: subDir });
+    fs.writeFileSync(path.join(subDir, 'seed.js'), '// seed\n');
+    gitOrThrow(['add', 'seed.js'], { cwd: subDir });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: subDir });
+    fs.mkdirSync(bareDir, { recursive: true });
+    gitOrThrow(['init', '--bare', '-q'], { cwd: bareDir });
+    gitOrThrow(['remote', 'add', 'origin', bareDir], { cwd: subDir });
+    const branch = gitOrThrow(['branch', '--show-current'], { cwd: subDir }).trim();
+    gitOrThrow(['push', 'origin', branch], { cwd: subDir });
+
+    bumpedSubmoduleIn(subDir);
+    gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: subDir });
+    const before = gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim();
+
+    const res = runGsdTools(
+      ['query', 'pr-subrepo', 'fix(backend): bump nested submodule',
+       '--repo', 'backend', '--branch', 'fix-3859-nested-submodule-pr'],
+      rootDir,
+    );
+    assert.ok(res.success, `pr-subrepo failed: ${res.error}`);
+    const result = JSON.parse(res.output);
+
+    assert.strictEqual(result.committed, true,
+      `the gitlink moved and \`git commit -- nested\` records it on git 2.39.5 only with the ` +
+      `GIT_CONFIG_* override applied, got ${JSON.stringify(result)}`);
+    assert.notStrictEqual(
+      gitOrThrow(['rev-parse', 'HEAD:nested'], { cwd: subDir }).trim(), before,
+      'the recorded gitlink must actually advance');
+  });
+});
 
 describe('#2279: map-codebase date stamp instructions overwrite existing dates', () => {
   const REPO_ROOT = path.join(__dirname, '..');
