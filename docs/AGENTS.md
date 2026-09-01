@@ -178,6 +178,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Emits a `<fails_when>` sibling for every runnable `<automated>` verify command, naming what output constitutes failure (#3172)
 - Includes `read_first` and `acceptance_criteria` sections
 - Groups plans into dependency waves
+- Applies an ordered minimum-solution check after preserving locked decisions and requirement coverage, preferring existing project behavior, standard-library or native-platform capability, and already-installed dependencies before new implementation (#4089)
 - Performs reachability check to validate plan steps reference accessible files and APIs (v1.32)
 - Enforces a comment-text discipline HARD GATE at plan-write time (`verify.plan-structure`): a literal that an acceptance criterion negative-greps for (`grep -c 'LIT' file == 0`) must not appear verbatim in an `<action>` body; violations fail plan creation. Use `<!-- planner-discipline-allow: LIT -->` to allowlist a legitimate occurrence. (#429)
 
