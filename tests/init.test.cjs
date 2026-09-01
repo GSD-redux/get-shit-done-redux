@@ -4744,6 +4744,70 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     assert.equal(eight.directory, null, 'Phase 8 has no directory (corroborating the stray-only-disk shape)');
   });
 
+  test('#4023: init.progress sorts decimal phase ids before choosing the roadmap frontier', (t) => {
+    const tmpDir = createTempProject('gsd-4023-init-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap',
+      '',
+      '## Milestone v1.1.0',
+      '',
+      '### Phase 12: Parent',
+      '**Goal:** g',
+      '',
+      '### Phase 12.1: Inserted fix',
+      '**Goal:** g',
+      '',
+      '### Phase 12.2: Second insert',
+      '**Goal:** g',
+      '',
+      '### Phase 12.10: Tenth insert',
+      '**Goal:** g',
+      '',
+      '### Phase 13: Follow-up',
+      '**Goal:** g',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.1.0',
+      'milestone_name: Active',
+      'status: executing',
+      'current_phase: 12.1',
+      'progress:',
+      '  total_phases: 13',
+      '  completed_phases: 11',
+      '  percent: 85',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 12.1',
+      'Status: Executing',
+      '',
+    ].join('\n'));
+    for (const dir of ['12.1-inserted-fix', '12.10-tenth-insert']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), { recursive: true });
+    }
+
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.deepEqual(
+      out.phases.map((phase) => String(phase.number).replace(/^0+(?=\d)/, '')),
+      ['12', '12.1', '12.2', '12.10', '13'],
+      'the disk/roadmap union follows component-wise phase-id order (12.2 before 12.10)',
+    );
+    assert.equal(
+      String(out.next_phase.number).replace(/^0+(?=\d)/, ''),
+      '12',
+      'the pending parent remains the frontier when an inserted decimal directory exists first',
+    );
+  });
+
   test('#3581 (control): a pending roadmap-only phase outranks a later pending directory', (t) => {
     writeProgressFixture(t, { strayNine: false });
     // pure ordering property, no stray artifacts: roadmap-only pending 8 vs a
@@ -4940,5 +5004,4 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
   });
 });
-
 
