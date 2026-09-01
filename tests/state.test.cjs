@@ -1912,7 +1912,40 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
-    assert.ok(output.error.toLowerCase().includes('cannot parse'), 'error should mention Cannot parse');
+    // Assert on what makes the message actionable, not on one literal phrase:
+    // it must say the plan position could not be read AND name the shapes that
+    // would work. The previous assertion only checked for "cannot parse", which
+    // a message can satisfy while leaving the reader no idea what to write.
+    assert.ok(
+      /cannot read the plan position/i.test(output.error),
+      `error should say the plan position could not be read; got: ${output.error}`,
+    );
+    // Coupling, not transcription: the message is DERIVED from
+    // `STATE_FIELD_SCHEMA.current_plan.acceptedShapes`, so this walks the
+    // schema rather than restating a list beside it. Widening the schema
+    // without widening the message (or vice versa) goes red here.
+    const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
+    const declared = STATE_FIELD_SCHEMA['current_plan'].acceptedShapes;
+    assert.ok(declared.length > 0, 'schema must declare at least one shape, else this assertion is vacuous');
+    for (const shape of declared) {
+      const spelling = shape === 'N'
+        ? 'Total Plans in Phase'
+        : `Current Plan: ${shape}`;
+      assert.ok(
+        output.error.includes(spelling),
+        `error should name declared shape ${JSON.stringify(shape)} as ${JSON.stringify(spelling)}; got: ${output.error}`,
+      );
+    }
+    // The body-only `Plan` field has no schema row (buildStateFrontmatter never
+    // reads it into frontmatter), so it is named explicitly.
+    assert.ok(output.error.includes('`Plan: N of M`'),
+      `error should name \`Plan: N of M\`; got: ${output.error}`);
+    // ...and must NOT advertise a shape the parser refuses (#3791 review round
+    // 6, M2). `Plan: N` paired with a `Total Plans in Phase: M` sibling and no
+    // `Current Plan` is not an accepted shape; a message naming it would send
+    // the reader to write a STATE.md this command still cannot read.
+    assert.ok(!output.error.includes('`Plan: N` with'),
+      `error must not advertise the unaccepted bare-Plan+sibling shape; got: ${output.error}`);
   });
 
   test('advances plan in compound "Plan: X of Y" format', () => {
