@@ -197,3 +197,39 @@ prohibition-enforcement verify-time seam.)
 this addendum adds to 550's decision record; the other two are cross-references to existing
 decisions, collected so the probe family's full "alternatives considered" set is readable in
 one place.
+
+## Amendment (2026-09-01, #3717): `text_en` field — durable fix for the #2773 language stopgap
+
+**What changed.** `Requirement` (the Edge Probe Module's locked input shape) gains an optional
+`text_en: string` field. `classifyShape`'s own signature is unchanged (still `(text: string) =>
+Shape[]`, a directly-tested export); the `text_en ?? text` selection happens once, at
+`proposeEdges`' single call site. `validateRequirement` fail-closes on a present-but-empty or
+whitespace-only `text_en` (an unvalidated `''` would otherwise win `??` silently, since nullish
+coalescing does not treat `''` as nullish).
+
+**Why this is a locked-surface change, not a silent one.** `text` previously carried a dual,
+undocumented meaning under the #2773 stopgap: the requirement's own text for English projects,
+but silently the *translation* for `response_language` projects (spec-phase Step 5.5 wrote the
+English rendering into `text`, never the SPEC's own words). `text_en` removes that overload —
+`text` always means the requirement's own text, in whatever language the SPEC uses; `text_en`,
+when present, is the engine-only English rendering the classifier prefers.
+
+**Not a re-open of the #652 rejection (see the Addendum above, `docs/adr/550-spec-phase-probe-contract.md:172-177`).** That addendum rejects a *standalone, model-dependent* LLM
+classifier surface. `text_en` is a plain optional string field read by the existing
+deterministic regex classifier — no new model-dependent surface, no change to the taxonomy or
+`SHAPE_CUES`'s cue-matching mechanism. The maintainer's approval on #3717 confirmed this reading
+explicitly and scoped the change to Form 1 only (the `text_en` field); per-language `SHAPE_CUES`
+tables (a form that WAS considered — a `lang` hint + a cue-table-per-language) were evaluated and
+declined as an unwarranted maintenance burden for a solo-maintainer project. `en` remains the
+only `SHAPE_CUES` vocabulary.
+
+**Acceptance bar carried into `tests/edge-probe.test.cjs` / `tests/edge-probe-spec-phase-contract.test.cjs`:** a `SHAPE_CUES`/`VALID_SHAPES` parity assertion (`RULESET.GENERATIVE-FIX`), a fixture
+pair proving a non-English requirement with `text_en` classifies identically to its English
+equivalent, boundary coverage for `text_en`'s absence/presence/empty-string cases, and a
+workflow-prose contract test asserting `spec-phase.md` Step 5.5 actually documents populating
+`text_en` for `response_language` projects — the machine check the #2773 doc-only stopgap
+explicitly lacked.
+
+**Explicitly out of scope (unchanged from #2773).** The ADR-857 §98 / Decision 7b recall gap — a
+requirement carrying no shape cue in *any* language, including English, still classifies to
+zero shapes — is untouched. The authored `shapes` override remains the remedy there.
