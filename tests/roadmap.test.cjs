@@ -4312,6 +4312,53 @@ describe('#3885 (ADR-3473 §8.5): countPhasePlansAndSummaries distinguishes unre
       `ENOENT must be treated as genuinely absent, not reported as an error; got: ${phase.context_read_error}`,
     );
   });
+
+  // ─── #4014 (epic #3473 B4-unreadable) matrix rows 7-9 ───────────────────
+  //
+  // `countPhasePlansAndSummaries` (not exported — driven through
+  // cmdRoadmapAnalyze, the same style as T61/T62/T64 above) gains a
+  // `context_scope` field on its result, surfaced on `AnalyzePhase` as
+  // `context_scope` — the typed SCOPE-enum sibling of the existing
+  // `context_read_error` string field.
+
+  test('#4014 matrix row 7: readable phase dir with CONTEXT.md reports has_context:true, context_scope:complete', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'CONTEXT.md'), '# context\n');
+
+    const output = runAnalyzeCapturingStdout(tmpDir);
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, true);
+    assert.strictEqual(phase.context_scope, 'complete');
+    assert.strictEqual(phase.context_read_error ?? null, null);
+  });
+
+  test('#4014 matrix row 8: unreadable phase dir reports context_scope:unreadable, distinct from a genuinely empty phase dir', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const restore = injectReaddirFailure(phaseDir, 'EACCES');
+    let output;
+    try {
+      output = runAnalyzeCapturingStdout(tmpDir);
+    } finally {
+      restore();
+    }
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, false);
+    assert.strictEqual(phase.context_scope, 'unreadable',
+      `an unreadable phase directory must report context_scope 'unreadable', distinct from a genuinely empty one; got: ${phase.context_scope}`);
+  });
+
+  test('#4014 matrix row 9: genuinely absent phase dir reports context_scope:complete (boundary — not unreadable)', () => {
+    // No phase directory created at all — matches T64's ENOENT-shaped absence.
+    const output = runAnalyzeCapturingStdout(tmpDir);
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, false);
+    assert.strictEqual(phase.context_scope, 'complete',
+      `a genuinely absent phase directory must report context_scope 'complete', not 'unreadable'; got: ${phase.context_scope}`);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

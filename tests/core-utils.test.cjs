@@ -556,6 +556,55 @@ describe('getPhaseFileStats', () => {
     assert.strictEqual(stats.hasReviews, false);
   });
 
+  // ─── #4014 (epic #3473 B4-unreadable) matrix rows 10-11 ───────────────────
+  //
+  // getPhaseFileStats used to catch its OWN readdirSync failure and return
+  // `scope: scan.scope` — the scope of the UNRELATED, already-successful
+  // scanPhasePlans call — silently dropping that THIS function's own read
+  // failed. Both scanPhasePlans and getPhaseFileStats's own read call
+  // `fs.readdirSync(phaseDir)` on the identical path, in that order (scan
+  // first) — so the failure is injected on the SECOND call to that exact
+  // path only, letting scanPhasePlans succeed (scope complete) while
+  // getPhaseFileStats's own read fails, reproducing the exact swallowing bug
+  // named in the issue. No chmod 0o000 — root bypasses mode bits (silent
+  // zero coverage in root CI); restored via t.mock's auto-restore.
+  test('#4014 matrix row 10: own readdirSync failure is not masked by an already-successful scan.scope', (t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
+    fs.writeFileSync(path.join(tmpDir, '01-PLAN.md'), '# Plan\n');
+    const target = path.resolve(tmpDir);
+    const origReaddirSync = fs.readdirSync.bind(fs);
+    let callsOnTarget = 0;
+    t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (path.resolve(String(p)) === target) {
+        callsOnTarget += 1;
+        // 1st call = scanPhasePlans's own read: let it succeed (scope complete).
+        if (callsOnTarget === 1) return origReaddirSync(p, ...rest);
+        // 2nd call = getPhaseFileStats's own read (via findContextMdIn): fail it.
+        const err = new Error(`EACCES: simulated failure, scandir '${p}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return origReaddirSync(p, ...rest);
+    });
+
+    const stats = coreUtils.getPhaseFileStats(tmpDir);
+    assert.strictEqual(stats.scope, SCOPE.UNREADABLE,
+      `own readdirSync failure must win over the unrelated already-successful scan.scope; got: ${stats.scope}`);
+    // #3183's pre-existing plans/summaries-untouched contract: unaffected
+    // by this function's own (unrelated) read outcome.
+    assert.deepEqual(stats.plans, ['01-PLAN.md']);
+  });
+
+  test('#4014 matrix row 11: both reads succeed — scope complete, flags computed as before (must not regress)', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
+    fs.writeFileSync(path.join(tmpDir, '01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(tmpDir, 'CONTEXT.md'), '# context\n');
+    const stats = coreUtils.getPhaseFileStats(tmpDir);
+    assert.strictEqual(stats.scope, SCOPE.COMPLETE);
+    assert.strictEqual(stats.hasContext, true);
+    assert.deepEqual(stats.plans, ['01-PLAN.md']);
+  });
+
   test('#3183 row 7 regression: nested plans/PLAN-01.md ONLY is reported (used to report 0)', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
     fs.mkdirSync(path.join(tmpDir, 'plans'));
