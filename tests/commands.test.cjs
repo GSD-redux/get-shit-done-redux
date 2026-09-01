@@ -5738,19 +5738,26 @@ describe('#3859: the empty-diff probe is pinned against diff-only configuration'
       'the new content must actually be recorded');
   });
 
-  // #3859 follow-up (e935694fc/b3d37b929): the actual `git commit` call now
-  // carries a `commitEnv` GIT_CONFIG_* override (forcing
-  // `diff.ignoreSubmodules=dirty`) — but ONLY when `canScope` is true (a
-  // pathspec-limited `git commit -- <paths>`), because only that git internal
-  // path consults `diff.ignoreSubmodules` when deciding whether a bumped
-  // submodule gitlink is a real change to record. A whole-index commit or
-  // `--amend` never appends a pathspec, so git never runs that check and the
-  // override is never applied there. These two tests pin that scoping
-  // boundary directly and independently of git version: both canScope=false
-  // shapes must keep recording a bumped submodule gitlink under
-  // `diff.ignoreSubmodules=all` with no override in play, proving the
-  // `canScope` gate on `commitEnv` was not needed — and is not silently
-  // relied on — outside the pathspec-limited path.
+  // #3859 follow-up (e935694fc/b3d37b929, widened after a canScope gap found
+  // reproducing live against the pinned CI tester image,
+  // ghcr.io/open-gsd/gsd-tester-linux:v1.8.0-node24, which runs git 2.39.5):
+  // the actual `git commit` call carries a `commitEnv` GIT_CONFIG_* override
+  // forcing `diff.ignoreSubmodules=dirty`. This was originally scoped to only
+  // fire when `canScope` was true (a pathspec-limited `git commit --
+  // <paths>`), on the assumption that only a pathspec-limited commit
+  // consults `diff.ignoreSubmodules` when deciding whether a bumped
+  // submodule gitlink is a real change to record. That assumption was wrong:
+  // on git 2.39.5 a bare WHOLE-INDEX `git commit -m ...` (no pathspec at
+  // all, canScope=false) is refused identically when the only staged change
+  // is a submodule gitlink under `diff.ignoreSubmodules=all` — git's
+  // "nothing to commit" check is a real diff (HEAD vs. index) that honours
+  // `diff.ignoreSubmodules` regardless of pathspec. The override is now
+  // applied unconditionally (no `canScope` gate) to cover this shape too.
+  // `--amend` is the one shape confirmed NOT to hit the refusal at all
+  // (reproduced directly: it succeeds identically with or without the
+  // override, since amend never runs the empty-diff check a plain `git
+  // commit` does) — its test below pins that the override being applied
+  // unconditionally is still harmless there.
   test('a whole-index commit (no --files, canScope=false) still records a bumped submodule under diff.ignoreSubmodules=all', () => {
     bumpedSubmodule();
     gitOrThrow(['config', 'diff.ignoreSubmodules', 'all'], { cwd: tmpDir });
@@ -5762,7 +5769,8 @@ describe('#3859: the empty-diff probe is pinned against diff-only configuration'
     const output = JSON.parse(payload);
 
     assert.strictEqual(output.committed, true,
-      'a whole-index commit never carries a pathspec, so it needs no GIT_CONFIG_* override to record the bumped gitlink');
+      'a whole-index commit hits the same git 2.39.5 refusal as a pathspec-limited one, so it needs the ' +
+      'GIT_CONFIG_* override applied unconditionally, not gated on canScope, to record the bumped gitlink');
     assert.notStrictEqual(
       gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
       'the recorded gitlink must actually advance');
@@ -5779,7 +5787,8 @@ describe('#3859: the empty-diff probe is pinned against diff-only configuration'
     const output = JSON.parse(payload);
 
     assert.strictEqual(output.committed, true,
-      '--amend never carries a pathspec either, so it needs no GIT_CONFIG_* override to record the bumped gitlink');
+      '--amend never hits the empty-diff refusal, so the now-unconditional GIT_CONFIG_* override must remain ' +
+      'a harmless no-op here');
     assert.notStrictEqual(
       gitOrThrow(['rev-parse', 'HEAD:sub'], { cwd: tmpDir }).trim(), before,
       'the recorded gitlink must actually advance');
