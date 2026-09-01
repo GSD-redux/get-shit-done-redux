@@ -140,7 +140,10 @@ if [ -z "$FILES_OVERRIDE" ]; then
   REVIEW_FILES=()
   
   if [ -n "$SUMMARIES" ]; then
-    for summary in $SUMMARIES; do
+    # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+    # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+    # one iteration there.
+    for summary in $(printf '%s' "$SUMMARIES"); do
       # Extract key_files.created and key_files.modified using node for reliable YAML parsing
       # This avoids fragile awk parsing that breaks on indentation differences
       EXTRACTED=$(node -e "

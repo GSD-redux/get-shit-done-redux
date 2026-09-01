@@ -222,8 +222,8 @@ Agent({
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
-If the checker returns errors:
-- Display the errors to the user
+Handle the checker return by severity, never by the sentinel alone: count BLOCKER + WARNING entries in the YAML issues block; an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If the return is `## VERIFICATION PASSED`, or the count is zero — every entry is explicitly INFO — display `ℹ advisory — {dimension}: {description}` per INFO entry and treat the plan as imported; INFO is advisory and never blocks an import (#3724). Otherwise:
+- Display the blocking issues to the user
 - Ask the user to resolve issues before the plan is considered imported
 - Do not delete the written file — the user can fix and re-validate manually
 
