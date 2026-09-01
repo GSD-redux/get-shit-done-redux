@@ -1793,12 +1793,16 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     //
     // GEMINI_API_KEY is pinned UNSET (round 4, Major 2). The preserved Gemini
     // fallback is `eventName === "" && !!process.env.GEMINI_API_KEY`, and
-    // readEventName returns "" for every malformed name — so with the key set
-    // in the ambient environment this row's `stdout === ''` assertion failed
-    // outright: injection becomes supported and a 30%-remaining reading emits
-    // a CONTEXT WARNING. Reproduced by running this row under
-    // `GEMINI_API_KEY=x`. The row is about readEventName's typing, so the
-    // dialect variable is fixed rather than inherited.
+    // readEventName returned "" for every malformed name AT THE TIME THIS ROW
+    // WAS WRITTEN — so with the key set in the ambient environment this row's
+    // `stdout === ''` assertion failed outright: injection becomes supported
+    // and a 30%-remaining reading emits a CONTEXT WARNING. Reproduced by
+    // running this row under `GEMINI_API_KEY=x`. Round 7 then SUPERSEDED that
+    // behaviour: a present-but-non-string name returns null and only an ABSENT
+    // one returns "", so a malformed payload can no longer reach the fallback
+    // at all. The pin stays regardless — this row is about readEventName's
+    // typing, not about the fallback, and an ambient key would still change
+    // what it measures — so the dialect variable is fixed, not inherited.
     // A FRESH SESSION PER SUBCASE (Codex review of #3808, round 4). Both
     // subcases shared one session, and the sentinel is the thing being
     // asserted: the `42` iteration left one behind, so the hostile-object
