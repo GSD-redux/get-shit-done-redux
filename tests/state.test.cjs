@@ -2658,6 +2658,129 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     });
   });
 
+  // #3862 round 4 (Nit): the cross-check used to enumerate phase directories
+  // through `listMilestonePhaseDirs` — milestone window plus sentinel filter —
+  // while `phase-plan-index` enumerates the phases directory raw. A filtered
+  // listing is a strict SUBSET of a raw one, so the two could disagree in both
+  // directions. All three shapes below are constructed rather than argued away,
+  // and each asserts the cross-check and the read-only verb now give the SAME
+  // answer, which is the parity the docblock claims.
+  describe('the cross-check enumerates the same directory listing its readers do', () => {
+    const roadmapWith = (...phaseHeadings) => [
+      '# Roadmap',
+      '',
+      '## Roadmap v1.0: Current Milestone',
+      ...phaseHeadings,
+      '',
+    ].join('\n');
+    const stateAt = (phaseLine, planLine) => [
+      '---',
+      'milestone: v1.0',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      phaseLine,
+      planLine,
+      'Status: Ready to execute',
+      '',
+    ].join('\n');
+    const seedDir = (dirName, prefix, count) => {
+      const dir = path.join(tmpDir, '.planning', 'phases', dirName);
+      fs.mkdirSync(dir, { recursive: true });
+      for (let i = 1; i <= count; i++) {
+        const id = String(i).padStart(2, '0');
+        fs.writeFileSync(path.join(dir, `${prefix}-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+        fs.writeFileSync(path.join(dir, `${prefix}-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
+      return dir;
+    };
+    const seedProject = (roadmap, phaseLine, planLine) => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateAt(phaseLine, planLine));
+    };
+
+    test('a phase outside the milestone WINDOW is still checked — the window is not the reader', () => {
+      // The ROADMAP declares phases 1-2, so the filter's heading set is
+      // non-empty and does NOT degrade pass-all; `03-payments` was therefore
+      // dropped from the listing, no directory matched, and the check abstained
+      // while five plans sat on disk. That abstention is #3830 recurring.
+      seedDir('03-payments', '03', 5);
+      seedProject(roadmapWith('### Phase 1: Foundation', '### Phase 2: API'),
+        'Phase: 03 (Payments) — EXECUTING', 'Plan: 1 of 3');
+      const before = stateText();
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 3', tmpDir).output);
+
+      assert.strictEqual(advance.reason, 'position_diverged',
+        `an out-of-window phase must still be checked; got ${JSON.stringify(advance)}`);
+      assert.strictEqual(advance.disk.plan_count, 5);
+      assert.strictEqual(index.plans.length, 5, 'phase-plan-index reads the same directory');
+      assert.strictEqual(advance.disk.plan_count, index.plans.length,
+        'the writing verb and the read-only verb must report the same count');
+      assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+    });
+
+    test('a SENTINEL-numbered directory that is the real current phase is still checked', () => {
+      // `isSentinelPhaseId` refuses leading 0 and 999 UNCONDITIONALLY — it
+      // survives even the pass-all degrade — so a project whose Current
+      // Position genuinely names phase 0 lost the cross-check entirely.
+      seedDir('00-bootstrap', '00', 5);
+      seedProject(roadmapWith('### Phase 0: Bootstrap', '### Phase 1: Foundation'),
+        'Phase: 00 (Bootstrap) — EXECUTING', 'Plan: 1 of 3');
+      const before = stateText();
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 0', tmpDir).output);
+
+      assert.strictEqual(advance.reason, 'position_diverged',
+        `a sentinel-numbered real phase must still be checked; got ${JSON.stringify(advance)}`);
+      assert.strictEqual(advance.disk.plan_count, 5);
+      assert.strictEqual(advance.disk.plan_count, index.plans.length);
+      assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+    });
+
+    test('an ambiguous bare number abstains here exactly where phase-plan-index refuses', () => {
+      // The other direction, and the one no review round named: under
+      // hyphenated ids the window admits by continuation token, so it could
+      // leave ONE of two bare-number-matching directories standing. The check
+      // then reported a plan_count as ground truth for a token its own warning
+      // told the operator to resolve with `phase-plan-index` — which refuses it
+      // as ambiguous. Sharing the listing makes both see two matches: one
+      // abstains, the other refuses to answer, and neither invents a number.
+      //
+      // This one COSTS coverage and the assertion below is what pins the cost:
+      // the window was disambiguating, so before the listing change this fixture
+      // REFUSED (`position_diverged`, plan_count 2) and now advances stale prose
+      // 1 of 9 -> 2 of 9. Taken deliberately — the recovered refusal rested on a
+      // token #2237 calls undecidable — but it is a trade, not a clean win, and
+      // a future reader must not "restore" the refusal without reading the
+      // docblock's named alternative.
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'),
+        JSON.stringify({ phase_id_convention: 'milestone-prefixed' }));
+      seedDir('03-01-alpha', '03-01', 2);
+      seedDir('03-02-beta', '03-02', 7);
+      seedProject(roadmapWith('### Phase 3-01: Alpha', '### Phase 4-01: Later'),
+        'Phase: 3 (Alpha) — EXECUTING', 'Plan: 1 of 9');
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 3', tmpDir).output);
+
+      assert.match(index.error, /ambiguous/, 'phase-plan-index refuses the token as ambiguous');
+      assert.strictEqual(advance.reason ?? null, null,
+        `an undecidable phase is no-evidence, never a named plan set; got ${JSON.stringify(advance)}`);
+      assert.strictEqual(advance.advanced, true,
+        'abstention advances, per ADR-3180 Decision 2 — and this is the coverage COST of sharing '
+        + 'the listing: the window used to break this tie and refuse. Do not "fix" this to a refusal '
+        + 'without reading resolvePlanSetForPhase\'s docblock on the trade.');
+      assert.strictEqual(advance.disk, undefined,
+        'the check must not report disk counts for a directory its readers refuse to name');
+    });
+  });
+
   test('a non-canonically-named plan-shaped file does not inflate the count', () => {
     // scanPhasePlans's own planFiles carry isRootPlanFile's loose /PLAN/i
     // fallback; phase-plan-index intersects with the strict predicate (#2893).

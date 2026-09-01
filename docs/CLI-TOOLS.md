@@ -132,6 +132,14 @@ way `query phase-plan-index` does and compares it against the `## Current
 Position` prose. It **refuses to advance** when the two disagree, rather than
 incrementing a position it cannot trust (#3830).
 
+"The same way" is literal, and it is a property of the directory listing as much
+as of the matcher: both read the phases directory raw — no milestone window and
+no sentinel filter — and both select through `matchPhaseDirs`. So a phase the
+current ROADMAP does not declare, or one whose number is sentinel-shaped, is
+still checked; and a bare number matching several directories is undecidable for
+both, where this verb spends it as an abstention and `phase-plan-index` spends it
+as a refusal to answer.
+
 Five answers a caller must tell apart, all at **exit 0**:
 
 | stdout | meaning | what a caller should do |

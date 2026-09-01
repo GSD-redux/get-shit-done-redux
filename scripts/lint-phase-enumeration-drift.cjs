@@ -191,6 +191,19 @@
  *   - `src/phase.cts` `cmdPhasePlanIndex`: resolves ONE caller-supplied
  *     `phase` id to its directory — a single-phase LOCATION lookup, not an
  *     enumeration of the current milestone's phase set.
+ *   - `src/state.cts` `resolvePlanSetForPhase` (#3862 round 4): the SAME
+ *     single-phase LOCATION lookup as `cmdPhasePlanIndex` above, and it must
+ *     be the same one — it exists to give `state advance-plan` the plan set
+ *     `query phase-plan-index` would report for that phase token, so that a
+ *     writing verb and a read-only verb cannot disagree (#3830's premise).
+ *     Sharing `matchPhaseDirs` is not sufficient for that: a scoped listing is
+ *     a strict SUBSET of the physical one, so the window and the sentinel
+ *     filter made the two disagree in both directions — an out-of-window or
+ *     sentinel-numbered phase was MISSED here and seen there (the cross-check
+ *     then abstained and advanced stale prose, #3830 recurring), and under
+ *     hyphenated ids a surviving one of two bare-number matches COLLAPSED an
+ *     ambiguity `phase-plan-index` refuses. Asking the milestone question here
+ *     is the defect, not the discipline.
  *   - `src/phase.cts` `cmdPhaseInsert`: the same next-free-decimal-id scan as
  *     `cmdPhaseNextDecimal` (id collisions can come from any milestone),
  *     immediately followed by creating the new phase directory — a CREATE
@@ -318,7 +331,7 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases', 'collectSiblingWorktreePhaseNums'])],
   [path.join('src', 'audit.cts'), new Set(['listAuditPhaseTargets'])],
   [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
-  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild', 'countRoadmapPhaseHeadings'])],
+  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild', 'countRoadmapPhaseHeadings', 'resolvePlanSetForPhase'])],
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
   [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
   [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter', 'scanMilestonePhaseIdSets', 'collectTablePhaseRows'])],

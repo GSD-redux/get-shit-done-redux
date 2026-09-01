@@ -40,6 +40,7 @@ const {
   // so the read-only plan-index verb and this writing verb cannot disagree
   // about which directory a phase names.
   normalizePhaseName,
+  comparePhaseNum,
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -1006,53 +1007,76 @@ function unsummarizedPlansForPositionPhase(
  *
  * Every step delegates to the existing canonical owner, which is the point:
  *
- * - Phase-directory ENUMERATION goes through `listMilestonePhaseDirs`
- *   (#3185 / ADR-3180 Decision 1), the single owner of "which phase
- *   directories belong to the current milestone" — the same one
- *   `cmdStateUpdateProgress` above uses. A local `readdirSync` here would
- *   re-derive it and skip the sentinel filter, counting backlog directories
- *   as phases.
+ * - Phase-directory ENUMERATION is a RAW listing of the phases directory —
+ *   no milestone window, no sentinel filter — which is exactly what
+ *   `cmdPhasePlanIndex` does (`src/phase.cts`). Parity is the whole point of
+ *   this function, and it is a property of the LISTING as much as of the
+ *   matcher: a filtered listing is a strict SUBSET of the raw one, so it can
+ *   disagree with the readers this check is meant to agree with in BOTH
+ *   directions, and #3862 round 4 constructed all three shapes.
  *
- *   Its `scope` is deliberately NOT gated on, and that is not an oversight.
- *   `scope` describes the milestone WINDOW, not the directory listing: a
- *   project with no ROADMAP.md to scope against reports `unreadable` while
- *   still returning every real phase directory, because the owner degrades
- *   pass-all for non-sentinels by design. This lookup wants one named phase,
- *   not a scoped aggregate, so an unscoped-but-complete listing answers it
- *   perfectly well — unlike `cmdStateUpdateProgress`, which sums across the
- *   window and must withhold when the window is unknown. Refusing here on
- *   `unreadable` would disable the cross-check for every project that has not
- *   written a roadmap yet, which is most of the projects most likely to be
- *   carrying drifted prose. If a resolvable window legitimately excludes the
- *   phase Current Position names, the match below simply misses and the check
- *   abstains — the safe direction.
+ *   Through `listMilestonePhaseDirs` (#3185 / ADR-3180 Decision 1) this check
+ *   MISSED directories those readers see, and then abstained: a phase outside
+ *   a resolvable milestone window, and a real phase directory whose leading
+ *   integer is a sentinel (`isSentinelPhaseId`, SENTINEL_RANGES [0, 999]) —
+ *   the latter refused unconditionally, even under the owner's pass-all
+ *   degrade. Both advanced stale prose past five plans sitting on disk, which
+ *   is #3830's own defect recurring inside this fix's scope. In the other
+ *   direction a subset can COLLAPSE an ambiguity: under hyphenated roadmap ids
+ *   the window admits by continuation token (`03-01` vs `03-02`), so of two
+ *   directories sharing a bare number one can survive while `matchPhaseDirs`'
+ *   bare-number fallback matches both. This check then named one of them as
+ *   ground truth while `phase-plan-index` refused the same token as ambiguous
+ *   — inside a warning telling the operator to go run `phase-plan-index`.
  *
- *   One shape that argument does not cover, named so it is not mistaken for a
- *   hole (#3862 round 3): a phase directory a SHIPPED milestone left behind,
- *   whose bare number the current milestone reuses, when the current phase's
- *   own directory does not exist yet. `matchPhaseDirs` then returns that one
- *   stale directory and this lookup reads a prior milestone's plan set.
- *   `milestone complete` archives phase directories by default, but
- *   `--no-archive-phases` and an unreadable window both leave them in place,
- *   so the state is reachable. What holds even there is narrower than a
- *   parity guarantee, and stated at its real width: `phase-plan-index` lists
- *   the phases directory raw and `find-phase` also walks archived milestones,
- *   so the three share only `matchPhaseDirs`, not a listing. Under plain
- *   numeric roadmap ids the window admits a directory by its phase number
- *   (`getMilestonePhaseFilter`; hyphenated ids narrow that), so a reused
- *   bare number is carried by every listing and the shared matcher picks
- *   the same stale directory in all three. The refusal then reports the drift
- *   the repo's own readers would report for that phase token; it is not this
- *   check disagreeing with `phase-plan-index`. It writes nothing, names that
+ *   THE TRADE, because it is a trade and not a clean win: the window was also
+ *   DISAMBIGUATING. In that third shape the filtered listing left one match and
+ *   this check refused a real divergence; the raw listing leaves two, so it
+ *   abstains and the stale prose ADVANCES — the very class #3830 is about.
+ *   Driven on the fixture above: prose `Plan: 1 of 9` against `03-01-alpha` (2
+ *   plans) held at `1 of 9` before, advances to `2 of 9` now. Two shapes gained,
+ *   one lost. It is taken deliberately, on the ground that the recovered
+ *   refusal rested on a token `matchPhaseDirs` and `phase-plan-index` both call
+ *   undecidable (#2237) — the window happened to break a tie the repo does not
+ *   consider breakable, so the catch was luck rather than a property. Abstaining
+ *   is what this function already does with every other unknown. The alternative
+ *   worth naming if that judgment is ever revisited: keep the raw listing and
+ *   fall back to the window ONLY to disambiguate a multi-match. That recovers
+ *   the refusal and re-opens the disagreement — the check would answer where
+ *   `phase-plan-index` refuses — so it buys coverage with the parity this
+ *   function exists to hold. Not obviously wrong; not taken here.
+ *
+ *   Reading raw does not re-derive the window owner's job, because this lookup
+ *   asks a different question: one NAMED phase, never a scoped aggregate.
+ *   `cmdStateUpdateProgress` sums across the window and must therefore own it;
+ *   selection here is `matchPhaseDirs` over a phase token, so a backlog or
+ *   sentinel directory is reachable only when the prose names its number — and
+ *   when the prose does name it, `phase-plan-index` reads that same directory.
+ *   Agreeing with the repo's readers is the contract; agreeing with the
+ *   milestone window never was.
+ *
+ *   One shape worth naming so it is not mistaken for a hole (#3862 round 3):
+ *   a phase directory a SHIPPED milestone left behind, whose bare number the
+ *   current milestone reuses, when the current phase's own directory does not
+ *   exist yet. `matchPhaseDirs` returns that one stale directory and this
+ *   lookup reads a prior milestone's plan set. `milestone complete` archives
+ *   phase directories by default, but `--no-archive-phases` and an unreadable
+ *   window both leave them in place, so the state is reachable. It is not a
+ *   disagreement: this check and `phase-plan-index` share both the listing and
+ *   the matcher, so they select that directory together by construction, and
+ *   `find-phase` additionally walks archived milestones so it agrees here
+ *   without being bound to in general. The refusal reports the drift those
+ *   readers report for that phase token. It writes nothing, names that
  *   directory's counts, and dissolves once the stale directory is archived.
  *   Pinned in tests/state.test.cjs ("a stale prior-milestone directory that
  *   is the sole bare-number match").
  * - Phase SELECTION goes through `normalizePhaseName` + `matchPhaseDirs`, the
- *   canonical two-pass matcher (#2528) `cmdPhasePlanIndex` uses. That is what
- *   keeps the read-only plan-index verb and this writing verb from disagreeing
- *   about which of the listed directories a phase names (the listings differ:
- *   see the collision note above), and it inherits the #2237 fail-loud
- *   rule for a bare number matching several directories.
+ *   canonical two-pass matcher (#2528) `cmdPhasePlanIndex` uses. Sharing the
+ *   matcher over a shared listing is what keeps the read-only plan-index verb
+ *   and this writing verb from disagreeing about which directory a phase
+ *   names, and it inherits the #2237 fail-loud rule for a bare number matching
+ *   several directories — which this function spends as an abstention, exactly
+ *   where `phase-plan-index` spends it as a refusal to answer.
  * - Plan COUNTING goes through `scanPhasePlans` (#3199), which owns the
  *   canonical-plan-file predicate and the #2349 superseded-plan exclusion. A
  *   local filter would count files this project does not consider plans and
@@ -1071,7 +1095,18 @@ function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.
   const normalized = normalizePhaseName(phase);
   const phasesDir = planningPaths(cwd).phases;
 
-  const { value: phaseDirs } = listMilestonePhaseDirs(phasesDir, { cwd });
+  // Enumerate the way `cmdPhasePlanIndex` does — a raw directory listing, no
+  // milestone window and no sentinel filter (#3862 round 4). Filtering here is
+  // what let the two disagree: see the docblock's parity paragraph.
+  let phaseDirs: string[];
+  try {
+    phaseDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort((a, b) => comparePhaseNum(a, b));
+  } catch {
+    return { ok: false, reason: `phases directory for ${normalized} could not be read` };
+  }
 
   const { matches } = matchPhaseDirs(phaseDirs, normalized);
   if (matches.length === 0) {
