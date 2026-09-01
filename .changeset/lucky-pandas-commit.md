@@ -9,7 +9,7 @@ The subject is now resolved from the captured message before validation, for the
 Everywhere the validated text could differ from the subject git actually receives, resolution is refused and the commit stays blocked exactly as it was before this change. That covers: a `-m '…'` single-quoted argument, in which bash performs no command substitution at all; a bare `<<EOF` delimiter, whose body bash expands; a `-m` that is not git's first message argument, since git concatenates multiple `-m` values and takes the first as the subject; an explicit `--cleanup=` or `-c commit.cleanup=` mode other than `whitespace`, including git's
 abbreviated spellings of it (`--cle=verbatim` and anything else that is an unambiguous prefix);
 a message argument claimed by a bundled short option, since git reads `-am 'first'` as `-a -m` and
-takes that first message as the subject; a `cat` reached by a relative path; a substitution composed with more text on either side of the terminator; and a `"` inside the subject line itself, which the quote-bounded capture cannot span.
+takes that first message as the subject; a `cat` reached by anything but a canonical system path (`cat`, `/bin/cat`, `/usr/bin/cat`), since an arbitrary executable merely named `cat` is not known to echo its stdin; a substitution composed with more text on either side of the terminator; and a `"` inside the subject line itself, which the quote-bounded capture cannot span.
 
 Option names are matched against the command with the three things bash removes before git sees
 an argument taken out of it: quote characters, syntactic backslashes, and the `$` that introduces

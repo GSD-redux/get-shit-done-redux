@@ -283,6 +283,19 @@ function resolveCommitSubject(messageArg) {
   // base=2 -> head=0 against a real commit). Requiring `/` up front costs
   // nothing real — `/bin/cat` and a bare `cat` both still resolve.
   //
+  // AN ABSOLUTE PATH IS NOT AN IDENTITY EITHER (independent review of #3816,
+  // round 8). Round 4 stopped at "must be absolute", so any absolute path
+  // ENDING in `/cat` was still trusted to echo its stdin — the very thing the
+  // round-4 reasoning rejected one spelling earlier. With an executable at
+  // `/some/scratch/dir/cat` printing `WIP injected`, the resolver validated
+  // the conforming heredoc body while git's real subject was `WIP injected`
+  // (measured on bash 3.2.57 and 5.3.15 against a real commit: hook exit 0,
+  // `git cat-file -p` subject `WIP injected`, while the same command through
+  // `./cat` was already refused). The prefix is now the canonical system
+  // locations, which is the only claim a string can support. `/usr/local/bin`
+  // is deliberately excluded: it is user-writable on ordinary machines, which
+  // is the plantable case this guard exists for.
+  //
   // RESIDUAL, not fixable from a string: a bare `cat` shadowed earlier on PATH
   // has the same effect and is indistinguishable here. It is also not a
   // meaningful boundary — anyone who can plant an executable on PATH can run
@@ -293,7 +306,7 @@ function resolveCommitSubject(messageArg) {
   // `\\(...)` (backslash-quoted) and `(...)` (bare) were one `\\?(...)` branch,
   // which conflated the only two spellings that differ in bash. See the
   // expansion guard below.
-  const opener = /^\$\([ \t]*(?:\/[\w.-]+(?:\/[\w.-]+)*\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\([^\s'"();|&<>\\]+)|([^\s'"();|&<>\\]+))[ \t]*$/
+  const opener = /^\$\([ \t]*(?:\/(?:usr\/)?bin\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\([^\s'"();|&<>\\]+)|([^\s'"();|&<>\\]+))[ \t]*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
 

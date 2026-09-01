@@ -1177,6 +1177,32 @@ EOF
       'a bare cat is the canonical idiom #3802 is about');
   });
 
+  test('an ABSOLUTE path is not an identity either (round-8 independent review)', () => {
+    // Round 4 stopped at "must be absolute", so any absolute path ENDING in
+    // `/cat` was still trusted to echo its stdin — the very thing the round-4
+    // reasoning rejected one spelling earlier. With an executable at
+    // `/some/scratch/dir/cat` printing `WIP injected`, the resolver validated the
+    // conforming heredoc body while git's real subject was `WIP injected`
+    // (measured on bash 3.2.57 and 5.3.15 against a real commit: hook exit 0,
+    // `git cat-file -p` subject `WIP injected`). Recognition is now the canonical
+    // system locations, the only claim a string can support.
+    const body = "<<'EOF'\nfeat: accepted body\nEOF\n)";
+    for (const [label, prog] of [
+      ['a scratch directory', '/tmp/evil/cat'],
+      ['a home directory', '/Users/someone/bin/cat'],
+      ['user-writable /usr/local/bin', '/usr/local/bin/cat'],
+    ]) {
+      assert.strictEqual(runHookCmd(`git commit -m "$(${prog} ${body}"`).status, 2,
+        `${label}: an absolute path merely ENDING in cat is not known to echo its stdin`);
+    }
+    // Non-vacuity: the canonical spellings must all still resolve, or this guard
+    // has simply disabled the feature #3802 exists for.
+    for (const prog of ['cat', '/bin/cat', '/usr/bin/cat']) {
+      assert.strictEqual(runHookCmd(`git commit -m "$(${prog} ${body}"`).status, 0,
+        `${prog} is a canonical cat and must still resolve`);
+    }
+  });
+
   test('validate-commit allows non-commit commands', () => {
     const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
     const input = JSON.stringify({
