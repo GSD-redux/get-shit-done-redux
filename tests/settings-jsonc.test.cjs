@@ -169,8 +169,9 @@ describe('readSettings null return on malformed files (#1461)', () => {
 
   test('callers guard against null readSettings return', () => {
     const installPath = path.join(__dirname, '..', 'bin', 'install.js');
-    // allow-test-rule: structural assertion on internal wiring (#1461) (#3545)
-    // inside install()'s (~2500-line) settings-configuration call sites — the
+    // allow-test-rule: structural-implementation-guard (#1461) (#3545) — structural
+    // assertion on internal wiring inside install()'s (~2500-line)
+    // settings-configuration call sites — the
     // null-guard only manifests behaviorally deep inside a full install()
     // run, so the source-text check is the minimum-cost regression guard
     // that a caller was not added without also checking readSettings'

@@ -114,8 +114,8 @@ describe('#3799: --no-legacy-cleanup and --config-dir CLI flags', () => {
   });
 
   test('the install() call site threads the config-dir scope and the skip flag', () => {
-    // allow-test-rule: structural assertion on install()'s internal wiring (#3545)
-    // (that its cleanupLegacyGsdCc call site threads configDirs/
+    // allow-test-rule: structural-implementation-guard (#3545) — structural assertion
+    // on install()'s internal wiring (that its cleanupLegacyGsdCc call site threads configDirs/
     // skipNoLegacyCleanup) — install() is a ~2500-line, side-effect-heavy
     // top-level installer routine, so exercising this specific plumbing
     // behaviorally would require a full install() run; the source-slice

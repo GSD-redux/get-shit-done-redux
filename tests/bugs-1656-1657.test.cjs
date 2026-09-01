@@ -55,11 +55,11 @@ describe('#1656: community .sh hooks must be present in hooks/dist', () => {
 describe('#1657 / #191: installer/package metadata retires sdk seam', () => {
   let src;
   test('install.js does not contain the legacy promptSdk() prompt (#1657)', () => {
-    // allow-test-rule: regression guards against literally reintroducing (#3545)
-    // dead/removed code strings (promptSdk(), --sdk/--no-sdk parsing,
-    // installSdkIfNeeded({) — none of them are live exports or behavior to
-    // exercise via require(), so the source text itself is the contract
-    // this test protects
+    // allow-test-rule: structural-regression-guard (#3545) — regression guard
+    // against literally reintroducing dead/removed code strings (promptSdk(),
+    // --sdk/--no-sdk parsing, installSdkIfNeeded({) — none of them are live
+    // exports or behavior to exercise via require(), so the source text
+    // itself is the contract this test protects
     src = fs.readFileSync(INSTALL_SRC, 'utf-8');
     assert.ok(
       !src.includes('promptSdk('),
