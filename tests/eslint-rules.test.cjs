@@ -544,8 +544,9 @@ describe('no-source-grep rule — widening (#3502)', () => {
 
   // ─── fold + hooks widening (#3545 / Phase 7 of #3464) ─────────────────────
   //
-  // One RuleTester case per row of .gsd/phase/chore-3464-fold-hooks-widening/
-  // 50-test-matrix.md, rows 1-8. Covers `fold` (a bare-Identifier readFileSync
+  // One RuleTester case per row of
+  // .gsd/phase/chore-3545-fold-hooks-widening-migration/50-test-matrix.md,
+  // rows 1-8. Covers `fold` (a bare-Identifier readFileSync
   // path argument resolved ONE hop back to its VariableDeclarator init) and
   // `hooks` (now a recognized source directory alongside bin/lib/gsd-core/src).
 
