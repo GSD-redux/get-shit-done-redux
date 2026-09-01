@@ -83,8 +83,10 @@
   "gsd-core/references/nyquist-compliance.md",
   "gsd-core/references/offer-next.md",
   "gsd-core/references/phase-argument-parsing.md",
+  "gsd-core/references/plan-checker-examples.md",
   "gsd-core/references/planner-antipatterns.md",
   "gsd-core/references/planner-chunked.md",
+  "gsd-core/references/planner-coupling.md",
   "gsd-core/references/planner-failing-direction.md",
   "gsd-core/references/planner-gap-closure.md",
   "gsd-core/references/planner-graphify-auto-update.md",
@@ -402,5 +404,6 @@
   "scripts/lib/cli-exit.cjs",
   "scripts/lib/drift-scan.cjs",
   "scripts/lib/exit-code-registry.cjs",
-  "scripts/lib/ndjson-reporter.cjs"
+  "scripts/lib/ndjson-reporter.cjs",
+  "scripts/lib/shellcheck-fetch.cjs"
 ]

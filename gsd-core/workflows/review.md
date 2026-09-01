@@ -490,7 +490,14 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
 done
 
-for SLUG in $DISPATCH_SLUGS; do
+# Rewrapped through unquoted command substitution, not consumed as a bare
+# `$DISPATCH_SLUGS`: bash word-splits an unquoted scalar on IFS by default,
+# but zsh does not, so a bare re-split collapsed every slug onto one
+# iteration under zsh whenever 2+ reviewers were selected (gsd-core#4109).
+# Unquoted `$(...)` re-splits identically under both shells regardless of
+# `SH_WORD_SPLIT` — same reason the accumulator-building loop above already
+# works under both.
+for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
   if [ "$PARALLEL_LANES" = "true" ]; then
     run_review_lane "$SLUG" &
   else
@@ -508,7 +515,9 @@ wait
 # produces is byte-identical to the one a sequential run produces. This is post-join and therefore
 # single-threaded, so `>>` here is safe. A lane that was budget-skipped, or that never started,
 # leaves no result file and correctly contributes no line.
-for SLUG in $DISPATCH_SLUGS; do
+# Rewrapped through unquoted command substitution (gsd-core#4109) — see the
+# dispatch loop above for why a bare `$DISPATCH_SLUGS` collapses under zsh.
+for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
   LANE_RESULT="$RUN_DIR/gsd-review-lane-result-$SLUG.json"
   if [ -f "$LANE_RESULT" ]; then
     cat "$LANE_RESULT" >> "$RUN_DIR/gsd-review-lane-results.jsonl"
@@ -569,7 +578,10 @@ if [ "${LANE_LINES:-0}" -eq 0 ]; then
   # failure stub does not. If a slug has no stub at all, it is not a skip.
   DISPATCHED_COUNT=0
   SKIPPED_COUNT=0
-  for SLUG in $DISPATCH_SLUGS; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$DISPATCH_SLUGS` word-splits under bash but not zsh, collapsing every
+  # slug onto one iteration there whenever 2+ reviewers were selected.
+  for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
     DISPATCHED_COUNT=$((DISPATCHED_COUNT + 1))
     STUB="$RUN_DIR/gsd-review-$SLUG.md"
     if [ -f "$STUB" ] && grep -q "review skipped: prompt budget" "$STUB" 2>/dev/null; then
@@ -627,7 +639,10 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
 done
 
-for SLUG in $DISPATCH_SLUGS; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$DISPATCH_SLUGS` word-splits under bash but not zsh, collapsing every
+# slug onto one iteration there whenever 2+ reviewers were selected.
+for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
   [ "$SLUG" = "coderabbit" ] && continue
   REVIEW_FILE="$RUN_DIR/gsd-review-$SLUG.md"
   [ -f "$REVIEW_FILE" ] || continue

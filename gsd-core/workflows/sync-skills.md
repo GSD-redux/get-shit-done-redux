@@ -237,12 +237,18 @@ mkdir -p "$DEST_ROOT"
 # empty. If per-runtime conversion is ever wired in, this is where it would go;
 # until then the cp -r must never run for a destination != source.
 
-for SKILL in $CREATE_LIST $UPDATE_LIST; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$VAR` word-splits under bash but not zsh, collapsing every element onto
+# one iteration there.
+for SKILL in $(printf '%s' "$CREATE_LIST") $(printf '%s' "$UPDATE_LIST"); do
   rm -rf "$DEST_ROOT/$SKILL"
   cp -r "$SRC_SKILLS_ROOT/$SKILL" "$DEST_ROOT/$SKILL"
 done
 
-for SKILL in $REMOVE_LIST; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$VAR` word-splits under bash but not zsh, collapsing every element onto
+# one iteration there.
+for SKILL in $(printf '%s' "$REMOVE_LIST"); do
   rm -rf "$DEST_ROOT/$SKILL"
 done
 ```
