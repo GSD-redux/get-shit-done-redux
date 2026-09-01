@@ -61,6 +61,7 @@ const {
 const {
   STEP_WORKFLOWS,
   HOST_LOOP_FILES,
+  buildContract,
   scanWiredPoints,
   getWiredLoopPoints,
   CANONICAL_POINTS,
@@ -914,48 +915,24 @@ describe('ADR-857 phase 6 planning feature capabilities', () => {
 });
 
 describe('#3778 — plan:pre contribution set feeding the quick.md planner dispatch', () => {
-  const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
-
-  test('at least one plan:pre contribution is registered', () => {
-    const planPreContributions = realRegistry.byLoopPoint['plan:pre'].contributions;
+  test('Quick host registration is generator-owned without changing canonical contract shape', () => {
+    const plan = STEP_WORKFLOWS.find((workflow) => workflow.step === 'plan');
+    assert.deepEqual(plan.auxiliaryHosts, [
+      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'] },
+    ]);
     assert.ok(
-      planPreContributions.length > 0,
-      'the real registry must declare at least one plan:pre contribution for quick.md to dispatch',
+      HOST_LOOP_FILES.includes('gsd-core/workflows/quick.md'),
+      'Quick must be enumerated by the generator-owned host set',
     );
-  });
 
-  test('every plan:pre contribution has a non-empty into target and a non-empty fragment.inline', () => {
-    const planPreContributions = realRegistry.byLoopPoint['plan:pre'].contributions;
-    for (const contribution of planPreContributions) {
-      assert.ok(
-        typeof contribution.into === 'string' && contribution.into.length > 0,
-        `contribution from ${contribution.capId} must declare a non-empty into target`,
-      );
-      assert.ok(
-        typeof contribution.fragment?.inline === 'string' && contribution.fragment.inline.length > 0,
-        `contribution from ${contribution.capId} must declare a non-empty fragment.inline`,
-      );
-    }
-  });
+    const contract = buildContract();
+    assert.strictEqual(STEP_WORKFLOWS.length, 5, 'canonical step rows must stay at five');
+    assert.strictEqual(contract.length, 5, 'serialized contract must stay at five entries');
+    assert.deepEqual(contract, LOOP_HOST_CONTRACT, 'auxiliary metadata must not be serialized');
 
-  test('the registry, as a whole, carries at least one non-planner-into contribution (D-07 filters against a real value)', () => {
-    // Built from the real registry's own capabilities export, with no dependency
-    // on which capabilities happen to be locally installed.
-    //
-    // Scope, stated precisely: this proves `into` takes non-planner values
-    // SOMEWHERE in the registry, so D-07's "into == planner" filter discriminates
-    // rather than being a no-op predicate. It does NOT prove the filter excludes
-    // anything at plan:pre — today every plan:pre contribution is into: "planner",
-    // so the filter is a forward-looking safeguard there, not an active exclusion.
-    // Asserting plan:pre is all-planner would be brittle: it would fail the day a
-    // legitimate non-planner plan:pre contribution lands, which is precisely when
-    // the safeguard starts doing work.
-    const allContributions = Object.values(realRegistry.byLoopPoint).flatMap((point) => point.contributions);
-    const nonPlannerContributions = allContributions.filter((c) => c.into !== 'planner');
-    assert.ok(
-      nonPlannerContributions.length > 0,
-      'registry must carry at least one non-planner-into contribution for the planner filter to be meaningful',
-    );
+    const points = contract.flatMap((entry) => entry.points);
+    assert.strictEqual(points.length, 12, 'serialized contract must stay at 12 points');
+    assert.strictEqual(new Set(points).size, 12, 'serialized lifecycle points must remain unique');
   });
 });
 

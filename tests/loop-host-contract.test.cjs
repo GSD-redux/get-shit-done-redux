@@ -441,25 +441,62 @@ describe('module exports', () => {
 // ─── #3778 — quick.md must never become a 6th loop-host file ──────────────────
 
 describe('quick.md is not a loop-host file (D-09 regression pin, #3778)', () => {
-  test('STEP_WORKFLOWS still names exactly the 5 canonical loop-host files, quick.md absent', () => {
-    const names = STEP_WORKFLOWS.map((w) => w.file);
-    assert.strictEqual(STEP_WORKFLOWS.length, 5, 'STEP_WORKFLOWS must stay at exactly 5 entries');
-    assert.ok(!names.includes('quick.md'), 'quick.md must never be added to STEP_WORKFLOWS');
+  function makeQuickWorkflow({ includePoint = true, includeKind = true } = {}) {
+    return [
+      includePoint ? 'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)' : '',
+      includeKind ? 'For each active entry where `kind == "contribution"`: inject.' : '',
+      '',
+    ].join('\n');
+  }
+
+  test('Quick is a generator-owned plan auxiliary host with its own contribution expectation', () => {
+    const plan = STEP_WORKFLOWS.find((workflow) => workflow.step === 'plan');
+    assert.deepEqual(plan.auxiliaryHosts, [
+      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'] },
+    ]);
+
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow();
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      const contract = buildContract(tmpDir);
+      assert.strictEqual(contract.length, 5, 'auxiliary hosts must not create a sixth serialized step');
+      assert.strictEqual(
+        new Set(contract.flatMap((entry) => entry.points)).size,
+        12,
+        'auxiliary hosts must not create a duplicate lifecycle point',
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 
-  test('parseLoopHostBlock throws on real quick.md content — it carries no <!-- gsd:loop-host --> marker', () => {
-    const quickPath = path.join(ROOT, 'gsd-core', 'workflows', 'quick.md');
-    const content = fs.readFileSync(quickPath, 'utf8');
-    assert.throws(
-      () => parseLoopHostBlock(content, 'quick.md'),
-      /missing <!-- gsd:loop-host \.\.\. --> block/,
-      'quick.md dispatching plan:pre must not gain a loop-host marker block',
-    );
+  test('buildContract rejects Quick without its plan:pre render seam', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ includePoint: false });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host missing expected point "plan:pre"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 
-  test('buildContract() still yields exactly 5 entries with quick.md unmodified on disk', () => {
-    const contract = buildContract(); // reads real gsd-core/workflows/
-    assert.strictEqual(contract.length, 5, 'buildContract() must still produce exactly 5 step entries');
+  test('buildContract rejects Quick without its contribution dispatch', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ includeKind: false });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host point "plan:pre" missing expected kind "contribution"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 });
 
