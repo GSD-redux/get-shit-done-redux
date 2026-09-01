@@ -158,5 +158,3 @@ describe('regression #4112: pause-work.md Context Detection block', () => {
     assert.match(result.deliberation, /\.planning\/deliberations\/topic\.md$/);
   });
 });
-</content>
-</invoke>
