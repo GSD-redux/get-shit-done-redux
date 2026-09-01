@@ -2045,31 +2045,36 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   if (noVerify) commitArgs.push('--no-verify');
   if (canScope) {
     commitArgs.push('--', ...stagedPaths);
-    // #3859 follow-up: on git 2.39.5 (confirmed on the CI Linux bench image;
-    // NOT reproducible on git 2.50.1) a PATHSPEC-LIMITED `git commit -- <paths>`
-    // itself — not just `git diff` — consults `diff.ignoreSubmodules` to decide
-    // whether the named pathspec has anything to record. With a local
-    // `diff.ignoreSubmodules=all` and a submodule gitlink genuinely bumped,
-    // that git version silently REFUSES the commit (prints a `git status`-style
-    // "Changes to be committed" dump and exits 1, having written nothing) even
-    // though the diff probe above (already pinned with its own
-    // `--ignore-submodules=dirty`) correctly reported the change as present.
-    // The result was misclassified as generic `commit_failed` because git's
-    // refusal text does not contain "nothing to commit".
-    // `-c diff.ignoreSubmodules=dirty` forces the SAME override the probe uses
-    // onto the real commit invocation, so the two can never disagree again —
-    // driven: this exact `-c` flag turns the git-2.39.5 refusal into a
-    // successful commit, and is a no-op everywhere else (driven: dry-run and
-    // git 2.50.1 already behave this way with or without it). Scoped to
-    // `canScope` because only a pathspec-limited commit exercises this git
-    // internal path; a bare/whole-index commit or `--amend` has no pathspec
-    // for `diff.ignoreSubmodules` to gate.
-    commitArgs.unshift('-c', 'diff.ignoreSubmodules=dirty');
   }
+  // #3859 follow-up: on git 2.39.5 (confirmed on the CI Linux bench image;
+  // NOT reproducible on git 2.50.1) a PATHSPEC-LIMITED `git commit -- <paths>`
+  // itself — not just `git diff` — consults `diff.ignoreSubmodules` to decide
+  // whether the named pathspec has anything to record. With a local
+  // `diff.ignoreSubmodules=all` and a submodule gitlink genuinely bumped, that
+  // git version silently REFUSES the commit (prints a `git status`-style
+  // "Changes to be committed" dump and exits 1, having written nothing) even
+  // though the diff probe above (already pinned with its own
+  // `--ignore-submodules=dirty`) correctly reported the change as present. The
+  // result was misclassified as generic `commit_failed` because git's refusal
+  // text does not contain "nothing to commit".
+  // The override rides in via `GIT_CONFIG_*` env vars rather than a `-c`
+  // argv flag so `commitArgs[0]` stays `'commit'` — several #3859 regression
+  // tests assert on the raw argv captured at the `execGit` seam (e.g.
+  // `gitCalls.some((a) => a[0] === 'commit')`), and a leading `-c` would shift
+  // every element and break that pinning. Same override the probe already
+  // carries, so the two can never disagree again — driven: this env override
+  // turns the git-2.39.5 refusal into a successful commit, and is a no-op
+  // everywhere else (driven: dry-run and git 2.50.1 already behave this way
+  // with or without it). Scoped to `canScope` because only a pathspec-limited
+  // commit exercises this git internal path; a bare/whole-index commit or
+  // `--amend` has no pathspec for `diff.ignoreSubmodules` to gate.
+  const commitEnv: Record<string, string> = canScope
+    ? { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_0: 'dirty' }
+    : {};
   // #3886: `git commit` runs pre-commit hooks (husky/lint-staged routinely
   // idles ~4s on Windows before any task) — 10s is too tight, and a timeout
   // kill is NOT an ordinary failure. Same band as the push call below.
-  const commitResult = execGit(commitArgs, { cwd, timeout: COMMIT_TIMEOUT_MS });
+  const commitResult = execGit(commitArgs, { cwd, timeout: COMMIT_TIMEOUT_MS, env: commitEnv });
   if (commitResult.exitCode !== 0) {
     // #3886: a SIGTERM'd git commit is a timeout, not commit_failed — the
     // partial stderr it flushed (often incidental CRLF warnings) is noise,
