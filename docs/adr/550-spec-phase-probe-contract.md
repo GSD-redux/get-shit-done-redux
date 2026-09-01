@@ -226,9 +226,12 @@ only `SHAPE_CUES` vocabulary.
 **Acceptance bar carried into `tests/edge-probe.test.cjs` / `tests/edge-probe-spec-phase-contract.test.cjs`:** a `SHAPE_CUES`/`VALID_SHAPES` parity assertion (`RULESET.GENERATIVE-FIX`), a fixture
 pair proving a non-English requirement with `text_en` classifies identically to its English
 equivalent, boundary coverage for `text_en`'s absence/presence/empty-string cases, and a
-workflow-prose contract test asserting `spec-phase.md` Step 5.5 actually documents populating
-`text_en` for `response_language` projects — the machine check the #2773 doc-only stopgap
-explicitly lacked.
+workflow-prose contract test — in the same style as the existing #2773 Step 5.5 assertions —
+confirming `spec-phase.md` documents populating `text_en` for `response_language` projects.
+The actual machine check the #2773 doc-only stopgap lacked is engine-level: `text_en` is now
+a real, validated `Requirement` field (`validateRequirement` fail-closes on an empty value)
+that `classifyShape`/`proposeEdges` demonstrably prefer over `text` — a property #2773's
+prose-only convention had no way to enforce.
 
 **Explicitly out of scope (unchanged from #2773).** The ADR-857 §98 / Decision 7b recall gap — a
 requirement carrying no shape cue in *any* language, including English, still classifies to

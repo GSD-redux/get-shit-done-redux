@@ -512,9 +512,14 @@ test('#2773: no Step 5.5 exit path leaks the $REQS_JSON temp file', () => {
 // prose. #3717 (approved scope: Form 1 only, `text_en` field) makes this an explicit,
 // validatable field: `text` goes back to meaning "the requirement's own text" (in
 // response_language, when set), and `text_en` carries the translation the classifier reads.
-// classifyShape's actual `text_en ?? text` selection is unit-tested in edge-probe.test.cjs;
-// these tests only check the WORKFLOW PROSE instructs populating text_en correctly — the
-// machine check the #2773 doc-only stopgap explicitly lacked.
+//
+// These three tests only check the WORKFLOW PROSE instructs populating text_en correctly —
+// the same prose-assertion pattern the #2773 tests above already use for Step 5.5, not a new
+// testing technique. The actual machine check the #2773 doc-only stopgap lacked is
+// ENGINE-level, not workflow-level: text_en is now a real, validated Requirement field —
+// validateRequirement fail-closes on an empty value, and classifyShape/proposeEdges
+// demonstrably prefer it over text — a property the #2773 prose-only convention had no way
+// to enforce. See tests/edge-probe.test.cjs for that engine-level coverage.
 
 test('#3717: Step 5.5 documents populating text_en for response_language projects', () => {
   const block = extractStep55Block(readSpecPhase());
