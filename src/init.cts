@@ -1467,6 +1467,10 @@ function cmdInitQuick(
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
     verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
+    // #3936: Step 4.75 dispatches gsd-phase-researcher; resolve its own tier
+    // (parity with cmdInitPlanPhase) so the research spawn stops pinning
+    // planner_model.
+    researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
     // #2072: the quick review step spawns gsd-code-reviewer; resolve its own model
     // so model_overrides / models.verification apply (was reusing executor_model).
     reviewer_model: resolveModelInternal(cwd, 'gsd-code-reviewer'),
