@@ -2894,6 +2894,10 @@ function validateStep(step, prefix, declaredSkills, declaredAgents) {
     errors.push(prefix + '.when must be a string if present');
   }
 
+  if (step.pointFrom !== undefined && typeof step.pointFrom !== 'string') {
+    errors.push(prefix + '.pointFrom must be a string if present');
+  }
+
   if (step.fragment !== undefined) {
     errors.push(...validateFragment(step.fragment, prefix + '.fragment'));
   }
@@ -3028,6 +3032,31 @@ function validateAgainstContract(cap, capId) {
       ) {
         errors.push(
           prefix + ' step.when "' + step.when + '" is not defined in capability config keys',
+        );
+      }
+    }
+  }
+
+  // pointFrom (#3661): selects which of possibly several same-capability steps is
+  // active for its own `point`, based on an enum config key. Require it references
+  // an enum key in cap.config whose values include THIS step's own point — otherwise
+  // the step could never activate (a silently-dead step).
+  for (const step of cap.steps) {
+    if (step.pointFrom !== undefined) {
+      if (typeof step.pointFrom !== 'string') continue; // already reported above
+      const slice = typeof cap.config === 'object' && cap.config !== null ? cap.config[step.pointFrom] : undefined;
+      if (!slice || typeof slice !== 'object') {
+        errors.push(
+          prefix + ' step.pointFrom "' + step.pointFrom + '" is not defined in capability config keys',
+        );
+      } else if (slice.type !== 'enum') {
+        errors.push(
+          prefix + ' step.pointFrom "' + step.pointFrom + '" must reference an enum config key (got type: ' + slice.type + ')',
+        );
+      } else if (!Array.isArray(slice.values) || !slice.values.includes(step.point)) {
+        errors.push(
+          prefix + ' step.pointFrom "' + step.pointFrom + '" enum values do not include this step\'s own point "' +
+          step.point + '" — the step could never activate',
         );
       }
     }
