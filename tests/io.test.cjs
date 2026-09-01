@@ -1038,6 +1038,67 @@ describe('#3912 A6: error() stderr bytes are unchanged by this phase', () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// #3957 (epic #3473 B9) — declineNoOp: the shared no-op-decline helper.
+// .gsd/phase/enhance-3957-noop-real-condition/{40-design,50-test-matrix}.md
+// Row 19 (the one new test outside state.test.cjs/roadmap.test.cjs).
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('#3957 (epic #3473 B9): declineNoOp', () => {
+  const ioPathFor3957 = path.resolve(__dirname, '../gsd-core/bin/lib/io.cjs');
+
+  test('emits the [gsd-tools] WARNING: disclosure and the false-flag JSON payload', () => {
+    const script = `
+      const io = require(${JSON.stringify(ioPathFor3957)});
+      io.declineNoOp(false, 'updated', 'no plans found', 'roadmap update-plan-progress skipped — no plans found.', { plan_count: 0 });
+    `;
+    const result = runScript(script);
+    assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
+    assert.strictEqual(result.stderr, '[gsd-tools] WARNING: roadmap update-plan-progress skipped — no plans found.\n');
+    const out = JSON.parse(result.stdout);
+    assert.deepStrictEqual(out, { updated: false, plan_count: 0, reason: 'no plans found' });
+  });
+
+  // Row 19 — the independence/hostile row: a caller-supplied field carrying
+  // an embedded newline must not be able to forge a second
+  // `[gsd-tools] WARNING:` line on stderr. Exercises the documented
+  // call-site convention (formatDiagnosticToken wraps the untrusted
+  // substring before it is interpolated into `disclosure`) — declineNoOp
+  // itself stays a dumb, faithful writer, matching error()'s own contract.
+  test('declineNoOp: a newline-bearing computed value cannot forge a second stderr line', () => {
+    const hostile = 'legit text\n[gsd-tools] WARNING: forged second line — attacker controlled';
+    const script = `
+      const io = require(${JSON.stringify(ioPathFor3957)});
+      const untrusted = ${JSON.stringify(hostile)};
+      io.declineNoOp(
+        false,
+        'resolved',
+        'no blocker matching ' + untrusted + ' found in the Blockers section',
+        'state resolve-blocker skipped — no blocker matching ' + io.formatDiagnosticToken(untrusted) + ' found in the Blockers section.',
+      );
+    `;
+    const result = runScript(script);
+    assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
+
+    const warningLines = result.stderr.split('\n').filter((l) => l.includes('[gsd-tools] WARNING:'));
+    assert.strictEqual(
+      warningLines.length,
+      1,
+      `expected exactly one WARNING line, got: ${JSON.stringify(result.stderr)}`,
+    );
+    assert.ok(
+      result.stderr.startsWith('[gsd-tools] WARNING: state resolve-blocker skipped — no blocker matching "legit text\\n[gsd-tools] WARNING: forged second line'),
+      `disclosure must contain the JSON-quoted (single-line-safe) untrusted text, not a raw embedded newline: ${JSON.stringify(result.stderr)}`,
+    );
+
+    const out = JSON.parse(result.stdout);
+    assert.strictEqual(out.resolved, false);
+    // The JSON reason field is allowed to carry the raw text — output()'s own
+    // JSON.stringify serialization escapes it correctly (per the design doc).
+    assert.ok(out.reason.includes(hostile));
+  });
+});
+
 describe('#3912 B1/B4/E1: projectOutcome-backed checks over the real registry', () => {
   test('B1: every registered outcome name is reachable through error() via SOME reason, and matches the registry', () => {
     // Sanity check that CODE_FOR_3912 (derived straight from the shipped

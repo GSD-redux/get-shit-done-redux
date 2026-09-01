@@ -19340,3 +19340,312 @@ describe('state — consumer-output identity (ADR-3180 Decision 4(b), #3358)', (
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #3957 (epic #3473 B9) — a no-op decline reports the real condition.
+// .gsd/phase/enhance-3957-noop-real-condition/{40-design,50-test-matrix}.md
+// Rows 1-10 of the test matrix. Every `cmdState*` call here is IN-PROCESS
+// (not via runGsdTools's subprocess) because a subprocess's legacy result
+// shape drops stderr on a clean (exit 0) run — see tests/helpers.cjs
+// toLegacyShape — and a no-op decline is exactly an exit-0 run that still
+// needs its stderr disclosure asserted.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () => {
+  const clockLib = require('../gsd-core/bin/lib/clock.cjs');
+
+  /**
+   * Mirrors captureStdout (top of file) but also captures any
+   * `[gsd-tools] WARNING:` disclosure written via `process.stderr.write`
+   * (declineNoOp's stderr mechanism, matching the pre-existing
+   * cmdStateUpdateProgress decline arms and the
+   * stateReplaceFieldWithFallback precedent above) — needed because
+   * subprocess-based runGsdTools drops stderr on a clean exit.
+   */
+  function captureCliIO(fn) {
+    const originalWriteSync = fs.writeSync;
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    let stdout = '';
+    let stderr = '';
+    fs.writeSync = (fd, data, offset, length) => {
+      if (fd !== 1) return originalWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      stdout += chunk;
+      return Buffer.byteLength(chunk, 'utf8');
+    };
+    process.stderr.write = (chunk) => {
+      stderr += String(chunk);
+      return true;
+    };
+    try {
+      fn();
+    } finally {
+      fs.writeSync = originalWriteSync;
+      process.stderr.write = originalStderrWrite;
+    }
+    return { stdout, stderr };
+  }
+
+  describe('cmdStateUpdateProgress', () => {
+    let tmpDir;
+    afterEach(() => { if (tmpDir) cleanup(tmpDir); });
+
+    // Row 1: frontmatter progress present (via the real disk scan), body has
+    // no Progress:/**Progress:** line at all.
+    test('update-progress reports the missing body line and carries computed values', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+        '# Roadmap', '', '## v1.0 Current', '', '### Phase 1: Foo', '',
+      ].join('\n'));
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foo');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+        '---',
+        'gsd_state_version: 1.0',
+        'milestone: v1.0',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Status: Executing',
+        'Phase: 1',
+        '',
+      ].join('\n'));
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateUpdateProgress(tmpDir, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(
+        out.reason,
+        'no Progress: line found in STATE.md body to update (frontmatter progress data is unaffected)',
+      );
+      assert.strictEqual(out.completed, 1, 'completed must be carried, not discarded');
+      assert.strictEqual(out.total, 2, 'total must be carried, not discarded');
+      assert.strictEqual(typeof out.percent, 'number', 'percent must be carried, not discarded');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state update-progress skipped — no Progress: line found in STATE\.md body/);
+    });
+
+    // Row 2: phase scope is not COMPLETE — a project with STATE.md but no
+    // ROADMAP.md at all resolves to SCOPE.UNREADABLE.
+    test('update-progress phase-scope decline still discloses via stderr', () => {
+      tmpDir = createFixture();
+      writeState(tmpDir, '# Project State\n\n## Current Position\n\nPhase: 1\n');
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateUpdateProgress(tmpDir, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, `phase scope is ${SCOPE.UNREADABLE}, not complete`);
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state update-progress skipped — phase scope is unreadable, not complete\./);
+    });
+
+    // Row 3: phase scope IS complete, but 0 plans exist in current-milestone phases.
+    test('update-progress zero-plans decline still discloses via stderr', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+        '# Roadmap', '', '## v1.0 Current', '', '### Phase 1: Foo', '',
+      ].join('\n'));
+      // Phase directory exists (so the scan is a real COMPLETE scan) but has
+      // zero plan files inside it.
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foo'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+        '---', 'gsd_state_version: 1.0', 'milestone: v1.0', 'status: executing', '---', '',
+        '# Project State', '',
+      ].join('\n'));
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateUpdateProgress(tmpDir, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(
+        out.reason,
+        'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)',
+      );
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state update-progress skipped — no plans found in current-milestone phases \(0 plans\)\./);
+    });
+
+    // Row 4: computeUpdateProgressPreview withholds (#1761: ROADMAP has no
+    // versioned milestone heading, so buildStateFrontmatter cannot bound the
+    // asserted `milestone: v1.0` and nulls percent/completed/total).
+    test('update-progress preview-withheld decline still discloses via stderr', () => {
+      tmpDir = createTempProject();
+      const lines = ['# Roadmap', ''];
+      for (let i = 1; i <= 3; i++) { lines.push(`### Phase ${i}: phase-${i}`, ''); }
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), lines.join('\n'));
+      const phasesDir = path.join(tmpDir, '.planning', 'phases');
+      for (let i = 1; i <= 2; i++) {
+        const dir = path.join(phasesDir, String(i).padStart(2, '0'));
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, '01-PLAN.md'), '# Plan\n');
+        fs.writeFileSync(path.join(dir, '01-SUMMARY.md'), '# Summary\n');
+      }
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+        '---', 'gsd_state_version: 1.0', 'milestone: v1.0', 'status: executing', '---', '',
+        '# Project State', '', '**Progress:** [░░░░░░░░░░] 0%', '',
+      ].join('\n'));
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateUpdateProgress(tmpDir, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false, `setup must reach the withheld arm; got ${stdout}`);
+      assert.ok(out.reason, 'a withheld reason must be present');
+      assert.match(stderr, new RegExp(`^\\[gsd-tools\\] WARNING: state update-progress skipped — ${escapeRegex(out.reason)}\\n$`));
+    });
+  });
+
+  describe('cmdStateResolveBlocker', () => {
+    let tmpDir;
+    afterEach(() => { if (tmpDir) cleanup(tmpDir); });
+
+    // Row 5
+    test('resolve-blocker: no section reports section-not-found, not false success', () => {
+      tmpDir = createFixture();
+      const statePath = writeState(tmpDir, '# Project State\n\n## Session Continuity\n\n**Last session:** none\n');
+      const before = fs.readFileSync(statePath, 'utf-8');
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateResolveBlocker(tmpDir, 'timeout', false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.resolved, false);
+      assert.strictEqual(out.reason, 'no Blockers/Concerns section found in STATE.md');
+      assert.strictEqual(fs.readFileSync(statePath, 'utf-8'), before, 'STATE.md must be unchanged');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state resolve-blocker skipped — no Blockers\/Concerns section found in STATE\.md\./);
+    });
+
+    // Row 6 (signature D — the false-success this issue fixes)
+    test('resolve-blocker: no matching bullet reports resolved:false, not a false success', () => {
+      tmpDir = createFixture();
+      const statePath = writeState(tmpDir, '# Project State\n\n### Blockers\n\n- Database connection timeout\n');
+      const before = fs.readFileSync(statePath, 'utf-8');
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateResolveBlocker(tmpDir, 'nonexistent blocker', false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.resolved, false, 'must not be a false success');
+      assert.strictEqual(out.reason, 'no blocker matching nonexistent blocker found in the Blockers section');
+      assert.strictEqual(fs.readFileSync(statePath, 'utf-8'), before, 'STATE.md bytes must be unchanged');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state resolve-blocker skipped — no blocker matching "nonexistent blocker" found in the Blockers section\./);
+    });
+
+    // Row 7 (boundary — case-insensitive match must still be preserved)
+    test('resolve-blocker: case-insensitive match still resolves', () => {
+      tmpDir = createFixture();
+      const statePath = writeState(tmpDir, '# Project State\n\n### Blockers\n\n- Database Connection Timeout\n');
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateResolveBlocker(tmpDir, 'database connection timeout', false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.resolved, true);
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.ok(!after.includes('Database Connection Timeout'), 'the matched blocker line must be removed');
+      assert.strictEqual(stderr, '', 'a real resolve must not emit a decline disclosure');
+    });
+  });
+
+  describe('cmdStateRecordSession', () => {
+    let tmpDir;
+    const originalNowIso = clockLib.realClock.nowIso;
+    afterEach(() => {
+      clockLib.realClock.nowIso = originalNowIso;
+      if (tmpDir) cleanup(tmpDir);
+    });
+
+    // Row 8
+    test('record-session: nothing to update reports no-fields-found', () => {
+      tmpDir = createFixture();
+      const statePath = writeState(tmpDir, '# Project State\n\n## Decisions\n\n- none yet\n');
+      const before = fs.readFileSync(statePath, 'utf-8');
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateRecordSession(tmpDir, {}, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.recorded, false);
+      assert.strictEqual(out.reason, 'no session fields found in STATE.md to update');
+      assert.strictEqual(fs.readFileSync(statePath, 'utf-8'), before, 'STATE.md must be unchanged');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state record-session skipped — no session fields found in STATE\.md to update\./);
+    });
+
+    // Row 9 (hardest — signature B, collapsed reconciliation). A frozen clock
+    // makes `now` match the ALREADY-ON-DISK `Last session` value, and the
+    // supplied --stopped-at matches the already-on-disk `Stopped at` value
+    // too, so the write is attempted (updated gets a pre-reconciliation
+    // push) but reconciliation finds no bytes actually changed.
+    test('record-session: matched-but-unchanged distinguished from nothing-found', () => {
+      const FIXED_NOW = '2024-01-01T00:00:00.000Z';
+      clockLib.realClock.nowIso = () => FIXED_NOW;
+      tmpDir = createFixture();
+      const statePath = writeState(tmpDir, [
+        '# Project State', '',
+        '## Session', '',
+        `**Last session:** ${FIXED_NOW}`,
+        '**Stopped at:** Phase 2 Plan 1 complete',
+        '**Resume file:** None',
+        '',
+      ].join('\n'));
+      const before = fs.readFileSync(statePath, 'utf-8');
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateRecordSession(tmpDir, { stopped_at: 'Phase 2 Plan 1 complete' }, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.recorded, false, `setup must reach the matched-but-unchanged arm; got ${stdout}`);
+      assert.strictEqual(
+        out.reason,
+        'the matched session field(s) already held the reported value — no bytes changed',
+      );
+      assert.strictEqual(fs.readFileSync(statePath, 'utf-8'), before, 'STATE.md bytes must be unchanged');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: state record-session skipped — the matched session field\(s\) already held the reported value; no bytes changed\./);
+    });
+
+    // Row 10 (pre-existing coverage; verify the split above did not break
+    // the common, correct fast path — a real change still reports recorded:true).
+    test('record-session: real change still reports recorded:true', () => {
+      const FIXED_NOW = '2024-01-01T00:00:00.000Z';
+      clockLib.realClock.nowIso = () => FIXED_NOW;
+      tmpDir = createFixture();
+      writeState(tmpDir, [
+        '# Project State', '',
+        '## Session', '',
+        '**Last session:** 2023-01-01T00:00:00.000Z',
+        '**Stopped at:** None',
+        '**Resume file:** None',
+        '',
+      ].join('\n'));
+
+      const { stdout, stderr } = captureCliIO(() => {
+        stateLib.cmdStateRecordSession(tmpDir, { stopped_at: 'Phase 3 Plan 1 complete' }, false);
+      });
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.recorded, true);
+      assert.ok(Array.isArray(out.updated) && out.updated.length > 0, 'updated list must be populated');
+      assert.strictEqual(stderr, '', 'a real change must not emit a decline disclosure');
+    });
+  });
+});
