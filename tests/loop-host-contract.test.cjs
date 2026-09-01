@@ -76,7 +76,7 @@ function makeValidWorkflowFiles() {
     ),
     'quick.md': [
       'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)',
-      'For each active entry where `kind == "contribution"`: inject.',
+      'For each active entry where `kind == "contribution"` and `into == "planner"`: inject.',
       '',
     ].join('\n'),
     'execute-phase.md': makeWorkflow(
@@ -447,9 +447,10 @@ describe('module exports', () => {
 
 describe('Quick auxiliary loop-host contract (#3778)', () => {
   function makeQuickWorkflow({ includePoint = true, includeKind = true, into = 'planner' } = {}) {
+    const target = into === null ? '' : ` and \`into == "${into}"\``;
     return [
       includePoint ? 'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)' : '',
-      includeKind ? `For each active entry where \`kind == "contribution"\` and \`into == "${into}"\`: inject.` : '',
+      includeKind ? `For each active entry where \`kind == "contribution"\`${target}: inject.` : '',
       '',
     ].join('\n');
   }
@@ -507,6 +508,20 @@ describe('Quick auxiliary loop-host contract (#3778)', () => {
   test('buildContract rejects a Quick contribution dispatch targeting the wrong role', () => {
     const files = makeValidWorkflowFiles();
     files['quick.md'] = makeQuickWorkflow({ into: 'orchestrator' });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host point "plan:pre" missing expected kind "contribution"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('buildContract rejects a Quick contribution dispatch without its planner target', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ into: null });
     const tmpDir = makeTempWorkflowsDir(files);
     try {
       assert.throws(

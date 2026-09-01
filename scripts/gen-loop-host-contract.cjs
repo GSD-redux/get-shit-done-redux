@@ -562,13 +562,16 @@ function coveredKindsInRegion(region, expectedInto) {
       }
       if (kindDiscriminators.length === 0) {
         // A deferral with no kind discriminator ("apply each entry per …")
-        // still covers every kind.
-        if (deferralRe.test(segment)) for (const kind of HOOK_KINDS) covered.add(kind);
+        // still covers every kind for generic hosts. An auxiliary host with a
+        // required role target must state both its kind and target explicitly.
+        if (!expectedInto && deferralRe.test(segment)) for (const kind of HOOK_KINDS) covered.add(kind);
         continue;
       }
       if (negationRe.test(segment)) continue;
       const narrowed = identityNarrowingRe.test(segment) ||
-        (intoNarrowingRe.test(segment) && !(expectedIntoRe && expectedIntoRe.test(segment)));
+        (expectedInto
+          ? !expectedIntoRe.test(segment)
+          : intoNarrowingRe.test(segment));
       if (deferralRe.test(segment)) {
         // Deferral naming kinds ("dispatch `kind == "step"` hooks per …").
         if (!narrowed) for (const kind of kindDiscriminators) covered.add(kind);

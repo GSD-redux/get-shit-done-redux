@@ -3619,11 +3619,12 @@ const HOOK_GROUP_KINDS = Object.freeze({
  * double-report.
  *
  * KNOWN LIMITATION (#3606): coverage is the UNION across all call sites for a
- * point in the five STEP_WORKFLOWS host files. Consumers outside that universe
- * (quick.md, autonomous.md, code-review*.md, audit-milestone.md,
+ * point in HOST_LOOP_FILES. Quick's plan:pre planner contribution seam has an
+ * additional generator-owned per-file check. Other consumers outside that
+ * universe (autonomous.md, code-review*.md, audit-milestone.md,
  * secure-phase.md, validate-phase.md) are not per-file checked — a narrowed
- * consumer there passes as long as one host file covers the point. Per-file
- * coverage maps are the tightening path.
+ * consumer there passes as long as one host file covers the point. More
+ * per-file coverage maps are the tightening path.
  *
  * @param {object}   cap       Validated capability object.
  * @param {Map<string, Set<string>>} wiredKinds  Per point, the hook kinds the
