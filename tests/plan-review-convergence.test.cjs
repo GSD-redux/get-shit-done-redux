@@ -32,7 +32,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
-const { readFileNormalized, createTempDir, cleanup } = require('./helpers.cjs');
+const { readFileNormalized, readWorkflowCombined, createTempDir, cleanup } = require('./helpers.cjs');
 const { runHook, OUTCOME } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fc = require('fast-check');
@@ -2216,10 +2216,9 @@ describe('#2398 — reviewer-instances cross-reference', () => {
  * suite anchors on above (`AFTER_AGENT_LINE`).
  */
 function extractReviewsFileResolution3899() {
-  // allow-test-rule: source-text-is-the-product (#3899)
   // The workflow markdown IS the runtime instruction; this fence is the shell an
   // orchestrator runs. It is extracted to be executed below, not string-matched.
-  const workflow = readFileNormalized(WORKFLOW_PATH);
+  const workflow = readWorkflowCombined(WORKFLOW_PATH);
   const start = workflow.search(/^After agent returns, verify REVIEWS\.md exists/m);
   assert.ok(start >= 0, 'workflow must retain the "After agent returns…" verification step');
   const rest = workflow.slice(start);
@@ -2317,6 +2316,14 @@ describe('#3899 REVIEWS.md path resolution is path-safe and fails closed', () =>
     });
   });
 
+  test('an empty phase_dir fails with a diagnostic naming phase_dir', posixOnly, () => {
+    const r = runReviewsFileResolution3899('');
+    assert.equal(r.outcome, OUTCOME.EXITED);
+    assert.notEqual(r.exitCode, 0, 'an empty phase_dir must fail closed');
+    assert.match(r.stderr, /phase_dir/, `the error must identify phase_dir, got: ${r.stderr}`);
+  });
+
+  // This -r arm is developer-box-only when CI runs as root or on Windows.
   test('an unreadable reviews file exits non-zero', {
     skip:
       process.platform === 'win32'
