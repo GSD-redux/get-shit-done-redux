@@ -56,7 +56,7 @@ Agent(
 **Handle checker return:**
 
 - **`## VERIFICATION PASSED`:** Display confirmation, proceed to step 6.
-- **`## ISSUES FOUND`:** Display issues, check iteration count, enter revision loop.
+- **`## ISSUES FOUND`:** Count BLOCKER + WARNING entries in the YAML issues block; an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If zero — every entry is explicitly INFO — display `ℹ advisory — {dimension}: {description}` per entry and proceed to step 6; INFO is advisory and never enters the loop (#3724). Otherwise display issues, check iteration count, enter revision loop.
 
 **Revision loop (max 2 iterations):**
 

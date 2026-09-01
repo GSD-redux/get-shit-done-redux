@@ -17,7 +17,7 @@ the `## OUTLINE COMPLETE` marker (written by the outline agent — #2762), skip 
 ```bash
 OUTLINE_FILE="${PHASE_DIR}/${PADDED_PHASE}-PLAN-OUTLINE.md"
 if [[ -f "$OUTLINE_FILE" ]] && grep -q "^## OUTLINE COMPLETE" "$OUTLINE_FILE"; then
-  # reuse existing outline — skip to 8.5.2
+  : # reuse existing outline — skip to 8.5.2
 fi
 ```
 
@@ -67,7 +67,7 @@ For each plan entry extracted from `PLAN-OUTLINE.md`:
    ```bash
    PLAN_FILE="${PHASE_DIR}/${plan_id}-PLAN.md"
    if [[ -f "$PLAN_FILE" ]] && head -1 "$PLAN_FILE" | grep -q '^---' && [[ "$ARGUMENTS" != *"--reviews"* ]]; then
-     continue  # resume safety — NOT under --reviews (replan)
+     : # resume safety — skip this plan, continue to next plan entry — NOT under --reviews (replan)
    fi
    ```
 
