@@ -1546,6 +1546,20 @@ const capabilities = {
         "type": "boolean",
         "default": true,
         "description": "Enable the non-blocking codebase drift pre-check at plan:pre, before /gsd:plan-phase spawns the planner. When enabled, a stale STRUCTURE.md (structural additions exceeding drift_threshold) is surfaced up front as a warn-only advisory pointing to /gsd:map-codebase; it never blocks planning and never spawns the mapper agent. Separate from schema_drift_gate so autonomous/CI runs can silence the plan-time advisory while keeping the execute:wave:post gates enabled."
+      },
+      "workflow.context_drift_precheck": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable the non-blocking context-drift pre-check at plan:pre, before /gsd:plan-phase reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own — an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see workflow.context_drift_action); never blocks planning on its own."
+      },
+      "workflow.context_drift_action": {
+        "type": "enum",
+        "values": [
+          "warn",
+          "block"
+        ],
+        "default": "warn",
+        "description": "Action taken by the context-drift gate when a stale upstream artifact is found: warn (advisory message naming the stale artifacts and how to regenerate them) or block (halt plan-phase until the artifacts are regenerated or the check is disabled)."
       }
     },
     "steps": [],
@@ -1575,6 +1589,15 @@ const capabilities = {
           "query": "verify.codebase-drift"
         },
         "when": "workflow.plan_drift_precheck",
+        "blocking": false,
+        "onError": "skip"
+      },
+      {
+        "point": "plan:pre",
+        "check": {
+          "query": "verify.context-drift"
+        },
+        "when": "workflow.context_drift_precheck",
         "blocking": false,
         "onError": "skip"
       }
@@ -4396,6 +4419,16 @@ const byLoopPoint = {
         "onError": "skip"
       },
       {
+        "capId": "drift",
+        "point": "plan:pre",
+        "check": {
+          "query": "verify.context-drift"
+        },
+        "when": "workflow.context_drift_precheck",
+        "blocking": false,
+        "onError": "skip"
+      },
+      {
         "capId": "ui",
         "point": "plan:pre",
         "check": {
@@ -4786,6 +4819,8 @@ const configKeys = {
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
   "workflow.plan_drift_precheck": "drift",
+  "workflow.context_drift_precheck": "drift",
+  "workflow.context_drift_action": "drift",
   "external_job.enabled": "external-job",
   "external_job.backend": "external-job",
   "external_job.artifact_dir": "external-job",
@@ -5003,6 +5038,22 @@ const configSchema = {
     "type": "boolean",
     "default": true,
     "description": "Enable the non-blocking codebase drift pre-check at plan:pre, before /gsd:plan-phase spawns the planner. When enabled, a stale STRUCTURE.md (structural additions exceeding drift_threshold) is surfaced up front as a warn-only advisory pointing to /gsd:map-codebase; it never blocks planning and never spawns the mapper agent. Separate from schema_drift_gate so autonomous/CI runs can silence the plan-time advisory while keeping the execute:wave:post gates enabled."
+  },
+  "workflow.context_drift_precheck": {
+    "owner": "drift",
+    "type": "boolean",
+    "default": true,
+    "description": "Enable the non-blocking context-drift pre-check at plan:pre, before /gsd:plan-phase reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own — an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see workflow.context_drift_action); never blocks planning on its own."
+  },
+  "workflow.context_drift_action": {
+    "owner": "drift",
+    "type": "enum",
+    "default": "warn",
+    "description": "Action taken by the context-drift gate when a stale upstream artifact is found: warn (advisory message naming the stale artifacts and how to regenerate them) or block (halt plan-phase until the artifacts are regenerated or the check is disabled).",
+    "values": [
+      "warn",
+      "block"
+    ]
   },
   "external_job.enabled": {
     "owner": "external-job",
