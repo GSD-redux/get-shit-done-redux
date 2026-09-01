@@ -208,6 +208,28 @@ describe('#3771 checker states the property and marks the example non-binding', 
     }
   });
 
+  test('progressive-disclosure issue examples carry the same binding schema', () => {
+    const examplesPath = path.join(
+      ROOT,
+      'gsd-core',
+      'references',
+      'plan-checker-examples.md'
+    );
+    assert.ok(
+      fs.existsSync(examplesPath),
+      'the current-base plan-checker examples reference must be present after integration'
+    );
+    const blocks = yamlIssueBlocks(fs.readFileSync(examplesPath, 'utf-8'));
+    assert.ok(blocks.length > 0, 'the progressive-disclosure reference must contain an issue example');
+    for (const block of blocks) {
+      assert.match(
+        block,
+        /(^|\r?\n)[>\s]*required_property:/,
+        `progressive-disclosure issue example lacks required_property:\n${block.trim().slice(0, 200)}`
+      );
+    }
+  });
+
   test('the blocker rendering names the property, not the example, as what must be fixed', () => {
     assert.match(
       PLAN_CHECKER,
