@@ -630,31 +630,6 @@
     "message": "Use { ..; } instead of (..) to avoid subshell overhead."
   },
   {
-    "file": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",
-    "code": "1009",
-    "message": "The mentioned syntax error was in this if expression."
-  },
-  {
-    "file": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",
-    "code": "1048",
-    "message": "Can't have empty then clauses (use 'true' as a no-op)."
-  },
-  {
-    "file": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",
-    "code": "1072",
-    "message": "Unexpected keyword/token. Fix any mentioned problems and try again."
-  },
-  {
-    "file": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",
-    "code": "1073",
-    "message": "Couldn't parse this then clause. Fix to allow more checks."
-  },
-  {
-    "file": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",
-    "code": "2105",
-    "message": "continue is only valid in loops."
-  },
-  {
     "file": "gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md",
     "code": "2086",
     "message": "Double quote to prevent globbing and word splitting."
