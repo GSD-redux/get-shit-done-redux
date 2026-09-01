@@ -11771,6 +11771,1840 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Regressions: issue #3697 — the `**Requirements**:` tokenizer UNDER-selects
+// silently. #2339 fixed OVER-selection (the shape filter) and added the
+// ghost-ID cross-check; neither covers an ID the tokenizer DROPPED. A spaced
+// range (`RANGE-01 … RANGE-05`) survives the `[,\s]+` split as its two
+// endpoints and marks only those; a tight range (`RANGE-01…05`) survives as one
+// token, fails the anchored shape filter, and marks nothing. Both paths report
+// success with `warnings: []`, because `ghostReqIds` is itself
+// `citedReqIds.filter(...)` and so cannot see an ID that was never selected.
+//
+// The fix warns; it does not parse. The selected set is unchanged (range syntax
+// stays unsupported), and the trigger is ID-SHAPED EVIDENCE only — the #2334 /
+// #2339 over-warning on `None`, on the shipped `<!-- ... -->` template comment,
+// and on parenthetical annotations must not return.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REQ_LINE_MISPARSE_RE = /could not be parsed as a comma-separated REQ-ID list/i;
+// The AMBIGUOUS channel, added in round 3. A spaced separator between two
+// selected, interior-implying REQ-IDs cannot be told from a range by any
+// token-level rule, and every ID on such a line IS selected — so the warning
+// discloses both readings instead of asserting a parse failure that did not
+// happen. See `formatRequirementsLineWarning` in src/phase.cts.
+const REQ_LINE_RANGE_READING_RE = /contains what reads as a range between two cited REQ-IDs/i;
+
+function build3697RangeFixture(roadmapRequirementsLine) {
+  return build2334GhostSurfaceFixture({
+    reqBody: [
+      '## Functional Requirements',
+      '',
+      '- [ ] **RANGE-01**: synthetic fixture requirement 1.',
+      '- [ ] **RANGE-02**: synthetic fixture requirement 2.',
+      '- [ ] **RANGE-03**: synthetic fixture requirement 3.',
+      '- [ ] **RANGE-04**: synthetic fixture requirement 4.',
+      '- [ ] **RANGE-05**: synthetic fixture requirement 5.',
+    ],
+    roadmapRequirementsLine,
+    traceabilityRows: [
+      '| RANGE-01 | Phase 01 | Pending |',
+      '| RANGE-02 | Phase 01 | Pending |',
+      '| RANGE-03 | Phase 01 | Pending |',
+      '| RANGE-04 | Phase 01 | Pending |',
+      '| RANGE-05 | Phase 01 | Pending |',
+    ],
+  });
+}
+
+const tickedReqIds = (reqContent) =>
+  [...reqContent.matchAll(/-\s*\[x\]\s*\*\*(RANGE-\d+)\*\*/gi)].map((m) => m[1].toUpperCase());
+
+describe('issue #3697: phase complete must warn when the Requirements line under-selects', () => {
+  for (const [label, line] of [
+    ['ellipsis', 'RANGE-01 … RANGE-05'],
+    ['hyphen', 'RANGE-01 - RANGE-05'],
+    ['worded', 'RANGE-01 through RANGE-05'],
+    ['parenthesized operator', 'RANGE-01 (..) RANGE-05'],
+  ]) {
+    test(
+      `#3697-1 (${label} spaced range): a range that survives the split as its two endpoints must warn — ` +
+      'and the endpoint-only marking behavior itself is UNCHANGED',
+      (t) => {
+        const tmpDir = build3697RangeFixture(line);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.ok(
+          warnings.some((w) => REQ_LINE_RANGE_READING_RE.test(w)),
+          `#3697-1 FAILED (${label}): a spaced range marks ONLY its endpoints, so it must warn. ` +
+          `Got warnings: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+        assert.strictEqual(
+          parsed.has_warnings, true,
+          `#3697-1 FAILED (${label}): has_warnings must be true, got: ${JSON.stringify(parsed)}`,
+        );
+        // The warning must name what WAS selected, so the author can see the gap.
+        assert.ok(
+          warnings.some(
+            (w) => REQ_LINE_RANGE_READING_RE.test(w) && /RANGE-01/.test(w) && /RANGE-05/.test(w),
+          ),
+          `#3697-1 FAILED (${label}): the warning must name the IDs actually selected ` +
+          `(RANGE-01, RANGE-05), got: ${JSON.stringify(warnings)}`,
+        );
+        // Round 3 (review finding Major 3): nothing on this line was dropped —
+        // both endpoints were selected — so the warning must NOT assert that
+        // the line failed to parse. It offers the range reading and the
+        // annotation reading and lets the author choose.
+        assert.ok(
+          !warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w)),
+          `#3697-1 FAILED (${label}): a spaced range drops nothing the tokenizer could have taken, ` +
+          `so the misparse channel must stay silent, got: ${JSON.stringify(warnings)}`,
+        );
+        // Behavior guard: this is a warning, NOT range support. Exactly the two
+        // endpoints stay ticked; the interior IDs are still not expanded.
+        const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+        assert.deepStrictEqual(
+          tickedReqIds(reqContent).sort(), ['RANGE-01', 'RANGE-05'],
+          `#3697-1 FAILED (${label}): the selected set must be UNCHANGED (endpoints only — ranges are ` +
+          `deliberately not expanded).\nREQUIREMENTS.md:\n${reqContent}`,
+        );
+      },
+    );
+  }
+
+  for (const [label, line] of [
+    ['ellipsis', 'RANGE-01…05'],
+    ['double-dot', 'RANGE-01..RANGE-05'],
+  ]) {
+    test(
+      `#3697-2 (${label} tight range): a line that selects ZERO IDs while being non-empty and not TBD ` +
+      'must warn, and must write nothing to the ledger',
+      (t) => {
+        const tmpDir = build3697RangeFixture(line);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.ok(
+          warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w)),
+          `#3697-2 FAILED (${label}): a zero-selection line is completely inert and must warn. ` +
+          `Got warnings: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+        assert.ok(
+          warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w) && /RANGE-01/.test(w)),
+          `#3697-2 FAILED (${label}): the warning must name the unparsed ID-shaped text, ` +
+          `got: ${JSON.stringify(warnings)}`,
+        );
+        assert.strictEqual(
+          parsed.requirements_updated, false,
+          `#3697-2 FAILED (${label}): nothing was selected, so requirements_updated must be false, ` +
+          `got: ${JSON.stringify(parsed)}`,
+        );
+        const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+        assert.deepStrictEqual(
+          tickedReqIds(reqContent), [],
+          `#3697-2 FAILED (${label}): no checkbox may be ticked.\nREQUIREMENTS.md:\n${reqContent}`,
+        );
+      },
+    );
+  }
+
+  for (const [label, line] of [
+    ['bare comma list', 'RANGE-01, RANGE-02, RANGE-03, RANGE-04, RANGE-05'],
+    ['bracketed comma list', '[RANGE-01, RANGE-02, RANGE-03, RANGE-04, RANGE-05]'],
+  ]) {
+    test(
+      `#3697-3 (control, ${label}): the canonical form must mark every ID and must not warn`,
+      (t) => {
+        const tmpDir = build3697RangeFixture(line);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        // Whole-channel assertion: the fixture registers every cited ID, so
+        // there is NO legitimate warning here. Filtering by the current
+        // phrase would let a re-worded over-warning slip through (review
+        // claim 8) — assert actual silence, not absence of one wording.
+        assert.deepStrictEqual(
+          warnings, [],
+          `#3697-3 FAILED (${label}): the canonical comma list must never warn, ` +
+          `got: ${JSON.stringify(warnings)}`,
+        );
+        const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+        assert.deepStrictEqual(
+          tickedReqIds(reqContent).sort(),
+          ['RANGE-01', 'RANGE-02', 'RANGE-03', 'RANGE-04', 'RANGE-05'],
+          `#3697-3 FAILED (${label}): all five requirements must be ticked.\n` +
+          `REQUIREMENTS.md:\n${reqContent}`,
+        );
+      },
+    );
+  }
+
+  // The #2334/#2339 over-warning must not return. The trigger is ID-shaped
+  // evidence — NOT "the line has residue after the selected IDs are removed",
+  // which is exactly the check that once warned to register `<!--`, `brackets`,
+  // `optional` and the literal word `None`.
+  for (const [label, line] of [
+    ['TBD placeholder', 'TBD'],
+    ['literal None', 'None'],
+    ['shipped template comment', '[RANGE-01, RANGE-02]  <!-- brackets optional, remove if unused -->'],
+    ['parenthetical citation', 'RANGE-01, RANGE-02 (locked per ADR-7)'],
+    // The next four are the false-positive classes a free-text detector
+    // produced (the #2334/#2339 regression shape): a hyphen after the list is
+    // an ANNOTATION separator, not a range operator, whenever what follows is
+    // not itself a REQ-ID — and an ID-shaped citation on a correctly-parsed
+    // line is a citation, not unparsed residue.
+    ['numeric estimate annotation', 'RANGE-01, RANGE-02 - 3 points'],
+    ['date annotation', 'RANGE-01, RANGE-02 - 2026-08-21 target'],
+    ['em-dash citation with trailing period', 'RANGE-01, RANGE-02 — locked per ADR-7.'],
+    ['nested parenthetical citations', 'RANGE-01, RANGE-02 (see (ADR-7), then ADR-8)'],
+    // A hyphen between two ADJACENT selected IDs can drop nothing (there is no
+    // interior), so it reads as an annotation separator, not a range.
+    ['adjacent-ID annotation hyphen', 'RANGE-01, RANGE-02 - RANGE-03 deferred'],
+    // Cross-prefix pairs around a separator are annotations, not ranges — real
+    // ranges are same-prefix by nature.
+    ['hyphen citation annotation', 'RANGE-01, RANGE-02 - (ADR-7)'],
+    ['ellipsis-of-omission with citation', 'RANGE-01, RANGE-02 (...) (ADR-7)'],
+    // Markdown emphasis around a placeholder must not defeat the placeholder
+    // gate.
+    ['bold placeholder with citation', '**None** (per ADR-7)'],
+    // `LETTERS-\d+-\d+` is also a date: the bare-hyphen tight-range arm demands
+    // a full ID on both sides precisely so this stays silent.
+    ['date-like parenthetical annotation', 'RANGE-01 (target FY-2026-08)'],
+    // A declared-empty line citing its rationale — zero selection with ID-shaped
+    // text, but placeholder-led. The #2334 class R3 must not recreate.
+    ['None with citation', 'None (per ADR-7)'],
+    ['TBD with citation', 'TBD (see ADR-7)'],
+  ]) {
+    test(
+      `#3697-4 (negative space, ${label}): must stay silent — the historical over-warning must not return`,
+      (t) => {
+        const tmpDir = build3697RangeFixture(line);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        // Whole-channel assertion, same rationale as #3697-3: every ID these
+        // fixtures cite is registered, so nothing here may warn at all. A
+        // phrase-filtered check pins wording, not silence (review claim 8).
+        assert.deepStrictEqual(
+          warnings, [],
+          `#3697-4 FAILED (${label}): ${JSON.stringify(line)} must not produce ANY warning, ` +
+          `got: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+      },
+    );
+  }
+
+  // A range hidden INSIDE balanced parentheses is stripped by the token shave
+  // and must still warn (review claim 2's first reproduction: the selector
+  // sees only `RANGE-01`, and v1's scan saw nothing at all). Partial
+  // selection: exactly RANGE-01 is ticked; the range token is reported as
+  // unparsed; nothing is expanded.
+  for (const [label5, line5] of [
+    ['parenthesized', 'RANGE-01 (plus RANGE-02..RANGE-05)'],
+    ['backticked', 'RANGE-01, `RANGE-02..RANGE-05`'],
+    ['bold-wrapped', 'RANGE-01, **RANGE-02..RANGE-05**'],
+    ['underscore-wrapped', 'RANGE-01, _RANGE-02..RANGE-05_'],
+  ]) {
+  test(
+    `#3697-5 (${label5} tight range): a wrapped range must still warn and stay unexpanded`,
+    (t) => {
+      const tmpDir = build3697RangeFixture(line5);
+      t.after(() => cleanup(tmpDir));
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+      const parsed = JSON.parse(output);
+      const warnings = parsed.warnings || [];
+      assert.ok(
+        warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w)),
+        `#3697-5 FAILED (${label5}): the wrapped range selects only RANGE-01, so it must warn. ` +
+        `Got warnings: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+      );
+      assert.ok(
+        warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w) && /RANGE-02\.\.RANGE-05/.test(w)),
+        `#3697-5 FAILED (${label5}): the warning must name the unparsed range token ` +
+        `(RANGE-02..RANGE-05), got: ${JSON.stringify(warnings)}`,
+      );
+      const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+      assert.deepStrictEqual(
+        tickedReqIds(reqContent), ['RANGE-01'],
+        `#3697-5 FAILED (${label5}): exactly RANGE-01 must be ticked (no expansion, no extra writes).\n` +
+        `REQUIREMENTS.md:\n${reqContent}`,
+      );
+    },
+  );
+  }
+
+  // A valid prefix-agnostic ID that HAPPENS to start with a word operator
+  // (`TORANGE-05` reads as `to` + `RANGE-05`) is an ID, not a glued range —
+  // the glued-fragment rule is symbol-operator-only for exactly this reason.
+  // The ID is unregistered in this fixture, so the pre-existing ghost-ID
+  // warning legitimately fires; only the misparse channel must stay silent.
+  test(
+    '#3697-4b (word-operator-prefixed ID): a canonical list must not read as a glued range',
+    (t) => {
+      const tmpDir = build3697RangeFixture('RANGE-01, TORANGE-05');
+      t.after(() => cleanup(tmpDir));
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+      const parsed = JSON.parse(output);
+      const warnings = parsed.warnings || [];
+      // Round 4 review Minor 1: this asserted only that the ASSERTIVE channel
+      // stayed silent, so a regression routing the line into the AMBIGUOUS
+      // channel would have passed. Whole-channel silence is not available here
+      // — the pre-existing ghost-ID warning legitimately fires on the
+      // unregistered `TORANGE-05` — so the precise assertion is that NO
+      // Requirements-line warning of ANY kind was emitted. The machine code
+      // added in this round is what makes that statable at all.
+      assert.strictEqual(
+        parsed.requirements_line_warning, undefined,
+        `#3697-4b FAILED: "RANGE-01, TORANGE-05" is a comma list of two valid IDs and must not ` +
+        `produce a Requirements-line warning in ANY channel, got kind ` +
+        `${JSON.stringify(parsed.requirements_line_warning)} / ${JSON.stringify(warnings)}\n` +
+        `Full output: ${output}`,
+      );
+    },
+  );
+
+  // ==========================================================================
+  // #3697-14 — AC-1b / AC-4: zero selection on a non-placeholder line.
+  //
+  // The issue's narrow clause verbatim: "warn when `citedReqIds.length === 0`
+  // while the raw capture is non-empty and not `TBD`". Before R3b these five
+  // words selected nothing and stayed SILENT, while the CLI-TOOLS reference's
+  // Requirements-line grammar section, the `placeholderLed` census comment and
+  // the advice string all stated they warned — a claim written into three
+  // artifacts and never executed once. (Named without spelling the doc's path:
+  // the docs-guard exemption ratchet fingerprints literal docs/ references in
+  // exempt test files, and this test reads no documentation.)
+  // The asymmetry was the tell: `Deferred (see ADR-7)` warned (the citation
+  // supplied ID-shaped residue) while bare `Deferred` did not.
+  // ==========================================================================
+  for (const [label14, line14] of [
+    ['Deferred', 'Deferred'],
+    ['N/A', 'N/A'],
+    ['Pending', 'Pending'],
+    ['TBA', 'TBA'],
+    ['bare dash', '-'],
+    // Prose with no ID-shaped token anywhere — the class R3's ID-shape gate
+    // could never reach, whatever the wording.
+    ['free prose', 'to be scoped after the spike'],
+  ]) {
+    test(
+      `#3697-14 (zero selection, ${label14}): a non-empty, non-placeholder line that selects NO ` +
+      'REQ-IDs must warn — #3697 AC-1b/AC-4',
+      (t) => {
+        const tmpDir = build3697RangeFixture(line14);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.ok(
+          warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w)),
+          `#3697-14 FAILED (${label14}): ${JSON.stringify(line14)} is non-empty, is not a ` +
+          `placeholder and selects zero REQ-IDs, so it must warn. ` +
+          `Got warnings: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+        // The warning must name the escape the author actually has, or it
+        // reports a problem with no remedy.
+        assert.ok(
+          warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w) && /`TBD` or `None`/.test(w)),
+          `#3697-14 FAILED (${label14}): the warning must name the TBD/None placeholder escape, ` +
+          `got: ${JSON.stringify(warnings)}`,
+        );
+        // Selection behavior is UNCHANGED — this rule warns, it never invents IDs.
+        const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+        assert.deepStrictEqual(
+          tickedReqIds(reqContent), [],
+          `#3697-14 FAILED (${label14}): a zero-selection line must tick NOTHING.\n` +
+          `REQUIREMENTS.md:\n${reqContent}`,
+        );
+      },
+    );
+  }
+
+  // The placeholder gate is what holds the whole #2334 negative space silent
+  // under R3b, so it is pinned in every spelling an author actually writes.
+  // Whole-channel silence, same rationale as #3697-4: a phrase filter pins
+  // wording, not silence.
+  for (const [label14b, line14b] of [
+    ['lowercase tbd', 'tbd'],
+    ['lowercase none', 'none'],
+    ['bold None only', '**None**'],
+    ['backticked TBD', '`TBD`'],
+    ['TBD with trailing note', 'TBD  <!-- pending scoping -->'],
+  ]) {
+    test(
+      `#3697-14b (placeholder spelling, ${label14b}): the placeholder gate must hold R3b off`,
+      (t) => {
+        const tmpDir = build3697RangeFixture(line14b);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.deepStrictEqual(
+          warnings, [],
+          `#3697-14b FAILED (${label14b}): ${JSON.stringify(line14b)} is a declared-empty line and ` +
+          `must produce NO warning at all, got: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+      },
+    );
+  }
+
+  // R3b's `tokens.length > 0` guard. The tokenizer strips `<!-- ... -->`
+  // BEFORE splitting, so a comment-only line yields no tokens and cannot
+  // reach the rule — without this guard the shipped template's own comment
+  // line would warn, which is #2334's opening move.
+  test(
+    '#3697-14c (comment-only line): a line whose only content is a template comment stays silent',
+    (t) => {
+      const tmpDir = build3697RangeFixture('<!-- fill in once the spike lands -->');
+      t.after(() => cleanup(tmpDir));
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+      const parsed = JSON.parse(output);
+      const warnings = parsed.warnings || [];
+      assert.deepStrictEqual(
+        warnings, [],
+        `#3697-14c FAILED: a comment-only Requirements line has no content tokens and must not ` +
+        `warn, got: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+      );
+    },
+  );
+
+  // ==========================================================================
+  // #3697-15 — AC-1a: a REQ-ID the selector dropped to a glued delimiter.
+  //
+  // `RANGE-01; RANGE-02` selects only RANGE-02 and marks only RANGE-02, with
+  // `requirements_updated: true` — #3697's own half-success failure mode,
+  // reached by one wrong delimiter, and silent before this rule.
+  //
+  // Round 4 review rated this Major rather than Blocker on the ground that it
+  // is indistinguishable from a parenthesised citation (`(ADR-7)` shaves to a
+  // bare ID too). At the RAW token level it is distinguishable: the shave
+  // class differs, and -15b pins the citation half.
+  // ==========================================================================
+  for (const [label15, line15, expectTicked15, expectNamed15] of [
+    ['semicolon', 'RANGE-01; RANGE-02', ['RANGE-02'], ['RANGE-01']],
+    ['colon', 'RANGE-01: RANGE-02', ['RANGE-02'], ['RANGE-01']],
+    // Every dropped ID is named, not just the first — the chain is what
+    // catches a clause that reports only one and reads as complete.
+    ['semicolon chain', 'RANGE-01; RANGE-02; RANGE-03', ['RANGE-03'], ['RANGE-01', 'RANGE-02']],
+    // The drop can be the LAST id as easily as the first.
+    ['trailing colon', 'RANGE-01, RANGE-02:', ['RANGE-01'], ['RANGE-02']],
+  ]) {
+    test(
+      `#3697-15 (delimiter-dropped ID, ${label15}): an ID the selector dropped to a glued ` +
+      '`;`/`:` must warn and be named — selection is UNCHANGED',
+      (t) => {
+        const tmpDir = build3697RangeFixture(line15);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.ok(
+          warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w)),
+          `#3697-15 FAILED (${label15}): ${JSON.stringify(line15)} silently drops an ID, so it ` +
+          `must warn. Got warnings: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+        // Naming the dropped ID is the whole point — a warning that says
+        // "something was dropped" without saying WHAT is not actionable.
+        const expectedClause15 =
+          `${expectNamed15.join(', ')} ${expectNamed15.length === 1 ? 'was' : 'were'} NOT selected`;
+        assert.ok(
+          warnings.some((w) => w.includes(expectedClause15)),
+          `#3697-15 FAILED (${label15}): the warning must name EVERY dropped ID — expected the ` +
+          `clause ${JSON.stringify(expectedClause15)}, got: ${JSON.stringify(warnings)}`,
+        );
+        // The selector is untouched by this PR — the rule warns, it never
+        // widens what gets marked.
+        const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+        assert.deepStrictEqual(
+          tickedReqIds(reqContent), expectTicked15,
+          `#3697-15 FAILED (${label15}): exactly ${JSON.stringify(expectTicked15)} must be ticked — ` +
+          `the warning must not change the selection.\nREQUIREMENTS.md:\n${reqContent}`,
+        );
+      },
+    );
+  }
+
+  // The rule's boundary, and the reason it is safe to ship. A delimiter glued
+  // to an ID-shaped token INSIDE a parenthetical is a citation, not a dropped
+  // requirement, and reporting it is the #2334 over-warning class. Whole
+  // channel, because there is nothing on these lines to warn about at all.
+  for (const [label15b, line15b] of [
+    ['colon in citation', 'RANGE-01, RANGE-02 (see ADR-7: section 3)'],
+    ['semicolon in citation', 'RANGE-01, RANGE-02 (see ADR-7; also ADR-9)'],
+    ['nested colon note', 'RANGE-01, RANGE-02 (blocked: ADR-7: sec 3)'],
+  ]) {
+    test(
+      `#3697-15b (citation boundary, ${label15b}): a delimiter inside a parenthetical is a ` +
+      'citation, not a dropped requirement',
+      (t) => {
+        const tmpDir = build3697RangeFixture(line15b);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.deepStrictEqual(
+          warnings, [],
+          `#3697-15b FAILED (${label15b}): ${JSON.stringify(line15b)} is a correctly-parsed comma ` +
+          `list carrying a citation and must produce NO warning, got: ${JSON.stringify(warnings)}\n` +
+          `Full output: ${output}`,
+        );
+      },
+    );
+  }
+
+  // ==========================================================================
+  // #3697-16 — the warning's machine kind reaches the JSON output (round 4
+  // review Major 3).
+  //
+  // `warnings[]` stays a string[] — it is a documented output field rendered by
+  // execute-phase.md, so re-typing its elements would break a shipped
+  // contract. The kind is emitted as its own additive field, and THAT is what
+  // a consumer and a test key on. Rewording a message must not silently
+  // un-assert anything.
+  // ==========================================================================
+  for (const [label16, line16, expectCode16] of [
+    ['assertive / misparse', 'RANGE-01..RANGE-05', 'req-line-misparse'],
+    ['ambiguous / range reading', 'RANGE-01 … RANGE-05', 'req-line-range-reading'],
+    ['zero selection', 'Deferred', 'req-line-misparse'],
+    ['delimiter drop', 'RANGE-01; RANGE-02', 'req-line-misparse'],
+  ]) {
+    test(
+      `#3697-16 (warning kind, ${label16}): the JSON result carries a stable machine code`,
+      (t) => {
+        const tmpDir = build3697RangeFixture(line16);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        assert.ok(
+          parsed.requirements_line_warning,
+          `#3697-16 FAILED (${label16}): a warning fired, so the result must carry ` +
+          `requirements_line_warning.\nFull output: ${output}`,
+        );
+        assert.strictEqual(
+          parsed.requirements_line_warning.code, expectCode16,
+          `#3697-16 FAILED (${label16}): wrong kind for ${JSON.stringify(line16)}.\n` +
+          `Full output: ${output}`,
+        );
+        // The prose channel is UNCHANGED — this field is additive, and a
+        // consumer reading warnings[] must see exactly what it saw before.
+        assert.ok(
+          Array.isArray(parsed.warnings) && parsed.warnings.every((w) => typeof w === 'string'),
+          `#3697-16 FAILED (${label16}): warnings[] must remain a string[]; ` +
+          `got ${JSON.stringify(parsed.warnings)}`,
+        );
+      },
+    );
+  }
+
+  // The absent half. A field that is present on every run carries no
+  // information, and a consumer keying on its presence would be wrong forever.
+  test(
+    '#3697-16b (clean line): no warning kind is emitted when the line parses',
+    (t) => {
+      const tmpDir = build3697RangeFixture('RANGE-01, RANGE-02, RANGE-03, RANGE-04, RANGE-05');
+      t.after(() => cleanup(tmpDir));
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+      const parsed = JSON.parse(output);
+      assert.strictEqual(
+        parsed.requirements_line_warning, undefined,
+        `#3697-16b FAILED: a clean Requirements line must emit no warning kind at all, got ` +
+        `${JSON.stringify(parsed.requirements_line_warning)}\nFull output: ${output}`,
+      );
+    },
+  );
+
+  // ==========================================================================
+  // #3697-17 — PARITY PIN against the SECOND parser of the same ROADMAP value.
+  //
+  // CLAUDE.md, KNOWN DEFECTS & ANTI-PATTERNS: "Generative Fix Divergence: when
+  // sharing constants/arrays/parsers between parallel surfaces, add a parity
+  // assertion test that fails if they diverge." Round 4 review Major 2.
+  //
+  // `normalizePhaseReqIds` (src/gap-checker.cts) parses the SAME
+  // `**Requirements:**` value — its own docblock says callers "may pass the
+  // roadmap value through verbatim". The two parsers do NOT agree today, and
+  // this PR does not make them agree: `phase complete` writes a ledger, gap
+  // analysis reports coverage, and unifying them would change what
+  // `phase complete` MARKS, which is the one invariant this PR holds fixed.
+  //
+  // So this is the pin, not the fix: every axis of disagreement is asserted
+  // explicitly, in BOTH directions, so drift on either side fails here rather
+  // than silently widening. The consequence is already user-visible — see
+  // -17b — and the pin is what makes it a known quantity instead of a slow
+  // leak.
+  // ==========================================================================
+  const { normalizePhaseReqIds } = require('../gsd-core/bin/lib/gap-checker.cjs');
+  const phaseSelects = (line) => analyzeRequirementsLine(line).citedReqIds;
+
+  for (const [axis, line17, expectPhase, expectGap, why] of [
+    [
+      'ranges',
+      'RANGE-01..RANGE-05',
+      [],
+      ['RANGE-01', 'RANGE-02', 'RANGE-03', 'RANGE-04', 'RANGE-05'],
+      'DELIBERATE: #3697 explicitly declines range expansion ("I am not asking for range syntax ' +
+      'to be supported"); gap analysis expanded ranges under #1269. This PR warns on the shape ' +
+      'rather than adopting it.',
+    ],
+    [
+      'placeholder vocabulary',
+      'None (per ADR-7)',
+      [],
+      ['ADR-7'],
+      'DIVERGENT: phase complete reads the LEAD token, so a declared-empty line citing its ' +
+      'rationale is empty. gap-checker strips parentheses first, so the whole value is no longer ' +
+      'the bare placeholder and the citation survives its ID-shape filter as a requirement.',
+    ],
+    [
+      'parentheses',
+      '(REQ-02)',
+      [],
+      ['REQ-02'],
+      'DIVERGENT: the selector strips square brackets only; gap-checker strips quotes, brackets ' +
+      'AND parentheses.',
+    ],
+    [
+      'ID shape',
+      'REQ-01a',
+      [],
+      ['REQ-01a'],
+      'DIVERGENT: the selector requires the token to END in digits; PHASE_REQ_ID_SHAPE_RE is ' +
+      'wider and admits a trailing suffix.',
+    ],
+    [
+      'the canonical form',
+      'REQ-01, REQ-02',
+      ['REQ-01', 'REQ-02'],
+      ['REQ-01', 'REQ-02'],
+      'AGREEMENT: on the shipped template form the two parsers agree exactly, which is what ' +
+      'makes the divergences above a boundary rather than chaos.',
+    ],
+  ]) {
+    test(`#3697-17 (parser parity, ${axis}): the divergence is pinned in both directions`, () => {
+      assert.deepStrictEqual(
+        phaseSelects(line17), expectPhase,
+        `#3697-17 FAILED (${axis}): phase complete's selection drifted for ${JSON.stringify(line17)}.\n${why}`,
+      );
+      assert.deepStrictEqual(
+        normalizePhaseReqIds(line17), expectGap,
+        `#3697-17 FAILED (${axis}): gap-checker's normalization drifted for ${JSON.stringify(line17)}.\n${why}`,
+      );
+    });
+  }
+
+  // The consequence, made concrete. This is what the divergence COSTS a user,
+  // and it is the reason the pin above is worth its cost: on one line, two
+  // commands report contradictory scopes, and this PR is what makes the
+  // contradiction visible by finally giving `phase complete` a voice.
+  test(
+    '#3697-17b (user-visible contradiction): a range line reports five requirements to gap ' +
+    'analysis and zero to phase complete',
+    () => {
+      const line = 'RANGE-01..RANGE-05';
+      const a = analyzeRequirementsLine(line);
+      assert.deepStrictEqual(a.citedReqIds, [], '#3697-17b: phase complete selects nothing');
+      assert.strictEqual(a.warn, true, '#3697-17b: and now says so, rather than failing silently');
+      assert.strictEqual(
+        normalizePhaseReqIds(line).length, 5,
+        '#3697-17b: while gap analysis reports five requirements in scope for the same line',
+      );
+    },
+  );
+
+  // ==========================================================================
+  // #3697-18 — the skipped-text rider must not tell the author to check
+  // whether a DATE is a requirement (round 4 review Minor 2).
+  //
+  // This round first answered it with a FILTER, and the pre-push review's
+  // continuation broke that in both directions: `API-2-01` is a legal
+  // requirement id (gap-checker's parseRequirements accepts it) so the filter
+  // hid a real drop, while `FY-26-08` and `FY-2026-08-15` leaked through. No
+  // regex separates a date from a sub-numbered id — they are the same shape,
+  // which is exactly why the strict-dash range rule refuses to act on it.
+  //
+  // So the rider DISCLOSES instead of adjudicating: it names the token and
+  // says why it may not be a requirement. Same move the two warning voices
+  // already make about an ambiguous separator.
+  // ==========================================================================
+  for (const [label18, line18, expectNamed18] of [
+    ['date beside a dotted range', 'RANGE-01 .. RANGE-05 (target FY-2026-08)', 'FY-2026-08'],
+    ['multi-segment date', 'RANGE-01 .. RANGE-05 (target FY-2026-08-15)', 'FY-2026-08-15'],
+    ['short-year date', 'RANGE-01 … RANGE-05 due FY-26-08', 'FY-26-08'],
+    ['sub-numbered requirement', 'RANGE-01 .. RANGE-05, API-2-01', 'API-2-01'],
+    ['four-digit sub-number', 'RANGE-01 .. RANGE-05, API-2026-08', 'API-2026-08'],
+  ]) {
+    test(
+      `#3697-18 (ambiguous numeric shape, ${label18}): named, and qualified rather than adjudicated`,
+      () => {
+        const a = analyzeRequirementsLine(line18);
+        const w = reqLineText(formatRequirementsLineWarning('1', line18, a));
+        assert.ok(w, `#3697-18 (${label18}): the range rule fired, so the line warns`);
+        // NAMED — suppressing it hid a genuinely dropped requirement.
+        assert.ok(
+          w.includes(expectNamed18),
+          `#3697-18 FAILED (${label18}): ${expectNamed18} must be named — a filter here hid a real ` +
+          `dropped requirement: ${w}`,
+        );
+        // QUALIFIED — the author is told why it may not be a requirement,
+        // instead of the warning deciding for them in either direction.
+        assert.match(
+          w,
+          /may equally be a date or a sub-numbered id/i,
+          `#3697-18 FAILED (${label18}): the shape is undecidable and the rider must say so: ${w}`,
+        );
+      },
+    );
+  }
+
+  // The other half: an UNAMBIGUOUS dropped id is named with no hedge attached.
+  test('#3697-18b (unambiguous skip): a plain dropped REQ-ID is named without the date caveat', () => {
+    const line = 'REQ-01, (REQ-02), REQ-03 — REQ-05';
+    const a = analyzeRequirementsLine(line);
+    const w = reqLineText(formatRequirementsLineWarning('1', line, a));
+    assert.match(
+      w, /ID-shaped text on the line that was NOT selected: REQ-02/i,
+      `#3697-18b FAILED: REQ-02 is a real skipped ID and must be named: ${w}`,
+    );
+    assert.doesNotMatch(
+      w, /may equally be a date/i,
+      `#3697-18b FAILED: REQ-02 is not the ambiguous shape and must carry no caveat: ${w}`,
+    );
+  });
+
+  // ==========================================================================
+  // #3697-19 — findings from this round's OWN pre-push adversarial review.
+  //
+  // Four claims this round made were driven and refuted before the push. Each
+  // is pinned here, because every one of them was a shape the author had not
+  // probed — the rules were correct across the probe set and wrong just
+  // outside it.
+  // ==========================================================================
+
+  // (1) An INVISIBLE line is an empty line. A lone U+200B carried a token to
+  // the parser while reading as empty to the author, so R3b warned and nothing
+  // on screen explained why.
+  for (const [label19, line19] of [
+    ['zero-width space', '\u200B'],
+    ['two zero-width spaces', '\u200B\u200B'],
+    ['word joiner', '\u2060'],
+    ['BOM', '\uFEFF'],
+    // All four below were driven by the pre-push review's continuation against
+    // a strip set that covered only the first four.
+    ['soft hyphen', '\u00AD'],
+    ['left-to-right mark', '\u200E'],
+    ['left-to-right isolate', '\u2066'],
+    ['variation selector 16', '\uFE0F'],
+  ]) {
+    test(`#3697-19 (invisible content, ${label19}): a line the author cannot see is not content`, () => {
+      const a = analyzeRequirementsLine(line19);
+      assert.strictEqual(
+        a.warn, false,
+        `#3697-19 FAILED (${label19}): an invisible-only line must not warn — no author could act on it`,
+      );
+    });
+  }
+
+  // A zero-width character INSIDE an otherwise valid line must be stripped, not
+  // treated as a delimiter: splitting on it would fabricate two fragments from
+  // one ID and invent a drop that never happened.
+  // An invisible INSIDE a token breaks it for the SELECTOR, so the id is
+  // genuinely not marked — #3697's own defect, in its most undetectable form.
+  //
+  // The first cut of this fix stripped invisibles from the detector wholesale
+  // and made exactly this case go SILENT, and the test written for it asserted
+  // the tokens and the empty R4 result while never asserting `warn` — it
+  // DOCUMENTED the bug instead of catching it. That omission was the pre-push
+  // review's `MISSED:` finding. The assertion below is the one that was absent.
+  for (const [label19b, line19b] of [
+    ['zero-width space', 'REQ-01\u200B, REQ-02'],
+    ['soft hyphen', 'REQ-01\u00AD, REQ-02'],
+    ['zero-width joiner', 'REQ-01\u200D, REQ-02'],
+  ]) {
+    test(`#3697-19b (embedded invisible, ${label19b}): an unmarkable id must never be silent`, () => {
+      const a = analyzeRequirementsLine(line19b);
+      assert.deepStrictEqual(
+        a.citedReqIds, ['REQ-02'],
+        `#3697-19b (${label19b}): the selector really does drop REQ-01 — selection is unchanged by this round`,
+      );
+      assert.strictEqual(
+        a.warn, true,
+        `#3697-19b FAILED (${label19b}): an id dropped to an INVISIBLE character is the least ` +
+        `detectable form of #3697's own defect and must not stay silent`,
+      );
+      assert.deepStrictEqual(
+        a.delimiterDroppedIds, ['REQ-01'],
+        `#3697-19b (${label19b}): and it must be NAMED — the author cannot see the character`,
+      );
+    });
+  }
+
+  // (2) R4's false positive. A BARE citation carrying a colon is the same shave
+  // class as a real delimiter drop, and the parenthetical test does not reach
+  // it. Same-prefix agreement with a SELECTED id is what separates them.
+  for (const [label19c, line19c] of [
+    ['bare citation', 'REQ-01, see ADR-7: section 3'],
+    ['bare citation, no verb', 'REQ-01, ADR-7: section 3'],
+    ['parenthesised citation', 'RANGE-01, RANGE-02 (see ADR-7: sec 3)'],
+  ]) {
+    test(`#3697-19c (citation boundary, ${label19c}): a foreign-prefix citation is not a dropped requirement`, () => {
+      const a = analyzeRequirementsLine(line19c);
+      assert.deepStrictEqual(
+        a.delimiterDroppedIds, [],
+        `#3697-19c FAILED (${label19c}): ${JSON.stringify(line19c)} cites a foreign prefix; ` +
+        `reporting it is the #2334 over-warning class`,
+      );
+    });
+  }
+
+  // (3) R4's false negative, on the DOCUMENTED form. The selector strips square
+  // brackets; R4's raw scanner did not, so the bracket spelling the template
+  // recommends silently dropped an ID with no warning at all.
+  for (const [label19d, line19d, expectDropped19] of [
+    ['bracketed semicolon', '[REQ-01; REQ-02]', ['REQ-01']],
+    ['bracketed colon', '[REQ-01, REQ-02: login]', ['REQ-02']],
+    // A trailing-only regex missed every one of these; they are one class
+    // (decoration on a token the selector then could not take), so they take
+    // one rule rather than four patches.
+    ['leading semicolon', 'REQ-01 ;REQ-02', ['REQ-02']],
+    ['leading colon', 'REQ-01 :REQ-02', ['REQ-02']],
+    ['bold-wrapped', '**REQ-01;** REQ-02', ['REQ-01']],
+    ['backtick-wrapped', '`REQ-01;` REQ-02', ['REQ-01']],
+  ]) {
+    test(`#3697-19d (bracket form, ${label19d}): the documented spelling must not defeat R4`, () => {
+      const a = analyzeRequirementsLine(line19d);
+      assert.deepStrictEqual(
+        a.delimiterDroppedIds, expectDropped19,
+        `#3697-19d FAILED (${label19d}): square brackets are the documented form and must be ` +
+        `stripped for R4 exactly as the selector strips them`,
+      );
+      assert.strictEqual(a.warn, true, `#3697-19d FAILED (${label19d}): and the line must warn`);
+    });
+  }
+
+  // (4) The rider filter suppressed a REGISTERED requirement. `API-2-01` is a
+  // legal requirement id — gap-checker's own parseRequirements accepts it — so
+  // only a DATE shape (four-digit year segment) may be filtered.
+  // The residual the same-prefix gate BUYS its safety with, pinned so it is a
+  // known quantity rather than a surprise. A genuinely dropped id whose prefix
+  // appears on no selected id stays silent — the same trade the strict-dash
+  // rule takes: under-report a rare shape rather than over-report a common one.
+  // EMPHASIS ALONE IS NOT EVIDENCE, and this pins the boundary in both
+  // directions. An earlier cut of this round fired on any wrapper, which made
+  // `REQ-01, see **REQ-7** for context` warn about a citation — the #2334
+  // class again. Nothing separates that from `**REQ-01**, REQ-02` meaning to
+  // list one, so R4 requires the positive signal: a glued `;`/`:` (a list
+  // separator was intended) or an invisible (the token is corrupted; no author
+  // types one on purpose). Markdown styling is authorial and is left to the
+  // skipped-text rider, which names the id without asserting a drop.
+  for (const [label19h, line19h] of [
+    ['emphasised citation', 'REQ-01, see **REQ-7** for context'],
+    ['backticked citation', 'REQ-01, see `REQ-7` for context'],
+    ['emphasis with no delimiter', '**REQ-01**, REQ-02'],
+    // The delimiter's POSITION is the rule. Outside the styling it is sentence
+    // punctuation, and an earlier cut of this round fired on exactly this —
+    // `see **REQ-7**; next topic` was reported as a dropped requirement.
+    ['punctuated emphasised citation', 'REQ-01, see **REQ-7**; next topic'],
+    ['punctuated backticked citation', 'REQ-01, see `REQ-7`; next'],
+    ['delimiter outside the wrapper', '**REQ-01**; REQ-02'],
+  ]) {
+    test(`#3697-19h (styling is not evidence, ${label19h}): a wrapper alone must not fire R4`, () => {
+      const a = analyzeRequirementsLine(line19h);
+      assert.deepStrictEqual(
+        a.delimiterDroppedIds, [],
+        `#3697-19h FAILED (${label19h}): markdown styling carries no list-separator intent, so ` +
+        `claiming a drop here is the #2334 over-warning class`,
+      );
+    });
+  }
+
+  // An invisible attached to the range OPERATOR, not to an id. The regression
+  // tests covered invisibles inside ids and not this, and that gap is exactly
+  // what let a fix for one direction break the other — the pre-push review's
+  // own MISSED finding.
+  for (const [label19i, line19i] of [
+    ['invisible around a dotted operator', 'REQ-01 \u200B..\u200B REQ-05'],
+    ['invisible before a glued dash', 'REQ-01 \u200B-REQ-05'],
+  ]) {
+    test(`#3697-19i (invisible on the operator, ${label19i}): the operator is still an operator`, () => {
+      assert.strictEqual(
+        analyzeRequirementsLine(line19i).warn, true,
+        `#3697-19i FAILED (${label19i}): an invisible beside the range operator must not hide it`,
+      );
+    });
+  }
+
+  // An UNBALANCED parenthesis is a typo, not a citation, and must not confer
+  // citation immunity on the rest of the line. A running-depth counter let one
+  // stay open to end-of-line and swallow every real drop after it.
+  for (const [label19j, line19j, expectDropped19j] of [
+    ['unclosed open paren', 'REQ-01, (note REQ-02; REQ-03', ['REQ-02']],
+    ['stray close paren', 'REQ-01, REQ-02; REQ-03)', ['REQ-02']],
+    // A matched span sharing a whitespace token with an id OUTSIDE it. The
+    // first cut promoted the whole token to immune because it CONTAINED a
+    // matched character, so the drop next to the citation went silent — the
+    // pre-push review's last MISSED finding, which named exactly the control
+    // these two rows add.
+    ['citation glued after the drop', 'REQ-01, REQ-02;(note) REQ-03', ['REQ-02']],
+    ['citation glued before the drop', 'REQ-01, (note)REQ-02; REQ-03', ['REQ-02']],
+  ]) {
+    test(`#3697-19j (unbalanced parens, ${label19j}): only a MATCHED span is a citation`, () => {
+      const a = analyzeRequirementsLine(line19j);
+      assert.deepStrictEqual(
+        a.delimiterDroppedIds, expectDropped19j,
+        `#3697-19j FAILED (${label19j}): an unmatched paren must not swallow the rest of the line`,
+      );
+    });
+  }
+
+  // And the matched forms still are citations.
+  for (const [label19k, line19k] of [
+    ['matched span', 'REQ-01, (see ADR-7: sec 3)'],
+    ['nested matched spans', 'RANGE-01, RANGE-02 (see (ADR-7), then ADR-8)'],
+  ]) {
+    test(`#3697-19k (matched parens, ${label19k}): a real citation is still immune`, () => {
+      assert.deepStrictEqual(
+        analyzeRequirementsLine(line19k).delimiterDroppedIds, [],
+        `#3697-19k FAILED (${label19k}): a matched parenthetical is a citation`,
+      );
+    });
+  }
+
+  test('#3697-19f (declared blind spot): a dropped id with an unshared prefix stays silent', () => {
+    const a = analyzeRequirementsLine('REQ-01, FOO-02: x');
+    assert.deepStrictEqual(a.citedReqIds, ['REQ-01'], '#3697-19f: FOO-02 really is dropped');
+    assert.deepStrictEqual(
+      a.delimiterDroppedIds, [],
+      '#3697-19f: and R4 deliberately does not claim it — textually identical to a foreign citation',
+    );
+  });
+
+  // Round 5 body claim-audit, MISSED item 1. A DEMONSTRATED R4 drop and an
+  // over-cap token on the same line: the over-cap voice's whole claim is that
+  // nothing could be checked, which is false the moment R4 has named an id.
+  // Before the fix `REQ-01, REQ-02: <2049 chars>` reported req-line-unverified
+  // and never mentioned REQ-02 — the actionable finding masked by the token
+  // beside it. Same exclusion, same reason, as rangeReadingOnly's.
+  test('#3697-19l (over-cap beside a drop): a demonstrated drop outranks the unverified voice', () => {
+    // 2049 = the 2048 cap + 1, written as a literal and asserted, in the same
+    // style as the #3697-B1/-B2 boundary fixtures below.
+    const overCap = 'x'.repeat(2049);
+    assert.strictEqual(overCap.length, 2049, '#3697-19l fixture must be one past the cap');
+    const line = `REQ-01, REQ-02: ${overCap}`;
+    const a = analyzeRequirementsLine(line);
+    assert.deepStrictEqual(a.delimiterDroppedIds, ['REQ-02'], '#3697-19l: R4 does name the drop');
+    assert.ok(a.oversizedTokens.length > 0, '#3697-19l: and the over-cap token is present');
+    const w = formatRequirementsLineWarning('1', line, a);
+    assert.strictEqual(
+      reqLineCode(w), REQ_LINE_WARNING_CODE.misparse,
+      '#3697-19l: a line with a demonstrated drop is a misparse, not an unverified line',
+    );
+    assert.match(
+      reqLineText(w), /is glued to the ID/,
+      '#3697-19l: and the drop diagnosis must survive — it is the only actionable part',
+    );
+    assert.match(
+      reqLineText(w), /exceed the 2048-character scan limit/,
+      '#3697-19l: while the over-cap disclosure is still carried, not traded away',
+    );
+  });
+
+  test('#3697-19p (over-cap beside a CLEAN range): the cap outranks the ambiguous voice', () => {
+    // The twin of #3697-19l on the other side of the boundary. There, a
+    // DEMONSTRATED drop outranks the unverified voice; here nothing was
+    // demonstrated, so the cap does — and what must not happen is the line
+    // reading as clean. `req-line-range-reading` is documented (in its own code
+    // comment and in CONTEXT.md's PHASE.REQ-LINE.SEAM.kinds predicate) to mean
+    // nothing was dropped, and this line carries a token no rule ever examined.
+    // Round 7 review, Minor 1.
+    const overCap = 'x'.repeat(2049);
+    assert.strictEqual(overCap.length, 2049, '#3697-19p fixture must be one past the cap');
+    const line = `RANGE-01 - RANGE-05, ${overCap}`;
+    const a = analyzeRequirementsLine(line);
+    // The range half is genuinely clean: R2 fired, both endpoints were taken.
+    assert.deepStrictEqual(
+      a.citedReqIds, ['RANGE-01', 'RANGE-05'],
+      '#3697-19p: both endpoints really are selected — this is the CLEAN range shape',
+    );
+    assert.ok(a.hasSpacedRange, '#3697-19p: and R2 really did fire');
+    assert.strictEqual(a.delimiterDroppedIds.length, 0, '#3697-19p: nothing was demonstrably dropped');
+    assert.ok(a.oversizedTokens.length > 0, '#3697-19p: while an over-cap token is present');
+    // The predicate itself, pinned: the ambiguous voice must stand down.
+    assert.strictEqual(
+      a.rangeReadingOnly, false,
+      '#3697-19p: the ambiguous voice claims nothing was dropped — it may not speak over an unexamined token',
+    );
+    const w = formatRequirementsLineWarning('1', line, a);
+    assert.strictEqual(
+      reqLineCode(w), REQ_LINE_WARNING_CODE.unverified,
+      '#3697-19p: an unexamined token makes the line UNVERIFIED, not clean',
+    );
+    // And specifically NOT the assertive voice: nothing on this line failed to
+    // parse, so `misparse` would be the #2334 over-warning class returning
+    // through the fix for its own false-clean.
+    assert.notStrictEqual(
+      reqLineCode(w), REQ_LINE_WARNING_CODE.misparse,
+      '#3697-19p: nothing demonstrably failed to parse — asserting a misparse here is the #2334 class',
+    );
+    assert.match(
+      reqLineText(w), /exceed the 2048-character scan limit/,
+      '#3697-19p: and the cap is named, so the reader knows what was not looked at',
+    );
+  });
+
+  test('#3697-19q (control for -19p): the same range WITHOUT an over-cap token still reads as a range', () => {
+    // Negative control. -19p must not be satisfiable by routing every spaced
+    // range to `unverified`; the ambiguous voice is still correct when there
+    // is nothing unexamined on the line.
+    const line = 'RANGE-01 - RANGE-05';
+    const a = analyzeRequirementsLine(line);
+    assert.strictEqual(a.oversizedTokens.length, 0, '#3697-19q: nothing over the cap here');
+    assert.strictEqual(a.rangeReadingOnly, true, '#3697-19q: so the ambiguous voice is the right one');
+    assert.strictEqual(
+      reqLineCode(formatRequirementsLineWarning('1', line, a)), REQ_LINE_WARNING_CODE.rangeReading,
+      '#3697-19q: unchanged by the -19p fix — a clean range is still a range reading',
+    );
+  });
+
+  // DECLARED BLIND SPOTS, pinned so the docs and the code cannot drift apart
+  // again — that drift IS the round 4 blocker. R4's trigger is a glued `;`/`:`
+  // or an embedded invisible. Styling is TOLERATED around an id, never a
+  // trigger on its own, so every line below silently drops an id. Each is
+  // documented as silent in the CLI tools reference; if one of these ever
+  // starts warning, that document is wrong and this test says so first.
+  for (const [label19m, line19m, expectSel19m] of [
+    ['bold', 'REQ-01, **REQ-02**', ['REQ-01']],
+    ['quotes', 'REQ-01, "REQ-02"', ['REQ-01']],
+    ['backticks', 'REQ-01, `REQ-02`', ['REQ-01']],
+    ['underscore', 'REQ-01, _REQ-02_', ['REQ-01']],
+    // The `**` sits BETWEEN the id and the `;`, so nothing is touching the id.
+    ['styling between id and delimiter', 'REQ-01, **REQ-02**;', ['REQ-01']],
+  ]) {
+    test(`#3697-19m (declared blind spot, styling-only ${label19m}): silent, and documented as silent`, () => {
+      const a = analyzeRequirementsLine(line19m);
+      assert.deepStrictEqual(a.citedReqIds, expectSel19m, `#3697-19m (${label19m}): the id really is dropped`);
+      assert.deepStrictEqual(a.delimiterDroppedIds, [], `#3697-19m (${label19m}): R4 does not claim it`);
+      assert.strictEqual(a.warn, false, `#3697-19m (${label19m}): and the line is silent`);
+    });
+  }
+
+  // The other half of the same boundary: only `;` and `:` are in the set.
+  // Round 4's separator census concluded "exactly those two" because it swept
+  // the ONE-SIDED form for `;`/`:` and only the bare and symmetric forms for
+  // every other separator — different members tested in different shapes, so
+  // the answer was forced. A fully crossed re-sweep (21 separators x 4
+  // spellings = 84) found 34 silent under-selections, every one of them a
+  // separator glued to exactly ONE of the two ids. Pinned here as the
+  // documented COST, never asserted as coverage.
+  for (const sep19n of ['/', '|', '&', '+', '.', '>', '\\', '；', '，', '؛']) {
+    for (const [dir19n, line19n, keep19n] of [
+      ['trailing', `REQ-01${sep19n} REQ-02`, 'REQ-02'],
+      ['leading', `REQ-01 ${sep19n}REQ-02`, 'REQ-01'],
+    ]) {
+      test(`#3697-19n (declared blind spot, ${dir19n} "${sep19n}"): silent, and documented as silent`, () => {
+        const a = analyzeRequirementsLine(line19n);
+        assert.deepStrictEqual(
+          a.citedReqIds, [keep19n],
+          `#3697-19n (${dir19n} "${sep19n}"): exactly one id survives the selector`,
+        );
+        assert.deepStrictEqual(
+          a.delimiterDroppedIds, [],
+          `#3697-19n (${dir19n} "${sep19n}"): R4 does not reach it`,
+        );
+        assert.strictEqual(a.warn, false, `#3697-19n (${dir19n} "${sep19n}"): and the line is silent`);
+      });
+    }
+  }
+
+  // The grammar tolerances the documentation was corrected to state. These are
+  // pre-existing selector behaviour, not new; the round 4 pre-push review
+  // caught the DOCS asserting a stricter rule than the code enforces.
+  for (const [label19g, line19g, expectSel19] of [
+    ['whitespace-separated', 'REQ-01 REQ-02', ['REQ-01', 'REQ-02']],
+    ['lowercase ids', 'req-01, req-02', ['req-01', 'req-02']],
+  ]) {
+    test(`#3697-19g (documented tolerance, ${label19g}): selected and silent, as the docs now say`, () => {
+      const a = analyzeRequirementsLine(line19g);
+      assert.deepStrictEqual(a.citedReqIds, expectSel19, `#3697-19g (${label19g}): both ids are selected`);
+      assert.strictEqual(a.warn, false, `#3697-19g (${label19g}): and nothing warns about it`);
+    });
+  }
+
+  // A HALF-SPACED range splits at the tokenizer before R1's own `\s*` can see
+  // it: `RANGE-01 -RANGE-05` tokenizes as `RANGE-01`, `-RANGE-05` and selects
+  // only the well-formed side. The glued-fragment rule must warn, and the
+  // selection stays exactly what the tokenizer produced.
+  for (const [label6, line6, expectTicked] of [
+    ['leading-glue', 'RANGE-01 -RANGE-05', ['RANGE-01']],
+    ['trailing-glue', 'RANGE-01- RANGE-05', ['RANGE-05']],
+    // A word operator can glue only TRAILING (an ID must end in digits, so
+    // `RANGE-01through` cannot be an ID — but `TORANGE-05` can, which is why
+    // the leading arm is symbol-only).
+    ['worded-glue', 'RANGE-01through RANGE-05', ['RANGE-05']],
+    // The trailing shave must not eat a glued `..` as sentence punctuation.
+    ['double-dot-glue', 'RANGE-01.. RANGE-05', ['RANGE-05']],
+  ]) {
+    test(
+      `#3697-6 (${label6} half-spaced range): a range glued to one endpoint must warn — ` +
+      'selection is unchanged',
+      (t) => {
+        const tmpDir = build3697RangeFixture(line6);
+        t.after(() => cleanup(tmpDir));
+        const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+        const parsed = JSON.parse(output);
+        const warnings = parsed.warnings || [];
+        assert.ok(
+          warnings.some((w) => REQ_LINE_MISPARSE_RE.test(w)),
+          `#3697-6 FAILED (${label6}): a half-spaced range under-selects, so it must warn. ` +
+          `Got warnings: ${JSON.stringify(warnings)}\nFull output: ${output}`,
+        );
+        const reqContent = fs.readFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), 'utf-8');
+        assert.deepStrictEqual(
+          tickedReqIds(reqContent), expectTicked,
+          `#3697-6 FAILED (${label6}): exactly ${JSON.stringify(expectTicked)} must be ticked ` +
+          `(no expansion).\nREQUIREMENTS.md:\n${reqContent}`,
+        );
+      },
+    );
+  }
+});
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3697 round 3 — unit + property coverage of the EXTRACTED detector.
+//
+// The end-to-end block above drives the CLI, one subprocess per case. That is
+// the right shape for wiring, and the wrong shape for the two rules round 3's
+// review blocked on: `RULESET.TESTS.property-based-testing` wants a fast-check
+// property over a parsing module (100+ runs), and
+// `RULESET.TESTS.boundary-coverage.fixtures` wants limit-1 / limit / limit+1 on
+// the 2048-char token cap. Both are expressible only against a callable
+// surface, which is why `analyzeRequirementsLine` was extracted from
+// `cmdPhaseComplete` in the same round.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const fc = require('fast-check');
+const {
+  analyzeRequirementsLine,
+  formatRequirementsLineWarning,
+  REQ_LINE_WARNING_CODE,
+} = require('../gsd-core/bin/lib/phase.cjs');
+
+// Round 4 review Major 3: the formatter returns `{ code, message }`, so channel
+// IDENTITY is asserted on the stable code and never on the English sentence.
+// The two channel regexes below survive for the assertions where the
+// USER-VISIBLE wording is itself the thing under test.
+const reqLineText = (w) => (w === null ? null : w.message);
+const reqLineCode = (w) => (w === null ? null : w.code);
+
+describe('#3697 round 3: Requirements-line detector — properties (RULESET.TESTS.property-based-testing)', () => {
+  // fc arbitraries for a well-formed REQ-ID. The shape is the selector's own:
+  // `[A-Z][A-Z0-9]*-\d+`. Word range operators are excluded from the prefix
+  // alphabet nowhere — deliberately: `TORANGE-05` IS a valid ID, and property
+  // (a) asserting silence over it is what pins the #3697-4b behaviour
+  // generatively rather than at one hand-picked example.
+  const reqPrefix = fc
+    .tuple(
+      fc.constantFrom(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')),
+      // fast-check v4 removed `fc.stringOf`; build the tail from an array so
+      // the alphabet stays pinned to the selector's own `[A-Z0-9]` class.
+      fc
+        .array(fc.constantFrom(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('')), {
+          minLength: 0,
+          maxLength: 6,
+        })
+        .map((cs) => cs.join('')),
+    )
+    .map(([head, tail]) => head + tail);
+  const reqNum = fc.integer({ min: 0, max: 9999 });
+  const reqId = fc.tuple(reqPrefix, reqNum).map(([p, n]) => `${p}-${n}`);
+
+  test(
+    '#3697-P1 (soundness of silence): a canonical comma list of well-formed REQ-IDs NEVER warns, ' +
+    'and selects exactly the IDs it lists',
+    () => {
+      fc.assert(
+        fc.property(fc.array(reqId, { minLength: 1, maxLength: 8 }), (ids) => {
+          const line = ids.join(', ');
+          const a = analyzeRequirementsLine(line);
+          // Domain invariant (boundary containment): the selected set IS the
+          // written set — no over-selection (#2334) and no under-selection
+          // (#3697) on the canonical form, whatever IDs it carries.
+          assert.deepStrictEqual(a.citedReqIds, ids);
+          assert.strictEqual(
+            a.warn,
+            false,
+            `#3697-P1: canonical list ${JSON.stringify(line)} must not warn; got ${JSON.stringify(
+              formatRequirementsLineWarning('1', line, a),
+            )}`,
+          );
+        }),
+        { numRuns: 300 },
+      );
+    },
+  );
+
+  test(
+    '#3697-P2 (completeness): a same-prefix pair separated by a spaced range operator, with an ' +
+    'interior between them, ALWAYS warns',
+    // NOT a bug-finder: every operator below was already in the pre-round
+    // operator set, so this property holds against the pre-round code too. An
+    // earlier round-3 commit claimed otherwise; the review refuted it. It is a
+    // regression guard over the spaced-range rule, which is what it is worth.
+    () => {
+      const ops = ['..', '...', '…', '—', '–', '-', 'to', 'thru', 'through'];
+      fc.assert(
+        fc.property(
+          reqPrefix,
+          fc.integer({ min: 0, max: 400 }),
+          fc.integer({ min: 2, max: 400 }),
+          fc.constantFrom(...ops),
+          (prefix, lo, delta, op) => {
+            const line = `${prefix}-${lo} ${op} ${prefix}-${lo + delta}`;
+            const a = analyzeRequirementsLine(line);
+            assert.strictEqual(
+              a.warn,
+              true,
+              `#3697-P2: ${JSON.stringify(line)} implies a dropped interior and must warn`,
+            );
+          },
+        ),
+        { numRuns: 300 },
+      );
+    },
+  );
+
+  test(
+    '#3697-P3 (the #2334 invariant): an ADJACENT same-prefix pair around a separator can drop ' +
+    'nothing, so it never warns however it is annotated',
+    () => {
+      const ops = ['-', '—', '–', '..'];
+      fc.assert(
+        fc.property(
+          reqPrefix,
+          fc.integer({ min: 0, max: 4000 }),
+          fc.integer({ min: 0, max: 1 }),
+          fc.constantFrom(...ops),
+          fc.constantFrom('deferred', 'blocked', 'per ADR-7', 'see notes', ''),
+          (prefix, lo, delta, op, tail) => {
+            const line = `${prefix}-${lo}, ${prefix}-${lo} ${op} ${prefix}-${lo + delta}${
+              tail ? ' ' + tail : ''
+            }`;
+            const a = analyzeRequirementsLine(line);
+            assert.strictEqual(
+              a.warn,
+              false,
+              `#3697-P3: ${JSON.stringify(line)} has no interior to drop and must stay silent; got ` +
+                JSON.stringify(formatRequirementsLineWarning('1', line, a)),
+            );
+          },
+        ),
+        { numRuns: 300 },
+      );
+    },
+  );
+
+  test(
+    '#3697-P4 (totality + idempotency): the detector is total over arbitrary input and returns ' +
+    'the same analysis every time',
+    () => {
+      fc.assert(
+        fc.property(fc.string({ maxLength: 300 }), (s) => {
+          const a = analyzeRequirementsLine(s);
+          const b = analyzeRequirementsLine(s);
+          assert.strictEqual(typeof a.warn, 'boolean');
+          assert.ok(Array.isArray(a.citedReqIds) && Array.isArray(a.tokens));
+          assert.deepStrictEqual(a, b, '#3697-P4: analysis must be deterministic');
+          const wr = formatRequirementsLineWarning('1', s, a);
+          const w = reqLineText(wr);
+          const wc = reqLineCode(wr);
+          // Round 4 review Major 3: a message without a kind, or a kind that is
+          // not in the declared vocabulary, is a channel no consumer can route
+          // on. Held over ARBITRARY input, so a new channel added later cannot
+          // ship without one.
+          assert.strictEqual(
+            wc === null,
+            w === null,
+            `#3697-P4: kind and message must appear together; got ${JSON.stringify(wr)}`,
+          );
+          if (wc !== null) {
+            assert.ok(
+              Object.values(REQ_LINE_WARNING_CODE).includes(wc),
+              `#3697-P4: ${JSON.stringify(wc)} is not a declared warning kind`,
+            );
+          }
+          // The formatter and the analysis must agree on whether there is
+          // anything to say — a warn with no text, or text with no warn, is a
+          // channel that can go silent or noisy on its own.
+          assert.strictEqual(
+            w === null,
+            a.warn === false,
+            `#3697-P4: warn=${a.warn} but message=${JSON.stringify(w)} for ${JSON.stringify(s)}`,
+          );
+        }),
+        { numRuns: 500 },
+      );
+    },
+  );
+
+  test(
+    '#3697-P5 (containment): every selected ID is REQ-ID-shaped and appears verbatim in the line',
+    () => {
+      // The first cut of this property drew from a bare `fc.string()` and was
+      // VACUOUS — measured over 500 samples it produced max length 10 and ZERO
+      // inputs containing a REQ-ID, so the loop body never executed a single
+      // assertion. Found by the round's pre-push review. The generator now
+      // interleaves real IDs with noise, and the property ASSERTS that it saw
+      // some: a containment property that never contains anything is a green
+      // test measuring nothing.
+      let sawIds = 0;
+      fc.assert(
+        fc.property(
+          fc.array(fc.oneof(reqId, fc.constantFrom('(', ')', '[', ']', ',', '—', '..', 'to', 'TBD', 'None', 'per', 'ADR-7')), {
+            minLength: 1,
+            maxLength: 12,
+          }),
+          (parts) => {
+            const line = parts.join(' ');
+            const cited = analyzeRequirementsLine(line).citedReqIds;
+            if (cited.length > 0) sawIds += 1;
+            for (const id of cited) {
+              assert.match(id, /^[A-Z][A-Z0-9]*-\d+$/i, `#3697-P5: ${JSON.stringify(id)} is not ID-shaped`);
+              assert.ok(line.includes(id), `#3697-P5: ${JSON.stringify(id)} is not present in the input`);
+            }
+          },
+        ),
+        { numRuns: 500 },
+      );
+      assert.ok(sawIds > 50, `#3697-P5 is VACUOUS: only ${sawIds}/500 generated lines selected any ID`);
+    },
+  );
+
+  test(
+    '#3697-P6 (totality over arbitrary text): the detector never throws on free-form input',
+    () => {
+      // What the old P5 generator was actually covering. Kept as its own
+      // property, honestly labelled, rather than left masquerading as
+      // containment coverage.
+      fc.assert(
+        fc.property(fc.string({ maxLength: 300, size: 'max' }), (str) => {
+          const a = analyzeRequirementsLine(str);
+          assert.strictEqual(typeof a.warn, 'boolean');
+          formatRequirementsLineWarning('1', str, a);
+        }),
+        { numRuns: 500 },
+      );
+    },
+  );
+});
+
+describe('#3697 round 3: the 2048-char token scan cap (RULESET.TESTS.boundary-coverage)', () => {
+  // `REQ_TOKEN_SCAN_LIMIT` is a hard cap with NO reserve or safety constant
+  // beside it, so clause (d) of RULESET.TESTS.boundary-coverage.fixtures — an
+  // input pushed within reserve-distance of the limit — has no referent here.
+  // (a)/(b)/(c) are the whole obligation, and they are exercised through BOTH
+  // predicate families the cap now guards: the unanchored ID-substring scan
+  // (R3) and the anchored range-token scan (R1, capped in round 3 per Nit 6).
+  const inertOfLength = (n) => `REQ-01${'X'.repeat(n - 'REQ-01'.length)}`;
+  const rangeTokenOfLength = (n) => {
+    const suffix = '..RANGE-05';
+    const digits = n - 'RANGE-'.length - suffix.length;
+    return `RANGE-${'0'.repeat(digits - 1)}1${suffix}`;
+  };
+
+  // `expectClassified` is the PREDICATE's verdict, which is what the cap
+  // governs. `warn` is deliberately NOT the boundary variable: past the cap the
+  // token is unclassified, and unclassified is reported, never treated as
+  // clean — asserting `warn === false` at limit+1 is precisely the silent
+  // regression the round's pre-push review refuted (CLAIM 2).
+  for (const [label, n, expectClassified] of [
+    ['limit-1 (2047)', 2047, true],
+    ['limit (2048)', 2048, true],
+    ['limit+1 (2049)', 2049, false],
+  ]) {
+    test(`#3697-B1 (${label}): the UNANCHORED ID-substring scan is applied at and below the cap only`, () => {
+      const tok = inertOfLength(n);
+      assert.strictEqual(tok.length, n, `#3697-B1 fixture is ${tok.length} chars, expected ${n}`);
+      const a = analyzeRequirementsLine(tok);
+      assert.deepStrictEqual(a.citedReqIds, [], '#3697-B1: the padded token is not itself an ID');
+      assert.strictEqual(
+        a.inertIdShaped.length > 0,
+        expectClassified,
+        `#3697-B1 (${label}): inertIdShaped membership must be ${expectClassified} at length ${n}`,
+      );
+      assert.strictEqual(
+        a.oversizedTokens.length > 0,
+        !expectClassified,
+        `#3697-B1 (${label}): past the cap the token must be recorded as unclassified`,
+      );
+      // Warns at every length — below the cap because a rule classified it,
+      // above it because "not classified" is itself reportable.
+      assert.strictEqual(a.warn, true, `#3697-B1 (${label}): unclassified is not clean`);
+    });
+
+    test(`#3697-B2 (${label}): the ANCHORED range-token scan takes the SAME cap (round-3 Nit 6)`, () => {
+      const tok = rangeTokenOfLength(n);
+      assert.strictEqual(tok.length, n, `#3697-B2 fixture is ${tok.length} chars, expected ${n}`);
+      const a = analyzeRequirementsLine(tok);
+      assert.strictEqual(
+        a.rangeTokens.length > 0,
+        expectClassified,
+        `#3697-B2 (${label}): rangeTokens membership must be ${expectClassified} at length ${n}`,
+      );
+      assert.strictEqual(
+        a.oversizedTokens.length > 0,
+        !expectClassified,
+        `#3697-B2 (${label}): past the cap the token must be recorded as unclassified`,
+      );
+      assert.strictEqual(a.warn, true, `#3697-B2 (${label}): unclassified is not clean`);
+    });
+  }
+});
+
+describe('#3697 round 3: the two warning channels', () => {
+  // ── Major 3 ────────────────────────────────────────────────────────────────
+  // An annotation separator between two NON-ADJACENT same-prefix IDs is
+  // textually identical to a range, and no token-level rule separates them.
+  // Before round 3 the detector resolved that ambiguity by assertion: it told
+  // the author the line "could not be parsed" and to rewrite it, on a line
+  // where every ID present HAD been selected and nothing had been dropped.
+  // Going silent instead is not available — the range reading is equally live,
+  // and silence is the #3697 defect itself. So the ambiguity is disclosed.
+  for (const [label, line, expectSelected] of [
+    ['em-dash', 'RANGE-01, RANGE-02 — RANGE-05 deferred', ['RANGE-01', 'RANGE-02', 'RANGE-05']],
+    ['hyphen', 'RANGE-01, RANGE-02 - RANGE-05 deferred', ['RANGE-01', 'RANGE-02', 'RANGE-05']],
+    ['bare range', 'RANGE-01 … RANGE-05', ['RANGE-01', 'RANGE-05']],
+  ]) {
+    test(
+      `#3697-9 (${label}): a spaced separator warns through the AMBIGUOUS channel and must NOT ` +
+      'claim the line failed to parse',
+      () => {
+        const a = analyzeRequirementsLine(line);
+        assert.deepStrictEqual(
+          a.citedReqIds,
+          expectSelected,
+          `#3697-9 (${label}): every ID written on the line must still be selected`,
+        );
+        assert.strictEqual(
+          a.rangeReadingOnly,
+          true,
+          `#3697-9 (${label}): only the spaced-range rule fired and both endpoints were selected — ` +
+          'that is why this channel exists',
+        );
+        const wr = formatRequirementsLineWarning('1', line, a);
+        const w = reqLineText(wr);
+        const wc = reqLineCode(wr);
+        assert.ok(w, `#3697-9 (${label}): the range reading is live, so the line must still warn`);
+        assert.strictEqual(
+          wc,
+          REQ_LINE_WARNING_CODE.rangeReading,
+          `#3697-9 (${label}): wrong channel: ${wc} / ${w}`,
+        );
+        assert.notStrictEqual(
+          wc,
+          REQ_LINE_WARNING_CODE.misparse,
+          `#3697-9 (${label}): nothing was dropped, so the warning must not assert a parse failure: ${w}`,
+        );
+        // Both readings must be offered — the author is the only one who can
+        // resolve the ambiguity, and a warning that hides half of it is the
+        // over-warning wearing better manners.
+        assert.match(w, /annotation rather than a range/i, `#3697-9 (${label}): ${w}`);
+        assert.match(w, /needs no change/i, `#3697-9 (${label}): ${w}`);
+        // The soft voice speaks about the SEPARATOR, never about the whole
+        // line: it has no basis for the latter (see #3697-9d).
+        assert.doesNotMatch(
+          w,
+          /the line is already correct/i,
+          `#3697-9 (${label}): the soft voice must not claim the whole line is correct: ${w}`,
+        );
+      },
+    );
+  }
+
+  // The channel discriminator must be RULE-SCOPED, not line-global. Both of
+  // these were misrouted by the first cut of the Major 3 fix, and the first is
+  // the damaging direction: it puts the false "could not be parsed" claim back
+  // on a correct line, which is the finding itself returning through a side
+  // door.
+  test(
+    '#3697-9b (unrelated parenthetical citation): a citation elsewhere on the line must not flip ' +
+    'the channel back to a misparse claim',
+    () => {
+      const line = 'RANGE-01, RANGE-02 — RANGE-05 deferred per (ADR-7)';
+      const a = analyzeRequirementsLine(line);
+      // `(ADR-7)` survives the selector's bracket strip and so is not selected —
+      // but #3697-4 already pins a parenthetical citation as NOT unparsed
+      // residue, and no rule fires on it. Only the rules that fired may speak.
+      assert.strictEqual(a.rangeReadingOnly, true, '#3697-9b: R2 alone fired, on selected endpoints');
+      const wr = formatRequirementsLineWarning('1', line, a);
+      const w = reqLineText(wr);
+      const wc = reqLineCode(wr);
+      assert.strictEqual(wc, REQ_LINE_WARNING_CODE.rangeReading, `#3697-9b: wrong channel: ${wc} / ${w}`);
+      assert.notStrictEqual(wc, REQ_LINE_WARNING_CODE.misparse, `#3697-9b: ${wc} / ${w}`);
+    },
+  );
+
+  test(
+    '#3697-9c (unselected endpoint): a spaced range whose own endpoint was never selected IS a ' +
+    'drop, and takes the assertive channel',
+    () => {
+      const line = 'RANGE-01 (RANGE-02) — RANGE-05';
+      const a = analyzeRequirementsLine(line);
+      // The detector shaves brackets and the selector does not, so R2 fires on
+      // a `RANGE-02` that was never selected. That is a genuine under-selection.
+      assert.deepStrictEqual(a.citedReqIds, ['RANGE-01', 'RANGE-05'], '#3697-9c: RANGE-02 is not selected');
+      assert.strictEqual(a.hasSpacedRange, true, '#3697-9c: R2 still fires');
+      assert.strictEqual(a.rangeReadingOnly, false, '#3697-9c: an unselected endpoint is a drop');
+      const wr = formatRequirementsLineWarning('1', line, a);
+      const w = reqLineText(wr);
+      const wc = reqLineCode(wr);
+      assert.strictEqual(wc, REQ_LINE_WARNING_CODE.misparse, `#3697-9c: wrong channel: ${wc} / ${w}`);
+    },
+  );
+
+  test(
+    '#3697-9d (dropped ID elsewhere on the line): the soft voice must not claim the LINE is ' +
+    'correct, and must name what the selector skipped',
+    () => {
+      // The pre-push review's CLAIM 1 counterexample. `(REQ-02)` survives the
+      // selector's bracket strip and no rule fires on it, so the channel is
+      // still the soft one — correctly, because `(ADR-7)` is the same shape and
+      // routing on it puts the false misparse claim back on a citation. What
+      // was wrong was the soft voice ASSERTING "the line is already correct and
+      // nothing needs to change" over a line that dropped a requirement.
+      const line = 'REQ-01, (REQ-02), REQ-03 — REQ-05';
+      const a = analyzeRequirementsLine(line);
+      assert.deepStrictEqual(a.citedReqIds, ['REQ-01', 'REQ-03', 'REQ-05'], '#3697-9d: REQ-02 is dropped');
+      assert.strictEqual(a.rangeReadingOnly, true, '#3697-9d: R2 alone fired, on selected endpoints');
+      assert.deepStrictEqual(a.unselectedIdShaped, ['REQ-02'], '#3697-9d: the skip is recorded as a fact');
+      const wr = formatRequirementsLineWarning('1', line, a);
+      const w = reqLineText(wr);
+      const wc = reqLineCode(wr);
+      assert.strictEqual(
+        wc, REQ_LINE_WARNING_CODE.rangeReading,
+        `#3697-9d: R2 alone fired on selected endpoints, so this is the range-reading kind: ${wc}`,
+      );
+      assert.doesNotMatch(w, /the line is already correct/i, `#3697-9d: ${w}`);
+      assert.match(w, /ID-shaped text on the line that was NOT selected: REQ-02/i, `#3697-9d: ${w}`);
+      assert.match(w, /check whether any of it is a requirement/i, `#3697-9d: ${w}`);
+    },
+  );
+
+  test(
+    '#3697-9e (over-cap token): a token past the scan limit is reported as UNCLASSIFIED, never ' +
+    'silently dropped',
+    () => {
+      // The review's CLAIM 2. Round 3's first cut of the uniform cap made a
+      // 2049-char range token silent — it warned before the round. The cap
+      // bounds the WORK; it must not bound the warning.
+      const suffix = '..RANGE-05';
+      const big = `RANGE-${'0'.repeat(2049 - 'RANGE-'.length - suffix.length - 1)}1${suffix}`;
+      assert.strictEqual(big.length, 2049, `#3697-9e fixture is ${big.length} chars, expected 2049`);
+      const a = analyzeRequirementsLine(big);
+      assert.strictEqual(a.rangeTokens.length, 0, '#3697-9e: past the cap, no predicate classifies it');
+      assert.deepStrictEqual(a.oversizedTokens, [big], '#3697-9e: but it IS recorded as unclassified');
+      assert.strictEqual(a.warn, true, '#3697-9e: and the line still warns');
+      const wr = formatRequirementsLineWarning('1', big, a);
+      const w = reqLineText(wr);
+      const wc = reqLineCode(wr);
+      assert.strictEqual(
+        wc, REQ_LINE_WARNING_CODE.unverified,
+        `#3697-9e: an unclassifiable line is the 'unverified' kind — the same seam CONTEXT.md ` +
+        `already records for a truncated scan: ${wc}`,
+      );
+      assert.match(w, /could not be checked/i, `#3697-9e: ${w}`);
+      assert.match(w, /2048-character scan limit/i, `#3697-9e: ${w}`);
+      assert.match(w, /unverified/i, `#3697-9e: ${w}`);
+    },
+  );
+
+  test('#3697-9f (cap uniformity): R2 and the glued rule cap their NEIGHBOURS, not just the operator', () => {
+    // The first review's MISSED finding. Capping the operator alone left
+    // `<over-cap ID> .. <over-cap ID>` running REQ_ID_SHAPE_RE and BigInt over
+    // both neighbours unbounded.
+    //
+    // The endpoints must DIFFER by more than 1, or R2 could not fire even
+    // uncapped and the fixture would prove nothing — the first cut of this test
+    // used the same ID twice and was exactly that vacuous.
+    const pad = '0'.repeat(2049 - 'RANGE-'.length - 1);
+    const lo = `RANGE-${pad}1`;
+    const hi = `RANGE-${pad}9`;
+    assert.strictEqual(lo.length, 2049, `#3697-9f fixture is ${lo.length} chars, expected 2049`);
+    assert.strictEqual(hi.length, 2049, `#3697-9f fixture is ${hi.length} chars, expected 2049`);
+    const a = analyzeRequirementsLine(`${lo} .. ${hi}`);
+    assert.strictEqual(a.hasSpacedRange, false, '#3697-9f: an over-cap endpoint must not be classified');
+    assert.deepStrictEqual(a.citedReqIds, [lo, hi], '#3697-9f: both endpoints are selected');
+    // Selected does NOT mean nothing was suppressed. The second continuation
+    // review's CLAIM J/K: an earlier cut exempted every selector-accepted token
+    // from `oversizedTokens`, so this line — which WARNED before the round,
+    // when R2 was uncapped — went silent. Both endpoints are unexaminable and
+    // sit either side of a range operator, so the line is reported unverified.
+    assert.deepStrictEqual(a.oversizedTokens, [lo, hi], '#3697-9f: both endpoints are unexaminable');
+    assert.strictEqual(a.warn, true, '#3697-9f: a suppressed classification is not clean');
+  });
+
+  test(
+    '#3697-9j (over-cap exemption scope): a selected over-cap ID is exempt ONLY when nothing could ' +
+    'have paired with it',
+    () => {
+      // The other half of CLAIM J/K. The exemption is what keeps #3697-9i
+      // silent; it must not extend to a token whose neighbour could have formed
+      // a range with it, because that is exactly where the cap suppressed a
+      // rule rather than merely declining to classify a lone token.
+      const big = `R-${'1'.repeat(2047)}`;
+      assert.strictEqual(big.length, 2049, `#3697-9j fixture is ${big.length} chars, expected 2049`);
+      // No neighbour that could pair -> exempt, silent.
+      assert.strictEqual(analyzeRequirementsLine(`REQ-01, ${big}`).warn, false, '#3697-9j: no pairing neighbour');
+      // A range operator beside it -> R2 was suppressed, so report.
+      assert.strictEqual(analyzeRequirementsLine(`${big} .. REQ-05`).warn, true, '#3697-9j: operator neighbour');
+      assert.strictEqual(analyzeRequirementsLine(`REQ-01 .. ${big}`).warn, true, '#3697-9j: operator neighbour');
+    },
+  );
+
+  test(
+    '#3697-9g (assertive voice): the skipped-text clause is on BOTH voices, and does not repeat ' +
+    'what the rule-specific clause already named',
+    () => {
+      // The continuation review found the clause wired into the soft return
+      // only, while the round claimed both. It also found the wording wrong:
+      // square brackets ARE stripped by the selector, only parentheses are not.
+      const line = 'REQ-01, (REQ-02), REQ-03..REQ-05';
+      const wr = formatRequirementsLineWarning('1', line, analyzeRequirementsLine(line));
+      const w = reqLineText(wr);
+      const wc = reqLineCode(wr);
+      assert.strictEqual(wc, REQ_LINE_WARNING_CODE.misparse, `#3697-9g: assertive voice expected: ${wc} / ${w}`);
+      assert.match(w, /ID-shaped text on the line that was NOT selected: REQ-02/i, `#3697-9g: ${w}`);
+      assert.match(w, /parentheses are not stripped, unlike square brackets/i, `#3697-9g: ${w}`);
+      // `REQ-03..REQ-05` is already named by "Unparsed text"; naming it twice
+      // is noise, and a warning that repeats itself is one readers skim.
+      // Count OUTSIDE the echoed line — the warning quotes the whole
+      // Requirements line first, so the raw echo is one legitimate occurrence.
+      const afterEcho = w.slice(w.indexOf('`)') + 2);
+      assert.strictEqual(
+        (afterEcho.match(/REQ-03\.\.REQ-05/g) || []).length,
+        1,
+        `#3697-9g: the range token must be diagnosed exactly once: ${w}`,
+      );
+      // And the claim must be TRUE: a bracketed ID is selected, so it can never
+      // appear in the skipped clause.
+      assert.deepStrictEqual(
+        analyzeRequirementsLine('[REQ-01, REQ-02]').citedReqIds,
+        ['REQ-01', 'REQ-02'],
+        '#3697-9g: square brackets are stripped by the selector',
+      );
+    },
+  );
+
+  test(
+    '#3697-9h (over-cap token with no hyphen): an unexaminable OPERATOR must not silence the line',
+    () => {
+      // The continuation review's CLAIM B. `oversizedTokens` first filtered on
+      // `includes('-')`, so a 2049-character run of dots between two IDs was
+      // missed: R2 declined to classify it (capped) and nothing reported it, so
+      // a line that warned before the round went silent after it.
+      const line = `REQ-01 ${'.'.repeat(2049)} REQ-05`;
+      const a = analyzeRequirementsLine(line);
+      assert.strictEqual(a.hasSpacedRange, false, '#3697-9h: the operator is past the cap');
+      assert.strictEqual(a.oversizedTokens.length, 1, '#3697-9h: and is recorded as unexaminable');
+      assert.strictEqual(a.warn, true, '#3697-9h: so the line is not silent');
+    },
+  );
+
+  test(
+    '#3697-9i (over-cap token the SELECTOR took): a selected ID is verified, never "unverified"',
+    () => {
+      // The continuation review's MISSED finding. The selector is uncapped and
+      // fully anchored, so a token it accepted was examined end to end.
+      // Reporting it unverified because the secondary detector declined to
+      // classify it is a contradiction inside one warning.
+      const bigId = `R-${'1'.repeat(2047)}`;
+      assert.strictEqual(bigId.length, 2049, `#3697-9i fixture is ${bigId.length} chars, expected 2049`);
+      const a = analyzeRequirementsLine(bigId);
+      assert.deepStrictEqual(a.citedReqIds, [bigId], '#3697-9i: it is a valid canonical REQ-ID');
+      assert.deepStrictEqual(a.oversizedTokens, [], '#3697-9i: selected means verified');
+      assert.strictEqual(a.warn, false, '#3697-9i: nothing to report');
+    },
+  );
+
+  // ── Minor 4 ────────────────────────────────────────────────────────────────
+  // A zero-selection non-placeholder line MUST warn — #3697's own acceptance
+  // criterion says so in as many words. What was wrong is that it reported an
+  // ADR citation as "Unparsed text", i.e. as requirement content it had failed
+  // to read. Name what the residue actually is, and name the escape hatch.
+  for (const [label, line] of [
+    ['Deferred (see ADR-7)', 'Deferred (see ADR-7)'],
+    ['N/A with citation', 'N/A (tracked in ADR-12)'],
+  ]) {
+    test(
+      `#3697-10 (${label}): a zero-selection line still warns, but names ID-shaped TEXT rather ` +
+      'than missed requirements, and points at the placeholder escape',
+      () => {
+        const a = analyzeRequirementsLine(line);
+        assert.deepStrictEqual(a.citedReqIds, [], `#3697-10 (${label}): nothing is selected here`);
+        const wr = formatRequirementsLineWarning('1', line, a);
+        const w = reqLineText(wr);
+        const wc = reqLineCode(wr);
+        assert.strictEqual(
+          wc, REQ_LINE_WARNING_CODE.misparse,
+          `#3697-10 (${label}): zero selection is a demonstrated parse failure: ${wc}`,
+        );
+        assert.ok(w, `#3697-10 (${label}): a non-empty non-placeholder line selecting zero must warn`);
+        assert.match(w, /ID-shaped text that was not selected/i, `#3697-10 (${label}): ${w}`);
+        assert.doesNotMatch(
+          w,
+          /Unparsed text/i,
+          `#3697-10 (${label}): the citation is not unparsed requirement content: ${w}`,
+        );
+        assert.doesNotMatch(
+          w,
+          /Range forms are not expanded/i,
+          `#3697-10 (${label}): no range rule fired, so no range may be diagnosed: ${w}`,
+        );
+        assert.match(w, /write `TBD` or `None`/i, `#3697-10 (${label}): ${w}`);
+      },
+    );
+  }
+
+  // ── Census closure ─────────────────────────────────────────────────────────
+  // The range-operator enumeration is a set the code fixes at author time over
+  // a domain (separator spellings) that grows without it. Round 3's census
+  // found the ASCII and typographic dashes split: U+2013/U+2014 were reached,
+  // the five other Unicode dashes were not, and each miss is a SILENT
+  // under-selection — #3697's own defect. They carry no collision risk because
+  // they are not the REQ-ID separator (that is ASCII `-`), so they close.
+  for (const [label, cp] of [
+    ['U+2010 hyphen', '‐'],
+    ['U+2011 non-breaking hyphen', '‑'],
+    ['U+2012 figure dash', '‒'],
+    ['U+2015 horizontal bar', '―'],
+    ['U+2212 minus sign', '−'],
+  ]) {
+    test(`#3697-11 (${label}): a typographic dash is the same range operator at a different codepoint`, () => {
+      const spaced = `RANGE-01 ${cp} RANGE-05`;
+      assert.strictEqual(
+        analyzeRequirementsLine(spaced).warn,
+        true,
+        `#3697-11 (${label}): spaced form must warn`,
+      );
+      const tight = `RANGE-01${cp}RANGE-05`;
+      assert.strictEqual(
+        analyzeRequirementsLine(tight).warn,
+        true,
+        `#3697-11 (${label}): tight form must warn`,
+      );
+      // And the collision the ASCII hyphen has must NOT arrive with them: a
+      // date-shaped annotation stays silent because its own separators are
+      // ASCII, so it never reaches the ID shape at all.
+      assert.strictEqual(
+        analyzeRequirementsLine(`RANGE-01 (target FY-2026-08)`).warn,
+        false,
+        `#3697-11 (${label}): the date-annotation control must stay silent`,
+      );
+    });
+  }
+
+  // Every dash takes the STRICT shape, whatever its codepoint. `PREFIX-\d+
+  // <dash> \d+` is also a date and a sub-numbered ID, and that ambiguity is a
+  // property of the shape rather than of which key was pressed. #3697-4 pins
+  // the ASCII date annotation silent; these pin its seven typographic twins to
+  // the same verdict. Two of them — U+2013 and U+2014 — warned BEFORE this PR,
+  // so this arm fixes a pre-existing inconsistency as well as the one an
+  // earlier round-3 commit briefly introduced for the other five.
+  const ALL_DASHES = [
+    ['ASCII hyphen-minus', '-'],
+    ['U+2010 hyphen', '‐'],
+    ['U+2011 non-breaking hyphen', '‑'],
+    ['U+2012 figure dash', '‒'],
+    ['U+2013 en dash', '–'],
+    ['U+2014 em dash', '—'],
+    ['U+2015 horizontal bar', '―'],
+    ['U+2212 minus sign', '−'],
+  ];
+
+  for (const [label, d] of ALL_DASHES) {
+    test(`#3697-13 (${label}): a date-shaped annotation must stay silent`, () => {
+      const line = `RANGE-01 (target FY-2026${d}08)`;
+      assert.strictEqual(
+        analyzeRequirementsLine(line).warn,
+        false,
+        `#3697-13 (${label}): ${JSON.stringify(line)} is a date annotation, not a range`,
+      );
+      // The sub-numbered-ID reading of the same shape, beside a selected ID.
+      const sub = `RANGE-01, API-2${d}01`;
+      assert.strictEqual(
+        analyzeRequirementsLine(sub).warn,
+        false,
+        `#3697-13 (${label}): ${JSON.stringify(sub)} is a sub-numbered ID, not a range`,
+      );
+    });
+
+    test(`#3697-13b (${label}): a tight range with a FULL ID on both sides must still warn`, () => {
+      const line = `RANGE-01${d}RANGE-05`;
+      assert.strictEqual(
+        analyzeRequirementsLine(line).rangeTokens.length,
+        1,
+        `#3697-13b (${label}): ${JSON.stringify(line)} is unambiguously a range`,
+      );
+    });
+  }
+
+  test('#3697-13c: the LOOSE operators keep their numeric endpoint', () => {
+    // `..`, `…` and the word operators have no date or sub-number reading
+    // between two numbers, so the strict shape would cost them coverage for
+    // nothing. They are deliberately not moved.
+    for (const line of ['RANGE-01…05', 'RANGE-01..05', 'RANGE-01through05']) {
+      assert.strictEqual(
+        analyzeRequirementsLine(line).rangeTokens.length,
+        1,
+        `#3697-13c: ${JSON.stringify(line)} must still read as a tight range`,
+      );
+    }
+  });
+
+  test('#3697-13d: the accepted false negative is now symmetric across dashes', () => {
+    // `RANGE-01, RANGE-02-05` is silent in the shipped design — the strict
+    // shape accepts that, deliberately, for the dash people actually type.
+    // Every other dash now accepts it identically; the inconsistency, not the
+    // gap, is what round 3 removed. A BARE `RANGE-02<dash>05` still warns,
+    // because it selects nothing and R3 catches it.
+    for (const [label, d] of ALL_DASHES) {
+      assert.strictEqual(
+        analyzeRequirementsLine(`RANGE-01, RANGE-02${d}05`).warn,
+        false,
+        `#3697-13d (${label}): mixed-list numeric endpoint is the accepted false negative`,
+      );
+      assert.strictEqual(
+        analyzeRequirementsLine(`RANGE-02${d}05`).warn,
+        true,
+        `#3697-13d (${label}): a bare zero-selection line must still warn via R3`,
+      );
+    }
+  });
+
+  test('#3697-12: the ASCII-hyphen strict shape is unchanged by the dash widening', () => {
+    // `LETTERS-\d+-\d+` is also a date and a sub-numbered ID, which is why the
+    // bare-hyphen tight arm demands a full ID on both sides. Widening the
+    // NOHYPHEN arm must not relax that.
+    for (const line of ['RANGE-01-05', 'FY-2026-08', 'API-2-01']) {
+      assert.strictEqual(
+        analyzeRequirementsLine(line).rangeTokens.length,
+        0,
+        `#3697-12: ${JSON.stringify(line)} must not read as a tight range`,
+      );
+    }
+    assert.strictEqual(
+      analyzeRequirementsLine('RANGE-01-RANGE-05').rangeTokens.length,
+      1,
+      '#3697-12: the full-ID-both-sides spelling must still read as a range',
+    );
+  });
+});
+
 // ─── #2572: phase-SUMMARY artifact↔disk advisory at phase completion ─────────
 //
 // A SUMMARY asserts "I created these files". Until #2572 nothing checked that
