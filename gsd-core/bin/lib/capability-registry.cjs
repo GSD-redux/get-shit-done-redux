@@ -1472,6 +1472,7 @@ const capabilities = {
         "binary": "cursor-agent",
         "args": [
           "-p",
+          "{{model}}",
           "--mode",
           "ask",
           "--trust",
@@ -1481,7 +1482,7 @@ const capabilities = {
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
-        "modelArg": null,
+        "modelArg": "--model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
@@ -1491,10 +1492,15 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-      "modelConfigKey": null,
+      "modelConfigKey": "review.models.cursor",
       "handler": null
     },
     "config": {
+      "review.models.cursor": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Cursor reviewer lane."
+      },
       "review.max_prompt_tokens_per_reviewer.cursor": {
         "type": "number",
         "default": -1,
@@ -4781,6 +4787,7 @@ const configKeys = {
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
   "review.timeouts.codex": "codex",
+  "review.models.cursor": "cursor",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
@@ -4969,6 +4976,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.models.cursor": {
+    "owner": "cursor",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Cursor reviewer lane."
   },
   "review.max_prompt_tokens_per_reviewer.cursor": {
     "owner": "cursor",
@@ -6416,6 +6429,7 @@ const runtimes = {
         "binary": "cursor-agent",
         "args": [
           "-p",
+          "{{model}}",
           "--mode",
           "ask",
           "--trust",
@@ -6425,7 +6439,7 @@ const runtimes = {
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
-        "modelArg": null,
+        "modelArg": "--model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
@@ -6435,10 +6449,15 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-      "modelConfigKey": null,
+      "modelConfigKey": "review.models.cursor",
       "handler": null
     },
     "config": {
+      "review.models.cursor": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Cursor reviewer lane."
+      },
       "review.max_prompt_tokens_per_reviewer.cursor": {
         "type": "number",
         "default": -1,

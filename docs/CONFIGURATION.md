@@ -240,6 +240,7 @@ The key suffix is **not** always the lane slug. Each lane declares the config ke
 | `review.models.codex` | string | `null` | Model id for Codex review (injected into --model), e.g. `"gpt-5"` |
 | `review.models.gemini` | string | `null` | Model id for Gemini review (injected into -m), e.g. `"gemini-2.5-pro"` |
 | `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
+| `review.models.cursor` | string | `null` | Model id for Cursor review (injected into --model), e.g. `"cursor-grok-4.5-high"` |
 | `review.models.kimi-code` | string | `null` | Model id for Kimi Code review (injected into -m) |
 
 ### Resolved model recording (#2295)
@@ -269,7 +270,7 @@ which schema validates them moved.
 One consequence follows: `<cli>` must now name a **declared reviewer lane**. Previously any slug
 matching `[a-zA-Z0-9_-]+` was accepted, so a typo or a key left over from a removed reviewer
 validated silently and was never read. Such a key is now rejected by `config-set`. The declared
-lanes are `gemini`, `claude`, `codex`, `opencode`, `agy` (the Antigravity lane — its key suffix is
+lanes are `gemini`, `claude`, `codex`, `opencode`, `cursor`, `agy` (the Antigravity lane — its key suffix is
 the CLI's own name, not the lane slug), `ollama`, `lm_studio` and `llama_cpp`.
 
 The same applies to `review.max_prompt_tokens_per_reviewer.<slug>`. `review.max_prompt_tokens`
@@ -288,9 +289,10 @@ falls back to that lane's built-in floor. For the `antigravity` lane specificall
 derives its native `agy --print-timeout` flag (roughly 60 seconds under the configured outer
 value), so raising `review.timeouts.antigravity` raises both bounds together — this is how to fix
 a reviewer lane being killed mid-run on a large plan set: `gsd config-set review.timeouts.antigravity 900`.
-Three lanes — `qwen`, `cursor`, and `coderabbit` — take neither a model flag nor a host and do not
-federate a timeout key either, matching the same narrow key-ownership invariant their
-`review.models.*`/host keys already follow (each owns only its own prompt-budget key).
+Two lanes — `qwen` and `coderabbit` — take neither a model flag nor a host and do not federate a
+timeout key either, matching the same narrow key-ownership invariant their `review.models.*`/host
+keys already follow (each owns only its own prompt-budget key). `cursor` gained a model flag
+(`review.models.cursor`, #3653) but still owns no federated timeout key of its own.
 
 ### Reviewer defaults for `/gsd-review`
 
@@ -1278,6 +1280,7 @@ Configure per-CLI model selection for `/gsd-review`. When set, overrides the CLI
 | `review.models.claude` | string | (CLI default) | Model used when `--claude` reviewer is invoked |
 | `review.models.codex` | string | (CLI default) | Model used when `--codex` reviewer is invoked |
 | `review.models.opencode` | string | (CLI default) | Model used when `--opencode` reviewer is invoked |
+| `review.models.cursor` | string | (CLI default) | Model used when the `--cursor` reviewer is invoked (injected into `--model`) |
 | `review.models.agy` | string | (CLI default) | Model used when the `--antigravity` / `--agy` reviewer is invoked. The key suffix is the CLI's own name (`agy`), not the lane slug — the lane declares which key it reads, so the two need not match |
 | `review.models.kimi-code` | string | (CLI default) | Model used when the `--kimi-code` reviewer is invoked (injected into `-m`) |
 | `review.models.ollama` | string | (server default) | Model name passed to Ollama when `--ollama` reviewer is invoked. If unset, the first available model reported by the server is used (e.g. `llama3`). Set to a specific tag: `gsd config-set review.models.ollama codellama` |
