@@ -2281,7 +2281,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
       '# Project State\n\n**Status:** Active\n'
     );
     // #3233: give the scan a plan so totalPlans > 0 clears the zero-plans
-    // no-op guard and this test reaches the 'Progress field not found' branch
+    // no-op guard and this test reaches the 'no Progress: line found' branch
     // it is named for (otherwise the guard fires first and the branch is uncovered).
     const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01');
     fs.mkdirSync(phase01Dir, { recursive: true });
@@ -2292,9 +2292,14 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.updated, false, 'updated should be false');
-    assert.ok(
-      /Progress field not found/i.test(String(output.reason)),
-      `should be the 'Progress field not found' reason; got: ${output.reason}`
+    // #3957: the reason now names the actual miss — the BODY Progress: line
+    // is what's absent, not the frontmatter progress data (which was already
+    // confirmed present a few lines above in cmdStateUpdateProgress, via
+    // computeUpdateProgressPreview). The old 'Progress field not found in
+    // STATE.md' reason named the wrong layer.
+    assert.strictEqual(
+      output.reason,
+      'no Progress: line found in STATE.md body to update (frontmatter progress data is unaffected)',
     );
   });
 
@@ -2831,14 +2836,26 @@ describe('cmdStateResolveBlocker (state resolve-blocker)', () => {
     assert.ok(output.error.includes('STATE.md'), 'error should mention STATE.md');
   });
 
-  test('returns resolved true even if no line matches', () => {
+  // #3957 (epic #3473 B9, signature D): previously `resolved` was set
+  // unconditionally as soon as the Blockers/Concerns heading was located —
+  // before checking whether any bullet line actually matched `text` — so a
+  // call naming a non-existent blocker reported `resolved: true` (a false
+  // success). The section here IS found (blockerFixture has a populated
+  // `## Blockers` section), so the real defect this test pins is the
+  // "section found, no bullet matched" case — distinct from "no
+  // Blockers/Concerns section at all", which carries a different reason.
+  test('returns resolved false when no line matches', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), blockerFixture);
 
     const result = runGsdTools('state resolve-blocker --text "nonexistent blocker text"', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
-    assert.strictEqual(output.resolved, true, 'resolved should be true even when no line matches');
+    assert.strictEqual(output.resolved, false, 'resolved must be false when no line matches — not a false success');
+    assert.strictEqual(
+      output.reason,
+      'no blocker matching nonexistent blocker text found in the Blockers section',
+    );
   });
 });
 
@@ -19479,14 +19496,36 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
       assert.match(stderr, /^\[gsd-tools\] WARNING: state update-progress skipped — no plans found in current-milestone phases \(0 plans\)\./);
     });
 
-    // Row 4: computeUpdateProgressPreview withholds (#1761: ROADMAP has no
-    // versioned milestone heading, so buildStateFrontmatter cannot bound the
-    // asserted `milestone: v1.0` and nulls percent/completed/total).
+    // Row 4: computeUpdateProgressPreview withholds (#1761). Mirrors the
+    // already-proven fixture shape from the '#3583 follow-up' test above
+    // (~line 2574): STATE.md has NO explicit `milestone:` frontmatter field
+    // and ROADMAP.md has no `##` milestone heading wrapper — that absence is
+    // exactly what lets the auto-derived scan at the top of
+    // cmdStateUpdateProgress classify as SCOPE.COMPLETE ("free-form legacy
+    // roadmap", #3583 finding 1) instead of UNSCOPED, so totalPlans > 0 and
+    // the first two decline arms are passed. ROADMAP.md does mention a bare
+    // version token ("v2.0") in body PROSE — not a heading, not a 🚧 bullet —
+    // which getMilestoneInfo's bare-version-token fallback picks up as
+    // `assertedMilestoneVersion`. buildStateFrontmatter's own #1761 guard
+    // then finds no ROADMAP HEADING matching "v2.0" (isMilestoneBounded
+    // requires a heading, not mere prose), so it nulls `progress.percent`
+    // even though diskScope is COMPLETE — reaching exactly the THIRD decline
+    // arm (computeUpdateProgressPreview.withheld), not the first
+    // (phase-scope) or second (zero-plans) one. An earlier version of this
+    // fixture used an explicit `milestone: v1.0` field with no matching
+    // heading at all, which left the milestone UNSCOPED from the very first
+    // arm instead of reaching this one.
     test('update-progress preview-withheld decline still discloses via stderr', () => {
       tmpDir = createTempProject();
-      const lines = ['# Roadmap', ''];
-      for (let i = 1; i <= 3; i++) { lines.push(`### Phase ${i}: phase-${i}`, ''); }
-      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), lines.join('\n'));
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+        '# Roadmap',
+        '',
+        'Target release: v2.0',
+        '',
+        '### Phase 1: phase-1',
+        '### Phase 2: phase-2',
+        '',
+      ].join('\n'));
       const phasesDir = path.join(tmpDir, '.planning', 'phases');
       for (let i = 1; i <= 2; i++) {
         const dir = path.join(phasesDir, String(i).padStart(2, '0'));
@@ -19495,7 +19534,7 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
         fs.writeFileSync(path.join(dir, '01-SUMMARY.md'), '# Summary\n');
       }
       fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
-        '---', 'gsd_state_version: 1.0', 'milestone: v1.0', 'status: executing', '---', '',
+        '---', 'gsd_state_version: 1.0', 'status: executing', '---', '',
         '# Project State', '', '**Progress:** [░░░░░░░░░░] 0%', '',
       ].join('\n'));
 
