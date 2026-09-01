@@ -103,8 +103,11 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 ```bash
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
-SESSION_OUTLIVES_TURN=$(gsd_run query config-get workflow.session_outlives_turn --raw 2>/dev/null || echo "true")
-[ "$SESSION_OUTLIVES_TURN" = "false" ] || SESSION_OUTLIVES_TURN="true"
+SESSION_OUTLIVES_TURN=$(gsd_run query config-get workflow.session_outlives_turn --raw 2>/dev/null || echo "false")
+[ "$USE_WORKTREES" = "false" ] || USE_WORKTREES="true"
+# Configuration-read failure fails closed to foreground dispatch. The registered
+# default still preserves background execution when the key is absent.
+[ "$SESSION_OUTLIVES_TURN" = "true" ] || SESSION_OUTLIVES_TURN="false"
 EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes --raw 2>/dev/null || echo "5")
 EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes --raw 2>/dev/null || echo "10")
 
@@ -826,6 +829,11 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **Orchestrator-managed worktree dispatch** (`ISOLATION=orchestrator-worktree`): read and execute `execute-phase/steps/executor-isolation-dispatch.md`. GSD creates each worktree (`worktree create`) and spawns the executor into it; the orchestrator performs every git operation. Merge-back and cleanup are the existing manifest-scoped gauntlet, unchanged.
 
    **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is `false` — either project-level `USE_WORKTREES=false`, or per-plan submodule intersection forced it false in step 2.5):
+
+   Apply the already-resolved `SESSION_OUTLIVES_TURN` mode here too: use
+   `run_in_background=false` and wait when it is `false`; otherwise retain the
+   normal background dispatch. Sequential describes main-worktree ownership,
+   not whether the parent session may outlive the child executor.
 
    Omit `isolation="worktree"` from the Agent call. Replace the `<parallel_execution>` block with:
 

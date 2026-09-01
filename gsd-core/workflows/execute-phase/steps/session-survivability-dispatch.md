@@ -13,8 +13,21 @@ asynchronous executor contract:
 Agent(
   subagent_type="{EXECUTOR_TYPE}",
   description="Execute plan {plan_number} of phase {phase_number}",
-  run_in_background: true,
-  prompt="{EXECUTOR_PROMPT}"
+  model="{executor_model}",  # omit when executor_model == "inherit"
+  {harnessFlag},
+  run_in_background=true,
+  prompt="
+    <objective>
+    Execute plan {plan_number} of phase {phase_number}-{phase_name}.
+    Commit each task atomically. Create SUMMARY.md.
+    </objective>
+    <required_reading>
+    Read the plan, PROJECT.md, STATE.md, config.json (if present), and the
+    project instructions before editing. Follow the gsd-executor role contract,
+    including its per-commit HEAD/cwd/path guards and gitignored-artifact skip
+    semantics: never force-stage a gitignored planning artifact.
+    </required_reading>
+  "
 )
 ```
 
@@ -25,8 +38,21 @@ for its completion before dispatching the next plan's executor:
 executor_result = Agent(
   subagent_type="{EXECUTOR_TYPE}",
   description="Execute plan {plan_number} of phase {phase_number}",
-  run_in_background: false,
-  prompt="{EXECUTOR_PROMPT}"
+  model="{executor_model}",  # omit when executor_model == "inherit"
+  {harnessFlag},
+  run_in_background=false,
+  prompt="
+    <objective>
+    Execute plan {plan_number} of phase {phase_number}-{phase_name}.
+    Commit each task atomically. Create SUMMARY.md.
+    </objective>
+    <required_reading>
+    Read the plan, PROJECT.md, STATE.md, config.json (if present), and the
+    project instructions before editing. Follow the gsd-executor role contract,
+    including its per-commit HEAD/cwd/path guards and gitignored-artifact skip
+    semantics: never force-stage a gitignored planning artifact.
+    </required_reading>
+  "
 )
 ```
 

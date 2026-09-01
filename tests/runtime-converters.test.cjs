@@ -2628,15 +2628,15 @@ describe('#3159: runtime conversion and projection of session-survivability disp
       assert.ok(trueIdx < falseIdx, `${rt}: true branch must precede false branch`);
 
       const trueChunk = out.slice(trueIdx, falseIdx);
-      assert.match(trueChunk, /run_in_background:\s*true/);
-      assert.doesNotMatch(trueChunk, /run_in_background:\s*false/);
+      assert.match(trueChunk, /run_in_background\s*=\s*true/);
+      assert.doesNotMatch(trueChunk, /run_in_background\s*=\s*false/);
 
       const afterFalse = out.slice(falseIdx);
       const nextHeadingIdx = afterFalse.indexOf('\n## ');
       const falseChunk = nextHeadingIdx !== -1 ? afterFalse.slice(0, nextHeadingIdx) : afterFalse;
-      assert.match(falseChunk, /run_in_background:\s*false/);
+      assert.match(falseChunk, /run_in_background\s*=\s*false/);
       assert.match(falseChunk, /synchronously/i);
-      assert.doesNotMatch(falseChunk, /run_in_background:\s*true/);
+      assert.doesNotMatch(falseChunk, /run_in_background\s*=\s*true/);
     }
   });
 
@@ -2686,4 +2686,3 @@ describe('#3159: runtime conversion and projection of session-survivability disp
     assert.match(isolationSource, /cleanup/i);
   });
 });
-

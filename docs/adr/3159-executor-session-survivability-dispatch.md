@@ -26,13 +26,14 @@ Introduce an explicit, default-preserving configuration key and literal dispatch
 Add `workflow.session_outlives_turn` as a centrally registered boolean configuration key:
 - **Default:** `true`. When absent or explicitly `true`, GSD preserves the standard asynchronous background dispatch across all supported executor backends.
 - **Opt-out:** `false`. When explicitly set to `false`, GSD switches to a foreground, synchronous execution path.
-- Non-boolean values passed via `gsd config-set` are rejected; hand-edited values in `.planning/config.json` normalize to the default `true` path at workflow execution time.
+- Non-boolean values passed via `gsd config-set` are rejected. The registered absent-key default resolves to `true`; malformed or unavailable workflow reads instead fail closed to foreground (`false`) so an unavailable configuration source cannot orphan an executor on a one-shot host.
 
 ### 2. Literal Foreground Dispatch with Awaiting (D-02)
 
 When `workflow.session_outlives_turn` is `false`:
 - **Harness Agent backend (`session-survivability-dispatch.md`):** Dispatches `gsd-executor` with an explicit, literal `run_in_background: false` instruction; the tool call returns synchronously before the next plan executor is dispatched. Subagents are retained; execution is not forced inline into the orchestrator prompt.
 - **Orchestrator-worktree process backend (`executor-isolation-dispatch.md`):** Spawns the executor child process synchronously in the foreground and waits for completion before proceeding, while preserving worktree ownership, wave merging, and cleanup contracts.
+- **No-isolation sequential backend:** Uses the same foreground/awaited executor mode when worktrees are disabled or a plan must use the main working tree.
 - Both true and false branches are expressed as distinct literal instructions in workflow fragments rather than relying on placeholder interpolation or omitted flags.
 
 ### 3. Scope Fence (D-03)
