@@ -77,4 +77,19 @@ describe('lint-portable-grep: findPerlGrepInvocations pure logic', () => {
     const findings = findPerlGrepInvocations('');
     assert.strictEqual(findings.length, 0);
   });
+
+  test('flags `grep -oP` right after a `then` shell keyword', () => {
+    const findings = findPerlGrepInvocations(`if [ -n "$x" ]; then grep -oP 'x' ; fi`);
+    assert.strictEqual(findings.length, 1);
+  });
+
+  test('flags `grep -oP` right after a `do` shell keyword', () => {
+    const findings = findPerlGrepInvocations(`for f in *.md; do grep -oP 'x' "$f"; done`);
+    assert.strictEqual(findings.length, 1);
+  });
+
+  test('a bare mention of the word "then" with no following grep is not flagged', () => {
+    const findings = findPerlGrepInvocations(`this sentence mentions the word then but nothing else`);
+    assert.strictEqual(findings.length, 0);
+  });
 });

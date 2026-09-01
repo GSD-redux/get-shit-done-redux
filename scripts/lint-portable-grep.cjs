@@ -72,11 +72,14 @@ const ROOT = path.join(__dirname, '..');
 // snippets which a bash/zsh host on macOS actually executes.
 const DEFAULT_ROOTS = ['gsd-core/workflows', 'gsd-core/references', 'agents', 'commands'];
 
-// A `grep`/`egrep`/`fgrep` token, anchored to a command position (line start
-// or right after `| & ; ( \` {`) so prose mentioning "grep -P" in running text
-// is still caught in these directive-markdown roots (see file header) without
-// also matching an unrelated word ending in "grep".
-const GREP_INVOCATION_RE = /(?:^|[|&;(`{])[ \t]*(?:e|f)?grep\b/g;
+// A `grep`/`egrep`/`fgrep` token, anchored to a command position (line start,
+// right after `| & ; ( \` {`, or right after a shell keyword that opens a new
+// command — `then`/`do`/`else`/`elif`) so prose mentioning "grep -P" in
+// running text is still caught in these directive-markdown roots (see file
+// header) without also matching an unrelated word ending in "grep". The
+// keyword alternative is `\b`-bounded on both sides, so a bare mention of the
+// word "then"/"do"/etc. with no following grep never matches on its own.
+const GREP_INVOCATION_RE = /(?:^|[|&;(`{]|\b(?:then|do|else|elif)\b)[ \t]*(?:e|f)?grep\b/g;
 
 // A `-P` short-flag cluster (e.g. `-P`, `-oP`, `-Po`, `-iP`) or the long form
 // `--perl-regexp`, as a standalone token.
