@@ -201,8 +201,8 @@ leaves it all `unresolved`. When this project has `response_language` set, add a
 requirement's `text`. `text_en` is **engine input, never user-facing output**, so the
 `response_language` rule at the top of this workflow does not govern it — but `text` itself is
 NOT translated: write it as the requirement's own text, exactly as it appears in the SPEC.
-The SPEC keeps the original language — only `text_en` is translated, and requirement `id`s
-are never translated or renumbered (coverage rows join back on `id`, and any Acceptance
+The SPEC keeps the original language — only `text_en` is translated, and requirement
+`id`s are never translated or renumbered (coverage rows join back on `id`, and any Acceptance
 Criteria you write from the resolved edges go into the SPEC in `response_language`). Populate
 `text_en` for **every** requirement, not only the ones that look edge-relevant: the
 `$APPLICABLE = 0` warning below fires only when *all* requirements are unclassified, so a
