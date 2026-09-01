@@ -6157,7 +6157,7 @@ describe('#3187 chain-owner identity — every consumer agrees with stateFieldVa
       stateDocument.stateFieldValue(fm, body, null, 'Phase').value;
 
     const output = JSON.parse(runGsdTools('smart-entry --json', tmpDir).output);
-    assert.strictEqual(output.signals.current_phase, parseInt(ownerPhaseRaw, 10));
+    assert.strictEqual(output.signals.current_phase, ownerPhaseRaw);
   });
 
   test('C5: workstream projection matches the owner', () => {
@@ -6258,7 +6258,7 @@ describe('#3187 chain-owner identity — every consumer agrees with stateFieldVa
 
     // C4: smart-entry
     const smartEntry = JSON.parse(runGsdTools('smart-entry --json', tmpDir).output);
-    assert.strictEqual(smartEntry.signals.current_phase, Number(ownerPhase));
+    assert.strictEqual(smartEntry.signals.current_phase, ownerPhase);
 
     // C6: complete-phase idempotency guard (no frontmatter in this fixture,
     // so this row does not exercise the frontmatter tier — see C6's own test
