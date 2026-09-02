@@ -154,31 +154,22 @@ function readGsdAgentTools(config: Record<string, unknown> | null): AgentTools |
  * model override resolver.
  */
 function readGsdEffectiveAgentTools(targetDir: string | null = null, options: ReadOptions = {}): AgentTools | null {
-  let globalConfig: Record<string, unknown> | null = null;
-  try {
-    const home = options.homedir ? options.homedir() : os.homedir();
-    const defaultsPath = path.join(home, '.gsd', 'defaults.json');
-    if (installFs().existsSync(defaultsPath)) {
-      globalConfig = JSON.parse(installFs().readFileSync(defaultsPath, 'utf-8')) as Record<string, unknown>;
-    }
-  } catch {
-    globalConfig = null;
-  }
+  const home = options.homedir ? options.homedir() : os.homedir();
+  const globalConfig = _readGsdConfigFile(path.join(home, '.gsd', 'defaults.json'), 'global defaults');
 
   let projectConfig: Record<string, unknown> | null = null;
   if (targetDir) {
     const candidate = _findAncestorGsdConfigPath(targetDir);
     if (candidate) {
-      try {
-        projectConfig = JSON.parse(installFs().readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
-      } catch {
-        projectConfig = null;
-      }
+      projectConfig = _readGsdConfigFile(candidate, 'project config');
     }
   }
 
   const global = readGsdAgentTools(globalConfig);
   const project = readGsdAgentTools(projectConfig);
+  if (projectConfig
+    && Object.prototype.hasOwnProperty.call(projectConfig, 'agent_tools')
+    && project === null) return {};
   if (!global && !project) return null;
   return { ...(global || {}), ...(project || {}) };
 }

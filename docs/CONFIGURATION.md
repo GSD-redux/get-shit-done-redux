@@ -200,8 +200,10 @@ Each selector value must be an array. A usable entry is a single tool token whic
 is non-empty and contains no whitespace, comma, `#`, quote, U+0000–U+001F, U+007F–U+009F,
 U+2028, or U+2029, and does not end with `:`.
 Invalid entries are ignored. An explicitly present but invalid project selector resolves to no
-grant for that selector; it does not restore the global value. Inline grants remain plain
-comma-separated tool names as required by Claude; block-sequence entries are YAML-quoted.
+grant for that selector; it does not restore the global value. A present but invalid project
+`agent_tools` container suppresses all global grants. Inline grants remain plain comma-separated
+tool names as required by Claude; block-sequence entries are YAML-quoted. Agents without a
+`tools:` key inherit the runtime's default tool surface, so GSD leaves those agents unchanged.
 
 Run `gsd install <runtime>` again after changing `agent_tools`; installed artifacts do not read
 configuration at agent-spawn time. The shared staging path gives Claude, Codex, and Qwen their
@@ -209,7 +211,9 @@ existing host representations. Kimi maps supported canonical tools and continues
 grants with its existing diagnostic. ZCode continues to omit `mcp__*` entries because its
 dispatcher treats them as required MCP servers, and OpenCode keeps its converter-owned tools
 omission. These are converter-specific output rules, not a claim that every runtime authorizes a
-tool identically.
+tool identically. Codex custom agents inherit the parent session's MCP servers natively;
+`agent_tools` does not encode an allowlist into their TOML or widen `sandbox_mode`, which remains
+derived from the shipped agent declaration.
 
 ## Core Settings
 

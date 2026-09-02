@@ -208,7 +208,7 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
   for (const kind of layout.kinds) {
     let stagedDir: string;
     try {
-      if (kind.kind === 'agents') {
+      if (kind.kind === 'agents' || kind.kind === 'kimi-agents') {
         // ADR-1235 §1: pass agentCtx so stageAgentsForRuntimeWithConverter applies
         // the full inline-loop order: pathRewrites → attribution → converter → normalize.
         // The cross-cutting is now PRE-converter (inside staging), not POST.
@@ -229,7 +229,7 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
         const rewrittenDir = rewriteStagedSkillBodies(stagedDir, rewriteOpts);
         sourceDir = addCleanupDir(cleanupDirs, stagedDir, rewrittenDir);
       }
-      // agents kind: cross-cutting already applied INSIDE kind.stage() via agentCtx.
+      // Agent kinds: cross-cutting already applied INSIDE kind.stage() via agentCtx.
       // No POST-step needed. sourceDir stays as stagedDir.
     } catch (err) {
       return { ok: false, kind: 'rewrite_failed', message: errorMessage(err), cleanupDirs, failedKind: kind.kind };

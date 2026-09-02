@@ -225,7 +225,7 @@ describe('config-field-docs', () => {
     const publicDocs = fs.readFileSync(DOCS_CONFIG_PATH, 'utf-8');
     assert.ok(tableRowForKey(publicDocs, 'agent_tools.<selector>'),
       'agent_tools must have a public configuration table row');
-    assert.match(publicDocs, /agents without a `tools:` key inherit/i);
+    assert.match(publicDocs, /agents without a\s+`tools:` key inherit/i);
     assert.match(publicDocs, /Codex.*parent.*MCP servers.*sandbox_mode/is);
   });
 

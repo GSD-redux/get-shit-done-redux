@@ -120,6 +120,11 @@
   ],
   "dynamicKeyPatterns": [
     {
+      "topLevel": "agent_tools",
+      "source": "^agent_tools\\.(\\*|[a-zA-Z0-9_-]+)$",
+      "description": "agent_tools.<selector>"
+    },
+    {
       "topLevel": "agent_skills",
       "source": "^agent_skills\\.[a-zA-Z0-9_-]+$",
       "description": "agent_skills.<agent-type>"

@@ -721,10 +721,13 @@ function appendAgentTools(content: string, grants: string[]): string {
 
   const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
   if (!toolsMatch) return content;
+  const commentIndex = toolsMatch[1].search(/[ \t]#/);
+  const inlineValue = commentIndex === -1 ? toolsMatch[1] : toolsMatch[1].slice(0, commentIndex);
+  const inlineComment = commentIndex === -1 ? '' : toolsMatch[1].slice(commentIndex);
   const existing: string[] = [];
   let insertAt = toolsIndex + 1;
-  if (toolsMatch[1].trim()) {
-    existing.push(...toolsMatch[1].split(',').map(decodeToolScalar).filter((value): value is string => value !== null));
+  if (inlineValue.trim()) {
+    existing.push(...inlineValue.split(',').map(decodeToolScalar).filter((value): value is string => value !== null));
   } else {
     while (insertAt < frontmatterEnd) {
       const item = /^([ \t]+)-[ \t]*(\S.*)$/.exec(lines[insertAt]);
@@ -738,8 +741,8 @@ function appendAgentTools(content: string, grants: string[]): string {
   const additions = grants.filter((grant) => !present.has(grant) && (present.add(grant), true));
   if (additions.length === 0) return content;
 
-  if (toolsMatch[1].trim()) {
-    lines[toolsIndex] += `, ${additions.join(', ')}`;
+  if (inlineValue.trim()) {
+    lines[toolsIndex] = `tools: ${inlineValue.trimEnd()}, ${additions.join(', ')}${inlineComment}`;
   } else {
     const firstItem = /^([ \t]+)-/.exec(lines[toolsIndex + 1]);
     const indent = firstItem ? firstItem[1] : '  ';

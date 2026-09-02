@@ -514,7 +514,7 @@ function kimiAgentsKind(destSubpath: string, prefix: string, configDir: string):
     kind: 'kimi-agents',
     destSubpath,
     prefix,
-    stage: (resolved) => {
+    stage: (resolved, agentCtx) => {
       const buildKimiAgentArtifacts = conversionExports['buildKimiAgentArtifacts'] as (opts: {
         rootAgent?: string;
         subagents?: Array<{ path: string; content: string }>;
@@ -528,6 +528,8 @@ function kimiAgentsKind(destSubpath: string, prefix: string, configDir: string):
         findAgentsSourceRoot(configDir),
         resolved,
         (content: string) => content,
+        false,
+        agentCtx,
       );
       const subagents: Array<{ path: string; content: string }> = [];
       if (installFs().existsSync(stagedAgents)) {
