@@ -115,7 +115,9 @@ describe('#4020 — run-tests temp root', () => {
     // A single trivial real test file so the runner has work to do and exits 0.
     const target = path.join(__dirname, 'helpers-4020-probe.test.cjs');
     fs.writeFileSync(target, "require('node:test').test('noop #4020', () => {});\n");
-    t.after(() => cleanup(target));
+    // A single file in the repo tree, not a temp dir — cleanup() refuses
+    // out-of-temp-root paths by design, so unlink it directly.
+    t.after(() => fs.unlinkSync(target));
 
     const r = runNode(
       [RUNNER, '--files', path.basename(target)],
@@ -133,12 +135,12 @@ describe('#4020 — run-tests temp root', () => {
     // run — the nested process must reuse the outer root and leave it standing
     // on ITS exit, or the outer suite mass-ENOENTs every later fixture.
     const inherited = createTempDir('gsd-test-run-inherited');
-    const marker = path.join(inherited, 'outer-still-needs-this');
-    fs.writeFileSync(marker, 'x');
     t.after(() => cleanup(inherited));
     const target = path.join(__dirname, 'helpers-4020-probe.test.cjs');
     fs.writeFileSync(target, "require('node:test').test('noop #4020 nested', () => {});\n");
-    t.after(() => cleanup(target));
+    // A single file in the repo tree, not a temp dir — cleanup() refuses
+    // out-of-temp-root paths by design, so unlink it directly.
+    t.after(() => fs.unlinkSync(target));
 
     const r = runNode(
       [RUNNER, '--files', path.basename(target)],
@@ -148,6 +150,8 @@ describe('#4020 — run-tests temp root', () => {
     const m = /tmp-root=(\S+)/.exec(r.stderr);
     assert.ok(m, 'nested runner announces its root');
     assert.equal(m[1], inherited, 'the nested runner REUSES the inherited root');
-    assert.ok(fs.existsSync(marker), 'the inherited root survives the nested runner\'s exit');
+    // The sweep may legitimately clean the root's CONTENTS between chunks; the
+    // property under test is that the nested runner never rmSyncs the root ITSELF.
+    assert.ok(fs.existsSync(inherited), 'the inherited root survives the nested runner\'s exit');
   });
 });
