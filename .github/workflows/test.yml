@@ -685,15 +685,19 @@ jobs:
       # SAME merged V8 data — no extra suite execution. Audit 2026-06: scripts/
       # measured 65.95%; the 55% floor prevents a collapse to zero-coverage
       # tooling while leaving headroom for variance. Raise deliberately, never lower.
-      # Re-slices the same ~358MB merged dumps as the step above and carries the
-      # same larger heap for the same reason, but `check-coverage` (unlike the
-      # `report` step above) was missing --merge-async, so it loaded every raw
-      # dump synchronously instead of incrementally — c8's own option
-      # description names this exact failure mode ("to avoid OOM issues").
-      # package.json's test:coverage:scripts-floor now carries the flag too.
+      # `check-coverage` (unlike the `report` step above) was missing --merge-async,
+      # so it loaded every raw dump synchronously instead of incrementally — c8's
+      # own option description names this exact failure mode ("to avoid OOM
+      # issues"); package.json's test:coverage:scripts-floor now carries the flag
+      # too. That alone was not sufficient: the merged shard dumps have grown to
+      # ~745MB combined (measured via this step's own artifact sizes), roughly
+      # double the ~358MB the 8192 figure above was calibrated against, and this
+      # step's --all also instruments every scripts/**/*.cjs file for a
+      # zero-coverage baseline on top of the merged data. 12288 restores headroom
+      # on the 16GB runner without exceeding it.
       - name: Coverage floor — scripts/ tooling (≥55%)
         env:
-          NODE_OPTIONS: --max-old-space-size=8192
+          NODE_OPTIONS: --max-old-space-size=12288
         run: npm run test:coverage:scripts-floor
 
       - name: Upload merged coverage report
