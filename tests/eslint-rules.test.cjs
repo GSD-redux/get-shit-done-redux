@@ -696,6 +696,97 @@ describe('no-source-grep rule — widening (#3502)', () => {
       invalid: [],
     });
   });
+
+  // One RuleTester case per row of the widen-regex.exec()-detection matrix,
+  // epic #3464 phase 8: `regex.exec(tracked)` must be flagged the same way
+  // `regex.test(tracked)` already is, sharing the identical
+  // looksLikeRegexReceiver / trackedInfo(args[0]) detection path.
+
+  test('#3464p8 row 1: re.exec(trackedSrc) — flagged (new .exec() detection)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const re = /foo/;
+            const trackedSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf8');
+            re.exec(trackedSrc);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3464p8 row 2: re.test(trackedSrc) — still flagged (unchanged baseline)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const re = /foo/;
+            const trackedSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf8');
+            re.test(trackedSrc);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3464p8 row 3: re.exec(untrackedString) — not flagged (argument is not source-derived)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const re = /foo/;
+            const untrackedString = 'hello';
+            re.exec(untrackedString);
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3464p8 row 4: someObj.exec(trackedSrc) — not flagged (receiver is not a bare Identifier/regex literal)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const trackedSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf8');
+            getRegex().exec(trackedSrc);
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3464p8 row 5: re.exec() with zero arguments — not flagged, does not throw', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const re = /foo/;
+            re.exec();
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
 });
 
 // ─── no-source-grep site-scoped suppression (#3508 / Phase 4 of #3464) ──────

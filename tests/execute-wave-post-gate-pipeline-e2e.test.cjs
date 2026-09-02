@@ -628,17 +628,29 @@ describe('F. Real registry execute:wave:post shape — guard against accidental 
       `ui.safety-gate onError must be 'halt'; got ${uiGate.onError}`);
   });
 
-  test('[happy] real registry: execute:wave:post has exactly 1 step (#2856 live-dom-uat gsd-dom-verifier, onError:skip) and 2 contributions (external-job executor + mempalace capture-problems)', () => {
+  test('[happy] real registry: execute:wave:post has exactly 2 steps (#3661 code-review ref.skill:code-review pointFrom:workflow.code_review_point onError:skip; #2856 live-dom-uat gsd-dom-verifier, onError:skip) and 2 contributions (external-job executor + mempalace capture-problems)', () => {
     const point = realRegistry.byLoopPoint['execute:wave:post'];
-    assert.strictEqual(point.steps.length, 1,
-      `execute:wave:post must have exactly 1 step; got ${point.steps.length}`);
-    const [step] = point.steps;
-    assert.strictEqual(step.capId, 'live-dom-uat',
-      `execute:wave:post step capId must be 'live-dom-uat'; got ${step.capId}`);
-    assert.deepStrictEqual(step.ref, { agent: 'gsd-dom-verifier' },
-      `execute:wave:post step ref must be { agent: 'gsd-dom-verifier' }; got ${JSON.stringify(step.ref)}`);
-    assert.strictEqual(step.onError, 'skip',
-      `execute:wave:post step onError must be 'skip'; got ${step.onError}`);
+    assert.strictEqual(point.steps.length, 2,
+      `execute:wave:post must have exactly 2 steps; got ${point.steps.length}`);
+    const [codeReviewStep, domUatStep] = point.steps;
+    // #3661: code-review's execute:wave:post step is config-gated (inactive by default)
+    // and can also live at execute:post via workflow.code_review_point.
+    assert.strictEqual(codeReviewStep.capId, 'code-review',
+      `execute:wave:post first step capId must be 'code-review'; got ${codeReviewStep.capId}`);
+    assert.deepStrictEqual(codeReviewStep.ref, { skill: 'code-review' },
+      `execute:wave:post code-review step ref must be { skill: 'code-review' }; got ${JSON.stringify(codeReviewStep.ref)}`);
+    assert.strictEqual(codeReviewStep.pointFrom, 'workflow.code_review_point',
+      `execute:wave:post code-review step pointFrom must be 'workflow.code_review_point'; got ${codeReviewStep.pointFrom}`);
+    assert.strictEqual(codeReviewStep.when, 'workflow.code_review',
+      `execute:wave:post code-review step when must be 'workflow.code_review'; got ${codeReviewStep.when}`);
+    assert.strictEqual(codeReviewStep.onError, 'skip',
+      `execute:wave:post code-review step onError must be 'skip'; got ${codeReviewStep.onError}`);
+    assert.strictEqual(domUatStep.capId, 'live-dom-uat',
+      `execute:wave:post step capId must be 'live-dom-uat'; got ${domUatStep.capId}`);
+    assert.deepStrictEqual(domUatStep.ref, { agent: 'gsd-dom-verifier' },
+      `execute:wave:post step ref must be { agent: 'gsd-dom-verifier' }; got ${JSON.stringify(domUatStep.ref)}`);
+    assert.strictEqual(domUatStep.onError, 'skip',
+      `execute:wave:post step onError must be 'skip'; got ${domUatStep.onError}`);
     // #2285: claude-orchestration's dispatch-backend-selector contribution moved
     // from execute:wave:post to execute:wave:pre — wave:post fires AFTER the
     // wave already dispatched inline, too late to select a dispatch backend.

@@ -148,7 +148,7 @@
     "test:qa": "node scripts/run-tests.cjs --suite qa",
     "test:affected": "node scripts/run-affected-tests.cjs",
     "test:coverage": "c8 --check-coverage --lines 70 --branches 60 --reporter text --include 'gsd-core/bin/lib/**/*.cjs' --exclude 'tests/**' --all node scripts/run-tests.cjs",
-    "test:coverage:scripts-floor": "c8 check-coverage --lines 55 --include 'scripts/**/*.cjs' --exclude 'tests/**' --all",
+    "test:coverage:scripts-floor": "c8 report --check-coverage --lines 55 --merge-async --include 'scripts/**/*.cjs' --exclude 'tests/**' --all",
     "test:coverage:unit": "c8 --reporter text --reporter json-summary --merge-async --include 'gsd-core/bin/lib/**/*.cjs' --exclude 'tests/**' --all node scripts/run-tests.cjs --suite unit && node scripts/check-coverage-gate.cjs",
     "test:coverage:unit:raw": "c8 --reporter none node scripts/run-tests.cjs --suite unit",
     "test:coverage:report": "c8 report --reporter text --reporter json-summary --merge-async --include 'gsd-core/bin/lib/**/*.cjs' --exclude 'tests/**' --all && node scripts/check-coverage-gate.cjs",

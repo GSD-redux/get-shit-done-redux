@@ -91,16 +91,19 @@ function registeredHookEvents() {
   let m;
   // Literal hook-spec array (the Kimi mirror of the settings.json wiring).
   const specRe = /event:\s*'([A-Za-z]+)',\s*command:\s*cmd\('([^']+)'\)/g;
+  // allow-test-rule: source-text-is-the-product (#3839)
   while ((m = specRe.exec(src)) !== null) add(path.basename(m[2]), m[1]);
   // Probe lines paired with a literal event:
   // settings.hooks.<Event>.some(… referencesHook(…, '<name>'))
   const probeRe = /settings\.hooks\.([A-Za-z]+)\.some\(\(entry: HookGroup\) =>\s*\n\s*entry\.hooks && entry\.hooks\.some\(\(h: HookEntry\) => referencesHook\(h as Record<string, unknown>, '([^']+)'\)/g;
+  // allow-test-rule: source-text-is-the-product (#3839)
   while ((m = probeRe.exec(src)) !== null) add(m[2], m[1]);
   // Probe lines paired with the runtime-resolved variables — statically
   // resolved to their non-Gemini canonical events (docs document the
   // canonical Claude/GS wiring; BeforeTool/AfterTool are the Gemini twins):
   // const preToolEvent = hookEvents === 'gemini' ? 'BeforeTool' : 'PreToolUse'
   const dynRe = /settings\.hooks\[(preToolEvent|postToolEvent)\]\.some\(\(entry: HookGroup\) =>\s*\n\s*entry\.hooks && entry\.hooks\.some\(\(h: HookEntry\) => referencesHook\(h as Record<string, unknown>, '([^']+)'\)/g;
+  // allow-test-rule: source-text-is-the-product (#3839)
   while ((m = dynRe.exec(src)) !== null) add(m[2], m[1] === 'preToolEvent' ? 'PreToolUse' : 'PostToolUse');
   return map;
 }

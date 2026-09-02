@@ -22,11 +22,6 @@
  * is the minimum-cost contract.
  */
 
-// allow-test-rule: structural-regression-guard
-// structural assertion on spawn-options shape; the behavior
-// (Windows-only shell resolution) is platform-gated at runtime and cannot be
-// reached on POSIX CI without a Windows lane.
-
 'use strict';
 
 const { test, describe } = require('node:test');
@@ -40,6 +35,12 @@ const PROJECTION_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs',
 );
 
+// allow-test-rule: structural-regression-guard (#3103)
+// This helper feeds real source (via readFileSync) into structural
+// assertions below. The behavior it guards — Windows-only shell
+// resolution — is platform-gated at runtime and cannot be reached on
+// POSIX CI without a Windows lane, so a structural assertion on the
+// spawn-options shape is the minimum-cost contract.
 function codeOnly(file) {
   return fs.readFileSync(file, 'utf8')
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/lib source, not adversarial input
