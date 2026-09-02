@@ -1,11 +1,10 @@
 # Execute-Phase — MVP+TDD Gate (Runtime Enforcement)
 
-> Loaded by `execute-phase` workflow and `gsd-executor` agent only when **both** `MVP_MODE=true` AND `TDD_MODE=true` for the phase. Defines the runtime gate that blocks behavior-adding tasks until a failing-test commit exists.
+> Loaded by `execute-phase` workflow and `gsd-executor` agent when `TDD_MODE=true` for the phase (#4011 — the gate no longer requires MVP mode; MVP may imply TDD, but TDD never requires MVP). Defines the runtime gate that blocks behavior-adding tasks until a failing-test commit exists.
 
 ## When this gate fires
 
-- `MVP_MODE` is `true` (resolved from CLI flag → ROADMAP `**Mode:**` field → config; see `gsd-core/references/planner-mvp-mode.md`).
-- `TDD_MODE` is `true` (resolved from `--tdd` flag → `workflow.tdd_mode` config).
+- `TDD_MODE` is `true` (resolved from `--tdd` flag → `workflow.tdd_mode` config). MVP mode is NOT required (#4011).
 - The current task being executed has `tdd="true"` in its `<task>` frontmatter (set by the planner per Phase 1).
 - The task's `<behavior>` block lists at least one expected behavior.
 
