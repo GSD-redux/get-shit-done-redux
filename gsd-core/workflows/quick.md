@@ -287,6 +287,13 @@ If `section_manifest` is `null` or `"research-phase"` is in its `included` list:
 
 **Step 5: Spawn planner (quick mode)**
 
+**Capability gate:**
+```bash
+PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
+```
+
+**Contribution dispatch (#3778):** read `PLAN_PRE_HOOKS_JSON.activeHooks` directly in context. In registry order, inject only active entries with `kind == "contribution"` and `into == "planner"` into each Quick planner prompt below, using `fragment.inline` verbatim plus resolved `configValues`. Do not paste `rendered`. Empty, inactive, incompatible, or non-planner entries inject nothing and do not error. Reuse this snapshot for revisions; do not render again.
+
 **If `$VALIDATE_MODE`:** Use `quick-full` mode with stricter constraints.
 
 **If NOT `$VALIDATE_MODE`:** Use standard `quick` mode.
@@ -312,6 +319,8 @@ ${RESEARCH_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-RESEARCH.md (Research fi
 ${AGENT_SKILLS_PLANNER}
 
 **Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
+
+{For each active entry in `PLAN_PRE_HOOKS_JSON` where `kind == "contribution"` and `into == "planner"` (in array order): inject the entry's `fragment.inline` verbatim here, plus its resolved `configValues` when the entry carries them. If no active planner contributions exist, omit this block entirely.}
 
 </planning_context>
 
