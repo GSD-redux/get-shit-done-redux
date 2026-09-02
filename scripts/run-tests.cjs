@@ -398,12 +398,17 @@ function setupRunTempRoot() {
 
 /**
  * Remove every non-reserved entry under the run root. Returns the removed
- * count. Best-effort per entry: a dir wedged open on Windows must not fail the
- * run — the leak guard below is what makes persistent residue loud.
+ * count. `protect` is a set of absolute paths that must survive — the runner
+ * populates it with every ancestor of its SELECTED test files: a harness may
+ * stage synthetic test files under the temp root (tests/run-tests-harness.test.cjs
+ * writes 30 of them for its chunking rows), and a sweep that deleted them between
+ * chunks would make every later chunk fail with "Could not find". Best-effort per
+ * entry: a dir wedged open on Windows must not fail the run — the leak guard below
+ * is what makes persistent residue loud.
  *
  * Exported for in-process tests.
  */
-function sweepRunTempRoot(root) {
+function sweepRunTempRoot(root, protect = new Set()) {
   let entries;
   try {
     entries = readdirSync(root);
@@ -413,8 +418,10 @@ function sweepRunTempRoot(root) {
   let removed = 0;
   for (const name of entries) {
     if (RESERVED_TEMP_PREFIXES.some((p) => name.startsWith(p))) continue;
+    const full = join(root, name);
+    if (protect.has(full)) continue;
     try {
-      rmSync(join(root, name), { recursive: true, force: true });
+      rmSync(full, { recursive: true, force: true });
       removed++;
     } catch {
       /* best-effort; the guard below reports persistent residue */
@@ -1055,6 +1062,7 @@ function main() {
 
   const selected = selectedNames.map(f => join(testDir, f));
 
+
   if (selected.length === 0) {
     // A legitimately-empty shard: --shard was given, the pre-shard selection
     // had files, but this shard index drew zero (total > file count). Exit 0.
@@ -1114,6 +1122,24 @@ function main() {
       }
     });
   }
+
+  // #4020: the temp sweep must never remove a directory holding a file a LATER
+  // chunk still runs — a harness may stage synthetic test files under the run
+  // root (tests/run-tests-harness.test.cjs's 30-file chunking fixture). Protect
+  // every ancestor of every selected file that lies INSIDE the run root.
+  const sweepProtectSet = new Set();
+  {
+    const { dirname } = require('path');
+    for (const f of selected) {
+      let cur = f;
+      while (cur && cur !== runTempRoot && cur.length > 1) {
+        sweepProtectSet.add(cur);
+        cur = dirname(cur);
+      }
+      if (cur === runTempRoot) sweepProtectSet.add(f); // exact-file case
+    }
+  }
+
   // Sandbox the overlay home so the loader's global scan ($GSD_HOME/.gsd/capabilities)
   // cannot read a developer's real installed capabilities during tests (ADR-1244 D2).
   // IDEMPOTENT: a nested run-tests spawn (e.g. tests/run-tests-harness.test.cjs)
@@ -1426,8 +1452,10 @@ function main() {
       // #4020: bound peak temp usage to ONE chunk, not the whole run — sweep
       // the leaked fixture trees the chunk's tests left behind, then fail fast
       // if residue persists (a fixture nothing cleans, wedged open), before the
-      // temp filesystem fills.
-      const swept = sweepRunTempRoot(runTempRoot);
+      // temp filesystem fills. PROTECTED: ancestors of the runner's own selected
+      // files — a harness may stage synthetic test files under the temp root and
+      // later chunks still need them (tests/run-tests-harness.test.cjs #3597).
+      const swept = sweepRunTempRoot(runTempRoot, sweepProtectSet);
       if (swept > 0) {
         console.error(`run-tests: temp sweep after chunk ${i + 1}/${chunks.length} — removed ${swept} leaked entr${swept === 1 ? 'y' : 'ies'}`);
       }

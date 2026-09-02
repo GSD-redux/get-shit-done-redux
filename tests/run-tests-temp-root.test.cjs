@@ -91,6 +91,15 @@ describe('#4020 — run-tests temp root', () => {
       'the GSD_HOME sandbox survives the sweep (nested-spawn reuse contract)');
     assert.ok(fs.existsSync(path.join(root, 'gsd-run-tests-events-keep')),
       'the events dir survives the sweep (timeout diagnostics)');
+
+    // #4020 CI fix: ancestors of the runner's own selected files must survive —
+    // the harness stages synthetic test files under the temp root and later
+    // chunks still need them (tests/run-tests-harness.test.cjs #3597).
+    for (const name of ['gsd-leak-x', 'gsd-leak-y']) fs.mkdirSync(path.join(root, name));
+    const protectedSwept = runner.sweepRunTempRoot(root, new Set([path.join(root, 'gsd-leak-x')]));
+    assert.equal(protectedSwept, 1, 'only the unprotected entry is removed');
+    assert.ok(fs.existsSync(path.join(root, 'gsd-leak-x')), 'the protected entry survives');
+    assert.ok(!fs.existsSync(path.join(root, 'gsd-leak-y')), 'the unprotected entry is removed');
   });
 
   test('the leak guard fails fast naming the leaked roots', (t) => {
