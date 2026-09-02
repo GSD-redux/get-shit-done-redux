@@ -50,7 +50,7 @@ if [ -n "$UC" ]; then
   # then silently degrades to the fresh-install fallback. The field name is
   # passed as argv, never interpolated into the script text.
   uc_field() {
-    printf '%s' "$UC" | node -e "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const v=JSON.parse(d)[process.argv[1]];process.stdout.write(v==null?'':String(v));}catch{}})" "$1" 2>/dev/null
+    printf '%s' "${2:-$UC}" | node -e "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const v=JSON.parse(d)[process.argv[1]];process.stdout.write(v==null?'':String(v));}catch{}})" "$1" 2>/dev/null
   }
   INSTALLED_VERSION="$(uc_field installedVersion)"
   INSTALL_SCOPE="$(uc_field scope)"
@@ -89,7 +89,7 @@ UPDATE_TARGET_UNRESOLVED
 
 GSD could not resolve an installed update target. No update was performed.
 
-Rerun from a valid installed runtime: `/gsd-update`. For a fresh installation, run `npx -y --package=@opengsd/gsd-core@latest -- gsd-core --global`.
+Rerun from a valid installed runtime: `/gsd:update`. For a fresh installation, run `npx -y --package=@opengsd/gsd-core@latest -- gsd-core --global`.
 ```
 
 Exit.
@@ -134,19 +134,19 @@ Check npm for latest version via the deterministic script. **Do NOT run `npm vie
 
 The `GSD_DIR` value emitted by `get_installed_version` (line 4) resolves to the runtime-specific config dir (`~/.claude/`, `~/.gemini/`, `~/.codex/`, etc.), so the script invocation works for every runtime — not just Claude. An unresolved target exits in `get_installed_version` before this step.
 
-`LATEST_RESULT` is a JSON document with the documented shape `{ ok: bool, version: string, reason: string, detail?: string }`. Parse via `jq` ONLY when the script actually ran. When the script cannot run or returns nothing, preserve its failure as a meaningful diagnostic (#2993 CR feedback):
+`LATEST_RESULT` is a JSON document with the documented shape `{ ok: bool, version: string, reason: string, detail?: string }`. Parse it with the Node-only `uc_field` helper. When the script cannot run or returns nothing, preserve its failure as a meaningful diagnostic (#2993 CR feedback):
 
 ```bash
 LATEST_RESULT="$(node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG" 2>/dev/null)"
 LATEST_STATUS=$?
 # #2993 CR: when node is missing or the script doesn't exist, LATEST_RESULT
-# is empty and piping it to `jq` produces a parse error on stderr while
-# leaving LATEST_OK / LATEST_REASON as empty strings. Fail the check with a
-# meaningful reason instead of a blank diagnostic.
+# is empty. Fail the check with a meaningful reason instead of a blank
+# diagnostic.
 if [ -n "$LATEST_RESULT" ]; then
-  LATEST_OK="$(printf '%s' "$LATEST_RESULT" | jq -r '.ok // false')"
-  LATEST_VERSION="$(printf '%s' "$LATEST_RESULT" | jq -r '.version // empty')"
-  LATEST_REASON="$(printf '%s' "$LATEST_RESULT" | jq -r '.reason // empty')"
+  LATEST_OK="$(uc_field ok "$LATEST_RESULT")"
+  LATEST_OK="${LATEST_OK:-false}"
+  LATEST_VERSION="$(uc_field version "$LATEST_RESULT")"
+  LATEST_REASON="$(uc_field reason "$LATEST_RESULT")"
 else
   LATEST_OK=false
   LATEST_VERSION=""
