@@ -89,6 +89,10 @@ export function inferPreferredRuntime({ fs, env, preferredConfigDir }: InferPref
     if (fs.exists(path.join(preferredConfigDir, 'opencode.json')) ||
         fs.exists(path.join(preferredConfigDir, 'opencode.jsonc'))) return 'opencode';
     if (fs.exists(path.join(preferredConfigDir, CODEX_CONFIG_MARKER))) return 'codex';
+    const resolved = path.resolve(preferredConfigDir);
+    const known = RUNTIME_DIRS.find(([, reldir]) =>
+      resolved.endsWith(path.sep + reldir.split('/').join(path.sep)));
+    if (known) return known[0];
   }
   if (env['CODEX_HOME']) return 'codex';
   if (env['ANTIGRAVITY_CONFIG_DIR']) return 'antigravity';
