@@ -383,15 +383,24 @@ function routeTaskCommand({ args, cwd, raw }: RouteTaskCommandOptions): void {
   if (args[2] === '--task-content') {
     content = args[3] || null;
   } else if (args[2]) {
-    const projectRoot = path.resolve(cwd || process.cwd());
     const requestedPath = args[2];
-    const resolvedTaskPath = path.resolve(projectRoot, requestedPath);
-    const rel = path.relative(projectRoot, resolvedTaskPath);
-    if (rel === '..' || rel.startsWith(`..${path.sep}`)) {
-      error(`Task file is outside project scope: ${requestedPath}`, ERROR_REASON.USAGE);
-    }
-    if (!fs.existsSync(resolvedTaskPath)) {
+    // Resolve symlinks on BOTH sides before comparing (same rationale as
+    // routeRedEvidenceVerdict above): `process.cwd()` is already OS-canonicalized,
+    // but `requestedPath` typically is not, so comparing one resolved side against
+    // one unresolved side falsely reports "outside project scope" for any project
+    // under a symlinked root (e.g. macOS's `/var` -> `/private/var` temp dirs).
+    let projectRoot: string;
+    let resolvedTaskPath: string;
+    try {
+      projectRoot = fs.realpathSync(path.resolve(cwd || process.cwd()));
+      resolvedTaskPath = fs.realpathSync(path.resolve(projectRoot, requestedPath));
+    } catch {
       error(`Task file not found: ${requestedPath}`, ERROR_REASON.USAGE);
+      return;
+    }
+    const rel = path.relative(projectRoot, resolvedTaskPath);
+    if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      error(`Task file is outside project scope: ${requestedPath}`, ERROR_REASON.USAGE);
     }
     content = fs.readFileSync(resolvedTaskPath, 'utf-8');
   }
