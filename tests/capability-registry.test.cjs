@@ -5196,6 +5196,15 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
         errs, [],
         `execute:wave:pre must dispatch step hooks before executor spawning. Errors: ${errs.join('; ')}`,
       );
+
+      const workflow = fs.readFileSync(path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8');
+      const wavePre = workflow.indexOf('WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre --raw)');
+      const stepDispatch = workflow.indexOf('**Step dispatch:**', wavePre);
+      const executorSpawn = workflow.indexOf('3. **Spawn executor agents:**', wavePre);
+      assert.ok(
+        wavePre !== -1 && stepDispatch > wavePre && executorSpawn > stepDispatch,
+        'wave-pre step dispatch must occur after hook rendering and before executor spawning',
+      );
     });
 
     // ─── #3866: the verify lane must be open to every hook kind ────────────────
