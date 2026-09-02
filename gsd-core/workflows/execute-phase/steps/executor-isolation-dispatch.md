@@ -162,8 +162,10 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #      (#3637 acceptance: resolved agent instructions as launch-level
 #      instructions + provenance of which role definition was used).
 #   4. Read the selected PLAN.md at `${PROJECT_ROOT}/{phase_dir}/{plan_file}`.
-#      Set `PLAN_TDD_CONTEXT=true` only when YAML frontmatter has `type: tdd`
-#      or a task opening tag has `tdd="true"`; prose examples do not qualify.
+#      Set `PLAN_TDD_CONTEXT=true` only when leading YAML frontmatter has `type: tdd`
+#      or a quoted scalar `tdd`, or an actual task opening tag has `tdd="true"` (or another
+#      quoted true form; whitespace around `=` is allowed) at the start of a non-fenced line.
+#      Literal task examples in prose or fenced code do not qualify.
 #      Halt if that PLAN.md cannot be read, or if `PLAN_TDD_CONTEXT=true` and
 #      `tdd.md` cannot be read. The conditional canonical tdd.md entry below
 #      must be included only when `PLAN_TDD_CONTEXT=true`.
@@ -261,6 +263,10 @@ printf '%s' "$EXECUTOR_PROMPT" | grep -q 'Inline the actual contents' && {
 }
 printf '%s' "$EXECUTOR_PROMPT" | grep -q '\${AGENT_SKILLS}' && {
   echo "FATAL: executor prompt for plan {plan_number} still contains the un-substituted \${AGENT_SKILLS} marker — the role definition was not spliced in (#3637). Halting." >&2
+  exit 1
+}
+printf '%s' "$EXECUTOR_PROMPT" | grep -q '\${PLAN_TDD_CONTEXT' && {
+  echo "FATAL: executor prompt for plan {plan_number} still contains the un-substituted \${PLAN_TDD_CONTEXT} marker — its conditional TDD context was not embedded. Halting rather than spawning an executor." >&2
   exit 1
 }
 ```

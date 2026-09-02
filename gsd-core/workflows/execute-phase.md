@@ -754,7 +754,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
        <execution_context>
        ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Never leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string (#3324), so an include arrives as literal text the executor never sees.
-       Before choosing the conditional `tdd.md` entry, read the selected PLAN.md at `${PROJECT_ROOT}/{phase_dir}/{plan_file}`. Set `PLAN_TDD_CONTEXT=true` only when its YAML frontmatter has `type: tdd` or a task opening tag has `tdd="true"`; prose examples do not qualify. If that PLAN.md cannot be read, halt this dispatch. If `PLAN_TDD_CONTEXT=true` and `tdd.md` cannot be read, halt this dispatch.
+       Before choosing the conditional `tdd.md` entry, read the selected PLAN.md at `${PROJECT_ROOT}/{phase_dir}/{plan_file}`. Set `PLAN_TDD_CONTEXT=true` only when leading YAML frontmatter has `type: tdd` or a quoted scalar `tdd`, or an actual task opening tag at the start of a non-fenced line has `tdd="true"` (or another quoted true form; whitespace around `=` is allowed). Literal task examples in prose or fenced code do not qualify. If that PLAN.md cannot be read, halt this dispatch. If `PLAN_TDD_CONTEXT=true` and `tdd.md` cannot be read, halt this dispatch.
        - `~/.claude/gsd-core/workflows/execute-plan.md`
        - `~/.claude/gsd-core/templates/summary.md`
        - `~/.claude/gsd-core/references/checkpoints.md`
