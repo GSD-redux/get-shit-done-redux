@@ -185,6 +185,14 @@ describe('quick-batch: task-list parsing', () => {
         t.skip(`mkfifo unavailable: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
+      if (!fs.existsSync(fifoPath)) {
+        // Documented skip: some Windows runners resolve `mkfifo` to a binary
+        // that exits 0 without creating anything (NTFS has no FIFO concept) —
+        // the exception-based skip above can't catch a silent no-op, so check
+        // the artifact actually exists before trusting the "success" exit code.
+        t.skip('mkfifo exited successfully but created no file on this platform');
+        return;
+      }
       const result = parseTaskListFromFile(dir, fifoPath);
       assert.equal(result.ok, false);
       assert.match(result.reason, /not a regular file/);
