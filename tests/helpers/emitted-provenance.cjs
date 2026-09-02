@@ -522,6 +522,9 @@ const PROVENANCE_RULES = [
     // source — attributing to the router would be wrong for every nested skill.
     pattern: /^([^/]+)\/skills\/([^/]+)\/SKILL\.md$/,
     sources: (m) => [`${COMMANDS_SRC}/${stripSkillPrefix(m[2])}.md`],
+    // #4002: zcode's nested router children pass through the same rewrite pass
+    // as its flat skills — see ZCODE_BODY_TRANSFORM_SRCS.
+    transforms: (_m, ctx) => (ctx.runtime === 'zcode' ? ZCODE_BODY_TRANSFORM_SRCS : []),
   },
   {
     id: 'flat-commands-from-commands',
