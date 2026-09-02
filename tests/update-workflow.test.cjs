@@ -90,6 +90,11 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.ok(latestBash, 'check_latest_version must contain a bash block');
     assert.doesNotMatch(latestBash, /\bjq\b/, 'latest-result parsing must not invoke jq');
     assert.match(
+      latestBash,
+      /uc_field\(\)\s*\{/,
+      'check_latest_version must define its JSON parser in the same shell block that invokes it',
+    );
+    assert.match(
       latest,
       /if LATEST_RESULT="\$\(node [^\n]+\)"; then\s+LATEST_STATUS=0\s+else\s+LATEST_STATUS=\$\?\s+fi/,
       'latest-version failure must be captured when errexit is active',
