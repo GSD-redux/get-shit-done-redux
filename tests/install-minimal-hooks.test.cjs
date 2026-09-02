@@ -3222,6 +3222,70 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
 // The expected directory name is asserted as a LITERAL on purpose: importing the
 // production constant would make the assertion re-derive the very value under
 // test, and it could then never catch that value changing.
+describe('#4087 review: Windsurf install stages the hook helpers its hooks require', () => {
+  // Same defect class as the Codex rows above, one runtime over. Windsurf sets
+  // skipSharedHooksInstall, so it never reaches installSharedHooksBundle, and
+  // writeWindsurfHooksJson staged the two Cascade guards without the hooks/lib
+  // helpers both require at module load. Measured before the fix against a real
+  // `--windsurf --global` install: installer exit 0, hooks/ holding only the two
+  // scripts, and each one exiting 1 with "Cannot find module './lib/hook-exit.js'".
+  //
+  // tests/windsurf-hooks-bridge.test.cjs runs these guards from the SOURCE tree,
+  // where hooks/lib/ is a sibling and require() trivially resolves — the same
+  // "assert existence, never execute the installed copy" blind spot that let
+  // #4087 ship. These rows execute the INSTALLED copy.
+  const { before: __gtmBefore, after: __gtmAfter } = require('node:test');
+  let __savedGsdTestMode;
+  __gtmBefore(() => { __savedGsdTestMode = process.env.GSD_TEST_MODE; delete process.env.GSD_TEST_MODE; });
+  __gtmAfter(() => { if (__savedGsdTestMode === undefined) delete process.env.GSD_TEST_MODE; else process.env.GSD_TEST_MODE = __savedGsdTestMode; });
+
+  let tmpDir;
+  beforeEach(() => { tmpDir = createTempDir('gsd-install-4087-windsurf-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function installWindsurf(configDir) {
+    // HOME/USERPROFILE sandboxed for the CHILD, for the same reason as installCodex.
+    throwIfFailed(
+      runNode([INSTALL_SCRIPT, '--windsurf', '--global', '--yes', '--config-dir', configDir], {
+        timeoutMs: 120000,
+        env: { ...process.env, HOME: configDir, USERPROFILE: configDir },
+      }),
+      `node ${INSTALL_SCRIPT} --windsurf --global --config-dir ${configDir}`,
+    );
+    return path.join(configDir, 'hooks');
+  }
+
+  test('both installed Windsurf guards LOAD AND RUN, not merely exist', () => {
+    const hooksDir = installWindsurf(tmpDir);
+    for (const script of ['gsd-windsurf-pre-write.js', 'gsd-windsurf-pre-command.js']) {
+      const hook = path.join(hooksDir, script);
+      assert.ok(fs.existsSync(hook), `precondition: ${script} must be staged`);
+      const result = runNode([hook], { timeoutMs: 30000, input: '{}', env: { ...process.env } });
+      assert.strictEqual(result.outcome, 'exited',
+        `${script} must run to completion, not time out or be killed. outcome=${result.outcome}`);
+      assert.strictEqual(result.exitCode, 0,
+        `the installed ${script} must load and exit 0 — a MODULE_NOT_FOUND at load fires on every `
+        + `pre_write_code / pre_run_command event and is invisible to the installer's exit code. stderr: ${result.stderr}`);
+      assert.doesNotMatch(String(result.stderr || ''), /MODULE_NOT_FOUND|Cannot find module/,
+        `no missing-module error may reach stderr for ${script}`);
+    }
+  });
+
+  test('the helpers the Windsurf guards require are staged, transitively', () => {
+    const hooksDir = installWindsurf(tmpDir);
+    const libDir = path.join(hooksDir, 'lib');
+    assert.ok(fs.existsSync(libDir), 'hooks/lib/ must be staged for Windsurf');
+    // Direct requires of the two guards, plus what hook-exit.js itself requires
+    // (cli-exit.js → exit-code-registry.js). The exact set is also pinned by
+    // tests/fixtures/install-tree/windsurf.json via the golden-install-tree test;
+    // this row states the reason each file must be present.
+    for (const helper of ['hook-exit.js', 'git-probe.js', 'cli-exit.js', 'exit-code-registry.js']) {
+      assert.ok(fs.existsSync(path.join(libDir, helper)),
+        `${helper} is on the require path of a staged Windsurf guard and must be staged`);
+    }
+  });
+});
+
 describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory', () => {
   const PI_RESERVED_DIR = 'hooks';
   const PI_BUNDLE_DIR = 'gsd-hooks';

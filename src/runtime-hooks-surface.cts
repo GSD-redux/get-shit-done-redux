@@ -1915,6 +1915,27 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
     }
   }
 
+  // Stage the hooks/lib/ helpers these scripts require (#4087 review). Windsurf
+  // sets hostBehaviors.skipSharedHooksInstall, so like Cursor it never reaches
+  // installSharedHooksBundle — the only other stager of hooks/lib — and it was
+  // staging neither. Both Cascade guards require helpers at module load:
+  // gsd-windsurf-pre-write.js requires ./lib/hook-exit.js and ./lib/git-probe.js,
+  // gsd-windsurf-pre-command.js requires ./lib/hook-exit.js. Measured against a
+  // real `--windsurf --global` install before this call existed: the installer
+  // exited 0, hooks/ held only the two scripts, and running either one exited 1
+  // with "Cannot find module './lib/hook-exit.js'" — the same failure #4087
+  // reports for Codex, on every pre_write_code / pre_run_command event.
+  //
+  // The transform matches the one applied to the scripts above: a helper must be
+  // rewritten the same way as its caller or the two disagree on the spelling.
+  stageTransitiveHookLibs({
+    seedSources: [...installedScripts].map((script) => fs.readFileSync(path.join(hooksDir, script), 'utf8')),
+    srcLibDir: path.join(srcHooksDir, 'lib'),
+    destLibDir: path.join(hooksDir, 'lib'),
+    runtimeLabel: 'Windsurf',
+    transform: (content) => content.replace(/gsd:/gi, 'gsd-'),
+  });
+
   // #2717: write the CommonJS marker into hooks/ alongside the staged .js
   // scripts. Windsurf sets skipSharedHooksInstall, so it never reaches
   // installSharedHooksBundle (the only other writer of this marker); without
