@@ -907,9 +907,9 @@ export function antigravityDiagnostic(
   );
   if (sessionStarted) {
     lines.push(
-      'An agy session started (its transcript exists) but no review was recovered — this is NOT ' +
-        'the pre-session-stall case. See stderr above; a headless run that was auto-denied a tool ' +
-        'permission reports the cause and its fix there.',
+      'An agy session started (its transcript exists) but no review was recovered, so a ' +
+        'pre-launch stall is ruled out. See stderr above; a headless run that was auto-denied a ' +
+        'tool permission reports the cause and its fix there.',
     );
   } else {
     lines.push(
