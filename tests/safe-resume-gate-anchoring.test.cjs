@@ -26,41 +26,50 @@ describe('#4003 — safe_resume_gate commit-scope greps', () => {
     const w = fs.readFileSync(WORKFLOW, 'utf8');
     // Anchored, ERE, zero-pad-tolerant on BOTH components — matches feat(2-02): and
     // feat(02-02): alike, never a substring elsewhere in the message.
-    assert.match(w, /--grep="\$\{PLAN_SCOPE_RE\}"/, 'the gate must grep the derived scope regex, not a padded literal');
-    assert.match(w, /PLAN_SCOPE_RE=\^\[a-z\]\+\\\(\(0\*\$\{PHASE_N\}\)-\(0\*\$\{PLAN_N\}\)\)\\\):/,
+    assert.ok(w.includes('PHASE_N=$((10#{phase_number}))'),
+      'phase component must be zero-stripped via arithmetic base-10');
+    assert.ok(w.includes('PLAN_N=$((10#{plan_padded}))'),
+      'plan component must be zero-stripped via arithmetic base-10');
+    assert.ok(w.includes('PLAN_SCOPE_RE="^[a-z]+\\((0*${PHASE_N})-(0*${PLAN_N})\\):"'),
       'the scope regex must be anchored to the commit-scope position and zero-pad-tolerant');
-    // Padding normalization from the substituted, possibly-padded placeholders.
-    assert.match(w, /10#\{phase_number\}/, 'phase component must be zero-stripped via arithmetic base-10');
-    assert.match(w, /10#\{plan_padded\}/, 'plan component must be zero-stripped via arithmetic base-10');
+    assert.ok(w.includes('--grep="${PLAN_SCOPE_RE}"'),
+      'the gate must grep the derived scope regex, not a padded literal');
     // The old unanchored padded-literal grep must be gone.
-    assert.doesNotMatch(w, /--grep="\$\{CURRENT_PLAN_ID\}"/,
+    assert.ok(!w.includes('--grep="${CURRENT_PLAN_ID}"'),
       'the bare substring grep over the padded id must not remain');
+    assert.ok(!w.includes('CURRENT_PLAN_ID="{phase_number}-{plan_padded}"'),
+      'the padded id derivation must not remain');
   });
 
   test('the gate bounds history to the current milestone with a no-tag fallback', () => {
     const w = fs.readFileSync(WORKFLOW, 'utf8');
-    assert.match(w, /git describe --tags --abbrev=0/,
+    assert.ok(w.includes('git describe --tags --abbrev=0'),
       'the milestone bound derives from the most recent reachable tag (complete-milestone git_tag)');
-    assert.match(w, /MILESTONE_BASE\+[^}]*\.\.\.?\^?HEAD|MILESTONE_BASE\.\.\^?HEAD/,
-      'the bounded invocation must range BASE..HEAD');
+    assert.ok(w.includes('${MILESTONE_BASE:+"$MILESTONE_BASE..HEAD"}'),
+      'the bounded invocation must range BASE..HEAD only when a base resolved');
     // Degrade must keep the anchor: a repo with no tags still gets the positional grep.
-    assert.match(w, /MILESTONE_BASE=.*|| *echo *""/, 'a missing tag base must degrade to empty, not fail the gate');
+    assert.ok(w.includes('MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")'),
+      'a missing tag base must degrade to empty, not fail the gate');
   });
 
   test('tdd red gate tolerates both commit-scope spellings (#4011 keying untouched)', () => {
     const w = fs.readFileSync(WORKFLOW, 'utf8');
-    assert.match(w, /--grep="\$\{PLAN_SCOPE_RE\}" -- "\*\*\/\*\.test\.\*/,
+    assert.ok(w.includes('PHASE_N=$((10#${PHASE_NUMBER}))') && w.includes('PLAN_N=$((10#${PLAN_ID}))'),
+      'the TDD block derives zero-stripped components');
+    assert.ok(w.includes('RED_COMMIT=$(git log --oneline -E --grep="${PLAN_SCOPE_RE}" -- "**/*.test.*"'),
       'the RED grep must use the same anchored padding-tolerant scope');
-    assert.doesNotMatch(w, /--grep="\^test\(\$\{PHASE_NUMBER\}-\$\{PLAN_ID\}\):"/,
+    assert.ok(!w.includes('--grep="^test(${PHASE_NUMBER}-${PLAN_ID})"'),
       'the padded-literal RED grep must not remain');
-    assert.match(w, /TDD_MODE.*=.*true/, '#4011 TDD_MODE keying preserved');
+    assert.ok(w.includes('if [ "$TDD_MODE" = "true" ]'), '#4011 TDD_MODE keying preserved');
   });
 
   test('completion spot-check uses the anchored scope and keeps its time bound', () => {
     const w = fs.readFileSync(WORKFLOW, 'utf8');
-    assert.doesNotMatch(w, /--grep="\{phase_number\}-\{plan_padded\}"/,
+    assert.ok(!w.includes('--grep="{phase_number}-{plan_padded}"'),
       'the raw padded placeholder substring grep must not remain');
-    assert.match(w, /--since="1 hour ago"/, 'the spot-check keeps its temporal bound');
+    assert.ok(w.includes('SPOT_PHASE_N=$((10#{phase_number}))') && w.includes('SPOT_PLAN_N=$((10#{plan_padded}))'),
+      'the spot-check derives zero-stripped components');
+    assert.ok(w.includes('--since="1 hour ago"'), 'the spot-check keeps its temporal bound');
   });
 
   test('the gate pipeline separates same-scope commits across a milestone tag (behavioral)', (t) => {
@@ -72,7 +81,8 @@ describe('#4003 — safe_resume_gate commit-scope greps', () => {
     const g = (args) => gitOrThrow(args, { cwd: repo });
 
     g(['commit', '--allow-empty', '-m', 'feat(02-02): old milestone same-scope commit']);
-    g(['tag', 'v9.0.0']);
+    // Annotated: a plain `git tag` can demand a message under some git configs.
+    g(['tag', '-a', 'v9.0.0', '-m', 'milestone close']);
     g(['commit', '--allow-empty', '-m', 'test(2-02): RED for this plan']);
     g(['commit', '--allow-empty', '-m', 'feat(2-02): GREEN for this plan']);
     g(['commit', '--allow-empty', '-m', 'feat(2-20): adjacent plan must not match']);
