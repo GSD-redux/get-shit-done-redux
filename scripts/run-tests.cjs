@@ -379,11 +379,19 @@ const RESERVED_TEMP_PREFIXES = ['gsd-test-home-', 'gsd-run-tests-events-'];
  *
  * Exported for in-process tests (tests/run-tests-temp-root.test.cjs).
  */
+/** True when THIS process created the active run temp root (see setupRunTempRoot). */
+let createdRunTempRoot = false;
+
 function setupRunTempRoot() {
-  const current = process.env.TMPDIR || '';
-  const root = current && basename(current).startsWith(RUN_TEMP_ROOT_PREFIX)
-    ? current
-    : mkdtempSync(join(tmpdir(), RUN_TEMP_ROOT_PREFIX));
+  // Ownership (a nested run-tests spawn REUSES an inherited root and must never
+  // remove it on ITS exit — that would delete the outer run's root mid-suite,
+  // mass-ENOENTing every later fixture): key the reuse check on ANY of the three
+  // vars, since a hypothetical child could carry TEMP but not TMPDIR.
+  const inherited = ['TMPDIR', 'TEMP', 'TMP']
+    .map((k) => process.env[k] || '')
+    .find((v) => v && basename(v).startsWith(RUN_TEMP_ROOT_PREFIX));
+  createdRunTempRoot = !inherited;
+  const root = inherited || mkdtempSync(join(tmpdir(), RUN_TEMP_ROOT_PREFIX));
   for (const key of ['TMPDIR', 'TEMP', 'TMP']) process.env[key] = root;
   return root;
 }
@@ -1094,13 +1102,18 @@ function main() {
   // operator (and tests/run-tests-temp-root.test.cjs) can observe it.
   const runTempRoot = setupRunTempRoot();
   console.error(`run-tests: tmp-root=${runTempRoot}`);
-  process.on('exit', () => {
-    try {
-      rmSync(runTempRoot, { recursive: true, force: true });
-    } catch {
-      /* best-effort; a wedged child dir must not block exit reporting */
-    }
-  });
+  // OWNERSHIP-GATED (#4020 review): only the process that CREATED the root
+  // removes it — a nested run-tests spawn (the harness regression test) reuses
+  // the outer run's root and must leave it standing mid-suite.
+  if (createdRunTempRoot) {
+    process.on('exit', () => {
+      try {
+        rmSync(runTempRoot, { recursive: true, force: true });
+      } catch {
+        /* best-effort; a wedged child dir must not block exit reporting */
+      }
+    });
+  }
   // Sandbox the overlay home so the loader's global scan ($GSD_HOME/.gsd/capabilities)
   // cannot read a developer's real installed capabilities during tests (ADR-1244 D2).
   // IDEMPOTENT: a nested run-tests spawn (e.g. tests/run-tests-harness.test.cjs)

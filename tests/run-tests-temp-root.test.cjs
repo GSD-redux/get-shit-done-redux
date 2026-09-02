@@ -127,4 +127,27 @@ describe('#4020 — run-tests temp root', () => {
     assert.ok(m[1].startsWith(sandbox), 'the announced root lives inside the sandboxed TMPDIR');
     assert.ok(!fs.existsSync(m[1]), 'the temp root is removed after the run');
   });
+
+  test('a nested runner reuses an inherited root and never removes it', (t) => {
+    // #4020 review: the harness regression test spawns run-tests INSIDE a live
+    // run — the nested process must reuse the outer root and leave it standing
+    // on ITS exit, or the outer suite mass-ENOENTs every later fixture.
+    const inherited = createTempDir('gsd-test-run-inherited');
+    const marker = path.join(inherited, 'outer-still-needs-this');
+    fs.writeFileSync(marker, 'x');
+    t.after(() => cleanup(inherited));
+    const target = path.join(__dirname, 'helpers-4020-probe.test.cjs');
+    fs.writeFileSync(target, "require('node:test').test('noop #4020 nested', () => {});\n");
+    t.after(() => cleanup(target));
+
+    const r = runNode(
+      [RUNNER, target],
+      { timeoutMs: 120_000, env: { ...process.env, TMPDIR: inherited, TEMP: inherited, TMP: inherited } },
+    );
+    assert.equal(r.exitCode, 0, `nested runner should pass: ${r.stderr.slice(-400)}`);
+    const m = /tmp-root=(\S+)/.exec(r.stderr);
+    assert.ok(m, 'nested runner announces its root');
+    assert.equal(m[1], inherited, 'the nested runner REUSES the inherited root');
+    assert.ok(fs.existsSync(marker), 'the inherited root survives the nested runner\'s exit');
+  });
 });
