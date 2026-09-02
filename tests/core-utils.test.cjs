@@ -826,6 +826,28 @@ describe('extractCanonicalPlanId', () => {
     assert.strictEqual(coreUtils.extractCanonicalPlanId('100-01-extra-slug-PLAN.md'), '100-01');
     assert.strictEqual(coreUtils.extractCanonicalPlanId('01-02-PLAN.md'), '01-02');
   });
+
+  // ─── #4014 mutation-gap: the three chained suffix strips are each anchored
+  // ($) to the true end of the filename. An unanchored variant would instead
+  // strip the FIRST mid-string occurrence of the pattern, corrupting a
+  // filename that merely CONTAINS one of these substrings earlier on.
+
+  test('mutation-gap: mid-string ".md" is left alone — only the trailing .md is stripped', () => {
+    // "foo.mdx-01-PLAN.md": the trailing "-PLAN.md" is stripped by the first
+    // regex; the base "foo.mdx-01" does NOT end in ".md" (it ends in "mdx"
+    // before "-01"), so the third (bare .md$) regex must NOT touch the ".md"
+    // that happens to sit inside "foo.mdx". An unanchored /\.md/i would strip
+    // it there instead, corrupting the base to "foox-01".
+    assert.strictEqual(coreUtils.extractCanonicalPlanId('foo.mdx-01-PLAN.md'), 'foo.mdx-01');
+  });
+
+  test('mutation-gap: mid-string "-SUMMARY.md" is left alone — only the trailing form is stripped', () => {
+    // "foo-SUMMARY.md-01-PLAN.md": trailing "-PLAN.md" is stripped by the
+    // first regex, leaving "foo-SUMMARY.md-01" — which does NOT end in
+    // "-SUMMARY.md". An unanchored /-SUMMARY\.md/i would still strip the
+    // mid-string occurrence, corrupting the base to "foo-01".
+    assert.strictEqual(coreUtils.extractCanonicalPlanId('foo-SUMMARY.md-01-PLAN.md'), 'foo-SUMMARY.md-01');
+  });
 });
 
 // ─── countMatchedSummaries (#1988) ───────────────────────────────────────────
@@ -889,6 +911,71 @@ describe('countMatchedSummaries — stray non-plan summaries excluded (#1988)', 
   test('absolute path (leading slash) still pairs via the dir split', () => {
     // Guards the lastIndexOf('/') >= 0 boundary (slash at index 0).
     assert.strictEqual(countMatchedSummaries(['/abs/PLAN-01.md'], ['/abs/SUMMARY-01.md']), 1);
+  });
+});
+
+// ─── #4014 mutation-gap: summaryCandidates / findUnsummarizedPlans /
+// findOrphanSummaries — same "Stryker core-utils shard runs only THIS file"
+// reasoning as countMatchedSummaries above. These three share the private
+// summaryCandidates helper but, unlike countMatchedSummaries, had no direct
+// coverage inside core-utils.test.cjs itself (their existing coverage lives
+// in plan-count-single-owner.test.cjs / summary-status-blocked-3345.test.cjs,
+// neither of which the core-utils Stryker shard executes).
+
+describe('summaryCandidates / findUnsummarizedPlans / findOrphanSummaries — #4014 mutation-gap', () => {
+  const { countMatchedSummaries, findUnsummarizedPlans, findOrphanSummaries } = coreUtils;
+
+  test('mutation-gap: mid-string ".md" in the plan filename does not corrupt the base', () => {
+    // "my.mdx-file-PLAN.md": summaryCandidates' own `base` strip is anchored
+    // (/\.md$/i) so only the true trailing ".md" is removed, leaving
+    // "my.mdx-file-PLAN" — the marker-swap candidate is then
+    // "my.mdx-file-SUMMARY.md". An unanchored strip would instead corrupt the
+    // base by stripping the ".md" that sits inside "my.mdx" first.
+    assert.strictEqual(
+      countMatchedSummaries(['my.mdx-file-PLAN.md'], ['my.mdx-file-SUMMARY.md']),
+      1,
+    );
+    assert.deepEqual(findUnsummarizedPlans(['my.mdx-file-PLAN.md'], ['my.mdx-file-SUMMARY.md']), []);
+  });
+
+  test('mutation-gap: legacy extended form <n>-PLAN-<m> matches ONLY via the <n>-<m>-SUMMARY candidate', () => {
+    // "14-PLAN-01.md" also generates a marker-swap candidate
+    // ("14-SUMMARY-01.md") and a stem-suffix candidate
+    // ("14-PLAN-01-SUMMARY.md"), but the summary file used here
+    // ("14-01-SUMMARY.md") matches NEITHER of those — it can only match via
+    // the `extended` candidate on the summaryCandidates line that special-
+    // cases `^(\d+)-PLAN-(\d+)`. Isolates that candidate from the other two.
+    assert.strictEqual(countMatchedSummaries(['14-PLAN-01.md'], ['14-01-SUMMARY.md']), 1);
+    assert.deepEqual(findUnsummarizedPlans(['14-PLAN-01.md'], ['14-01-SUMMARY.md']), []);
+  });
+
+  test('mutation-gap: #3183 canonical-id candidate fires only when it differs from the PLAN-stripped stem', () => {
+    // "68-01-scaffolding-PLAN.md": extractCanonicalPlanId pairs "68"+"01" into
+    // "68-01", which differs from the plain PLAN-stripped stem
+    // "68-01-scaffolding" — so the `canonicalId !== planStem` guard fires and
+    // pushes the "68-01-SUMMARY.md" candidate. The summary here matches ONLY
+    // through that candidate (not the marker-swap or stem-suffix forms), so
+    // flipping the guard's equality in either direction breaks this match.
+    assert.strictEqual(
+      countMatchedSummaries(['68-01-scaffolding-PLAN.md'], ['68-01-SUMMARY.md']),
+      1,
+    );
+    assert.deepEqual(findUnsummarizedPlans(['68-01-scaffolding-PLAN.md'], ['68-01-SUMMARY.md']), []);
+  });
+
+  test('mutation-gap: findUnsummarizedPlans on a MIXED set returns exactly the unsummarized subset', () => {
+    // An all-matched or all-unmatched fixture can't distinguish a `.filter()`
+    // that was mutated to always-true/always-false/identity from a correctly
+    // behaving one — only a mixed set, checked by exact array identity, can.
+    const plans = ['01-01-PLAN.md', '01-02-PLAN.md', '01-03-PLAN.md'];
+    const summaries = ['01-01-SUMMARY.md', '01-03-SUMMARY.md']; // 01-02 has none
+    assert.deepEqual(findUnsummarizedPlans(plans, summaries), ['01-02-PLAN.md']);
+  });
+
+  test('mutation-gap: findOrphanSummaries on a MIXED set returns exactly the unclaimed subset', () => {
+    const plans = ['01-01-PLAN.md', '01-02-PLAN.md'];
+    const summaries = ['01-01-SUMMARY.md', '01-02-SUMMARY.md', '01-STRAY-SUMMARY.md'];
+    assert.deepEqual(findOrphanSummaries(plans, summaries), ['01-STRAY-SUMMARY.md']);
   });
 });
 
