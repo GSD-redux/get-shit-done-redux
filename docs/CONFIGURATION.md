@@ -198,7 +198,7 @@ the global wildcard but replaces the global `gsd-executor` list:
 
 Each selector value must be an array. A usable entry is a single tool token which, after trimming,
 is non-empty and contains no whitespace, comma, `#`, quote, U+0000–U+001F, U+007F–U+009F,
-U+2028, or U+2029.
+U+2028, or U+2029, and does not end with `:`.
 Invalid entries are ignored. An explicitly present but invalid project selector resolves to no
 grant for that selector; it does not restore the global value. Inline grants remain plain
 comma-separated tool names as required by Claude; block-sequence entries are YAML-quoted.

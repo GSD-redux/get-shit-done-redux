@@ -194,7 +194,7 @@ test('Kimi receives canonical grants before its existing mapper runs (#4032)', (
 test('hostile values fail closed while inline Claude tools remain valid tokens (#4032)', (t) => {
   const rejected = [
     null, 1, '', '  ', 'mcp__bad,comma', 'mcp__bad\0nul', 'mcp__bad\nline', 'mcp__bad\u0085nel', 'mcp__bad\u2028line',
-    '#comment', 'tool: value', 'Bash(git log:*)', '"quote"', "'quote'",
+    '#comment', 'tool:', 'tool: value', 'Bash(git log:*)', '"quote"', "'quote'",
   ];
   const accepted = ['mcp__safe__:terminal', 'Agent(worker)', '\\backslash'];
   const installed = installClaude(t, { defaults: { agent_tools: { '*': [...rejected, ...accepted] } } });
