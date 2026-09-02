@@ -14,8 +14,16 @@ const REF = path.join(__dirname, '..', 'gsd-core', 'references', 'execute-mvp-td
 describe('gsd-executor — MVP+TDD gate section', () => {
   const content = fs.readFileSync(AGENT, 'utf-8');
 
-  test('agent defines an MVP+TDD Gate section', () => {
-    assert.match(content, /MVP\+TDD\s*Gate|MVP[\s-]?TDD[\s-]?gate/i, 'must label the gate');
+  test('agent defines a TDD Gate section keyed on TDD_MODE alone (#4011)', () => {
+    assert.match(content, /MVP\+TDD\s*Gate|MVP[\s-]?TDD[\s-]?gate|TDD\s*Gate/i, 'must label the gate');
+    // The gate's trigger must not require MVP_MODE (#4011): a discipline gate
+    // keyed to a product-scope flag is silently inert on non-MVP phases.
+    const gateSection = content.slice(
+      content.search(/## (?:MVP\+TDD )?TDD Gate/i),
+      content.indexOf('##', content.search(/## (?:MVP\+TDD )?TDD Gate/i) + 3),
+    );
+    assert.ok(!/MVP_MODE\s*=\s*"?"?true"?.{0,80}TDD_MODE|both .MVP_MODE.= true and .TDD_MODE.= true/i.test(gateSection),
+      'the executor gate section must trigger on TDD_MODE alone, not the MVP intersection (#4011)');
   });
 
   test('agent instructs halt-and-report when gate trips', () => {

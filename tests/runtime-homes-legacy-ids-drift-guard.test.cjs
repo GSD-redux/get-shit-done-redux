@@ -130,6 +130,11 @@ describe('#3024 review finding 2: LEGACY_NON_REGISTRY_RUNTIME_IDS drift guard', 
     assert.ok(
       !registryIds.includes(SENTINEL_ID) &&
         !legacyIds.includes(SENTINEL_ID) &&
+        // allow-test-rule: source-text-is-the-product (#3545) — sourceParsedIds
+        // is enumeration scaffolding derived from readFileSync'd source text
+        // (see parseHardcodedBranchIds doc comment above); every id it turns
+        // up is verified BEHAVIORALLY below via getGlobalConfigDir, never
+        // trusted on its own
         !sourceParsedIds.includes(SENTINEL_ID),
       `sentinel id ${SENTINEL_ID} unexpectedly collides with a real candidate id — pick a different sentinel`,
     );

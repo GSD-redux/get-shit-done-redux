@@ -124,9 +124,41 @@ function _resolveActivationValue(
   return r.found ? Boolean(r.value) : false;
 }
 
+/**
+ * Resolve a step's optional `pointFrom` gate (#3661): a step declaring
+ * `pointFrom: "<dotted enum key>"` is only active for ITS OWN `point` when the
+ * resolved value of that config key equals `point` exactly. This lets a
+ * capability register the same logical step at more than one loop point and
+ * have config select which registration is live — without teaching the
+ * shared `when` grammar an equality operator (`when` stays a plain boolean
+ * gate on a dotted key everywhere else).
+ *
+ * No `pointFrom` → true (unconditional; every existing step is unaffected).
+ * Present but not a non-empty string → false (malformed, mirrors `when`).
+ * Present and resolved → true only on an exact match against `point`.
+ *
+ * Single-owner precedence engine: called from both `loop-resolver.cts`
+ * (`isActive`) and `capability-state.cts` (`processHooks`) so the two
+ * consumers can never diverge on activation (see
+ * `tests/capability-precedence-parity.test.cjs`).
+ */
+function _resolvePointGate(
+  pointFrom: unknown,
+  point: string,
+  config: Record<string, unknown>,
+  cwd: string | undefined,
+  registry: Record<string, unknown>,
+): boolean {
+  if (pointFrom === undefined || pointFrom === null) return true;
+  if (typeof pointFrom !== 'string' || pointFrom.length === 0) return false;
+  const r = resolveConfigKey(pointFrom, { config, cwd, registry });
+  return r.found && r.value === point;
+}
+
 export = {
   _getNestedConfigValue,
   _readRawConfigKey,
   _resolveActivationValue,
+  _resolvePointGate,
   resolveConfigKey,
 };

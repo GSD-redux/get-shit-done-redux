@@ -578,7 +578,11 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
       '',
     ].join('\n');
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
-    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // #3784: was '3'. The dropped zero-padding this used to pin is the defect
+    // the issue reports, not behaviour worth preserving — a fixture written
+    // "02" must not come back "3". The characterization is updated rather than
+    // worked around, because the old value WAS the bug.
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '03');
     assert.strictEqual(result.data && result.data.advanced, true);
     assert.strictEqual(result.data && result.data.current_plan, 3);
     assert.strictEqual(result.data && result.data.total_plans, 5);
@@ -605,6 +609,488 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
     assert.strictEqual(result.data && result.data.error, true);
     assert.deepStrictEqual(result.updated, []);
+  });
+
+  // Hybrid shape: the legacy field NAME carrying the compound VALUE, with no
+  // `Total Plans in Phase` sibling. Neither documented branch handled it —
+  // `legacyTotal` is null so the legacy branch fell through, and the compound
+  // branch reads the `Plan` field through a `^Plan:` line-anchored pattern
+  // that never matches `Current Plan:`. Both produced NaN, and the caller
+  // reported a parse failure against a file whose plan numbers are plainly
+  // readable.
+  //
+  // Not hypothetical: an agent wrote this exact shape unprompted, believing
+  // it was the parseable form, and every later run inherited it.
+  test('hybrid format: "Current Plan: 4 of 6" with no Total Plans sibling', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 4 of 6',
+      'Status: Executing Phase 7',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.error, undefined);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 5);
+    assert.strictEqual(result.data && result.data.total_plans, 6);
+  });
+
+  // AC1: the hybrid must write back to the SAME field with padding preserved,
+  // not merely report the right numbers in `data`.
+  test('hybrid format: writes back to Current Plan with padding preserved', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '05 of 06');
+    // Identity, not a presence proxy: assert the whole section body, so a
+    // spurious extra field or a dropped line is visible rather than merely
+    // "no line starting with Plan:".
+    const section = result.content.slice(result.content.indexOf('## Current Position'));
+    assert.strictEqual(section.trimEnd(), ['## Current Position', '', 'Current Plan: 05 of 06'].join('\n'));
+  });
+
+  test('hybrid format: phase-complete branch still fires on the last plan', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 6 of 6',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, false);
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+  });
+
+  test('compound format preserves zero-padding on both halves', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Plan:** 04 of 06',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '05 of 06');
+  });
+
+  test('padding widens rather than truncates when the plan number grows', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Plan:** 09 of 12',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '10 of 12');
+  });
+
+  test('unpadded compound stays unpadded', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Plan:** 2 of 6',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 6');
+  });
+
+  // AC6: the shared field reader must NOT be loosened to make the hybrid work.
+  // Reading the hybrid is the transition's job; `stateExtractField('Plan')` is
+  // line-anchored (`^Plan:`) and has 13+ callers, so teaching it to match a
+  // field name that merely ENDS in "Plan" would be the wrong fix and would
+  // silently change what those callers read. This test fails if anyone tries it.
+  test('shared reader stays anchored: "Plan" does not match "Current Plan:"', () => {
+    const content = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      '',
+    ].join('\n');
+    assert.strictEqual(stateExtractField(content, 'Plan'), null);
+    assert.strictEqual(stateExtractField(content, 'Current Plan'), '04 of 06');
+  });
+
+  // The legacy pair must keep winning when both are present: a stray "of N"
+  // inside the Current Plan value must not override an explicit Total Plans.
+  test('legacy pair still takes precedence over an "of N" in Current Plan', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 2 of 99',
+      '**Total Plans in Phase:** 5',
+      '**Status:** Executing Phase 3',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.total_plans, 5);
+    // Assert the WRITE, not just the parse. Reading `data` alone cannot see a
+    // lossy write-back, and a regression test that cannot observe the
+    // regression is not coverage. The legacy branch used to write
+    // `String(newPlan)`, which turned "2 of 99" into a bare "3" — silently
+    // destroying the reader's own text on a branch nobody was looking at.
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3 of 99');
+    assert.strictEqual(stateExtractField(result.content, 'Total Plans in Phase'), '5');
+  });
+
+  test('legacy pair preserves zero-padding on write-back', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 04',
+      '**Total Plans in Phase:** 06',
+      '**Status:** Executing Phase 3',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '05');
+  });
+
+  // Findings 2+3 are one defect seen twice: the body-level write is single-shot
+  // and bold-preferring, so on a file carrying the field at BOTH the bold header
+  // and the `## Current Position` line it updates the header only — and
+  // `mutateCurrentPositionForAdvance` could not pick up the slack because its
+  // plan arm only ever looked for `Plan:`, never `Current Plan:`. The earlier
+  // hybrid write-back test passed only because its fixture was single-site.
+  test('hybrid format: header and Current Position both advance, no drift', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 04 of 06',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      'Status: Executing Phase 7',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    const advanced = result.content.match(/05 of 06/g) || [];
+    assert.strictEqual(advanced.length, 2, 'both sites must advance');
+    assert.ok(!/04 of 06/.test(result.content), 'no site may be left behind');
+  });
+
+  // Review round 4, Blocker 1. The section fallback was guarded by the
+  // FUNCTION-wide `mutated`, which the status/lastActivity arms had already set.
+  // The discriminating shape needs BOTH a header `Status:` (to absorb the
+  // body-level status write, so the section's own status is still a template
+  // default when the section arm runs) AND a bold section plan line (so the
+  // plain-line arm misses and only the fallback can write it). Without the
+  // header Status this passes even on the broken build.
+  test('B1: a bold section plan line advances when an unrelated field was also refreshed', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 04 of 06',
+      '**Status:** Ready to plan',
+      '',
+      '## Current Position',
+      '',
+      '**Current Plan:** 01 of 06',
+      'Status: Ready to plan',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    const section = result.content.slice(result.content.indexOf('## Current Position'));
+    assert.match(section, /\*\*Current Plan:\*\* 05 of 06/, 'the bold section line must advance');
+    assert.ok(!/01 of 06/.test(result.content), 'no site may be left behind');
+  });
+
+  // Review round 4, Blocker 2. In the legacy shape BOTH plan values are
+  // populated, so a fallback that picked one name by ternary always chose
+  // `Current Plan` and never wrote a `**Plan:**` section line — which base did
+  // write. The header `**Plan:**` absorbs the body-level write, so only the
+  // section arm can advance the section copy.
+  test('B2: a bold **Plan:** section line advances in the legacy pair shape', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 3',
+      '**Total Plans in Phase:** 5',
+      '**Plan:** 3 of 5',
+      '**Status:** Ready to plan',
+      '',
+      '## Current Position',
+      '',
+      '**Plan:** 3 of 5',
+      'Status: Ready to plan',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    const section = result.content.slice(result.content.indexOf('## Current Position'));
+    assert.match(section, /\*\*Plan:\*\* 4 of 5/, 'the section Plan line must advance');
+    assert.ok(!/3 of 5/.test(result.content), 'no site may be left behind');
+  });
+
+  // Review round 4, Blocker 3. `PLAN_SHAPE_N` was anchored harder than
+  // `PLAN_SHAPE_N_OF_M`, so annotated values base parsed via `parseInt` began to
+  // hard-error. Narrowing what the transition ACCEPTS is out of scope for #3784.
+  test('B3: annotated legacy values still parse, and keep their annotation', () => {
+    const drive = (plan, total) => transitionCore([
+      '# Project State', '',
+      `**Current Plan:** ${plan}`,
+      `**Total Plans in Phase:** ${total}`,
+      '**Status:** Executing', '',
+    ].join('\n'), { kind: 'advancePlan' }, deps);
+
+    const annotatedTotal = drive('3', '5 phases');
+    assert.strictEqual(annotatedTotal.data.advanced, true, '"5 phases" must still supply a total');
+    assert.strictEqual(annotatedTotal.data.total_plans, 5);
+
+    const annotatedPlan = drive('3 (blocked)', '5');
+    assert.strictEqual(annotatedPlan.data.advanced, true, '"3 (blocked)" must still advance');
+    assert.strictEqual(
+      stateExtractField(annotatedPlan.content, 'Current Plan'), '4 (blocked)',
+      'the annotation is the author\'s text and survives the advance',
+    );
+
+    // The prose case stays refused: the START anchor is what closes it, not the
+    // absence of a suffix.
+    const prose = transitionCore([
+      '# Project State', '', '**Current Plan:** 4 — blocked on review of 2 PRs',
+      '**Status:** Executing', '',
+    ].join('\n'), { kind: 'advancePlan' }, deps);
+    assert.strictEqual(prose.data.error, true, 'a total must never be read out of prose');
+  });
+
+  // Minor 1: the Number.isSafeInteger bound this PR introduces.
+  test('boundary: the safe-integer limit', () => {
+    const drive = (v) => transitionCore([
+      '# Project State', '', `**Current Plan:** ${v}`, '**Status:** Executing', '',
+    ].join('\n'), { kind: 'advancePlan' }, deps).data;
+    const MAX = Number.MAX_SAFE_INTEGER; // 9007199254740991
+    assert.strictEqual(drive(`${MAX - 1} of ${MAX}`).advanced, true, 'limit-1 advances');
+    assert.strictEqual(drive(`${MAX} of ${MAX}`).reason, 'last_plan', 'limit itself is readable');
+    assert.strictEqual(drive(`${MAX} of 9007199254740992`).error, true, 'limit+1 is refused, not rounded');
+  });
+
+  // Boundary coverage (RULESET.TESTS.boundary-coverage) around the
+  // `currentPlan >= totalPlans` limit, on the newly readable hybrid shape.
+  // limit itself ("6 of 6") is covered by the phase-complete test above.
+  test('hybrid boundary: limit-1 advances', () => {
+    const input = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 5 of 6',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 6);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '6 of 6');
+  });
+
+  test('hybrid boundary: limit+1 takes the phase-complete branch', () => {
+    const input = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 7 of 6',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    // Mirrors the compound branch's existing `>= totalPlans` semantics — an
+    // over-limit value is past the end, not a new advance.
+    assert.strictEqual(result.data && result.data.advanced, false);
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+  });
+
+  // CRLF: regexes matching only \n are a recurring defect class here, and the
+  // write path's `(.*)` capture eats a trailing \r. A file that arrives CRLF
+  // must not leave with one line silently converted to LF.
+  test('hybrid format: CRLF line endings survive the write-back', () => {
+    const input = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      'Status: Executing Phase 7',
+      '',
+    ].join('\r\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.ok(/Current Plan: 05 of 06\r\n/.test(result.content),
+      'the advanced line must keep its CRLF terminator');
+    assert.ok(!/(^|[^\r])\n/.test(result.content), 'no line may be downgraded to bare LF');
+  });
+
+  // RULESET.TESTS.property-based-testing: this is a parsing/transformation with
+  // a format-preserving contract, so the contract gets a property, not just
+  // examples. Contract: advancing rewrites ONLY the leading integer, pads it to
+  // at least the original digit width, and leaves the rest of the value byte-
+  // identical.
+  // Drives BOTH compound spellings — `Plan:` and the hybrid `Current Plan:`
+  // this PR adds — because a property that only exercises the pre-existing
+  // branch says nothing about the branch under review. `n` ranges past 99 so
+  // the 99 -> 100 width transition is covered by the property rather than by a
+  // single example.
+  test('property: advancing preserves padding width and the " of M" remainder', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 150 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.constantFrom('Plan', 'Current Plan'),
+        (n, planWidth, totalWidth, fieldName) => {
+          const total = n + 2; // strictly greater, so the advance branch is taken
+          const planStr = String(n).padStart(planWidth, '0');
+          const totalStr = String(total).padStart(totalWidth, '0');
+          const input = [
+            '# Project State',
+            '',
+            `**${fieldName}:** ${planStr} of ${totalStr}`,
+            '**Status:** Executing Phase 7',
+            '',
+          ].join('\n');
+          const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+          const expected = `${String(n + 1).padStart(planStr.length, '0')} of ${totalStr}`;
+          assert.strictEqual(stateExtractField(result.content, fieldName), expected);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  // The legacy pair's own format-preserving contract: the ` of M` remainder and
+  // the padding survive there too, and the sibling supplies the total.
+  test('property: the legacy pair preserves the written Current Plan value shape', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 150 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.option(fc.integer({ min: 1, max: 999 }), { nil: null }),
+        (n, planWidth, inlineTotal) => {
+          const total = n + 2;
+          const planStr = String(n).padStart(planWidth, '0');
+          const written = inlineTotal === null ? planStr : `${planStr} of ${inlineTotal}`;
+          const input = [
+            '# Project State',
+            '',
+            `**Current Plan:** ${written}`,
+            `**Total Plans in Phase:** ${total}`,
+            '**Status:** Executing Phase 7',
+            '',
+          ].join('\n');
+          const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+          const bumped = String(n + 1).padStart(planStr.length, '0');
+          const expected = inlineTotal === null ? bumped : `${bumped} of ${inlineTotal}`;
+          assert.strictEqual(stateExtractField(result.content, 'Current Plan'), expected);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  // #3791 review round 6: the two properties above each exercise ONE spelling,
+  // so neither could see a document carrying both — which is where B1 and M1
+  // both lived. This one crosses the two contracts, with agreeing and
+  // disagreeing numbers, and asserts the per-spelling contract on each half.
+  test('property: two spellings — each keeps its own shape when they agree, and neither moves when they do not', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 150 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.integer({ min: 1, max: 4 }),
+        // The `Plan:` line's OWN total, independent of the sibling field.
+        fc.integer({ min: 200, max: 400 }),
+        // 0 = the two spellings agree; anything else is the offset that makes
+        // them disagree.
+        fc.integer({ min: 0, max: 9 }),
+        (n, legacyWidth, planWidth, planOwnTotal, disagreeBy) => {
+          const siblingTotal = n + 2; // strictly greater, so the advance branch is taken
+          const legacyStr = String(n).padStart(legacyWidth, '0');
+          const planN = n + disagreeBy;
+          const planStr = String(planN).padStart(planWidth, '0');
+          const input = [
+            '# Project State',
+            '',
+            `**Current Plan:** ${legacyStr}`,
+            `**Total Plans in Phase:** ${siblingTotal}`,
+            '**Status:** Executing Phase 7',
+            '',
+            '## Current Position',
+            '',
+            `Plan: ${planStr} of ${planOwnTotal}`,
+            '',
+          ].join('\n');
+          const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+
+          if (disagreeBy !== 0) {
+            // Refused, and nothing written — not one field, not the status.
+            assert.strictEqual(result.data && result.data.error, true);
+            assert.strictEqual(result.data && result.data.reason, 'ambiguous_plan_position');
+            assert.strictEqual(stateExtractField(result.content, 'Current Plan'), legacyStr);
+            assert.strictEqual(stateExtractField(result.content, 'Plan'), `${planStr} of ${planOwnTotal}`);
+            return;
+          }
+
+          // They agree: both advance, and each keeps its OWN written shape —
+          // the legacy field its padding and bare form, the `Plan:` line its
+          // padding AND its own total, which is never the sibling's.
+          assert.strictEqual(result.data && result.data.advanced, true);
+          assert.strictEqual(
+            stateExtractField(result.content, 'Current Plan'),
+            String(n + 1).padStart(legacyStr.length, '0'),
+          );
+          assert.strictEqual(
+            stateExtractField(result.content, 'Plan'),
+            `${String(n + 1).padStart(planStr.length, '0')} of ${planOwnTotal}`,
+          );
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  // m2: the degenerate end of the totalPlans threshold, and the shapes the
+  // anchored grammar must refuse. `0 of 0` is `currentPlan >= totalPlans`, so
+  // it is phase-complete rather than an error — pinned so the grammar
+  // tightening cannot silently reclassify it.
+  test('boundary: degenerate and malformed plan values', () => {
+    const drive = (value) => {
+      const input = ['# Project State', '', `**Current Plan:** ${value}`, '**Status:** Executing', ''].join('\n');
+      return transitionCore(input, { kind: 'advancePlan' }, deps).data;
+    };
+    assert.strictEqual(drive('0 of 0').reason, 'last_plan', '"0 of 0" is past the end, not an error');
+    assert.strictEqual(drive('0 of 3').advanced, true, '"0 of 3" advances to 1');
+    for (const bad of ['-1 of 6', '+2 of 6', '\u0663 of \u0665', '3 of', 'of 5', 'x of 5']) {
+      assert.strictEqual(drive(bad).error, true, `${JSON.stringify(bad)} must be refused`);
+    }
   });
 
   test('compound format: "Plan: 2 of 6" preserves compound shape', () => {
@@ -646,6 +1132,201 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
 // pins today's reality, and it is EXPECTED to go RED the moment the parser
 // changes underneath it. That is the forcing function working as designed
 // (§8.8 "checked, not generated"), not a broken test.
+describe('#3791 review round 6 (B1/M1): every spelling advances from its own text', () => {
+  const deps = { clock: fixedClock };
+  const advance = (lines) => transitionCore(lines.join('\n'), { kind: 'advancePlan' }, deps);
+
+  // ─── M1: a field keeps its OWN total, padding and annotation ───────────────
+  //
+  // The legacy pair wins precedence, but that only decides which numbers the
+  // ADVANCE is computed from. It does not license re-rendering the `Plan:` line
+  // from the legacy pair's numbers, which is what the previous revision did:
+  // `planDisplayValue` fell back to a bare `${newPlan} of ${totalPlans}` built
+  // from the sibling field.
+
+  test('the Plan line keeps its own total when it differs from the sibling field', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 9',
+      'Status: Executing',
+      '',
+    ]);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // Was '3 of 5' — the sibling's total silently overwrote the line's own.
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 9');
+  });
+
+  test('the Plan line keeps its own zero-padding when the legacy pair supplies the numbers', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 03',
+      '**Total Plans in Phase:** 05',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 03 of 05',
+      'Status: Executing',
+      '',
+    ]);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '04');
+    // Was '4 of 5' — the changeset's "the zero-padding width and everything
+    // after it survive" was true only for the parse-source field.
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '04 of 05');
+  });
+
+  test('a trailing annotation on the Plan line survives an advance driven by the legacy pair', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 5 in current phase',
+      '',
+    ]);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 5 in current phase');
+  });
+
+  // ─── B1: two spellings, different numbers — refuse, never fabricate ────────
+
+  test('refuses when Current Plan and Plan carry different numbers', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 7',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 5',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.error, true);
+    assert.strictEqual(result.data && result.data.reason, 'ambiguous_plan_position');
+    assert.deepStrictEqual(result.data && result.data.plan_candidates,
+      ['Current Plan: 7', 'Plan: 2 of 5']);
+    // Nothing is written. The previous revision advanced `Plan` to `3 of 5` and
+    // stamped `Current Plan: 3` — a number with no relationship to the 7 the
+    // author wrote.
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '7');
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '2 of 5');
+  });
+
+  test('the disagreement refusal runs BEFORE the phase-complete branch', () => {
+    // `Plan: 5 of 5` alone would advance=false / last_plan and write a terminal
+    // "Phase complete — ready for verification". Guarding only the normal
+    // advance path would let it do that to a document whose two spellings never
+    // agreed on where execution was.
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 7',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 5 of 5',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.error, true);
+    assert.strictEqual(result.data && result.data.reason, 'ambiguous_plan_position');
+    assert.ok(!/Phase complete/.test(result.content),
+      'a disagreeing document must not be marked phase-complete');
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '7');
+  });
+
+  test('agreeing spellings are not a disagreement, whatever their totals say', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 9',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.error, undefined);
+    assert.strictEqual(result.data && result.data.advanced, true);
+  });
+
+  // ─── An unreadable sibling is left alone, not overwritten ──────────────────
+
+  test('a Plan line with no readable number is left exactly as authored', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+      '## Current Position',
+      '',
+      'Plan: TBD',
+      '',
+    ]);
+    // The advance still happens — refusing the whole document because an
+    // unrelated line is unreadable would be a narrowing #3784 does not license.
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // ...and the unreadable line is untouched rather than fabricated over.
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), 'TBD');
+  });
+
+  test('a Current Plan with no readable number is left alone, and not reported as updated', () => {
+    // The mirror of the case above: `Plan` is the parse source and the legacy
+    // field is the unreadable one. It exercises the other arm of the same skip,
+    // and it is the fixture where an unconditional `updated.push('Current Plan')`
+    // would claim a write that never happened.
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** TBD',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 5',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 5');
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), 'TBD');
+    assert.ok(!result.updated.includes('Current Plan'),
+      'must not report a field it did not write');
+    assert.ok(result.updated.includes('Status'), 'the fields it did write are still reported');
+  });
+
+  // ─── M2: the bare `Plan: N` + sibling shape is not accepted ────────────────
+
+  test('a bare Plan: N with a Total sibling and no Current Plan is refused', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+    ]);
+    // Base refused this (its `else if (planField)` arm had no `of M` match and
+    // errored via NaN). A revision of this PR accepted it; #3791 review round 6
+    // (M2) is that it cannot be given the schema-row + forcing-test coupling
+    // the other shapes have, because `Plan` is body-only.
+    assert.strictEqual(result.data && result.data.error, true);
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+});
+
 describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declared shapes', () => {
   const deps = { clock: fixedClock };
 
@@ -716,17 +1397,34 @@ describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declare
 
   // The worked case (#3784's three spellings): current_plan specifically.
   test('planNofMShapesAreExactlyTheDeclaredSet', () => {
-    assert.deepStrictEqual(Array.from(STATE_FIELD_SCHEMA.current_plan.acceptedShapes), ['N']);
+    // #3791 widened this row, exactly as the schema's own comment instructed.
+    assert.deepStrictEqual(Array.from(STATE_FIELD_SCHEMA.current_plan.acceptedShapes), ['N', 'N of M']);
 
     // Declared shape parses.
     assert.strictEqual(driveCurrentPlanShape('3', { withTotalSibling: true }), true, '"N" (paired with Total Plans in Phase) should parse');
 
-    // The hybrid shape is NOT declared today (#3784/#3791 boundary) and does
-    // NOT parse standalone in the Current Plan field.
-    assert.strictEqual(driveCurrentPlanShape('3 of 5'), false, '"N of M" standalone in Current Plan should NOT parse today');
+    // The hybrid shape is now declared AND parses standalone — #3784.
+    assert.strictEqual(driveCurrentPlanShape('3 of 5'), true, '"N of M" standalone in Current Plan should parse');
 
     // A fourth, never-declared spelling fails rather than quietly joining.
     assert.strictEqual(driveCurrentPlanShape('3/5'), false, '"N/M" should NOT parse — it has never been declared');
+
+    // Declaring "N of M" is a claim about an ANCHORED grammar, not about the
+    // substring "of". Prose that merely contains it must still be refused —
+    // otherwise `4 — blocked on review of 2 PRs` reads as "4 of 2", which is
+    // `currentPlan >= totalPlans` and WRITES a terminal phase-complete status.
+    for (const prose of [
+      '4 — blocked on review of 2 PRs',
+      '3 (waiting for refactor of 1 module)',
+      '2roof 5',
+      '+2 of 6',
+      '-1 of 6',
+    ]) {
+      assert.strictEqual(
+        driveCurrentPlanShape(prose), false,
+        `${JSON.stringify(prose)} must NOT parse — the declared shape is anchored`,
+      );
+    }
   });
 });
 
@@ -754,8 +1452,8 @@ describe('ADR-1769 Phase 2: advancePlan with frontmatter (#1255 pattern — code
       '',
     ].join('\n');
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
-    // Body Current Plan must advance to 3.
-    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // Body Current Plan must advance to 3, keeping the written width (#3784).
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '03');
     // Body Status must be updated (not the YAML status key).
     const bodyStatus = stateExtractField(result.content, 'Status');
     assert.ok(

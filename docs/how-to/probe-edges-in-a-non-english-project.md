@@ -14,20 +14,20 @@ The probe classifies each requirement's data/behavior shape by matching **Englis
 
 That is not a rejection you can act on — it looks identical to a genuinely edge-free requirement. When it happens to *every* requirement, the probe has contributed nothing to the spec.
 
-So Step 5.5 sends the probe an English rendering of each requirement, while your spec stays in your language. Concretely, for the same requirement:
+So Step 5.5 populates an optional `text_en` field alongside each requirement — a faithful English translation — which the engine reads in preference to `text` for classification (`text_en ?? text`). Your spec's own `text` stays in your language throughout. Concretely, for the same requirement:
 
-| Requirement text handed to the probe | Shapes | Edges raised |
-|---|---|---|
-| `O sistema mescla intervalos sobrepostos em uma lista ordenada` | none | none — one `unclassified` row |
-| `The system merges overlapping intervals in a sorted list` | `collection` | `adjacency`, `empty`, `ordering` |
+| Requirement `text` | Requirement `text_en` | Shapes | Edges raised |
+|---|---|---|---|
+| `O sistema mescla intervalos sobrepostos em uma lista ordenada` | *(absent)* | none | none — one `unclassified` row |
+| `O sistema mescla intervalos sobrepostos em uma lista ordenada` | `The system merges overlapping intervals in a sorted list` | `collection` | `adjacency`, `empty`, `ordering` |
 
 ## What you do
 
-Nothing extra. The translation happens inside Step 5.5 as part of the run.
+Nothing extra. The translation happens inside Step 5.5 as part of the run, populating the engine-only `text_en` field.
 
-What you should *see* is the split: your **spec stays in `response_language`** — its requirements, its acceptance criteria, its `## Edge Coverage` section — while the probe's findings are reasoned about from an English rendering of the requirement text. Requirement ids (`R1`, `R2`, …) are never translated or renumbered, so a finding always names the same requirement you wrote.
+What you should *see* is the split: your **spec stays in `response_language`** — its requirements, its acceptance criteria, its `## Edge Coverage` section — while the probe's findings are reasoned about from `text_en`, an English rendering of the requirement text that lives alongside (never in place of) your requirement's own `text`. Requirement ids (`R1`, `R2`, …) are never translated or renumbered, so a finding always names the same requirement you wrote.
 
-If your spec comes back anglicized, that is a bug worth reporting — only the probe's transient input is translated, never the document.
+If your spec comes back anglicized, that is a bug worth reporting — only the transient `text_en` field is translated, never the document.
 
 ## Tell "no edges here" apart from "the probe could not read it"
 

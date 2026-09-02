@@ -92,6 +92,21 @@ function stripShippedMilestones(content: string): string {
 }
 
 /**
+ * #3982: strip only <details> blocks whose <summary> marks a CLOSED milestone
+ * (ARCHIVED/SHIPPED/✅/… without an active marker) — the narrow form of
+ * stripShippedMilestones the current-milestone window needs. A blanket strip
+ * would delete the ACTIVE milestone's own collapsed blocks (#1341) and
+ * reproduce the phase_count: 0 class of #557/#2947.
+ */
+function stripClosedMilestoneDetails(content: string): string {
+  return content.replace(/<details\b[^>]*>[\s\S]*?<\/details>/gi, (block) => {
+    const summaryMatch = block.match(/<summary[^>]*>([^<]*)<\/summary>/i);
+    if (!summaryMatch) return block;
+    return isClosedMilestoneHeading(summaryMatch[1]) ? '' : block;
+  });
+}
+
+/**
  * #2562: is the milestone `version` marked SHIPPED by the ROADMAP itself?
  *
  * Scoped deliberately narrowly, because a false positive here reproduces the
@@ -1177,7 +1192,17 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
     ? earliestMilestoneIndex
     : firstMatch.index;
   const beforeMilestones = content.slice(0, preambleCutoff);
-  const currentSection = content.slice(sectionStart, sectionEnd);
+  // #3982: newest-first roadmaps collapse their archives into <details>
+  // blocks BELOW the active milestone, whose titles live in <summary> tags —
+  // not headings — so no milestone-shaped heading bounds the section walk and
+  // the raw slice runs to end-of-document. Strip CLOSED milestone details
+  // blocks here so the window never feeds archived phases to the
+  // lowest-outstanding scan. Deliberately NOT a blanket strip: the active
+  // milestone may legitimately hold its own collapsed <details> (#1341), and
+  // removing that would trade this bug for the phase_count: 0 class (#557).
+  // Gated on the same isClosedMilestoneHeading the file already applies to
+  // <summary> lines, per the issue's prescribed narrower fix.
+  const currentSection = stripClosedMilestoneDetails(content.slice(sectionStart, sectionEnd));
 
   // Multi-milestone roadmaps split each added milestone across two version-bearing
   // headings: a `## Phases` checklist subsection (early) and a dedicated

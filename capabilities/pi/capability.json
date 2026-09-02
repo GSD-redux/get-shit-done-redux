@@ -47,7 +47,8 @@
         "background": false,
         "backgroundDispatch": false,
         "subagentToolkit": "undocumented",
-        "isolation": "none"
+        "isolation": "none",
+        "maxConcurrency": "undocumented"
       },
       "modelMode": "active",
       "hookBus": "host",

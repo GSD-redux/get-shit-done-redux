@@ -29,7 +29,7 @@ import { checkUiPresence } from './ui-safety-gate.cjs';
 import { hasStaticFrontendEvidence } from './ui-frontend-evidence.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verifyModule = require('./verify.cjs');
-const { cmdVerifySchemaDrift, cmdVerifyCodebaseDrift } = verifyModule;
+const { cmdVerifySchemaDrift, cmdVerifyCodebaseDrift, cmdVerifyContextDrift } = verifyModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapModule = require('./roadmap.cjs');
 const { getRoadmapPhaseWithFallback } = roadmapModule;
@@ -1720,6 +1720,13 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     cmdVerifyCodebaseDrift(cwd, raw);
     return;
   }
+  if (subcommand === 'verify-context-drift') {
+    // Delegates to verify.context-drift — drift capability gate at plan:pre (non-blocking).
+    // Dot-to-hyphen normalization means query "verify.context-drift" routes here.
+    const phaseArg = typeof args[2] === 'string' ? args[2] : '';
+    cmdVerifyContextDrift(cwd, phaseArg, raw);
+    return;
+  }
   if (subcommand === 'predicate') {
     // Generic gate-predicate evaluator (#2008). The workflow gate-dispatch calls
     // this for any gate whose `check` carries a `predicate` (instead of a `query`),
@@ -1737,7 +1744,7 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     routeProhibitionEnforcement(args, raw);
     return;
   }
-  error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-command-paths, verify-failure-directions, verify-schema-drift, verify-codebase-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+  error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-command-paths, verify-failure-directions, verify-schema-drift, verify-codebase-drift, verify-context-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);
 }
 
 export = {

@@ -1951,6 +1951,32 @@ describe('cmdInitQuick', () => {
     cleanup(tmpDir);
   });
 
+  test('init quick emits researcher_model', () => {
+    // #3936: the quick research step (Step 4.75) dispatches gsd-phase-researcher,
+    // so init quick must resolve the researcher's own model tier — parity with
+    // init plan-phase (which emits researcher_model for the same agent).
+    const result = runGsdTools('init quick "Fix login bug"', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok('researcher_model' in output,
+      'init quick should emit researcher_model for the Step 4.75 research dispatch');
+  });
+
+  test('init quick resolves researcher_model from model_overrides', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-phase-researcher': 'openai/o4-mini' },
+    }));
+
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.researcher_model, 'openai/o4-mini',
+      'model_overrides["gsd-phase-researcher"] must reach init quick\'s researcher_model');
+  });
+
   test('with description generates slug and task_dir with YYMMDD-xxx format', () => {
     const result = runGsdTools('init quick "Fix login bug"', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -3387,11 +3413,17 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   const phaseDirAbs = () => path.join(projectDir, '.planning', 'phases', '03-api');
 
   describe('cmdInitPlanPhase', () => {
+    // #4014 (epic #3473 B4-unreadable) matrix row 14: a readable, genuinely
+    // context-less phase dir reports context_scope 'complete' — the
+    // additive scope signal adjacent to has_context.
     test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
       const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
       assert.strictEqual(output.context_read_error ?? null, null);
+      assert.strictEqual(output.context_scope, 'complete');
     });
 
+    // #4014 matrix row 13: has_context stays false AND context_scope
+    // distinguishes this from genuine absence.
     test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
       injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
       const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
@@ -3399,6 +3431,9 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
         `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
       assert.ok(output.context_read_error.includes('03-api'),
         `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+      assert.strictEqual(output.has_context, false);
+      assert.strictEqual(output.context_scope, 'unreadable',
+        `an unreadable phase directory must report context_scope 'unreadable', distinct from a genuinely empty one; got: ${output.context_scope}`);
     });
 
     test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
@@ -3410,11 +3445,14 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   });
 
   describe('cmdInitPhaseOp', () => {
+    // #4014 matrix row 14 (second surface).
     test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
       const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
       assert.strictEqual(output.context_read_error ?? null, null);
+      assert.strictEqual(output.context_scope, 'complete');
     });
 
+    // #4014 matrix row 13 (second surface).
     test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
       injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
       const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
@@ -3422,6 +3460,9 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
         `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
       assert.ok(output.context_read_error.includes('03-api'),
         `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+      assert.strictEqual(output.has_context, false);
+      assert.strictEqual(output.context_scope, 'unreadable',
+        `an unreadable phase directory must report context_scope 'unreadable', distinct from a genuinely empty one; got: ${output.context_scope}`);
     });
 
     test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {

@@ -73,7 +73,8 @@
         "background": true,
         "subagentToolkit": "undocumented",
         "backgroundDispatch": true,
-        "isolation": "orchestrator-worktree"
+        "isolation": "orchestrator-worktree",
+        "maxConcurrency": "undocumented"
       },
       "modelMode": "passive",
       "hookBus": "host",

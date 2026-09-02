@@ -211,7 +211,8 @@ describe('#3651 workflow — review.models settable-set rule', () => {
   test('keyless reviewer lanes have no settable review.models key (#3651)', (t) => {
     // Lanes whose capability declares modelConfigKey: null — the workflow used
     // to walk users into writing these keys, and config-set rejects them.
-    for (const keyless of ['cursor', 'qwen', 'coderabbit']) {
+    // `cursor` gained a real modelConfigKey (#3653) and is no longer keyless.
+    for (const keyless of ['qwen', 'coderabbit']) {
       assert.ok(
         !isValidConfigKey(`review.models.${keyless}`),
         `review.models.${keyless} must not validate (lane declares no modelConfigKey)`
@@ -227,7 +228,7 @@ describe('#3651 workflow — review.models settable-set rule', () => {
     const tmp = createTempProject();
     t.after(() => cleanup(tmp));
     runGsdTools(['config-ensure-section'], tmp);
-    const r = runGsdTools(['config-set', 'review.models.cursor', 'cursor-model'], tmp);
+    const r = runGsdTools(['config-set', 'review.models.qwen', 'qwen-model'], tmp);
     assert.ok(
       !r.success,
       'config-set must reject a keyless lane — the exact error the old workflow steered users into'

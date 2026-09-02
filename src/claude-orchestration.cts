@@ -43,6 +43,10 @@
  * Zero external dependencies. Pure functions. Never throws on bad input.
  */
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- file-overlap-partitioner.cjs is an export= CommonJS module
+import fileOverlapPartitionerMod = require('./file-overlap-partitioner.cjs');
+const { partitionByFileOverlap } = fileOverlapPartitionerMod;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /**
@@ -330,29 +334,15 @@ interface EmitErr {
  *
  * This is the same overlap rule execute-phase applies inline — the only difference
  * is the execution vehicle (Workflow `parallel()` vs one-agent-per-message).
+ *
+ * #3674: the algorithm itself now lives in the generic, dependency-free
+ * `file-overlap-partitioner.cts` module (`partitionByFileOverlap`) — this is a
+ * thin adapter mapping this module's own `Plan[]` shape onto that module's
+ * generic `{ id, files }[]` input and back. Behavior-preserving extraction:
+ * same greedy first-fit algorithm, same output, only the implementation moved.
  */
 function partitionStages(plans: Plan[]): string[][] {
-  const stages: { plans: Plan[]; files: Set<string> }[] = [];
-  for (const plan of plans) {
-    const fileSet = new Set(plan.files_modified);
-    let placed = false;
-    for (const stage of stages) {
-      let overlap = false;
-      for (const f of fileSet) {
-        if (stage.files.has(f)) { overlap = true; break; }
-      }
-      if (!overlap) {
-        stage.plans.push(plan);
-        for (const f of fileSet) stage.files.add(f);
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      stages.push({ plans: [plan], files: new Set(fileSet) });
-    }
-  }
-  return stages.map((s) => s.plans.map((p) => p.id));
+  return partitionByFileOverlap(plans.map((p) => ({ id: p.id, files: p.files_modified })));
 }
 
 /**

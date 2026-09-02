@@ -84,9 +84,13 @@
  *     shape as `collectDiskPhases` and the `audit.cts` scanners; it must see
  *     every phase directory regardless of milestone window to catch a
  *     naming/duplicate defect wherever it lives.
- *   - `src/verify.cts` `cmdVerifySchemaDrift`: resolves ONE caller-supplied
+ *   - `src/verify.cts` `resolvePhaseDirByToken`: resolves ONE caller-supplied
  *     `phase` argument to its directory (falling back to an exact-name
  *     match) — a single-phase LOOKUP, not a current-milestone enumeration.
+ *     Originally `cmdVerifySchemaDrift`'s own inline block; #3348 lifted it
+ *     into this shared helper (also used by the new `cmdVerifyContextDrift`)
+ *     without changing what question it asks, so the exemption moved with
+ *     the call site rather than multiplying.
  *   - `src/init.cts` `detectHasPriorPhases`: answers "has this project EVER
  *     completed a phase", explicitly excluding the current one. A history
  *     probe across all milestones, not a current-milestone enumeration.
@@ -305,7 +309,7 @@ const OWNER_FILES = new Set([
 // `lint-milestone-window-drift.cjs`'s FUNCTION_SCOPED_EXEMPTIONS mechanism.
 // See the header comment for the full written reason behind each entry.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
-  [path.join('src', 'verify.cts'), new Set(['cmdValidateHealth', 'cmdVerifySchemaDrift'])],
+  [path.join('src', 'verify.cts'), new Set(['cmdValidateHealth', 'resolvePhaseDirByToken'])],
   [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
   // #3849: collectSiblingWorktreePhaseNums reads a SIBLING worktree's phases dir —

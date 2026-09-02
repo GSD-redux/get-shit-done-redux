@@ -186,19 +186,29 @@ export const STATE_FIELD_SCHEMA: Readonly<Record<string, StateFieldSchema>> = Ob
         // (verified: it calls `stateExtractField(bodyContent, 'Current Plan')`
         // only), so that shape is out of scope for this row regardless.
         //
-        // #3784 is the open issue for teaching `Current Plan` to read the
-        // hybrid shape; **PR #3791** ("fix(#3784): read the hybrid
-        // `Current Plan: N of M` shape, keep zero-padding, and name the
-        // accepted shapes on failure") is the in-flight fix. Do NOT widen
-        // this row speculatively — that would assert a shape the shipped
-        // parser does not accept, which is the exact defect class §8.8
-        // exists to make impossible. When #3791 merges, `acceptedShapes`
-        // MUST widen to `['N', 'N of M']` — until then, the row 23/24/25
-        // parser-shape tests (`tests/state-transition.test.cjs`) will go RED
-        // the moment the parser changes underneath it. That failure is the
-        // forcing function working as designed, not a broken test: it is
-        // what stops the schema and the parser from drifting apart silently.
-        acceptedShapes: Object.freeze(['N']),
+        // #3784/#3791 WIDENED THIS ROW. The paragraph above describes the
+        // pre-#3791 parser and is kept as the record of what the shape was
+        // before, because row 25 exists to stop exactly that reading from
+        // being re-asserted by accident.
+        //
+        // `advancePlanCore` now accepts the hybrid shape, so the declared set
+        // is `['N', 'N of M']`. Two properties of the widening matter to a
+        // future reader:
+        //
+        //   - It is ANCHORED. The parser matches `/^(\d+)\s+of\s+(\d+)\s*$/`
+        //     against the whole value, so `4 — blocked on review of 2 PRs`
+        //     is REJECTED rather than yielding a total of 2 out of prose.
+        //     Declaring `'N of M'` is a claim about that grammar, not about
+        //     "contains the word of".
+        //   - `'N/M'` stays UNDECLARED and must keep failing. Row 23 probes
+        //     the undeclared remainder of `SHAPE_EXAMPLES`, so it needs at
+        //     least one member outside the declared set to stay non-vacuous.
+        //
+        // Widening this row without widening the parser (or the reverse) goes
+        // RED on rows 23/24/25. That coupling is the forcing function, and it
+        // is the reason this row is data rather than a predicate: §8.8's
+        // "parsers are checked, not generated".
+        acceptedShapes: Object.freeze(['N', 'N of M']),
         emitted: 'when-present',
       } as StateFieldSchema,
 

@@ -2046,10 +2046,45 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   if (canScope) {
     commitArgs.push('--', ...stagedPaths);
   }
+  // #3859 follow-up: on git 2.39.5 (confirmed on the CI Linux bench image,
+  // ghcr.io/open-gsd/gsd-tester-linux:v1.8.0-node24; NOT reproducible on git
+  // 2.50.1) `git commit` itself — not just `git diff` — consults
+  // `diff.ignoreSubmodules` when deciding whether there is anything to
+  // record. With a local `diff.ignoreSubmodules=all` and a submodule gitlink
+  // genuinely bumped, that git version silently REFUSES the commit (prints a
+  // `git status`-style "Changes to be committed" dump and exits 1, having
+  // written nothing) even though the diff probe above (already pinned with
+  // its own `--ignore-submodules=dirty`) correctly reported the change as
+  // present. The result was misclassified as generic `commit_failed` because
+  // git's refusal text does not contain "nothing to commit".
+  // Originally scoped to `canScope` on the assumption that only a
+  // PATHSPEC-LIMITED `git commit -- <paths>` exercises this git internal
+  // path. That assumption was wrong: reproduced directly against the pinned
+  // v1.8.0-node24 tester image, a bare WHOLE-INDEX `git commit -m ...` (no
+  // pathspec at all) is refused identically when the only staged change is a
+  // submodule gitlink and `diff.ignoreSubmodules=all` — git's "nothing to
+  // commit" check is a real diff (HEAD vs. index) honouring
+  // `diff.ignoreSubmodules` regardless of whether a pathspec narrows it.
+  // `--amend` is the one shape confirmed NOT to hit this: it always
+  // recreates the commit from the current index and never runs the
+  // empty-diff refusal a plain `git commit` does, override or not. The
+  // override is therefore applied unconditionally here (not gated on
+  // `canScope`) — it is a documented no-op everywhere it is not needed
+  // (dry-run, git 2.50.1, and `--amend` already behave this way with or
+  // without it; see `#3859 follow-up (canScope gap)` regression tests).
+  // The override rides in via `GIT_CONFIG_*` env vars rather than a `-c`
+  // argv flag so `commitArgs[0]` stays `'commit'` — several #3859 regression
+  // tests assert on the raw argv captured at the `execGit` seam (e.g.
+  // `gitCalls.some((a) => a[0] === 'commit')`), and a leading `-c` would shift
+  // every element and break that pinning. Same override the probe already
+  // carries, so the two can never disagree again.
+  const commitEnv: Record<string, string> = {
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_0: 'dirty',
+  };
   // #3886: `git commit` runs pre-commit hooks (husky/lint-staged routinely
   // idles ~4s on Windows before any task) — 10s is too tight, and a timeout
   // kill is NOT an ordinary failure. Same band as the push call below.
-  const commitResult = execGit(commitArgs, { cwd, timeout: COMMIT_TIMEOUT_MS });
+  const commitResult = execGit(commitArgs, { cwd, env: commitEnv, timeout: COMMIT_TIMEOUT_MS });
   if (commitResult.exitCode !== 0) {
     // #3886: a SIGTERM'd git commit is a timeout, not commit_failed — the
     // partial stderr it flushed (often incidental CRLF warnings) is noise,
@@ -2213,7 +2248,12 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
     const commitArgs = canScopeSub
       ? ['commit', '-m', message as string, '--', ...stagedRelPaths]
       : ['commit', '-m', message as string];
-    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
+    // #3859 follow-up fix as cmdCommit above (line ~2081) — git 2.39.5 needs
+    // this override for pathspec-scoped AND whole-index commits alike.
+    const commitEnvSub: Record<string, string> = {
+      GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_0: 'dirty',
+    };
+    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS, env: commitEnvSub });
     if (commitResult.exitCode !== 0) {
       if (isSpawnTimeout(commitResult)) {
         // #3886 (subrepo counterpart): timeout ≠ error; surface the stale-lock
@@ -2301,7 +2341,19 @@ function cmdPrSubrepo(
 
   // 1. Collect changed files via porcelain status — explicit, never git add -A.
   //    ?? (untracked) lines are excluded — only stage tracked modifications.
-  const statusResult = execGit(['-c', 'core.quotePath=false', 'status', '--porcelain'], { cwd: repoCwd });
+  // #3859 follow-up: `git status --porcelain` honors `diff.ignoreSubmodules`
+  // the same way the empty-diff probe fixed for cmdCommit did — under a local
+  // `diff.ignoreSubmodules=all`, a genuinely bumped submodule gitlink is
+  // invisible here too, so `changedFiles` comes back empty and the function
+  // reports `nothing_to_commit` before ever reaching the (now-fixed) commit
+  // call. `--ignore-submodules=dirty` pins this the same way, reported
+  // verbatim: `git -C repo status --porcelain` (no flag) shows nothing for a
+  // pure gitlink bump under `diff.ignoreSubmodules=all`, while
+  // `--ignore-submodules=dirty` reports ` M nested` (reproduced directly).
+  const statusResult = execGit(
+    ['-c', 'core.quotePath=false', 'status', '--porcelain', '--ignore-submodules=dirty'],
+    { cwd: repoCwd },
+  );
   if (statusResult.exitCode !== 0) {
     error(`git status failed in ${repo}: ${statusResult.stderr}`);
   }
@@ -2381,7 +2433,12 @@ function cmdPrSubrepo(
   const commitArgs = canScopePr
     ? ['commit', '-m', commitMessage as string, '--', ...changedFiles]
     : ['commit', '-m', commitMessage as string];
-  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
+  // #3859 follow-up fix as cmdCommit above (line ~2081) — git 2.39.5 needs
+  // this override for pathspec-scoped AND whole-index commits alike.
+  const commitEnvPr: Record<string, string> = {
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules', GIT_CONFIG_VALUE_0: 'dirty',
+  };
+  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS, env: commitEnvPr });
   if (commitResult.exitCode !== 0) {
     rollback();
     if (isSpawnTimeout(commitResult)) {
