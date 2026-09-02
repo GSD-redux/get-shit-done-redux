@@ -2084,7 +2084,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   // #3886: `git commit` runs pre-commit hooks (husky/lint-staged routinely
   // idles ~4s on Windows before any task) — 10s is too tight, and a timeout
   // kill is NOT an ordinary failure. Same band as the push call below.
-  const commitResult = execGit(commitArgs, { cwd, timeout: COMMIT_TIMEOUT_MS, env: commitEnv });
+  const commitResult = execGit(commitArgs, { cwd, env: commitEnv, timeout: COMMIT_TIMEOUT_MS });
   if (commitResult.exitCode !== 0) {
     // #3886: a SIGTERM'd git commit is a timeout, not commit_failed — the
     // partial stderr it flushed (often incidental CRLF warnings) is noise,

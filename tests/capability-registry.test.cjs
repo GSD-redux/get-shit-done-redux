@@ -7178,12 +7178,18 @@ describe('#1592 — drift plan:pre codebase-drift gate (registry, behavioral)', 
     assert.deepStrictEqual(
       keys,
       [
+        'workflow.context_drift_action',
+        'workflow.context_drift_precheck',
         'workflow.drift_action',
         'workflow.drift_threshold',
         'workflow.plan_drift_precheck',
         'workflow.schema_drift_gate',
       ],
-      'the plan:pre gate adds exactly the dedicated plan_drift_precheck toggle — no other new keys',
+      // #3348 (separately) adds its own plan:pre context-drift gate's two dedicated
+      // toggles (workflow.context_drift_precheck / workflow.context_drift_action) —
+      // #1592's own contribution here remains exactly the one plan_drift_precheck key.
+      'the plan:pre gate adds exactly the dedicated plan_drift_precheck toggle — no other new keys from #1592 ' +
+        '(workflow.context_drift_precheck / workflow.context_drift_action are #3348\'s separate context-drift gate keys)',
     );
   });
 });

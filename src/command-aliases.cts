@@ -260,6 +260,14 @@ export const VERIFY_COMMAND_ALIASES: CommandAlias[] = [
     ],
     "subcommand": "codebase-drift",
     "mutation": false
+  },
+  {
+    "canonical": "verify.context-drift",
+    "aliases": [
+      "verify context-drift"
+    ],
+    "subcommand": "context-drift",
+    "mutation": false
   }
 ];
 

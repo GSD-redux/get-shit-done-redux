@@ -1277,6 +1277,242 @@ describe('#2584 dispatch.isolation — negotiation', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #3673 — ADR-1239 Phase 1: dispatch.maxConcurrency (numeric sibling of
+// dispatch.isolation). NOT an enum member of HOST_INTEGRATION_AXES (same
+// "numeric dispatch sub-field" precedent as maxDepth). No engine-side
+// reduction (design doc's explicit rejection of a min(host,engine) rule) —
+// the resolved value passes through verbatim when it is a positive safe
+// integer; every other shape degrades to the fail-closed floor of 1.
+// ---------------------------------------------------------------------------
+
+describe('#3673 dispatch.maxConcurrency — negotiation', () => {
+  const BASE_DISPATCH = {
+    namedDispatch: true, nested: false, maxDepth: 1, background: false,
+    subagentToolkit: 'full', backgroundDispatch: false, isolation: 'none',
+  };
+
+  test('descriptor maxConcurrency:8 (valid positive integer) is honored', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: 8 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 8);
+  });
+
+  test('missing dispatch.maxConcurrency degrades to 1', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('maxConcurrency'), `Expected a warning naming maxConcurrency; got: ${warnText}`);
+  });
+
+  test('undocumented maxConcurrency degrades to 1 with sentinel-specific warning', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: 'undocumented' },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('dispatch.maxConcurrency') && warnText.includes('undocumented'),
+      `Expected a sentinel-specific warning naming dispatch.maxConcurrency as undocumented; got: ${warnText}`);
+  });
+
+  test('zero maxConcurrency degrades to 1 (non-positive)', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: 0 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('non-positive'), `Expected a non-positive warning; got: ${warnText}`);
+  });
+
+  test('maxConcurrency of exactly 1 is honored as valid, not degraded', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: 1 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(!warnText.includes('maxConcurrency'), `A valid maxConcurrency:1 must not produce a maxConcurrency warning; got: ${warnText}`);
+  });
+
+  test('maxConcurrency of 2 is honored', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: 2 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 2);
+  });
+
+  test('negative maxConcurrency degrades to 1', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: -3 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('non-positive'), `Expected a non-positive warning; got: ${warnText}`);
+  });
+
+  test('fractional maxConcurrency degrades to 1 (non-integer)', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: 4.5 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('not an integer'), `Expected a non-integer warning; got: ${warnText}`);
+  });
+
+  test('NaN maxConcurrency degrades to 1 (fails Number.isSafeInteger)', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: NaN },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('not an integer'), `Expected a non-integer warning for NaN; got: ${warnText}`);
+  });
+
+  test('unsafe-integer maxConcurrency (MAX_SAFE_INTEGER + 1) degrades to 1', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: Number.MAX_SAFE_INTEGER + 1 },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('unsafe integer'), `Expected an unsafe-integer warning; got: ${warnText}`);
+  });
+
+  test('MAX_SAFE_INTEGER maxConcurrency is honored (largest valid value)', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: Number.MAX_SAFE_INTEGER },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, Number.MAX_SAFE_INTEGER);
+  });
+
+  test('string-typed maxConcurrency ("8") degrades to 1 (non-numeric)', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: '8' },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('not a number'), `Expected a non-numeric warning; got: ${warnText}`);
+  });
+
+  test('null maxConcurrency degrades to 1', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, maxConcurrency: null },
+    });
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+  });
+
+  test('object/array-typed maxConcurrency degrades to 1', () => {
+    for (const bogus of [[8], {}]) {
+      const result = negotiateHostCapabilities({
+        dispatch: { ...BASE_DISPATCH, maxConcurrency: bogus },
+      });
+      assert.strictEqual(result.effective.dispatch.maxConcurrency, 1,
+        `maxConcurrency=${JSON.stringify(bogus)} must degrade to 1`);
+    }
+  });
+
+  test('adding maxConcurrency does not change isolation/effortSurface/modelMode negotiation results', () => {
+    const result = negotiateHostCapabilities({
+      embeddingMode: 'imperative',
+      commandSurface: 'slash-file',
+      modelMode: 'active',
+      hookBus: 'host',
+      stateIO: 'filesystem',
+      transport: 'mcp',
+      runtime: 'node',
+      effortSurface: 'argv',
+      dispatch: { ...BASE_DISPATCH, isolation: 'harness-worktree', maxConcurrency: 8 },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'harness-worktree');
+    assert.strictEqual(result.effective.effortSurface, 'argv');
+    assert.strictEqual(result.effective.modelMode, 'active');
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 8);
+  });
+
+  test('host omits dispatch entirely → effective.dispatch.maxConcurrency === 1', () => {
+    const result = negotiateHostCapabilities({});
+    assert.strictEqual(result.effective.dispatch.maxConcurrency, 1);
+  });
+
+  test('property: effective.dispatch.maxConcurrency equals the declared value iff it is a positive safe integer, else 1', () => {
+    const declaredArb = fc.oneof(
+      fc.integer(),
+      fc.double(),
+      fc.string(),
+      fc.constant('undocumented'),
+      fc.constant(null),
+      fc.constant(undefined),
+      fc.boolean(),
+      fc.array(fc.integer()),
+      fc.object(),
+    );
+    fc.assert(
+      fc.property(declaredArb, (declared) => {
+        const result = negotiateHostCapabilities({
+          dispatch: { ...BASE_DISPATCH, maxConcurrency: declared },
+        });
+        const eff = result.effective.dispatch.maxConcurrency;
+        const isValid = typeof declared === 'number' && Number.isSafeInteger(declared) && declared > 0;
+        if (isValid) {
+          assert.strictEqual(eff, declared, `a valid declared value (${declared}) must pass through unchanged`);
+        } else {
+          assert.strictEqual(eff, 1, `an invalid declared value (${JSON.stringify(declared)}) must degrade to 1`);
+        }
+      }),
+      { numRuns: 200, seed: 3673 },
+    );
+  });
+});
+
+describe('#3673 dispatch.maxConcurrency — validator', () => {
+  test('a descriptor that omits dispatch.maxConcurrency entirely still validates clean (added after existing descriptors)', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    delete cap.runtime.hostIntegration.dispatch.maxConcurrency;
+    const errors = validateCapability(cap, 'claude');
+    const mcErrors = errors.filter((e) => e.includes('maxConcurrency'));
+    assert.deepEqual(mcErrors, [], `omitted maxConcurrency must validate clean, got: ${JSON.stringify(mcErrors)}`);
+  });
+
+  for (const value of [1, 2, 20, Number.MAX_SAFE_INTEGER, 'undocumented']) {
+    test(`dispatch.maxConcurrency:${JSON.stringify(value)} → ZERO validator errors`, () => {
+      const cap = shippedClaudeCapabilityWithoutIsolation();
+      cap.runtime.hostIntegration.dispatch.maxConcurrency = value;
+      const errors = validateCapability(cap, 'claude');
+      const mcErrors = errors.filter((e) => e.includes('maxConcurrency'));
+      assert.strictEqual(mcErrors.length, 0,
+        `${JSON.stringify(value)} must produce no validator errors; got: ${JSON.stringify(mcErrors)}`);
+    });
+  }
+
+  // Hostile: an out-of-vocabulary shape (boolean) — same treatment the
+  // validator already gives a malformed isolation/maxDepth value.
+  for (const bogus of [true, false, 0, -1, 4.5, '8', null, [], {}]) {
+    test(`dispatch.maxConcurrency:${JSON.stringify(bogus)} is rejected`, () => {
+      const cap = shippedClaudeCapabilityWithoutIsolation();
+      cap.runtime.hostIntegration.dispatch.maxConcurrency = bogus;
+      const errors = validateCapability(cap, 'claude');
+      assert.ok(
+        errors.some((e) => e.includes('maxConcurrency')),
+        `${JSON.stringify(bogus)} must produce a validator error; got: ${JSON.stringify(errors)}`,
+      );
+    });
+  }
+
+  test('every shipped runtime descriptor with a maxConcurrency value passes validateCapability', () => {
+    const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+    for (const [id, cap] of Object.entries(registry.runtimes)) {
+      const mc = cap && cap.runtime && cap.runtime.hostIntegration && cap.runtime.hostIntegration.dispatch
+        && cap.runtime.hostIntegration.dispatch.maxConcurrency;
+      if (mc === undefined) continue;
+      const errors = validateCapability(cap, id);
+      const mcErrors = errors.filter((e) => e.includes('maxConcurrency'));
+      assert.strictEqual(mcErrors.length, 0,
+        `${id}: shipped dispatch.maxConcurrency:${JSON.stringify(mc)} must validate clean; got: ${JSON.stringify(mcErrors)}`);
+    }
+  });
+});
+
 describe('#2584 dispatch.isolation — validator', () => {
   test('_HOST_INTEGRATION_VOCAB.isolation matches HOST_INTEGRATION_AXES.isolation (parity guard)', () => {
     assert.deepEqual(
@@ -2756,6 +2992,96 @@ describe('#2627 dispatch-isolation CLI route', () => {
     assert.equal(pi.isolation, 'none');
     assert.equal(pi.exec, null);
     assert.equal(pi.harnessFlag, null);
+  });
+});
+
+describe('#3673 dispatch-capacity CLI route', () => {
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+  const GSD_TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  // `maxConcurrencyEnv === undefined` means "unset" — GSD_DISPATCH_MAX_CONCURRENCY
+  // is deliberately deleted from the child's env rather than passed as the
+  // literal string "undefined", so the "env absent" test cases are genuinely
+  // absent, not present-with-a-bogus-value.
+  function query(runtimeId, extraArgs = [], maxConcurrencyEnv) {
+    const env = { ...process.env, GSD_RUNTIME: runtimeId };
+    delete env.GSD_DISPATCH_MAX_CONCURRENCY;
+    if (maxConcurrencyEnv !== undefined) {
+      env.GSD_DISPATCH_MAX_CONCURRENCY = maxConcurrencyEnv;
+    }
+    const r = runNode(
+      [GSD_TOOLS, 'query', 'dispatch-capacity', ...extraArgs],
+      { cwd: REPO_ROOT, env, timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    throwIfFailed(r, `gsd-tools query dispatch-capacity ${extraArgs.join(' ')}`);
+    return r.stdout;
+  }
+  const queryJson = (runtimeId, extraArgs = [], maxConcurrencyEnv) =>
+    JSON.parse(query(runtimeId, ['--json', ...extraArgs], maxConcurrencyEnv));
+
+  test('live env wins over descriptor', () => {
+    // claude's shipped descriptor declares maxConcurrency:20.
+    assert.equal(query('claude', [], '4').trim(), '4');
+    assert.equal(queryJson('claude', [], '4').source, 'live');
+  });
+
+  test('descriptor used when live is absent', () => {
+    const result = queryJson('claude');
+    assert.equal(result.capacity, 20);
+    assert.equal(result.source, 'descriptor');
+  });
+
+  test('fallback to 1 when both live and a real descriptor value are absent', () => {
+    // codex's shipped descriptor carries the "undocumented" sentinel.
+    const result = queryJson('codex');
+    assert.equal(result.capacity, 1);
+    assert.equal(result.source, 'fallback');
+  });
+
+  test('malformed live env falls through to descriptor tier', () => {
+    assert.equal(query('claude', [], 'abc').trim(), '20');
+    assert.equal(queryJson('claude', [], 'abc').source, 'descriptor');
+  });
+
+  test('invalid live env values (0, negative, fractional) fall through to descriptor tier', () => {
+    for (const bogus of ['0', '-1', '4.5']) {
+      assert.equal(query('claude', [], bogus).trim(), '20', `env=${bogus} must fall through to descriptor`);
+    }
+  });
+
+  test('JSON output has the documented shape', () => {
+    const result = queryJson('claude');
+    assert.deepEqual(Object.keys(result).sort(), ['capacity', 'declared', 'reason', 'runtime', 'source'].sort());
+    assert.equal(result.runtime, 'claude');
+    assert.equal(result.capacity, 20);
+    assert.equal(result.declared, 20);
+    assert.equal(result.source, 'descriptor');
+    assert.equal(result.reason, 'ok');
+  });
+
+  test('unknown runtime degrades to 1 without erroring', () => {
+    const result = queryJson('no-such-runtime-xyz');
+    assert.equal(result.capacity, 1);
+    assert.equal(result.source, 'fallback');
+    assert.equal(result.reason, 'unknown_runtime');
+  });
+
+  test('default output mode matches --raw', () => {
+    assert.equal(query('claude').trim(), query('claude', ['--raw']).trim());
+  });
+
+  test('claude descriptor value (20) is honored', () => {
+    assert.equal(query('claude').trim(), '20');
+  });
+
+  test('undocumented descriptor value degrades to fallback', () => {
+    // codex declares dispatch.maxConcurrency:"undocumented".
+    const result = queryJson('codex');
+    assert.equal(result.capacity, 1);
+    assert.equal(result.source, 'fallback');
+    assert.equal(result.reason, 'undocumented');
   });
 });
 
