@@ -2323,7 +2323,7 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.strictEqual(r1.exitCode, 0,
       'G1: valid evidence with agreeing declared and observed locations must authorize — the ' +
       'paired control that makes the G2 failure attributable to the location mismatch, not to ' +
-      'the gate having become unconditionally strict. See #3770.');
+      `the gate having become unconditionally strict. See #3770.\nstdout: ${r1.stdout}\nstderr: ${r1.stderr}`);
 
     // ── G2, mismatched evidence (RED) ─────────────────────────────────────
     const s2 = newRepo(t);
@@ -2581,7 +2581,8 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
         assert.strictEqual(result.exitCode, 0,
           `${row.name}: the gate must authorize on ${JSON.stringify(row.id)} declaring ` +
           `${row.file} — the file comes from location.declared.file, never from a filename ` +
-          'convention or the id itself. See #3770 (Task 6, LANG-01).');
+          `convention or the id itself. See #3770 (Task 6, LANG-01).\n` +
+          `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
       }
 
       // Part two: the stale-fallback case. An OLDER commit touches the test
