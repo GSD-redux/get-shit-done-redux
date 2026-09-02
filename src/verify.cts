@@ -66,7 +66,7 @@ import onboardProjectionMod = require('./onboard-projection.cjs');
 const { REQUIRED_CODEBASE_MAP_FILES } = onboardProjectionMod;
 import { realClock } from './clock.cjs';
 
-const { planningDir, planningRoot } = planningWorkspace;
+const { planningDir, planningRoot, withPlanningLock } = planningWorkspace;
 const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { readStateHeadFreshness } = stateMod;
@@ -2316,15 +2316,20 @@ function cmdStampCodebaseMap(cwd: string, raw: boolean, only?: string[]): void {
 
     const stamped: string[] = [];
     const failed: { file: string; reason: string }[] = [];
-    for (const file of present) {
-      try {
-        write(path.join(codebaseDir, file), commit, stampedAt);
-        stamped.push(file);
-      } catch (err) {
-        // One unwritable document must not cost the stamp on the other six.
-        failed.push({ file, reason: err instanceof Error ? err.message : String(err) });
+    // Each stamp is a read-modify-write of a document's frontmatter, and two
+    // stampers can run at once: the full map-codebase run and the execute-phase
+    // auto-remap. Same hazard, same lock the rest of the .planning/ writers take.
+    withPlanningLock(cwd, () => {
+      for (const file of present) {
+        try {
+          write(path.join(codebaseDir, file), commit, stampedAt);
+          stamped.push(file);
+        } catch (err) {
+          // One unwritable document must not cost the stamp on the other six.
+          failed.push({ file, reason: err instanceof Error ? err.message : String(err) });
+        }
       }
-    }
+    });
 
     emit({
       stamped,
@@ -2460,11 +2465,12 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
     // `git diff --name-status` always prints repo-root-relative paths, so a cwd
     // below the root needs the `sub/` prefix or the filter matches nothing.
     // That prefix comes from git (`--show-prefix`: root-relative, forward
-    // slashes, trailing slash, empty at the root) rather than from
-    // path.relative() against `--show-toplevel`, because the two sides would
-    // then come from different path producers: on Windows os.tmpdir() hands
-    // back the 8.3 short form while git resolves the long one, and relative()
-    // between them yields a `../..` chain that matches nothing.
+    // slashes, trailing slash, empty at the root). The rejected alternative was
+    // path.relative(`--show-toplevel`, cwd), which mixes two path producers: on
+    // Windows os.tmpdir() hands back the 8.3 short form while git resolves the
+    // long one, so relative() between them yields a `../..` chain that matches
+    // nothing. The `.planning` half below is safe to compute with relative()
+    // because both of its sides are the same cwd string.
     const prefixProbe = execGit(['rev-parse', '--show-prefix'], { cwd }) as unknown as { exitCode: number; stdout: string };
     const repoPrefix = prefixProbe.exitCode === 0 ? prefixProbe.stdout.trim() : '';
     const planningPrefix = repoPrefix + path.relative(cwd, planningRoot(cwd)).split(path.sep).join('/') + '/';

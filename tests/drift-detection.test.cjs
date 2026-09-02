@@ -1239,6 +1239,24 @@ describe('stamp-codebase-map CLI (#3418)', () => {
     assert.deepStrictEqual(data.affected_paths, []);
   });
 
+  test('the stamp takes the planning lock around its read-modify-write (#4124 review)', () => {
+    // Seven frontmatter read-modify-writes with no lock lose an update when the
+    // full map run and the execute-phase auto-remap stamp at the same time.
+    // A dead holder's lock is stolen and released by withPlanningLock, so its
+    // disappearance is the proof the stamp went through the lock at all.
+    writeMap();
+    const lockPath = path.join(tmp, '.planning', '.lock');
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: 999999, cwd: tmp, acquired: new Date(0).toISOString(),
+    }));
+
+    const r = runGsdTools(['stamp-codebase-map'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    assert.strictEqual(JSON.parse(r.output).skipped, false);
+    assert.strictEqual(fs.existsSync(lockPath), false,
+      'the stale lock must be consumed and released; a surviving lock means the stamp never took it');
+  });
+
   test('the planning-artifact filter holds when cwd is below the repo root (#4124 review)', () => {
     // `git diff --name-status` prints repo-root-relative paths whatever the
     // cwd, so a prefix computed against cwd would read `.planning/` while git
