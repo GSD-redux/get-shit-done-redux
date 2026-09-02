@@ -14962,6 +14962,8 @@ describe('bug #3982: archived details leak into lowest-outstanding scan', () => 
   test('phase complete 20 advances to 21, not the archived range', () => {
     const out = runPhaseComplete(tmpDir, { phase: '20', tolerateExit: true });
     const payload = JSON.parse(out.slice(out.indexOf('{')));
+    assert.strictEqual(payload.next_phase, '21',
+      'completing phase 20 must advance to the real next phase 21 (#3982)');
     assert.notStrictEqual(payload.next_phase, '10',
       'an archived milestone\'s unchecked phase must never win the lowest-outstanding scan (#3982)');
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
