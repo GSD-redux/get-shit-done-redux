@@ -380,8 +380,9 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `api-coverage.md` | API-coverage gate reference (full-coverage-by-default) for the `ai-integration` capability's `verify:pre` blocking gate (#1562) — matrix format, trigger, tuning, detector CLI, and the seal-time outcome table naming every pass/block arm including `scope_unavailable` (#3909). |
 | `ai-frameworks.md` | AI framework decision-matrix reference for `gsd-framework-selector`. |
 | `executor-examples.md` | Worked examples for the gsd-executor agent. |
+| `plan-checker-examples.md` | Worked example for the gsd-plan-checker agent (Scope Exceeded), moved out of the inline `<examples>` block to keep worked examples structurally separate from the agent contract, matching the other agents' reference layout. `@`-inlined at load (eager), so this costs ~0.6 KB of runtime context versus keeping it inline — a readability trade, not a size-cap remedy (#3724). |
 | `doc-conflict-engine.md` | Shared conflict-detection contract for ingest/import workflows. |
-| `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under MVP+TDD — pre-task failing-test verification, end-of-phase blocking review. |
+| `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under TDD mode — pre-task failing-test verification, end-of-phase blocking review. |
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
 | `verify-mvp-mode.md` | UAT framing rules for MVP-mode phases — user-flow-first ordering, deferred technical checks, user-story-format guard. |
 
@@ -429,6 +430,7 @@ The `gsd-planner` agent is decomposed into a core agent plus reference modules t
 | `planner-interface-context.md` | Interface context rules for executors — how to extract key interfaces/types/exports from existing code and document new interfaces that downstream plans will consume. |
 | `planner-load-graph-context.md` | Planner's load_graph_context step: knowledge-graph freshness + dependency-context query via the gsd_run launcher (extracted from gsd-planner.md). |
 | `planner-verify-command-grounding.md` | Verify Command Grounding rules (#2401): inherit `prior_verify_commands` verbatim when the story repeats, prefer `npm --prefix <dir> run <script>` over `cd <dir> && npm run <script>`, and ground every authored path. |
+| `planner-coupling.md` | Same-wave shared-mutable-state coupling rules (#3724): when non-file coupling requires `depends_on` or a re-wave, and the `coupling_justified` frontmatter declaration that plan-checker Dimension 3b recognizes for deliberately order-independent pairs. |
 | `planner-failing-direction.md` | Stated Failing Direction rules (#3172): every runnable `<automated>` carries a `<fails_when>` sibling naming an observable failure signal, the pairing and placeholder rules, the `MISSING` sentinel exemption, and the authoring test ("if this command were silently doing nothing, what would tell me?"). |
 | `skeleton-template.md` | SKELETON.md template emitted for new-project Walking Skeleton (Phase 1 + `--mvp`). |
 | `user-story-template.md` | User story format for MVP planning — "As a / I want to / So that" structured fields. |

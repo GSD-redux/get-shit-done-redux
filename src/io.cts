@@ -215,6 +215,47 @@ function output(result: unknown, raw: boolean, rawValue?: unknown): void {
 }
 
 /**
+ * Single owner of the "a no-op decline reports the real condition" pairing:
+ * a `[gsd-tools] WARNING:` stderr disclosure plus the matching
+ * `{ [flagKey]: false, ...computed, reason }` JSON payload (#3957, epic
+ * #3473 B9). Before this helper, each CLI command's no-op arm hand-wrote
+ * both halves independently, and #3957's own sweep found sites where one
+ * half drifted: a decline that discarded values it had already computed, a
+ * `reason` string naming a condition that hadn't actually fired, or no
+ * stderr disclosure at all (missing the `[gsd-tools] WARNING:` convention
+ * #3217, ADR-3180 §7.6 rule 4, established for exactly this situation —
+ * a JSON `reason` field alone is easy for a caller piping stdout through
+ * `--json` to never read). Routing every no-op decline through one call
+ * site makes the convention structural — a call site, not a habit a fifth
+ * arm can independently forget — rather than leaving it to per-site
+ * discipline.
+ *
+ * `disclosure` is written to stderr VERBATIM. Like `error()`'s `message`
+ * argument (see that function's own doc comment above `formatDiagnosticToken`),
+ * this function stays a dumb, faithful writer and does not sanitize it — a
+ * caller that interpolates an UNTRUSTED substring (a caller-supplied
+ * blocker/session-field string, an argv token) into `disclosure` MUST pass
+ * that substring through `formatDiagnosticToken` first. Skipping that step
+ * lets an embedded `\n` forge a second, attacker-authored
+ * `[gsd-tools] WARNING:` line — the same risk `error()`'s doc comment
+ * documents for its own stderr write.
+ */
+function declineNoOp(
+  raw: boolean,
+  flagKey: string,
+  reason: string,
+  disclosure: string,
+  computed: Record<string, unknown> = {},
+): void {
+  // `process.stderr.write`, matching the `[gsd-tools] WARNING:` call sites
+  // this helper replaces (state.cts's stateReplaceFieldWithFallback and the
+  // cmdStateUpdateProgress decline arms) — not the `writeAllSync(2, …)`
+  // primitive `error()` uses, which is reserved for the fatal-exit path.
+  process.stderr.write(`[gsd-tools] WARNING: ${disclosure}\n`);
+  output({ [flagKey]: false, ...computed, reason }, raw, 'false');
+}
+
+/**
  * Frozen enum of typed reason codes used by error() for structured errors.
  * Each subcommand contributes its own codes; the enum exists so tests can
  * assert against typed values instead of grepping stderr (#2974).
@@ -412,6 +453,7 @@ export = {
   ensureGsdTempDir,
   reapStaleTempFiles,
   output,
+  declineNoOp,
   serializeForOutput,
   ERROR_REASON,
   setJsonErrorMode,

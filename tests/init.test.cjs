@@ -1951,6 +1951,32 @@ describe('cmdInitQuick', () => {
     cleanup(tmpDir);
   });
 
+  test('init quick emits researcher_model', () => {
+    // #3936: the quick research step (Step 4.75) dispatches gsd-phase-researcher,
+    // so init quick must resolve the researcher's own model tier — parity with
+    // init plan-phase (which emits researcher_model for the same agent).
+    const result = runGsdTools('init quick "Fix login bug"', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.ok('researcher_model' in output,
+      'init quick should emit researcher_model for the Step 4.75 research dispatch');
+  });
+
+  test('init quick resolves researcher_model from model_overrides', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-phase-researcher': 'openai/o4-mini' },
+    }));
+
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.researcher_model, 'openai/o4-mini',
+      'model_overrides["gsd-phase-researcher"] must reach init quick\'s researcher_model');
+  });
+
   test('with description generates slug and task_dir with YYMMDD-xxx format', () => {
     const result = runGsdTools('init quick "Fix login bug"', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -4744,6 +4770,70 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     assert.equal(eight.directory, null, 'Phase 8 has no directory (corroborating the stray-only-disk shape)');
   });
 
+  test('#4023: init.progress sorts decimal phase ids before choosing the roadmap frontier', (t) => {
+    const tmpDir = createTempProject('gsd-4023-init-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap',
+      '',
+      '## Milestone v1.1.0',
+      '',
+      '### Phase 12: Parent',
+      '**Goal:** g',
+      '',
+      '### Phase 12.1: Inserted fix',
+      '**Goal:** g',
+      '',
+      '### Phase 12.2: Second insert',
+      '**Goal:** g',
+      '',
+      '### Phase 12.10: Tenth insert',
+      '**Goal:** g',
+      '',
+      '### Phase 13: Follow-up',
+      '**Goal:** g',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.1.0',
+      'milestone_name: Active',
+      'status: executing',
+      'current_phase: 12.1',
+      'progress:',
+      '  total_phases: 13',
+      '  completed_phases: 11',
+      '  percent: 85',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 12.1',
+      'Status: Executing',
+      '',
+    ].join('\n'));
+    for (const dir of ['12.1-inserted-fix', '12.10-tenth-insert']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), { recursive: true });
+    }
+
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.deepEqual(
+      out.phases.map((phase) => String(phase.number).replace(/^0+(?=\d)/, '')),
+      ['12', '12.1', '12.2', '12.10', '13'],
+      'the disk/roadmap union follows component-wise phase-id order (12.2 before 12.10)',
+    );
+    assert.equal(
+      String(out.next_phase.number).replace(/^0+(?=\d)/, ''),
+      '12',
+      'the pending parent remains the frontier when an inserted decimal directory exists first',
+    );
+  });
+
   test('#3581 (control): a pending roadmap-only phase outranks a later pending directory', (t) => {
     writeProgressFixture(t, { strayNine: false });
     // pure ordering property, no stray artifacts: roadmap-only pending 8 vs a
@@ -4940,5 +5030,4 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
   });
 });
-
 

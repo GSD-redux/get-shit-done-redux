@@ -209,7 +209,8 @@ process.stdin.on('end', () => {
       const output = {
         hookSpecificOutput: {
           hookEventName: eventName || "AfterTool",
-          additionalContext: message
+          additionalContext: message,
+          severity: currentLevel
         }
       };
       process.stdout.write(JSON.stringify(output));

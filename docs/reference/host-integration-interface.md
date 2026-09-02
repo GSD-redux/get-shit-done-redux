@@ -27,13 +27,26 @@ value (or the `undocumented` sentinel):
 |---|---|
 | `embeddingMode` | `imperative` \| `declarative` |
 | `commandSurface` | `slash-file` \| `slash-programmatic` \| `slash-toml` \| `palette` \| `prose-only` |
-| `dispatch` | struct: `{ namedDispatch, nested, maxDepth, background, subagentToolkit, backgroundDispatch }` |
+| `dispatch` | struct: `{ namedDispatch, nested, maxDepth, background, subagentToolkit, backgroundDispatch, isolation, maxConcurrency }` |
 | `modelMode` | `active` \| `passive` |
 | `hookBus` | `host` \| `engine` \| `none` |
 | `stateIO` | `filesystem` \| `sandboxed-storage` \| `session-log-append` |
 | `transport` | `mcp` \| `native-extension` |
 | `runtime` | `node` \| `bun` \| `sandboxed-web` \| `python` \| `go` \| `rust` \| `electron` \| `other` |
 | `effortSurface` | `argv` \| `none` |
+
+`dispatch.isolation` (`harness-worktree` \| `orchestrator-worktree` \| `none`, added #2584)
+and `dispatch.maxConcurrency` (a positive integer, added #3673) are two dispatch
+sub-fields with their own per-field fail-closed floors — unlike the other five
+dispatch fields, they are not gated on `namedDispatch`. `dispatch.maxConcurrency`
+degrades to `1` (strictly sequential) on anything other than a positive safe
+integer (missing, the `undocumented` sentinel, zero, negative, fractional, an
+unsafe integer, or a non-numeric type); there is no negotiated host/engine
+reduction the way `maxDepth` has one — the resolved value passes through
+unchanged. Its live transport (`GSD_DISPATCH_MAX_CONCURRENCY`) is read only at
+the CLI query layer (`gsd-tools query dispatch-capacity`), never inside this
+pure negotiation module, and takes precedence over the descriptor value, which
+in turn takes precedence over the `1` fallback.
 
 ## Classification + negotiation
 

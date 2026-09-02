@@ -195,10 +195,11 @@ interface ReviewerLaneCommon {
    * config value that is not a positive finite number, falls back to `timeoutFloorMs` unchanged.
    * For a lane whose `args` template ALSO carries a native tool-side timeout (antigravity's
    * `--print-timeout`, via the `{{nativeTimeout}}` ARGV_PLACEHOLDER), the resolved value feeds both
-   * levels — see `resolveLanePlan`'s expansion of that token. Three lanes — `qwen`, `cursor`,
-   * `coderabbit` — accept neither a model flag nor a host and own no `review.timeouts.<slug>` key
-   * either, matching the same narrow key-ownership invariant `modelConfigKey` already follows for
-   * them (#3691 narrows #2797).
+   * levels — see `resolveLanePlan`'s expansion of that token. Two lanes — `qwen` and `coderabbit` —
+   * accept neither a model flag nor a host and own no `review.timeouts.<slug>` key either, matching
+   * the same narrow key-ownership invariant `modelConfigKey` already follows for them (#3691 narrows
+   * #2797). `cursor` gained a model flag (`review.models.cursor`, #3653) but still owns no
+   * `review.timeouts.cursor` key of its own.
    */
   timeoutConfigKey: string | null;
   emptyOutput: EmptyOutputPolicy;
@@ -431,10 +432,10 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'cursor-agent' },
     invoke: {
       binary: 'cursor-agent',
-      args: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', '{{prompt}}'],
+      args: ['-p', '{{model}}', '--mode', 'ask', '--trust', '--output-format', 'text', '{{prompt}}'],
       promptChannel: 'argv-file-ref',
       outputChannel: 'stdout',
-      modelArg: null,
+      modelArg: '--model',
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
@@ -444,7 +445,8 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'source-grounded',
     requiresBinaries: [],
     promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.cursor',
-    modelConfigKey: null,
+    // #3653: cursor-agent exposes --model (204 selectable models); wired the same as codex.
+    modelConfigKey: 'review.models.cursor',
     handler: null,
   },
   {

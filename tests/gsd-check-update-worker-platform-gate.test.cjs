@@ -477,17 +477,14 @@ describe('Issue #815: --next dist-tag support', () => {
  *   4. Single-source: check-latest-version's PACKAGE_NAME === the seam's
  *      packageName === the scoped '@opengsd/gsd-core'.
  *
- * Source-grep policy: this test reads hook source via readFileSync. The repo's
- * lint-no-source-grep rule targets bin/lib/gsd-core — hooks/ is out of
- * scope. The behavior (correct name → no E404) only manifests at runtime
+ * Source-grep policy: this test reads hook source via readFileSync. Since
+ * #3545 lint-no-source-grep also covers hooks/, not just bin/lib/gsd-core.
+ * The behavior (correct name → no E404) only manifests at runtime
  * against the live registry; structural assertions are the minimum-cost
- * contract for the worker, the same rationale #378 carried.
+ * contract for the worker, the same rationale #378 carried. See the
+ * site-scoped `allow-test-rule` marker directly above the readFileSync()
+ * call in workerCodeOnly() below.
  */
-
-// allow-test-rule: structural-regression-guard (see #378)
-// structural assertion on hook delegation; the behavior being
-// tested (correct package name → no E404) only manifests at runtime against the
-// live npm registry, which CI does not call.
 
 'use strict';
 
@@ -502,6 +499,11 @@ const SEAM = require('../gsd-core/bin/lib/package-identity.cjs');
 const { PACKAGE_NAME } = require('../gsd-core/bin/check-latest-version.cjs');
 
 function workerCodeOnly() {
+  // allow-test-rule: structural-regression-guard (see #378) — the behavior
+  // being tested (correct scoped package name → no E404) only manifests at
+  // runtime against the live npm registry, which CI does not call; the
+  // stripped-source text is the minimum-cost contract for this worker
+  // (#3545 widening brings hooks/ into the rule's scope)
   const src = fs.readFileSync(WORKER_PATH, 'utf8');
   return src
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks source, not adversarial input
@@ -566,10 +568,11 @@ describe('bug #378 / #498: update worker queries the scoped name via the seam', 
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-2784-update-cache-clear-path (consolidation epic #1969 B5 #1974)", () => {
-// allow-test-rule: structural-regression-guard (see #2784)
 // Reads hook .js or bin/install.js source to assert structural invariants
 // (search array order, function wiring, path constants) that cannot be
-// verified by observing runtime outputs alone. Per CONTRIBUTING.md exception matrix.
+// verified by observing runtime outputs alone. Per CONTRIBUTING.md exception
+// matrix. See the site-scoped `allow-test-rule` marker directly above the
+// readFileSync() call below (#3545 widening brings hooks/ into scope).
 
 /**
  * Regression test for bug #2784
@@ -603,6 +606,9 @@ const CHECK_UPDATE_HOOK = path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js');
 
 describe('bug-2784: update.md cache-clear covers shared cache path', () => {
   test('gsd-check-update.js hook constructs cache dir from .cache and gsd path segments', () => {
+    // allow-test-rule: structural-regression-guard (see #2784) — asserts
+    // the path.join() segment structure that cannot be verified by
+    // observing runtime outputs alone (#3545)
     const hookContent = fs.readFileSync(CHECK_UPDATE_HOOK, 'utf-8');
     // Parse the path.join() call structurally rather than text-grepping.
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own bounded hooks/gsd-check-update.js source, not adversarial input

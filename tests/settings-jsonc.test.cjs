@@ -147,22 +147,35 @@ describe('stripJsonComments (#1461)', () => {
 });
 
 describe('readSettings null return on malformed files (#1461)', () => {
-  test('install.js contains JSONC stripping in readSettings', () => {
-    const installPath = path.join(__dirname, '..', 'bin', 'install.js');
-    const content = fs.readFileSync(installPath, 'utf8');
-    assert.ok(content.includes('stripJsonComments'),
-      'install.js should use stripJsonComments in readSettings');
+  test('readSettings strips JSONC comments when reading a real file', (t) => {
+    const tmpFile = path.join(os.tmpdir(), `gsd-settings-test-jsonc-${process.pid}.json`);
+    fs.writeFileSync(tmpFile, `{\n  // a comment\n  "key": "value"\n}`);
+    t.after(() => fs.unlinkSync(tmpFile));
+    const result = readSettings(tmpFile);
+    assert.deepStrictEqual(
+      result,
+      { key: 'value' },
+      'readSettings should use stripJsonComments so a commented file parses, not warns-as-malformed'
+    );
   });
 
-  test('readSettings returns null on truly malformed files (not empty object)', () => {
-    const installPath = path.join(__dirname, '..', 'bin', 'install.js');
-    const content = fs.readFileSync(installPath, 'utf8');
-    assert.ok(content.includes('return null'),
-      'readSettings should return null on parse failure, not empty object');
+  test('readSettings returns null on truly malformed files (not empty object)', (t) => {
+    const tmpFile = path.join(os.tmpdir(), `gsd-settings-test-malformed-return-${process.pid}.json`);
+    fs.writeFileSync(tmpFile, '{ this is not valid json');
+    t.after(() => fs.unlinkSync(tmpFile));
+    const result = readSettings(tmpFile);
+    assert.strictEqual(result, null, 'readSettings should return null on parse failure, not empty object');
   });
 
   test('callers guard against null readSettings return', () => {
     const installPath = path.join(__dirname, '..', 'bin', 'install.js');
+    // allow-test-rule: structural-implementation-guard (#1461) (#3545) — structural
+    // assertion on internal wiring inside install()'s (~2500-line)
+    // settings-configuration call sites — the
+    // null-guard only manifests behaviorally deep inside a full install()
+    // run, so the source-text check is the minimum-cost regression guard
+    // that a caller was not added without also checking readSettings'
+    // documented null return
     const content = fs.readFileSync(installPath, 'utf8');
     // Should have null guards at the settings configuration call sites
     assert.ok(
@@ -180,13 +193,16 @@ describe('readSettings null return on malformed files (#1461)', () => {
 // the behavioural ones beneath it.
 
 describe('readSettings: JSON null coalesced to empty, malformed warns (#1191)', () => {
-  test('source contains the null-coalescing guard (parsed === null ? {})', () => {
-    // Structural anchor: if someone removes the coalescing, this test catches it
-    // before the behavioural test below even runs.
-    const installPath = path.join(__dirname, '..', 'bin', 'install.js');
-    const content = fs.readFileSync(installPath, 'utf8');
-    assert.ok(
-      content.includes('parsed === null ? {}'),
+  test('valid JSON null coalesces to {} via the real function (early behavioral anchor)', (t) => {
+    // Behavioral anchor: if someone removes the coalescing, this test catches
+    // it before the more detailed behavioural test below even runs.
+    const tmpFile = path.join(os.tmpdir(), `gsd-settings-test-null-anchor-${process.pid}.json`);
+    fs.writeFileSync(tmpFile, 'null');
+    t.after(() => fs.unlinkSync(tmpFile));
+    const result = readSettings(tmpFile);
+    assert.deepStrictEqual(
+      result,
+      {},
       'install.js readSettings must coalesce valid JSON null to {} (not malformed warning)'
     );
   });

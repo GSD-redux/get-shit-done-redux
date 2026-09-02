@@ -327,7 +327,7 @@ describe('smart-entry: real STATE.md schema (nested progress YAML + body Phase f
       roadmap: true,
     }));
     const signals = detectSignals(dir);
-    assert.equal(signals.current_phase, 3, 'current_phase from body Phase: field');
+    assert.equal(signals.current_phase, '3', 'current_phase from body Phase: field');
     assert.equal(signals.total_phases, 5, 'total_phases from nested progress.total_phases');
     assert.equal(signals.progress, 40, 'percent from nested progress.percent');
     assert.equal(signals.status, 'verifying');
@@ -456,6 +456,19 @@ describe('smart-entry: JSON shape invariants', () => {
 
 describe('smart-entry: CLI dispatch (gsd-tools smart-entry)', () => {
   afterEach(removeAll);
+
+  test('#4023: --json preserves decimal current_phase as a phase-id string', () => {
+    for (const phase of ['12.1', '12.10']) {
+      const dir = track(makeProject({
+        state: state({ status: 'executing', total_phases: 13, current_phase: phase }),
+        roadmap: true,
+      }));
+      const r = runNode([TOOLS, 'smart-entry', '--json', '--cwd', dir], { timeoutMs: PROBE_TIMEOUT_MS });
+      throwIfFailed(r, 'gsd-tools smart-entry --json');
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.signals.current_phase, phase);
+    }
+  });
 
   test('--json in an empty dir returns no-project machine JSON', () => {
     // A bare tmpdir with no .planning is a true no-project.

@@ -1,0 +1,1012 @@
+[
+  {
+    "file": "gsd-core/workflows/add-tests.md",
+    "code": "2035",
+    "message": "Use ./*glob* or -- *glob* so names with dashes won't become options."
+  },
+  {
+    "file": "gsd-core/workflows/add-todo.md",
+    "code": "2102",
+    "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/ai-integration-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/autonomous.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/check-todos.md",
+    "code": "2102",
+    "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/check-todos.md",
+    "code": "2102",
+    "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/cleanup.md",
+    "code": "1083",
+    "message": "This { is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/cleanup.md",
+    "code": "1083",
+    "message": "This { is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/cleanup.md",
+    "code": "1083",
+    "message": "This { is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/cleanup.md",
+    "code": "1083",
+    "message": "This } is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/cleanup.md",
+    "code": "1083",
+    "message": "This } is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/cleanup.md",
+    "code": "1083",
+    "message": "This } is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1009",
+    "message": "The mentioned syntax error was in this then clause."
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1036",
+    "message": "'(' is invalid here. Did you forget to escape it?"
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1061",
+    "message": "Couldn't find 'done' for this 'do'."
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1062",
+    "message": "Expected 'done' matching previously mentioned 'do'."
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1065",
+    "message": "Trying to declare parameters? Don't. Use () and refer to params as $1, $2.."
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1072",
+    "message": "Expected 'done'. Fix any mentioned problems and try again."
+  },
+  {
+    "file": "gsd-core/workflows/code-review-fix.md",
+    "code": "1073",
+    "message": "Couldn't parse this while loop. Fix to allow more checks."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1009",
+    "message": "The mentioned syntax error was in this test expression."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1035",
+    "message": "You need a space after the [ and before the ]."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1072",
+    "message": "Expected end of single quoted string. Fix any mentioned problems and try again."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1073",
+    "message": "Couldn't parse this single quoted string. Fix to allow more checks."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1078",
+    "message": "Did you forget to close this single quoted string?"
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1078",
+    "message": "Did you forget to close this single quoted string?"
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1079",
+    "message": "This is actually an end quote, but due to next char it looks suspect."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "1079",
+    "message": "This is actually an end quote, but due to next char it looks suspect."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "2088",
+    "message": "Tilde does not expand in quotes. Use $HOME."
+  },
+  {
+    "file": "gsd-core/workflows/code-review.md",
+    "code": "2153",
+    "message": "Possible misspelling: DEPTH_OVERRIDE may not be assigned. Did you mean DEPTH_OVERRIDES?"
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/dispatch-fix.md",
+    "code": "1036",
+    "message": "'(' is invalid here. Did you forget to escape it?"
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/dispatch-fix.md",
+    "code": "1046",
+    "message": "Couldn't find 'fi' for this 'if'."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/dispatch-fix.md",
+    "code": "1047",
+    "message": "Expected 'fi' matching previously mentioned 'if'."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/dispatch-fix.md",
+    "code": "1065",
+    "message": "Trying to declare parameters? Don't. Use () and refer to params as $1, $2.."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/dispatch-fix.md",
+    "code": "1072",
+    "message": "Expected 'fi'. Fix any mentioned problems and try again."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/dispatch-fix.md",
+    "code": "1073",
+    "message": "Couldn't parse this if expression. Fix to allow more checks."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1009",
+    "message": "The mentioned syntax error was in this variable assignment."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1036",
+    "message": "'(' is invalid here. Did you forget to escape it?"
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1072",
+    "message": "Expected end of $(..) expression. Fix any mentioned problems and try again."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1073",
+    "message": "Couldn't parse this command expansion. Fix to allow more checks."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1083",
+    "message": "This { is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "2157",
+    "message": "Argument to -z is always false due to literal strings."
+  },
+  {
+    "file": "gsd-core/workflows/complete-milestone.md",
+    "code": "2001",
+    "message": "See if you can use ${variable//search/replace} instead."
+  },
+  {
+    "file": "gsd-core/workflows/complete-milestone.md",
+    "code": "2001",
+    "message": "See if you can use ${variable//search/replace} instead."
+  },
+  {
+    "file": "gsd-core/workflows/complete-milestone.md",
+    "code": "2038",
+    "message": "Use 'find .. -print0 | xargs -0 ..' or 'find .. -exec .. +' to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/complete-milestone.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/complete-milestone.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/complete-milestone.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/debug.md",
+    "code": "2010",
+    "message": "Don't use ls | grep. Use a glob or a for loop with a condition to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase-assumptions.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2010",
+    "message": "Don't use ls | grep. Use a glob or a for loop with a condition to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/discuss-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/docs-update/steps/dispatch-monorepo-packages.md",
+    "code": "2043",
+    "message": "This loop will only ever run once. Bad quoting or missing glob/expansion?"
+  },
+  {
+    "file": "gsd-core/workflows/eval-review.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/eval-review.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2016",
+    "message": "Expressions don't expand in single quotes, use double quotes for that."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2043",
+    "message": "This loop will only ever run once. Bad quoting or missing glob/expansion?"
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md",
+    "code": "2016",
+    "message": "Expressions don't expand in single quotes, use double quotes for that."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md",
+    "code": "2016",
+    "message": "Expressions don't expand in single quotes, use double quotes for that."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/wave-post-gate-hooks.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-plan.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-plan.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-plan.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/forensics.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/health.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/health.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/import.md",
+    "code": "2194",
+    "message": "This word is constant. Did you forget the $ on a variable?"
+  },
+  {
+    "file": "gsd-core/workflows/ingest-docs.md",
+    "code": "2157",
+    "message": "Argument to -n is always true due to literal strings."
+  },
+  {
+    "file": "gsd-core/workflows/ingest-docs.md",
+    "code": "2194",
+    "message": "This word is constant. Did you forget the $ on a variable?"
+  },
+  {
+    "file": "gsd-core/workflows/ingest-docs.md",
+    "code": "2194",
+    "message": "This word is constant. Did you forget the $ on a variable?"
+  },
+  {
+    "file": "gsd-core/workflows/milestone-summary.md",
+    "code": "2046",
+    "message": "Quote this to prevent word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/milestone-summary.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/milestone-summary.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/milestone-summary.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/new-milestone.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/new-project.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/new-project.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/new-workspace.md",
+    "code": "2164",
+    "message": "Use 'cd ... || exit' or 'cd ... || return' in case cd fails."
+  },
+  {
+    "file": "gsd-core/workflows/new-workspace.md",
+    "code": "2164",
+    "message": "Use 'cd ... || exit' or 'cd ... || return' in case cd fails."
+  },
+  {
+    "file": "gsd-core/workflows/next.md",
+    "code": "2181",
+    "message": "Check exit code directly with e.g. 'if ! mycmd;', not indirectly with $?."
+  },
+  {
+    "file": "gsd-core/workflows/next.md",
+    "code": "2181",
+    "message": "Check exit code directly with e.g. 'if ! mycmd;', not indirectly with $?."
+  },
+  {
+    "file": "gsd-core/workflows/pause-work.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/pause-work.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/pause-work.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/pause-work.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/pause-work.md",
+    "code": "2102",
+    "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2010",
+    "message": "Don't use ls | grep. Use a glob or a for loop with a condition to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase.md",
+    "code": "2235",
+    "message": "Use { ..; } instead of (..) to avoid subshell overhead."
+  },
+  {
+    "file": "gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-review-convergence.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-review-convergence.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/plan-review-convergence.md",
+    "code": "2327",
+    "message": "This command substitution will be empty because the command's output gets redirected away."
+  },
+  {
+    "file": "gsd-core/workflows/plan-review-convergence.md",
+    "code": "2328",
+    "message": "This redirection takes output away from the command substitution (use tee to duplicate)."
+  },
+  {
+    "file": "gsd-core/workflows/plant-seed.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/plant-seed.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/pr-branch.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/pr-branch.md",
+    "code": "2181",
+    "message": "Check exit code directly with e.g. 'if ! mycmd;', not indirectly with $?."
+  },
+  {
+    "file": "gsd-core/workflows/progress.md",
+    "code": "2102",
+    "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/progress.md",
+    "code": "2102",
+    "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/quick.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/quick.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/quick.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/reapply-patches.md",
+    "code": "2088",
+    "message": "Tilde does not expand in quotes. Use $HOME."
+  },
+  {
+    "file": "gsd-core/workflows/remove-workspace.md",
+    "code": "2164",
+    "message": "Use 'cd ... || exit' or 'cd ... || return' in case cd fails."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/review.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/secure-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings-advanced.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdin. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/settings.md",
+    "code": "2261",
+    "message": "Multiple redirections compete for stdout. Use cat, tee, or pass filenames instead."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/ship.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/sketch.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/spec-phase.md",
+    "code": "2010",
+    "message": "Don't use ls | grep. Use a glob or a for loop with a condition to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/spec-phase.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/spike.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2010",
+    "message": "Don't use ls | grep. Use a glob or a for loop with a condition to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2010",
+    "message": "Don't use ls | grep. Use a glob or a for loop with a condition to allow non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2115",
+    "message": "Use \"${var:?}\" to ensure this never expands to / ."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2115",
+    "message": "Use \"${var:?}\" to ensure this never expands to / ."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2181",
+    "message": "Check exit code directly with e.g. 'if ! mycmd;', not indirectly with $?."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2181",
+    "message": "Check exit code directly with e.g. 'if ! mycmd;', not indirectly with $?."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2181",
+    "message": "Check exit code directly with e.g. 'if ! mycmd;', not indirectly with $?."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2199",
+    "message": "Arrays implicitly concatenate in [[ ]]. Use a loop (or explicit * instead of @)."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2199",
+    "message": "Arrays implicitly concatenate in [[ ]]. Use a loop (or explicit * instead of @)."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2199",
+    "message": "Arrays implicitly concatenate in [[ ]]. Use a loop (or explicit * instead of @)."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2199",
+    "message": "Arrays implicitly concatenate in [[ ]]. Use a loop (or explicit * instead of @)."
+  },
+  {
+    "file": "gsd-core/workflows/sync-skills.md",
+    "code": "2207",
+    "message": "Prefer mapfile or read -a to split command output (or quote to avoid splitting)."
+  },
+  {
+    "file": "gsd-core/workflows/ui-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/ui-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/ui-review.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/ui-review.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/undo.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/undo.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/update.md",
+    "code": "2046",
+    "message": "Quote this to prevent word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/update.md",
+    "code": "2046",
+    "message": "Quote this to prevent word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/update.md",
+    "code": "2088",
+    "message": "Tilde does not expand in quotes. Use $HOME."
+  },
+  {
+    "file": "gsd-core/workflows/validate-phase.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/verify-work.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/verify-work.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/verify-work.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/verify-work.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/verify-work/steps/automated-ui-verification.md",
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
+  },
+  {
+    "file": "gsd-core/workflows/verify-work/steps/mvp-uat-framing.md",
+    "code": "2086",
+    "message": "Double quote to prevent globbing and word splitting."
+  }
+]

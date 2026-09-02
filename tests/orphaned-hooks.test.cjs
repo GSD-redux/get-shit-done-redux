@@ -42,6 +42,9 @@ describe('orphaned hooks stale detection (#1750)', () => {
   });
 
   test('gsd-check-update-worker.js imports managed-hooks-registry.cjs (not inline array)', () => {
+    // allow-test-rule: structural-regression-guard (#3545) — presence of a
+    // require() wire-up and absence of a reintroduced inline array are source
+    // structure facts, not runtime behavior; see file header.
     const content = fs.readFileSync(WORKER_PATH, 'utf8');
     assert.ok(
       content.includes('managed-hooks-registry.cjs'),
@@ -55,6 +58,9 @@ describe('orphaned hooks stale detection (#1750)', () => {
   });
 
   test('gsd-check-update.js spawns the worker by file path (not inline -e code)', () => {
+    // allow-test-rule: structural-regression-guard (#3545) — spawn-target
+    // wiring and absence of inline `-e` code are source structure facts, not
+    // runtime behavior; see file header.
     const content = fs.readFileSync(CHECK_UPDATE_PATH, 'utf8');
     assert.ok(
       content.includes('gsd-check-update-worker.js'),

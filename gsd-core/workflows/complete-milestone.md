@@ -775,7 +775,10 @@ CURRENT_BRANCH=$(git branch --show-current)
 git checkout ${BASE_BRANCH}
 
 if [ "$BRANCHING_STRATEGY" = "phase" ]; then
-  for branch in $PHASE_BRANCHES; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  for branch in $(printf '%s' "$PHASE_BRANCHES"); do
     git merge --squash "$branch"
     # Strip .planning/ from staging if commit_docs is false
     if [ "$COMMIT_DOCS" = "false" ]; then
@@ -804,7 +807,10 @@ CURRENT_BRANCH=$(git branch --show-current)
 git checkout ${BASE_BRANCH}
 
 if [ "$BRANCHING_STRATEGY" = "phase" ]; then
-  for branch in $PHASE_BRANCHES; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  for branch in $(printf '%s' "$PHASE_BRANCHES"); do
     git merge --no-ff --no-commit "$branch"
     # Strip .planning/ from staging if commit_docs is false
     if [ "$COMMIT_DOCS" = "false" ]; then
@@ -830,7 +836,10 @@ git checkout "$CURRENT_BRANCH"
 
 ```bash
 if [ "$BRANCHING_STRATEGY" = "phase" ]; then
-  for branch in $PHASE_BRANCHES; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  for branch in $(printf '%s' "$PHASE_BRANCHES"); do
     git branch -d "$branch" 2>/dev/null || git branch -D "$branch"
   done
 fi

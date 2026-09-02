@@ -74,6 +74,11 @@ function makeValidWorkflowFiles() {
       // Cross-check content: must contain the agent names
       'gsd-phase-researcher gsd-planner gsd-plan-checker',
     ),
+    'quick.md': [
+      'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)',
+      'For each active entry where `kind == "contribution"` and `into == "planner"`: inject.',
+      '',
+    ].join('\n'),
     'execute-phase.md': makeWorkflow(
       'execute', ['execute:pre', 'execute:wave:pre', 'execute:wave:post', 'execute:post'],
       ['executor', 'verifier'],
@@ -435,6 +440,97 @@ describe('module exports', () => {
     assert.strictEqual(Object.keys(EXPECTED_POINTS_BY_STEP).length, 5);
     assert.ok(Array.isArray(EXPECTED_POINTS_BY_STEP.execute));
     assert.strictEqual(EXPECTED_POINTS_BY_STEP.execute.length, 4);
+  });
+});
+
+// ─── #3778 — quick.md is auxiliary without becoming a 6th serialized step ────
+
+describe('Quick auxiliary loop-host contract (#3778)', () => {
+  function makeQuickWorkflow({ includePoint = true, includeKind = true, into = 'planner' } = {}) {
+    const target = into === null ? '' : ` and \`into == "${into}"\``;
+    return [
+      includePoint ? 'PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)' : '',
+      includeKind ? `For each active entry where \`kind == "contribution"\`${target}: inject.` : '',
+      '',
+    ].join('\n');
+  }
+
+  test('Quick is a generator-owned plan auxiliary host with its own contribution expectation', () => {
+    const plan = STEP_WORKFLOWS.find((workflow) => workflow.step === 'plan');
+    assert.deepEqual(plan.auxiliaryHosts, [
+      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'], into: 'planner' },
+    ]);
+
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow();
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      const contract = buildContract(tmpDir);
+      assert.strictEqual(contract.length, 5, 'auxiliary hosts must not create a sixth serialized step');
+      assert.strictEqual(
+        new Set(contract.flatMap((entry) => entry.points)).size,
+        12,
+        'auxiliary hosts must not create a duplicate lifecycle point',
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('buildContract rejects Quick without its plan:pre render seam', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ includePoint: false });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host missing expected point "plan:pre"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('buildContract rejects Quick without its contribution dispatch', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ includeKind: false });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host point "plan:pre" missing expected kind "contribution"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('buildContract rejects a Quick contribution dispatch targeting the wrong role', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ into: 'orchestrator' });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host point "plan:pre" missing expected kind "contribution"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('buildContract rejects a Quick contribution dispatch without its planner target', () => {
+    const files = makeValidWorkflowFiles();
+    files['quick.md'] = makeQuickWorkflow({ into: null });
+    const tmpDir = makeTempWorkflowsDir(files);
+    try {
+      assert.throws(
+        () => buildContract(tmpDir),
+        /quick\.md: auxiliary host point "plan:pre" missing expected kind "contribution"/,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 });
 

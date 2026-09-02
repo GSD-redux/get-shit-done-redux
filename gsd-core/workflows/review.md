@@ -210,7 +210,8 @@ Provide structured feedback on plan quality, completeness, and risks.
 {research if present}
 
 ### Plans to Review
-{all PLAN.md contents}
+For each `*-PLAN.md` in the phase directory, in glob order, include its full content preceded by a `####` header carrying the plan's **repo-relative path** (e.g. `#### .planning/phases/<phase>/<NN>-PLAN.md`). The path header is the citable anchor for findings about the plan itself — cite it as `<repo-relative plan path>:<line>` (name the heading in prose beside the citation if it helps the reader); reserve `path:line` for repo files the plan references.
+{per-plan: `#### <repo-relative plan path>` + full plan contents}
 
 ## Review Instructions
 
@@ -263,12 +264,15 @@ RUN_DIR="{run_dir}"   # from gather_context
 cp "$INSTRUCTIONS_BLOCK_FILE" "${RUN_DIR}/gsd-review-instructions.md"
 cp "$ROADMAP_SECTION_FILE" "${RUN_DIR}/gsd-review-roadmap.md"
 
-# Plan files: copy each PLAN.md to a predictable numbered path
-PLAN_INDEX=0
+# Plan files: copy each PLAN.md to a predictable path named after its source
+# plan id (#3959: a bare padded index discards provenance — the budget tool's
+# per-plan `### <file>` header then renders a run-dir artifact name no reviewer
+# or consensus step can resolve. The plan id keeps the gsd-review-plan-*.md glob
+# prepare_trimmed_prompt_for_reviewer consumes.)
 for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
-  PADDED_IDX=$(printf '%02d' "$PLAN_INDEX")
-  cp "$PLAN_FILE" "${RUN_DIR}/gsd-review-plan-${PADDED_IDX}.md"
-  PLAN_INDEX=$((PLAN_INDEX + 1))
+  PLAN_BASENAME=$(basename "$PLAN_FILE")
+  PLAN_ID="${PLAN_BASENAME%-PLAN.md}"
+  cp "$PLAN_FILE" "${RUN_DIR}/gsd-review-plan-${PLAN_ID}.md"
 done
 
 # #3301: plan coverage manifest — tell reviewers exactly which plan ids exist and
@@ -492,7 +496,14 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
 done
 
-for SLUG in $DISPATCH_SLUGS; do
+# Rewrapped through unquoted command substitution, not consumed as a bare
+# `$DISPATCH_SLUGS`: bash word-splits an unquoted scalar on IFS by default,
+# but zsh does not, so a bare re-split collapsed every slug onto one
+# iteration under zsh whenever 2+ reviewers were selected (gsd-core#4109).
+# Unquoted `$(...)` re-splits identically under both shells regardless of
+# `SH_WORD_SPLIT` — same reason the accumulator-building loop above already
+# works under both.
+for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
   if [ "$PARALLEL_LANES" = "true" ]; then
     run_review_lane "$SLUG" &
   else
@@ -510,7 +521,9 @@ wait
 # produces is byte-identical to the one a sequential run produces. This is post-join and therefore
 # single-threaded, so `>>` here is safe. A lane that was budget-skipped, or that never started,
 # leaves no result file and correctly contributes no line.
-for SLUG in $DISPATCH_SLUGS; do
+# Rewrapped through unquoted command substitution (gsd-core#4109) — see the
+# dispatch loop above for why a bare `$DISPATCH_SLUGS` collapses under zsh.
+for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
   LANE_RESULT="$RUN_DIR/gsd-review-lane-result-$SLUG.json"
   if [ -f "$LANE_RESULT" ]; then
     cat "$LANE_RESULT" >> "$RUN_DIR/gsd-review-lane-results.jsonl"
@@ -571,7 +584,10 @@ if [ "${LANE_LINES:-0}" -eq 0 ]; then
   # failure stub does not. If a slug has no stub at all, it is not a skip.
   DISPATCHED_COUNT=0
   SKIPPED_COUNT=0
-  for SLUG in $DISPATCH_SLUGS; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$DISPATCH_SLUGS` word-splits under bash but not zsh, collapsing every
+  # slug onto one iteration there whenever 2+ reviewers were selected.
+  for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
     DISPATCHED_COUNT=$((DISPATCHED_COUNT + 1))
     STUB="$RUN_DIR/gsd-review-$SLUG.md"
     if [ -f "$STUB" ] && grep -q "review skipped: prompt budget" "$STUB" 2>/dev/null; then
@@ -629,7 +645,10 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
 done
 
-for SLUG in $DISPATCH_SLUGS; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$DISPATCH_SLUGS` word-splits under bash but not zsh, collapsing every
+# slug onto one iteration there whenever 2+ reviewers were selected.
+for SLUG in $(printf '%s' "$DISPATCH_SLUGS"); do
   [ "$SLUG" = "coderabbit" ] && continue
   REVIEW_FILE="$RUN_DIR/gsd-review-$SLUG.md"
   [ -f "$REVIEW_FILE" ] || continue

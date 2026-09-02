@@ -192,21 +192,25 @@ If gate passes (ambiguity ≤ 0.20 AND all minimums met):
 Run AFTER the ambiguity gate passes (you probe edges of clear requirements, not vague
 ones). Reference: @~/.claude/gsd-core/references/edge-probe.md.
 
-**Non-English projects — the probe input is translated, the SPEC is not.** The shape cues the
-classifier matches are **English** word-boundary patterns, so requirement prose written in
-another language matches nothing, classifies to zero shapes, and lands every row in
-`unclassified` (#1110) — the taxonomy contributes nothing and `--auto` leaves it all
-`unresolved`. The `$REQS_JSON` payload below is **engine input, never user-facing output**, so
-the `response_language` rule at the top of this workflow does not govern it: write each
-requirement's `text` as a faithful **English** translation of the SPEC requirement.
-The SPEC keeps the original language — only the probe input is translated, and requirement
+**Non-English projects — `text_en` carries the classifier-facing translation; the SPEC is
+not.** The shape cues the classifier matches are **English** word-boundary patterns, so
+requirement prose written in another language matches nothing, classifies to zero shapes, and
+lands every row in `unclassified` (#1110) — the taxonomy contributes nothing and `--auto`
+leaves it all `unresolved`. When this project has `response_language` set, add an optional
+`text_en` key to each `$REQS_JSON` entry: a faithful **English** translation of that
+requirement's `text`. `text_en` is **engine input, never user-facing output**, so the
+`response_language` rule at the top of this workflow does not govern it — but `text` itself is
+NOT translated: write it as the requirement's own text, exactly as it appears in the SPEC.
+The SPEC keeps the original language — only `text_en` is translated, and requirement
 `id`s are never translated or renumbered (coverage rows join back on `id`, and any Acceptance
-Criteria you write from the resolved edges go into the SPEC in `response_language`).
-Translate **every** requirement, not only the ones that look edge-relevant: the
+Criteria you write from the resolved edges go into the SPEC in `response_language`). Populate
+`text_en` for **every** requirement, not only the ones that look edge-relevant: the
 `$APPLICABLE = 0` warning below fires only when *all* requirements are unclassified, so a
-partly-classified spec slips through with no signal at all.
-If a requirement still classifies to zero shapes after translation, it carries no cue in any
-language (the recorded recall gap — ADR-857 §98 / ADR-550 D7b, not a translation failure);
+partly-classified spec slips through with no signal at all. When `response_language` is unset
+(an English-language project), omit `text_en` — `text` is already English and the engine
+falls back to it automatically (`text_en ?? text`).
+If a requirement still classifies to zero shapes with `text_en` populated, it carries no cue in
+any language (the recorded recall gap — ADR-857 §98 / ADR-550 D7b, not a translation failure);
 author an explicit `shapes` array on that requirement instead of relying on the prose
 classifier.
 
@@ -251,11 +255,12 @@ fi
 
 # Write the Requirements gathered in THIS spec session to a temp JSON, then invoke the
 # canonical coverage compute. Populate the heredoc from the SPEC's Requirements — one object
-# per requirement: {"id","text","shapes"?}. This is the load-bearing step: an empty file makes
-# the probe a no-op, so the guard below fails loud rather than silently skipping (RR-04).
-# When `response_language` is set, `text` carries a faithful ENGLISH translation (see above) —
-# the shape cues are English-only, so original-language prose classifies to zero shapes and the
-# probe becomes a silent no-op. Keep every `id` exactly as it appears in the SPEC.
+# per requirement: {"id","text","text_en"?,"shapes"?}. This is the load-bearing step: an empty
+# file makes the probe a no-op, so the guard below fails loud rather than silently skipping
+# (RR-04). When `response_language` is set, ALSO add `text_en` — a faithful ENGLISH
+# translation of `text` (see above) — the shape cues are English-only, so original-language
+# `text` alone classifies to zero shapes; `text` itself stays the SPEC's own requirement text
+# and is never translated. Keep every `id` exactly as it appears in the SPEC.
 # BSD/macOS mktemp only randomizes XXXXXX when it is the final path component, so make a
 # suffixless temp then append the extension — portable across BSD + GNU (#1520).
 REQS_JSON=$(mktemp "${TMPDIR:-/tmp}/edge-probe-reqs-XXXXXX") && mv "$REQS_JSON" "${REQS_JSON}.json" && REQS_JSON="${REQS_JSON}.json" || exit 1

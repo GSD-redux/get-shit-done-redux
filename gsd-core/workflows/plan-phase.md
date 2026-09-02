@@ -287,6 +287,43 @@ fi
 
 If `AI_SPEC_FILE` is non-empty, pass `AI_SPEC_PATH` and `FRAMEWORK_LINE` to the planner in step 8 so it can reference the AI design contract. If it is empty, the active `ai-integration` capability hook in step 5.6 handles any AI-system nudge or `/gsd:ai-integration-phase` dispatch.
 
+## 4.6. Context Drift Pre-Check (drift plan:pre gate)
+
+Capability-driven dispatch, same lazy-init pattern already used elsewhere in this file for
+`PLAN_PRE_HOOKS_JSON`:
+
+```bash
+if [ -z "${PLAN_PRE_HOOKS_JSON:-}" ]; then
+  PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
+fi
+```
+
+If `activeHooks` (from `PLAN_PRE_HOOKS_JSON`) has a `kind == "gate"`, `capId == "drift"`,
+`check.query == "verify.context-drift"` entry (`workflow.context_drift_precheck` on), run the
+check before either the research-reuse decision (§5.1) or the pattern-mapper reuse decision
+(§7.8) can fire — both would otherwise silently reuse a stale artifact with zero signal.
+Otherwise skip to §5.
+
+```bash
+DRIFT=$(gsd_run verify context-drift "${PHASE}" 2>/dev/null || echo '{"skipped":true}')
+```
+
+If `skipped` is true, continue silently to §5 — nothing to compare (no CONTEXT.md yet, no
+upstream artifacts yet, or the phase directory did not resolve).
+
+If `stale_artifacts` is a non-empty array, print `message` verbatim (it names each stale
+artifact and the command to regenerate it). Then:
+
+- If `DRIFT.block` is `false` (the default, `workflow.context_drift_action: warn`): continue to
+  §5 — this is advisory only, exactly like the codebase-drift pre-check at §5.65.
+- If `DRIFT.block` is `true` (opt-in `workflow.context_drift_action: block`): **exit the
+  plan-phase workflow** rather than continuing. Do not spawn the researcher, the planner, or the
+  pattern mapper against a premise the user has not yet reconciled. Point the user at re-running
+  `/gsd:plan-phase {X}` once the named artifacts are regenerated, or at disabling the check with
+  `gsd_run query config-set workflow.context_drift_action warn` if the flag was a false positive.
+
+If `stale_artifacts` is empty, continue silently to §5 — nothing to report.
+
 ## 5. Handle Research
 
 **Skip if:** `--gaps` flag or `--skip-research` flag or `--reviews` flag.
@@ -1165,9 +1202,9 @@ Track `stall_reentry_count` (starts at 0; incremented each time "Adjust approach
 
 **If iteration_count < 3:**
 
-Parse issue count from checker return: count BLOCKER + WARNING entries in the YAML issues block (structured output from gsd-plan-checker). If the checker's return contains no YAML issues block (i.e., the plan was approved with no issues), treat `issue_count` as 0 and skip the stall check — the plan passed. Proceed to step 13.
+Parse issue count from checker return: count BLOCKER + WARNING entries in the YAML issues block (structured output from gsd-plan-checker); an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If the checker's return contains no YAML issues block (i.e., the plan was approved with no issues), treat `issue_count` as 0 and skip the stall check — the plan passed. Proceed to step 13 — likewise when every entry in the block is explicitly INFO (display them as advisories). Advisory format: `ℹ advisory — {dimension}: {description}` per INFO entry, listed once before the step-13 output.
 
-Display: `Revision iteration {N}/3 -- {blocker_count} blockers, {warning_count} warnings`
+Display (only when entering the revision loop — skip if the paragraph above already proceeded to step 13): `Revision iteration {N}/3 -- {blocker_count} blockers, {warning_count} warnings`
 
 **Stall detection:** If `issue_count >= prev_issue_count`:
   Display: `Revision loop stalled — issue count not decreasing ({issue_count} issues remain after {N} iterations)`
@@ -1228,6 +1265,8 @@ Agent(
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 
 **If iteration_count >= 3:**
+
+Recount BLOCKER + WARNING by the same rule — an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If `issue_count` is 0 — PASSED, or every entry in the block is explicitly INFO — display any advisories and proceed to step 13; the gate below fires on everything else (#3724).
 
 Display: `Max iterations reached. {N} issues remain:` + issue list
 

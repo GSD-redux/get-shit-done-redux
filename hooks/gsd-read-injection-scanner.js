@@ -351,8 +351,8 @@ process.stdin.on('end', () => {
     const output = blocking
       ? { decision: 'block',
           reason: `Prompt-injection blocked (${toolName}). ${advisory}`,
-          hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory, findings } }
-      : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory, findings } };
+          hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory, findings, severity, source } }
+      : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: advisory, findings, severity, source } };
 
     process.stdout.write(JSON.stringify(output));
   } catch {

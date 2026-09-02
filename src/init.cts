@@ -92,7 +92,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
+const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -1467,6 +1467,10 @@ function cmdInitQuick(
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
     verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
+    // #3936: Step 4.75 dispatches gsd-phase-researcher; resolve its own tier
+    // (parity with cmdInitPlanPhase) so the research spawn stops pinning
+    // planner_model.
+    researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
     // #2072: the quick review step spawns gsd-code-reviewer; resolve its own model
     // so model_overrides / models.verification apply (was reusing executor_model).
     reviewer_model: resolveModelInternal(cwd, 'gsd-code-reviewer'),
@@ -3175,9 +3179,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     }
   }
 
-  phases.sort(
-    (a, b) => parseInt(a['number'] as string, 10) - parseInt(b['number'] as string, 10),
-  );
+  phases.sort((a, b) => comparePhaseNum(a['number'], b['number']));
 
   // #3581: the frontier is ROADMAP ORDER, not artifact presence. The disk loop
   // above could claim nextPhase from a stray out-of-order artifact directory

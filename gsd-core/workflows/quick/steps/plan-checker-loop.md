@@ -56,7 +56,7 @@ Agent(
 **Handle checker return:**
 
 - **`## VERIFICATION PASSED`:** Display confirmation, proceed to step 6.
-- **`## ISSUES FOUND`:** Display issues, check iteration count, enter revision loop.
+- **`## ISSUES FOUND`:** Count BLOCKER + WARNING entries in the YAML issues block; an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If zero — every entry is explicitly INFO — display `ℹ advisory — {dimension}: {description}` per entry and proceed to step 6; INFO is advisory and never enters the loop (#3724). Otherwise display issues, check iteration count, enter revision loop.
 
 **Revision loop (max 2 iterations):**
 
@@ -68,6 +68,8 @@ Display: `Sending back to planner for revision... (iteration ${N}/2)`
 
 Revision prompt:
 
+Reuse the `PLAN_PRE_HOOKS_JSON` snapshot captured by Quick Step 5; do not render hooks again.
+
 ```markdown
 <revision_context>
 **Mode:** quick-full (revision)
@@ -77,6 +79,8 @@ Revision prompt:
 </required_reading>
 
 ${AGENT_SKILLS_PLANNER}
+
+{For each active entry in `PLAN_PRE_HOOKS_JSON` where `kind == "contribution"` and `into == "planner"` (in array order): inject the entry's `fragment.inline` verbatim here, plus its resolved `configValues` when the entry carries them. If no active planner contributions exist, omit this block entirely.}
 
 **Checker issues:** ${structured_issues_from_checker}
 

@@ -269,6 +269,9 @@ describe('bug #224: --pick stdout capture contract', () => {
   let src;
 
   before(() => {
+    // allow-test-rule: structural-implementation-guard (see #224) — locks the
+    // main()-body byte-length seam contract structurally (no deterministic
+    // Windows repro harness yet); see block header above.
     src = fs.readFileSync(GSD_TOOLS_SRC, 'utf-8');
   });
 
