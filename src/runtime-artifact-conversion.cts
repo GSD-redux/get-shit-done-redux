@@ -288,8 +288,14 @@ const kiloAgentPermissionOrder = [
   'lsp',
 ];
 
+const kiloMcpPermissionPattern = /^mcp__([A-Za-z0-9_-]+)__((?:[A-Za-z0-9_-]+)|\*)$/;
+
 function convertClaudeToKiloPermissionTool(claudeTool) {
-  return claudeToKiloAgentPermissions[claudeTool] || null;
+  const builtinPermission = claudeToKiloAgentPermissions[claudeTool];
+  if (builtinPermission) return builtinPermission;
+
+  const mcpPermission = kiloMcpPermissionPattern.exec(claudeTool);
+  return mcpPermission ? `${mcpPermission[1]}_${mcpPermission[2]}` : null;
 }
 
 function buildKiloAgentPermissionBlock(claudeTools) {
@@ -305,6 +311,10 @@ function buildKiloAgentPermissionBlock(claudeTools) {
   const lines = ['permission:'];
   for (const permission of kiloAgentPermissionOrder) {
     lines.push(`  ${permission}: ${allowedPermissions.has(permission) ? 'allow' : 'deny'}`);
+  }
+  for (const permission of allowedPermissions) {
+    if (kiloAgentPermissionOrder.includes(permission)) continue;
+    lines.push(`  ${permission}: allow`);
   }
 
   return lines;
@@ -2165,7 +2175,8 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
 
     if (isAgent && inAgentTools) {
       if (trimmed.startsWith('- ')) {
-        agentTools.push(trimmed.substring(2).trim());
+        const tool = decodeToolScalar(trimmed.substring(2));
+        if (tool !== null) agentTools.push(tool);
         continue;
       }
       if (trimmed && !trimmed.startsWith('-')) {
@@ -2178,7 +2189,7 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
       if (isAgent) {
         const toolsValue = trimmed.substring(6).trim();
         if (toolsValue) {
-          const tools = toolsValue.split(',').map(t => t.trim()).filter(t => t);
+          const tools = toolsValue.split(',').map(decodeToolScalar).filter((tool): tool is string => tool !== null);
           agentTools.push(...tools);
         } else {
           inAgentTools = true;
@@ -2244,7 +2255,8 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
       if (trimmed.startsWith('- ')) {
         const tool = trimmed.substring(2).trim();
         if (isAgent) {
-          agentTools.push(tool);
+          const decoded = decodeToolScalar(tool);
+          if (decoded !== null) agentTools.push(decoded);
         } else {
           allowedTools.push(tool);
         }
@@ -3766,6 +3778,7 @@ export = {
   // opencode/kilo command install through the engine instead of the bespoke path).
   convertClaudeToOpencodeFrontmatter,
   convertClaudeToKiloFrontmatter,
+  _decodeToolScalar: decodeToolScalar,
   readGsdCommandNames,
   transformContentToHyphen,
   // #1383: version resolver (exported for regression test of the Codex

@@ -996,7 +996,7 @@ function stageAgentsForRuntimeWithConverter(
   try {
     // Resolve cmdNames once per staging call (not per file) for performance.
     const cmdNames = agentCtx ? _readGsdCommandNames() : [];
-    const agentTools = installModelOverrideResolver.readGsdEffectiveAgentTools(agentCtx?.targetDir ?? null) as Record<string, string[]> | null;
+    const agentTools = installModelOverrideResolver.readGsdEffectiveAgentTools(agentCtx?.targetDir ?? null);
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith('.md')) continue;

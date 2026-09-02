@@ -171,12 +171,19 @@ test('missing or invalid agent_tools leave installed agent bytes unchanged (#403
 });
 
 test('host converters receive canonical grants without changing their omissions (#4032)', (t) => {
-  const defaults = { agent_tools: { 'gsd-executor': ['mcp__configured__grant'] } };
-  for (const runtime of ['claude', 'codex', 'qwen']) {
+  const defaults = { agent_tools: { 'gsd-executor': ['mcp__configured__grant', 'mcp__first__*'] } };
+  for (const runtime of ['claude', 'codex']) {
     const artifacts = emittedAgentArtifacts(installRuntime(t, runtime, { defaults }), 'gsd-executor');
     assert.ok(artifacts.some((artifact) => artifact.includes('mcp__configured__grant')),
       `${runtime} must expose the configured canonical grant in its existing host form`);
   }
+  const kiloArtifacts = emittedAgentArtifacts(installRuntime(t, 'kilo', { defaults }), 'gsd-executor');
+  assert.ok(kiloArtifacts.some((artifact) => {
+    const configured = artifact.indexOf('  configured_grant: allow');
+    const wildcard = artifact.indexOf('  first_*: allow');
+    return configured >= 0 && wildcard > configured;
+  }),
+    'Kilo must translate safe canonical MCP grants into native permission keys in first-seen order');
   for (const runtime of ['zcode', 'opencode']) {
     const artifacts = emittedAgentArtifacts(installRuntime(t, runtime, { defaults }), 'gsd-executor');
     assert.ok(artifacts.every((artifact) => !artifact.includes('mcp__configured__grant')),
@@ -231,8 +238,8 @@ test('quoted scalar identity is shared by append, Kimi, and Qwen (#4191)', () =>
     assert.ok(!kimi.subagents[0].yaml.includes('unterminated'));
 
     const qwen = convertClaudeAgentToQwenAgent(content);
-    assert.match(qwen, /^  - WebFetch$/m);
-    assert.match(qwen, /^  - WebSearch$/m);
+    assert.match(qwen, /^ {2}- WebFetch$/m);
+    assert.match(qwen, /^ {2}- WebSearch$/m);
     assert.doesNotMatch(qwen, /unterminated/);
   }
 });
