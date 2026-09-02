@@ -30,6 +30,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { extractFencedBlock } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const UPDATE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md');
 const UPDATE_COMMAND = path.join(__dirname, '..', 'commands', 'gsd', 'update.md');
@@ -84,8 +85,10 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.ok(latestStart >= 0, 'check_latest_version step must exist');
     assert.ok(latestEnd > latestStart, 'check_latest_version step must close');
     const latest = src.slice(latestStart, latestEnd);
+    const latestBash = extractFencedBlock(latest, 'bash');
 
-    assert.doesNotMatch(latest, /(?:^|[;&|]\s*|\n\s*)jq(?:\s|$)/m, 'latest-result parsing must not invoke jq');
+    assert.ok(latestBash, 'check_latest_version must contain a bash block');
+    assert.doesNotMatch(latestBash, /\bjq\b/, 'latest-result parsing must not invoke jq');
     assert.match(
       latest,
       /if LATEST_RESULT="\$\(node [^\n]+\)"; then\s+LATEST_STATUS=0\s+else\s+LATEST_STATUS=\$\?\s+fi/,
