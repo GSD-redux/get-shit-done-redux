@@ -385,11 +385,19 @@ let createdRunTempRoot = false;
 function setupRunTempRoot() {
   // Ownership (a nested run-tests spawn REUSES an inherited root and must never
   // remove it on ITS exit — that would delete the outer run's root mid-suite,
-  // mass-ENOENTing every later fixture): key the reuse check on ANY of the three
-  // vars, since a hypothetical child could carry TEMP but not TMPDIR.
-  const inherited = ['TMPDIR', 'TEMP', 'TMP']
-    .map((k) => process.env[k] || '')
-    .find((v) => v && basename(v).startsWith(RUN_TEMP_ROOT_PREFIX));
+  // mass-ENOENTing every later fixture). PRECEDENCE: the FIRST SET var in
+  // TMPDIR > TEMP > TMP order decides — a set-but-not-a-run-root TMPDIR is an
+  // operator redirect (or a test sandboxing a child) and must WIN over leftover
+  // inherited TEMP/TMP, never be overridden by them (a CI-observed failure: the
+  // child redirected TMPDIR but inherited TEMP=<outer root>, and the any-of-three
+  // reuse check silently preferred the inherited root).
+  let inherited = '';
+  for (const key of ['TMPDIR', 'TEMP', 'TMP']) {
+    const v = process.env[key] || '';
+    if (!v) continue;
+    inherited = basename(v).startsWith(RUN_TEMP_ROOT_PREFIX) ? v : '';
+    break;
+  }
   createdRunTempRoot = !inherited;
   const root = inherited || mkdtempSync(join(tmpdir(), RUN_TEMP_ROOT_PREFIX));
   for (const key of ['TMPDIR', 'TEMP', 'TMP']) process.env[key] = root;
