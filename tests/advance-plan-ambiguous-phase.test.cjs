@@ -97,4 +97,71 @@ describe('#3807: advance-plan refuses an ambiguous multi-entry Current Position'
     const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
     assert.match(after, /Plan: 4 of 8/, 'the plan counter advanced');
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // #3784 x #3807 interaction. #3784 taught advancePlanCore a third value
+  // shape — the hybrid `Current Plan: N of M` (legacy field name, compound
+  // value, no `Total Plans in Phase` sibling). Both changes land on the same
+  // function, and the guard sits ABOVE the parse, so a document the guard
+  // refuses is never parsed at all. That ordering is the whole answer to
+  // "does the widened grammar bypass the refusal" — but ordering is a
+  // property of the source, and these two assert it as behaviour.
+  //
+  // Fail-first proven, not assumed: with the `phaseCandidates.length > 1`
+  // refusal disabled, the multi-entry case below advances the FIRST entry's
+  // `Current Plan: 04 of 06` to `05 of 06` and writes it — #3807's exact
+  // defect, reached through the shape #3784 added.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  const HYBRID_ENTRY = (phase, plan) => [
+    `Phase: ${phase}`,
+    `Current Plan: ${plan}`,
+    'Status: In progress',
+    'Last activity: 2026-08-24 — working',
+    '',
+  ];
+
+  test('#3784 x #3807: the hybrid `Current Plan: N of M` shape does not bypass the refusal', (t) => {
+    const tmpDir = createTempProject('gsd-3807-hybrid-amb-');
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, [
+      '## Current Position',
+      '',
+      ...HYBRID_ENTRY('03.1 of 8 (some-phase)', '04 of 06'),
+      ...HYBRID_ENTRY('04 of 15 (other-phase)', '04 of 15'),
+    ].join('\n'));
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+
+    const r = runAdvance(tmpDir);
+    const out = JSON.parse(r.output);
+    assert.equal(
+      out.reason,
+      'ambiguous_position_phase',
+      `#3807's refusal must fire on the hybrid shape too, not #3784's parse; got ${r.output}`,
+    );
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+    assert.equal(after, before, 'refusing must leave STATE.md byte-identical on the hybrid shape');
+    assert.ok(
+      !/Current Plan: 05 of 06/.test(after),
+      "the first entry's hybrid plan counter must NOT advance",
+    );
+  });
+
+  test('#3784 x #3807 control: a single-entry hybrid section still advances, padding intact', (t) => {
+    const tmpDir = createTempProject('gsd-3807-hybrid-ctl-');
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, [
+      '## Current Position',
+      '',
+      ...HYBRID_ENTRY('03.1 of 8 (some-phase)', '04 of 06'),
+    ].join('\n'));
+
+    const r = runAdvance(tmpDir);
+    const out = JSON.parse(r.output);
+    assert.equal(out.advanced, true, `the hybrid shape still advances when unambiguous; got ${r.output}`);
+    assert.equal(out.current_plan, 5, '#3784: the hybrid value supplies the plan number');
+    assert.equal(out.total_plans, 6, '#3784: the hybrid value supplies the total, with no sibling field');
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+    assert.match(after, /Current Plan: 05 of 06/, '#3784: zero-padding survives the advance');
+  });
 });

@@ -1,7 +1,3 @@
-// allow-test-rule: structural-regression-guard
-// Reads hook .js or bin/install.js source to assert structural invariants
-// (search array order, function wiring, path constants) that cannot be
-// verified by observing runtime outputs alone. Per CONTRIBUTING.md exception matrix.
 /**
  * Regression test for #1750: orphaned hook files from removed features
  * (e.g., gsd-intel-*.js) should NOT be flagged as stale by gsd-check-update.js.
@@ -42,6 +38,9 @@ describe('orphaned hooks stale detection (#1750)', () => {
   });
 
   test('gsd-check-update-worker.js imports managed-hooks-registry.cjs (not inline array)', () => {
+    // allow-test-rule: structural-regression-guard (#3545) — presence of a
+    // require() wire-up and absence of a reintroduced inline array are source
+    // structure facts, not runtime behavior; see file header.
     const content = fs.readFileSync(WORKER_PATH, 'utf8');
     assert.ok(
       content.includes('managed-hooks-registry.cjs'),
@@ -55,6 +54,9 @@ describe('orphaned hooks stale detection (#1750)', () => {
   });
 
   test('gsd-check-update.js spawns the worker by file path (not inline -e code)', () => {
+    // allow-test-rule: structural-regression-guard (#3545) — spawn-target
+    // wiring and absence of inline `-e` code are source structure facts, not
+    // runtime behavior; see file header.
     const content = fs.readFileSync(CHECK_UPDATE_PATH, 'utf8');
     assert.ok(
       content.includes('gsd-check-update-worker.js'),

@@ -68,6 +68,8 @@ Display: `Sending back to planner for revision... (iteration ${N}/2)`
 
 Revision prompt:
 
+Reuse the `PLAN_PRE_HOOKS_JSON` snapshot captured by Quick Step 5; do not render hooks again.
+
 ```markdown
 <revision_context>
 **Mode:** quick-full (revision)
@@ -77,6 +79,8 @@ Revision prompt:
 </required_reading>
 
 ${AGENT_SKILLS_PLANNER}
+
+{For each active entry in `PLAN_PRE_HOOKS_JSON` where `kind == "contribution"` and `into == "planner"` (in array order): inject the entry's `fragment.inline` verbatim here, plus its resolved `configValues` when the entry carries them. If no active planner contributions exist, omit this block entirely.}
 
 **Checker issues:** ${structured_issues_from_checker}
 

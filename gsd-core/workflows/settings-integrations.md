@@ -163,12 +163,13 @@ namespace — any other slug fails with `Unknown config key`.
 Settable keys (the shipped registry's model-bearing lanes):
 
 `review.models.agy` (Antigravity), `review.models.claude`, `review.models.codex`,
-`review.models.gemini`, `review.models.kimi-code`, `review.models.llama_cpp`,
-`review.models.lm_studio`, `review.models.ollama`, `review.models.opencode`.
+`review.models.cursor`, `review.models.gemini`, `review.models.kimi-code`,
+`review.models.llama_cpp`, `review.models.lm_studio`, `review.models.ollama`,
+`review.models.opencode`.
 
-Reviewer lanes `cursor`, `qwen`, and `coderabbit` declare no `modelConfigKey` —
-there is nothing to configure for them here (whether they should have a
-per-lane model key is a separate question, out of scope for this workflow).
+Reviewer lanes `qwen` and `coderabbit` declare no `modelConfigKey` — there is
+nothing to configure for them here (whether they should have a per-lane model
+key is a separate question, out of scope for this workflow).
 If the user asks for one of those, say exactly that and skip.
 
 ```text
@@ -208,8 +209,8 @@ If it is not one of the settable keys, print:
 
 ```text
 Rejected: review.models.<slug> is not settable — only the reviewer lanes whose
-keys are enumerated above can be configured here. (cursor, qwen, and
-coderabbit have no per-lane model key.)
+keys are enumerated above can be configured here. (qwen and coderabbit have no
+per-lane model key.)
 ```
 
 and re-prompt.

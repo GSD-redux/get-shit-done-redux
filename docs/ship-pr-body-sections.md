@@ -19,12 +19,12 @@ Custom sections are append-only. They render after `Key Decisions` (and before t
 
 ### TDD Audit section
 
-The `TDD Audit` section is always appended last. It walks the commits in the `merge-base..HEAD` range (merges excluded), reads each commit's `gate_status:` Git trailer (`skill` | `fallback` | `exempt`), and pairs each `test:` commit with its following `feat:`/`fix:` implementation commit in a table. Commits that carry no recognized trailer are counted as `missing`.
+The `TDD Audit` section is always appended last. It walks the commits in the `merge-base..HEAD` range (merges excluded), reads each commit's `gate-status:` Git trailer (`skill` | `fallback` | `exempt`), and pairs each `test:` commit with its following `feat:`/`fix:` implementation commit in a table. Commits that carry no recognized trailer are counted as `missing`.
 
 The section closes with a single aggregate trailer line that a GitHub squash-merge carries into the base branch:
 
 ```
-gate_status: skill=3, fallback=1, exempt=0, missing=0
+gate-status: skill=3, fallback=1, exempt=0, missing=0
 ```
 
 ## Configure Sections During Onboarding

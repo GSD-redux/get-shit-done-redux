@@ -126,8 +126,9 @@ describe('#2304: Kimi tool vocabulary engages the workflow guard', () => {
     });
     assert.equal(r.exitCode, 0);
     const output = JSON.parse(r.stdout);
-    assert.ok(
-      output.hookSpecificOutput?.additionalContext?.includes('WORKFLOW ADVISORY'),
+    assert.equal(
+      output.hookSpecificOutput?.code,
+      'WORKFLOW_ADVISORY',
       'Kimi WriteFile should reach the write branch and emit the advisory'
     );
   });

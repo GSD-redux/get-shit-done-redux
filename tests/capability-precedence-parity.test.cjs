@@ -38,6 +38,7 @@ const LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib');
 
 const capabilityActivation = require(path.join(LIB, 'capability-activation.cjs'));
 const loopResolver = require(path.join(LIB, 'loop-resolver.cjs'));
+const capabilityStateMod = require(path.join(LIB, 'capability-state.cjs'));
 
 // ─── (a) Identity guard ───────────────────────────────────────────────────────
 
@@ -63,6 +64,128 @@ describe('capability-precedence-parity: identity guard — loop-resolver re-expo
       loopResolver._readRawConfigKey,
       capabilityActivation._readRawConfigKey,
       '_readRawConfigKey: loop-resolver must re-export the capability-activation.cjs function, not a local copy',
+    );
+  });
+
+  // #3661
+  test('_resolvePointGate is the same function in both modules', () => {
+    assert.strictEqual(
+      loopResolver._resolvePointGate,
+      capabilityActivation._resolvePointGate,
+      '_resolvePointGate: loop-resolver must re-export the capability-activation.cjs function, not a local copy',
+    );
+  });
+});
+
+// ─── (a2) #3661 — _resolvePointGate pure-function matrix (50-test-matrix.md Section A) ─────
+//
+// A1-A10: pure, no-I/O behavioral coverage of _resolvePointGate directly (happy /
+// boundary / negative / hostile), mirroring the style of the _resolveActivationValue
+// matrix below but scoped to the new pointFrom gate.
+
+describe('capability-precedence-parity: _resolvePointGate matrix (#3661, matrix Section A)', () => {
+  const { _resolvePointGate } = capabilityActivation;
+
+  test('A1: resolvePointGateTrueWhenPointFromAbsent — pointFrom undefined → true', () => {
+    const registry = makeRegistry('workflow.point_key', undefined);
+    assert.strictEqual(
+      _resolvePointGate(undefined, 'execute:post', {}, undefined, registry),
+      true,
+    );
+  });
+
+  test('A2: resolvePointGateTrueWhenPointFromNull — pointFrom null → true (mirrors undefined)', () => {
+    const registry = makeRegistry('workflow.point_key', undefined);
+    assert.strictEqual(
+      _resolvePointGate(null, 'execute:post', {}, undefined, registry),
+      true,
+    );
+  });
+
+  test('A3: resolvePointGateTrueOnExactMatch — config resolves to the SAME value as point → true', () => {
+    const key = 'workflow.point_key';
+    const config = { workflow: { point_key: 'execute:wave:post' } };
+    const registry = makeRegistry(key, undefined);
+    assert.strictEqual(
+      _resolvePointGate(key, 'execute:wave:post', config, undefined, registry),
+      true,
+    );
+  });
+
+  test('A4: resolvePointGateFalseOnMismatch — config resolves to a DIFFERENT value than point → false', () => {
+    const key = 'workflow.point_key';
+    const config = { workflow: { point_key: 'execute:post' } };
+    const registry = makeRegistry(key, undefined);
+    assert.strictEqual(
+      _resolvePointGate(key, 'execute:wave:post', config, undefined, registry),
+      false,
+    );
+  });
+
+  test('A5: resolvePointGateFalseWhenKeyUnresolvable — key absent from config and no schema default → false', () => {
+    const key = 'workflow.nonexistent_point_key';
+    const registry = makeRegistry(key, undefined);
+    assert.strictEqual(
+      _resolvePointGate(key, 'execute:post', {}, undefined, registry),
+      false,
+    );
+  });
+
+  test('A6: resolvePointGateFalseOnEmptyString — pointFrom="" → false (malformed, mirrors when)', () => {
+    const registry = makeRegistry('workflow.point_key', undefined);
+    assert.strictEqual(
+      _resolvePointGate('', 'execute:post', {}, undefined, registry),
+      false,
+    );
+  });
+
+  test('A7: resolvePointGateFalseOnNonStringType — pointFrom is a number/object/array → false', () => {
+    const registry = makeRegistry('workflow.point_key', undefined);
+    for (const malformed of [42, { key: 'workflow.point_key' }, ['workflow.point_key']]) {
+      assert.strictEqual(
+        _resolvePointGate(malformed, 'execute:post', {}, undefined, registry),
+        false,
+        `pointFrom=${JSON.stringify(malformed)} must resolve to false`,
+      );
+    }
+  });
+
+  test('A8: resolvePointGateUsesSchemaDefaultPrecedence — resolves via registry.configSchema default', () => {
+    const key = 'workflow.point_key';
+    // No explicit config value — only the schema default, matching point.
+    const registryMatch = makeRegistry(key, 'execute:post');
+    assert.strictEqual(
+      _resolvePointGate(key, 'execute:post', {}, undefined, registryMatch),
+      true,
+      'schema default equal to point must match',
+    );
+    // Schema default present but NOT equal to point → false.
+    const registryMismatch = makeRegistry(key, 'execute:wave:post');
+    assert.strictEqual(
+      _resolvePointGate(key, 'execute:post', {}, undefined, registryMismatch),
+      false,
+      'schema default not equal to point must not match',
+    );
+  });
+
+  test('A9: resolvePointGateDoesNotMatchOnDoubleEmptyUnlessFound — point="" and unresolved key must not spuriously match', () => {
+    const key = 'workflow.nonexistent_point_key';
+    const registry = makeRegistry(key, undefined); // no schema default → found:false
+    assert.strictEqual(
+      _resolvePointGate(key, '', {}, undefined, registry),
+      false,
+      'an unresolved (found:false) key must never match, even against an empty point string',
+    );
+  });
+
+  test('A10: resolvePointGateRejectsPrototypePollutionKey — pointFrom colliding with a prototype key segment → false', () => {
+    const key = 'a.__proto__.polluted';
+    const config = { a: { real: 1 } };
+    const registry = makeRegistry(key, undefined); // no schema default for this exact dotted key
+    assert.strictEqual(
+      _resolvePointGate(key, 'execute:post', config, undefined, registry),
+      false,
+      '__proto__ path segment must be rejected by the shared nested-traversal guard, yielding found:false',
     );
   });
 });
@@ -592,5 +715,171 @@ describe('capability-precedence-parity: behavioral — loop-resolver resolveConf
       undefined,
       'hook.configValues must be undefined when all aliases are absent (omit-when-empty contract)',
     );
+  });
+});
+
+// ─── (e) #3661 — loop-resolver and capability-state agree on pointFrom selection ──
+// (50-test-matrix.md Section D)
+//
+// A single synthetic two-point capability fixture is run through BOTH resolvers
+// (resolveLoopHooks / resolveCapabilityState) sharing the same enum config key,
+// proving the two consumers of _resolvePointGate can never diverge.
+
+describe('capability-precedence-parity: loop-resolver + capability-state agree on pointFrom selection (#3661, matrix Section D)', () => {
+  const { resolveCapabilityState } = capabilityStateMod;
+  const { resolveLoopHooks, CANONICAL_POINTS_FALLBACK } = loopResolver;
+
+  /**
+   * Build one synthetic capability declared twice (point A / point B) sharing one
+   * enum `pointFrom` key, plus a third control step at point A with NO `pointFrom`
+   * (governed by `when` alone). Returns both a loop-resolver-shaped registry
+   * (byLoopPoint) and a capability-state-shaped registry (capabilities), built from
+   * the SAME step objects, so both resolvers see byte-identical hook declarations.
+   */
+  function makeTwoPointFixture() {
+    const capId = 'test-two-point-cap';
+    const pointA = 'execute:post';
+    const pointB = 'execute:wave:post';
+    const enumKey = 'workflow.test_point_select';
+    const whenAKey = 'workflow.test_step_a_enabled';
+    const whenBKey = 'workflow.test_step_b_enabled';
+    const whenControlKey = 'workflow.test_control_enabled';
+
+    const stepA = {
+      capId, point: pointA, ref: { skill: 'test-skill' },
+      produces: [], consumes: [], when: whenAKey, pointFrom: enumKey, onError: 'skip',
+    };
+    const stepB = {
+      capId, point: pointB, ref: { skill: 'test-skill' },
+      produces: [], consumes: [], when: whenBKey, pointFrom: enumKey, onError: 'skip',
+    };
+    // Control: no pointFrom at all — must be unaffected by the enum's value (D4).
+    const controlStep = {
+      capId, point: pointA, ref: { skill: 'control-skill' },
+      produces: [], consumes: [], when: whenControlKey, onError: 'skip',
+    };
+
+    const configSchema = {
+      [enumKey]: { default: pointA },
+      [whenAKey]: { default: true },
+      [whenBKey]: { default: true },
+      [whenControlKey]: { default: true },
+    };
+
+    const byLoopPoint = {};
+    for (const p of CANONICAL_POINTS_FALLBACK) {
+      byLoopPoint[p] = { steps: [], contributions: [], gates: [] };
+    }
+    byLoopPoint[pointA].steps = [stepA, controlStep];
+    byLoopPoint[pointB].steps = [stepB];
+    const loopRegistry = { byLoopPoint, configSchema };
+
+    const capStateRegistry = {
+      capabilities: {
+        [capId]: {
+          id: capId, tier: 'standard', skills: [], steps: [stepA, stepB, controlStep],
+          gates: [], contributions: [], config: {},
+        },
+      },
+      configSchema,
+    };
+
+    const capabilityStatesById = new Map([[capId, { enabled: true, active: true }]]);
+
+    return {
+      capId, pointA, pointB, enumKey, whenAKey, whenBKey, whenControlKey,
+      loopRegistry, capStateRegistry, capabilityStatesById,
+    };
+  }
+
+  function capStateHooks(fixture, config) {
+    const result = resolveCapabilityState({
+      registry: fixture.capStateRegistry,
+      installedSkills: '*',
+      surfacedSkills: new Set(),
+      config,
+    });
+    assert.strictEqual(result.capabilities.length, 1, 'fixture declares exactly one capability');
+    return result.capabilities[0].hooks;
+  }
+
+  test('D1: loopResolverAndCapabilityStateAgreeOnDefaultPointFromSelection', () => {
+    const f = makeTwoPointFixture();
+    const config = {}; // everything resolves via schema default: enumKey -> pointA
+
+    const resultA = resolveLoopHooks({ point: f.pointA, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const resultB = resolveLoopHooks({ point: f.pointB, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const loopStepAActive = resultA.activeHooks.some((h) => h.when === f.whenAKey);
+    const loopStepBActive = resultB.activeHooks.some((h) => h.when === f.whenBKey);
+    assert.strictEqual(loopStepAActive, true, 'loop-resolver: point A step must be active by default');
+    assert.strictEqual(loopStepBActive, false, 'loop-resolver: point B step must be inactive by default');
+
+    const hooks = capStateHooks(f, config);
+    const stateStepA = hooks.find((h) => h.when === f.whenAKey);
+    const stateStepB = hooks.find((h) => h.when === f.whenBKey);
+    assert.strictEqual(stateStepA.active, true, 'capability-state: point A step must be active by default');
+    assert.strictEqual(stateStepB.active, false, 'capability-state: point B step must be inactive by default');
+
+    assert.strictEqual(loopStepAActive, stateStepA.active, 'resolvers must agree on point A');
+    assert.strictEqual(loopStepBActive, stateStepB.active, 'resolvers must agree on point B');
+  });
+
+  test('D2: loopResolverAndCapabilityStateAgreeOnFlippedPointFromSelection', () => {
+    const f = makeTwoPointFixture();
+    const config = { workflow: { test_point_select: f.pointB } };
+
+    const resultA = resolveLoopHooks({ point: f.pointA, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const resultB = resolveLoopHooks({ point: f.pointB, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const loopStepAActive = resultA.activeHooks.some((h) => h.when === f.whenAKey);
+    const loopStepBActive = resultB.activeHooks.some((h) => h.when === f.whenBKey);
+    assert.strictEqual(loopStepAActive, false, 'loop-resolver: point A step must flip to inactive');
+    assert.strictEqual(loopStepBActive, true, 'loop-resolver: point B step must flip to active');
+
+    const hooks = capStateHooks(f, config);
+    const stateStepA = hooks.find((h) => h.when === f.whenAKey);
+    const stateStepB = hooks.find((h) => h.when === f.whenBKey);
+    assert.strictEqual(stateStepA.active, false, 'capability-state: point A step must flip to inactive');
+    assert.strictEqual(stateStepB.active, true, 'capability-state: point B step must flip to active');
+
+    assert.strictEqual(loopStepAActive, stateStepA.active, 'resolvers must agree on point A after flip');
+    assert.strictEqual(loopStepBActive, stateStepB.active, 'resolvers must agree on point B after flip');
+  });
+
+  test('D3: loopResolverAndCapabilityStateAgreeOnOutOfEnumPointFromValue', () => {
+    const f = makeTwoPointFixture();
+    const config = { workflow: { test_point_select: 'bogus' } };
+
+    const resultA = resolveLoopHooks({ point: f.pointA, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const resultB = resolveLoopHooks({ point: f.pointB, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const loopStepAActive = resultA.activeHooks.some((h) => h.when === f.whenAKey);
+    const loopStepBActive = resultB.activeHooks.some((h) => h.when === f.whenBKey);
+    assert.strictEqual(loopStepAActive, false, 'loop-resolver: point A step must be inactive on an out-of-enum value');
+    assert.strictEqual(loopStepBActive, false, 'loop-resolver: point B step must be inactive on an out-of-enum value');
+
+    const hooks = capStateHooks(f, config);
+    const stateStepA = hooks.find((h) => h.when === f.whenAKey);
+    const stateStepB = hooks.find((h) => h.when === f.whenBKey);
+    assert.strictEqual(stateStepA.active, false, 'capability-state: point A step must be inactive on an out-of-enum value');
+    assert.strictEqual(stateStepB.active, false, 'capability-state: point B step must be inactive on an out-of-enum value');
+
+    assert.strictEqual(loopStepAActive, stateStepA.active, 'resolvers must agree: both points inactive');
+    assert.strictEqual(loopStepBActive, stateStepB.active, 'resolvers must agree: both points inactive');
+  });
+
+  test('D4: loopResolverAndCapabilityStateAgreeWhenPointFromAbsent', () => {
+    // Reuse D3's out-of-enum config — the strongest proof that the control step
+    // (no pointFrom at all) is UNAFFECTED by the enum's value in either resolver.
+    const f = makeTwoPointFixture();
+    const config = { workflow: { test_point_select: 'bogus' } };
+
+    const resultA = resolveLoopHooks({ point: f.pointA, registry: f.loopRegistry, config, capabilityStatesById: f.capabilityStatesById });
+    const loopControlActive = resultA.activeHooks.some((h) => h.when === f.whenControlKey);
+    assert.strictEqual(loopControlActive, true, 'loop-resolver: control step (no pointFrom) must remain active, governed by when alone');
+
+    const hooks = capStateHooks(f, config);
+    const stateControl = hooks.find((h) => h.when === f.whenControlKey);
+    assert.strictEqual(stateControl.active, true, 'capability-state: control step (no pointFrom) must remain active, governed by when alone');
+
+    assert.strictEqual(loopControlActive, stateControl.active, 'resolvers must agree the control step is unaffected');
   });
 });

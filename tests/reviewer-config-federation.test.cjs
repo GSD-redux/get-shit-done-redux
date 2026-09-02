@@ -102,17 +102,20 @@ describe('reviewer config federation — provenance actually moved (#2797)', () 
   });
 
   test('a lane with no model flag and no host owns no MODEL or HOST key (#3691 narrows #2797)', () => {
-    // Absent-safe (ADR-2782 D4): qwen, cursor and coderabbit take neither a model
+    // Absent-safe (ADR-2782 D4): qwen and coderabbit take neither a model
     // argument nor a host. Under #2797 that meant "declares nothing" — the only
     // way a lane owned a config key was via a model flag or a host. #3691 gave
     // every CLI lane a `review.max_prompt_tokens_per_reviewer.<slug>` key, a
-    // third legitimate reason to own a key, so qwen/cursor/coderabbit now
-    // legitimately own their own budget key. The part of the #2797 invariant
-    // that still holds — a lane must never own a MODEL or HOST key, or another
-    // lane's budget key, it has no use for — is what this asserts directly.
+    // third legitimate reason to own a key, so qwen/coderabbit now legitimately
+    // own their own budget key. `cursor` gained a real model flag (#3653) and
+    // now legitimately owns `review.models.cursor` too, so it is excluded from
+    // this loop. The part of the #2797 invariant that still holds — a lane must
+    // never own a MODEL or HOST key it has no use for, or another lane's budget
+    // key — is what this asserts directly for the two lanes that still have
+    // neither.
     for (const [key, entry] of Object.entries(registry.configSchema || {})) {
       const owner = entry && entry.owner;
-      if (!['qwen', 'cursor', 'coderabbit'].includes(owner)) continue;
+      if (!['qwen', 'coderabbit'].includes(owner)) continue;
       assert.ok(
         !key.startsWith('review.models.') && !key.endsWith('_host'),
         `${owner} must not own a model or host key, but owns "${key}"`,

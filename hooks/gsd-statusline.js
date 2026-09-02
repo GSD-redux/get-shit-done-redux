@@ -404,8 +404,12 @@ function formatGsdState(s, opts = {}) {
     // Scene 2: idle + a recommended next command is visible to the user.
     // Surfaces "what to run next" without the user opening STATE.md.
     parts.push(`next ${s.nextAction} ${phasesStr}`);
-  } else if (Number(s.percent) === 100 || (s.completedPhases && s.totalPhases && s.completedPhases === s.totalPhases)) {
-    // Scene 3: milestone complete (every phase done).
+  } else if (Number(s.percent) === 100 || (Number(s.totalPhases) > 0 && Number(s.completedPhases) === Number(s.totalPhases))) {
+    // Scene 3: milestone complete (every phase done). #3945: the counters are
+    // regex-captured STRINGS, so the old `cp && tp && cp === tp` guard fired on
+    // the empty set ('0' is truthy, '0' === '0') — "0% · milestone complete".
+    // Numeric coercion + a non-empty denominator makes "nothing to measure"
+    // stop meaning "everything is done".
     parts.push('milestone complete');
   } else {
     // Backward-compatible default — preserved EXACTLY for STATE.md files that
@@ -529,7 +533,7 @@ function formatGsdStateCompact(s, opts = {}) {
   // still completes) wins over milestone-complete (Scene 3), even if a
   // non-atomic STATE.md edit leaves percent=100 alongside a lifecycle phase.
   const done = !s.activePhase && (Number(s.percent) === 100 ||
-    (s.completedPhases && s.totalPhases && s.completedPhases === s.totalPhases));
+    (Number(s.totalPhases) > 0 && Number(s.completedPhases) === Number(s.totalPhases)));
 
   if (done) {
     parts.push('complete');

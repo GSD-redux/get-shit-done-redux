@@ -54,9 +54,15 @@ const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-worktree-path-guard.js');
 
 function loadNormalizer() {
   const src = fs.readFileSync(HOOK, 'utf8');
+  // allow-test-rule: source-text-is-the-product (#3545) — normalizeKimiPayload
+  // is deliberately inlined per hook script with no require()-able module (see
+  // file-header note above); text-index extraction is the only way to bind
+  // and eval it, mirroring tests/kimi-guard-normalization-parity.test.cjs
   const start = src.indexOf('const KIMI_TOOL_NAMES');
   assert.notEqual(start, -1, 'KIMI_TOOL_NAMES block not found in hook source');
   const endMarker = '  return data;\n}';
+  // allow-test-rule: source-text-is-the-product (#3545) — same inlined-block
+  // extraction as above, locating the end of the block to eval
   const end = src.indexOf(endMarker, start);
   assert.notEqual(end, -1, 'normalizeKimiPayload end not found in hook source');
   const block = src.slice(start, end + endMarker.length);

@@ -197,6 +197,7 @@
   - [Machine-Readable State Contract (`.planning/state.json`)](#166-machine-readable-state-contract-planningstatejson)
   - [Stated Failing Direction](#167-stated-failing-direction)
   - [Runtime Identity](#168-runtime-identity)
+  - [Context Drift Gate](#3348-context-drift-gate)
   - ["Failure Is a Value" — Strict Argv Rejection and the `--pick` Absence Contract](#3884-failure-is-a-value--strict-argv-rejection-and-the---pick-absence-contract)
   - [No Silent Swallow, No Verdict From Dropped Data](#3885-no-silent-swallow-no-verdict-from-dropped-data)
   - [Runtime Marker Resolution, Derived Codex Sandbox, and In-Phase Short-Form Dependencies](#3897-runtime-marker-resolution-derived-codex-sandbox-and-in-phase-short-form-dependencies)
@@ -205,6 +206,7 @@
   - [gsd-tools Declares Outcomes, Pinned at v1](#3912-gsd-tools-declares-outcomes-pinned-at-v1)
   - [Reachable Lint Rules and a Non-Destructive Quick-Task Append](#3951-reachable-lint-rules-and-a-non-destructive-quick-task-append)
   - [Per-Task External-Tracker Content-Resolution Seam](#3970-per-task-external-tracker-content-resolution-seam)
+  - [Unreadable-Directory Scope Signal](#4014-unreadable-directory-scope-signal)
 
 ---
 
@@ -2245,13 +2247,30 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 - REQ-REVIEW-05: Each fix MUST be committed atomically with a descriptive message
 - REQ-REVIEW-06: `--auto` flag MUST enable fix + re-review iteration loop, capped at 3 iterations
 - REQ-REVIEW-07: Feature MUST be gated by `workflow.code_review` config flag
+- REQ-REVIEW-08: `workflow.code_review_point` MUST select which loop point the automatic review step registers at (`execute:post` default, or `execute:wave:post`), independent of the `workflow.code_review` on/off gate and of manual `/gsd-code-review` invocation (#3661)
 
 **Config:**
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `workflow.code_review` | boolean | `true` | Enable code review commands |
+| `workflow.code_review_point` | string | `execute:post` | Loop point for the automatic review: `execute:post` (once per phase, default) or `execute:wave:post` (once per completed wave, scoped to what changed since the phase's prior review). See below. |
 | `workflow.code_review_depth` | string | `standard` | Default review depth: `quick`, `standard`, or `deep` |
 | `workflow.code_review_depth_overrides` | array | `[]` | Ordered `{ paths, depth }` rules that escalate depth for directories matched by path prefix against the changed-file set (#2554). See below. |
+
+**Reviewing per wave instead of per phase (#3661)**
+
+Setting `workflow.code_review_point` to `execute:wave:post` moves the automatic review from
+"once, after the whole phase's waves have all landed" to "once per completed wave." Each
+wave's review scopes to what changed since the phase's *previous* review — the whole phase's
+diff on the first wave, then just that wave's diff on every wave after — so review batches
+stay small instead of growing with the phase. A finding introduced early is caught after the
+wave that introduced it, not after the last wave of the phase.
+
+This only affects the *automatic* dispatch inside a wave-based phase execution. Manual
+`/gsd-code-review <phase>` runs are gated by `workflow.code_review` alone and are unaffected
+by this key. `/gsd-autonomous` and `/gsd-quick` have no wave granularity of their own, so
+setting this to `execute:wave:post` means automatic review does not run inside those two
+flows — the same way every other wave-scoped capability step already behaves for them.
 
 **Path-scoped code review depth overrides**
 
@@ -3211,7 +3230,7 @@ explicit reviewer flags -> --all -> review.default_reviewers -> all detected rev
 
 When a requirement's prose matches **no** shape cue, the probe does not silently drop it (#1110): it emits a single `unclassified — review manually` candidate so the zero-cue requirement is surfaced for the author to resolve like any other (specify / dismiss-with-reason / defer) — a manual-review nudge, not a hard block.
 
-**Non-English projects: the probe reads English, the SPEC does not have to (#2773).** The shape cues are English word-boundary patterns, so a project running with [`response_language`](CONFIGURATION.md) set would otherwise have *every* requirement match nothing, classify to zero shapes, and land in `unclassified` — the taxonomy silently contributing nothing to exactly the kind of spec it exists to harden. `spec-phase` Step 5.5 therefore feeds the probe a faithful **English translation** of each requirement's `text`: that payload is engine input, never user-facing output, so it is translated while the SPEC itself stays in the original language, requirement ids are left untouched, and any acceptance criteria written back from the resolved edges return to `response_language`. Translation makes the classifier *applicable*; it does not make it omniscient. A requirement carrying no shape cue in **any** language still classifies to zero — that is the classifier's recorded recall gap (ADR-857 §98), not a translation failure — and the remedy there is the same one an English project uses: author an explicit `shapes` array on the requirement instead of relying on prose classification.
+**Non-English projects: the probe reads English via `text_en`, the SPEC does not have to (#2773, durable fix #3717).** The shape cues are English word-boundary patterns, so a project running with [`response_language`](CONFIGURATION.md) set would otherwise have *every* requirement match nothing, classify to zero shapes, and land in `unclassified` — the taxonomy silently contributing nothing to exactly the kind of spec it exists to harden. `spec-phase` Step 5.5 therefore populates an optional `text_en` field alongside each requirement's `text` with a faithful **English translation**: `text_en` is engine input, never user-facing output, so it is translated while `text` keeps the requirement's own wording (the SPEC stays in the original language), requirement ids are left untouched, and any acceptance criteria written back from the resolved edges return to `response_language`. Translation makes the classifier *applicable*; it does not make it omniscient. A requirement carrying no shape cue in **any** language still classifies to zero — that is the classifier's recorded recall gap (ADR-857 §98), not a translation failure — and the remedy there is the same one an English project uses: author an explicit `shapes` array on the requirement instead of relying on prose classification.
 
 The resolved edges populate a `## Edge Coverage` section in `SPEC.md`. Unresolved *applicable* edges trigger a soft gate (Resolve / Write-anyway-flagged / Keep-probing) rather than a hard block. Under `--auto`, the probe **never auto-dismisses** — it auto-covers where a defensible criterion exists, otherwise auto-backstops, and logs `[auto] edge coverage: C covered, B backstop, U unresolved`. The one exception is an `unclassified` candidate: `--auto` leaves it **`unresolved`** (surfaced as a flagged assumption), never auto-`backstop` — a missing shape is not evidence an edge exists, so minting a held-out edge obligation would be a false claim.
 
@@ -3682,6 +3701,17 @@ See [State a failing direction](how-to/state-a-failing-direction.md) and [`gsd-t
 ---
 
 _Generated by `scripts/gen-features.cjs` — add a fragment under `docs/features/` and run `--write`._
+
+---
+
+### 3348. Context Drift Gate
+
+**Purpose:** Warns (or optionally blocks) before `/gsd-plan-phase` reuses an existing
+`RESEARCH.md`, `PATTERNS.md`, `VALIDATION.md`, or `SPEC.md` that predates a decision added to the
+phase's `CONTEXT.md` after that artifact was derived from it. Deterministic — compares git commit
+time (falling back to mtime for uncommitted edits), no model call. Sibling to the existing
+codebase-drift and schema-drift gates in the `drift` capability. Configure with
+`workflow.context_drift_precheck` (on/off) and `workflow.context_drift_action` (`warn`/`block`).
 
 ---
 
@@ -4181,6 +4211,52 @@ for the authoring walkthrough, [Capability manifest → `taskContentResolver`](.
 for the field reference, and
 [`loop-hook-dispatch.md`](../../gsd-core/references/loop-hook-dispatch.md#the-executetask-point-a-different-shape)
 for how `execute:task` differs from the twelve prose-dispatched points.
+
+---
+
+### 4014. Unreadable-Directory Scope Signal
+
+**Purpose:** ADR-3473 §8.4 ("failure is a value") applies to filesystem
+listings, not only command argv. `#3885` (B5) gave `roadmap analyze`,
+`gap-checker`, and `init`'s JSON bundles a `context_read_error` /
+`phase_dir_read_error` string naming an unreadable phase directory — but the
+underlying `has_context` / `hasContext` boolean stayed `false` either way,
+so a consumer branching on that boolean alone still cannot tell "genuinely
+no context file" from "could not read the directory at all." This closes
+that gap with a typed signal, reusing ADR-3180's existing frozen `SCOPE`
+enum rather than a new vocabulary.
+
+**`findContextMdIn` (`src/planning-workspace.cts`) now reports its own
+scope.** Called with a directory path, it returns `{ file, files, scope }`
+instead of a bare filename-or-null, and never throws — an unreadable
+directory reports `scope: 'unreadable'` (previously it threw, forcing every
+caller to hand-roll its own `try`/`catch`); a genuinely absent directory
+(`ENOENT`) reports `scope: 'complete'`, the same "real empty" answer as
+today. The array-input call form (an already-read listing) is unchanged.
+
+**Five downstream call sites gain an additive `scope` field, none renamed
+or removed:** `roadmap analyze`'s `AnalyzePhase.context_scope`,
+`gap-checker`'s `phase_dir_scope`, and `init`'s `context_scope` on all three
+JSON bundles (`init plan-phase`, `init phase-op`, `init manager`) —
+including `cmdInitManager`, whose own read failure previously vanished into
+a bare empty `catch {}` with no signal of any kind. `getPhaseFileStats`
+(`src/core-utils.cts`) — the shared listing owner behind `roadmap analyze`
+and `init`'s `has_context` — no longer lets its own failed read get masked
+by an unrelated, already-successful `scanPhasePlans` scope on the same
+phase directory.
+
+**Known limits:**
+- `context_read_error` / `phase_dir_read_error`'s message text is now a
+  fixed "Could not read phase directory `<path>`" rather than embedding the
+  underlying OS errno text — `findContextMdIn`'s directory-string form
+  reports only the `SCOPE` discriminator, not the raw caught error. The
+  field's presence and type are unchanged; only its message detail is
+  coarser than before #4014.
+- `init.cts`'s three call sites call `findContextMdIn` for the scope signal
+  and then still run their own, pre-existing `fs.readdirSync` on the same
+  path for the rest of their output — an intentional, additive-only choice
+  to avoid altering already-complex failure control-flow at those sites,
+  not a performance optimization.
 
 ---
 

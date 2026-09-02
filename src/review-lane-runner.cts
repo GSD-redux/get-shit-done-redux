@@ -859,8 +859,62 @@ export function antigravityArgv(
  *
  * Mode 3 (a pre-session stall, which `--print-timeout` cannot bound because it cannot fire before a
  * session exists) leaves no log line at all, so its tell is stated rather than searched for.
+ *
+ * #3996 mode 4 (a headless tool-permission denial) exits 0 with empty stdout and a POPULATED
+ * transcript, and reports the cause only on stderr — so the stub carries the run's stderr
+ * (`evidence.stderr`, the same `plan.errPath` content the generic stub reads), and the mode-3
+ * tell is stated only when `antigravityFailureMode` rules a session out (a fresh conv-id or
+ * transcript growth past the watermark means one verifiably started). Asserting mode 3 over a
+ * transcript this code just read inverts who is better placed to know.
  */
-export function antigravityDiagnostic(deps: RunnerDeps): string {
+/**
+ * What actually failed, as a typed fact rather than a guess baked into prose. #3996.
+ *
+ * The session-started question is decidable at diagnostic time with the same staleness rule the
+ * layer-2 fallback uses: re-resolve the workspace's CURRENT conv-id and compare against the
+ * pre-spawn watermark. A conv-id that changed, or a transcript that grew past the watermark
+ * line count, means THIS invocation demonstrably reached a session — a pre-launch stall is
+ * ruled out. An unchanged conv-id with no growth means nothing new happened, which is the
+ * #2073 mode-3 shape even when a PRIOR session's transcript still exists on disk (existence
+ * alone would mis-diagnose mode 3 as mode 4 in any workspace with history).
+ */
+export const ANTIGRAVITY_FAILURE_MODE = Object.freeze({
+  /** A session ran this invocation (fresh conv-id, or transcript growth) but no review was recovered. */
+  SESSION_STARTED: 'session_started',
+  /** No session this invocation — the #2073 mode-3 stall tell is the right signpost. */
+  PRE_SESSION_STALL: 'pre_session_stall',
+} as const);
+
+export type AntigravityFailureMode =
+  (typeof ANTIGRAVITY_FAILURE_MODE)[keyof typeof ANTIGRAVITY_FAILURE_MODE];
+
+export function antigravityFailureMode(
+  workspace: string,
+  mark: TranscriptWatermark,
+  deps: RunnerDeps,
+): AntigravityFailureMode {
+  const convId = resolveWorkspaceConvId(workspace, deps);
+  if (!convId) return ANTIGRAVITY_FAILURE_MODE.PRE_SESSION_STALL;
+  // A different conv-id than the watermark saw = a fresh session this run, transcript or not.
+  if (convId !== mark.convId) return ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED;
+  const tx = transcriptPath(deps.homeDir, convId);
+  if (!deps.exists(tx)) return ANTIGRAVITY_FAILURE_MODE.PRE_SESSION_STALL;
+  try {
+    const lines = deps.readFile(tx).split(/\r?\n/).filter((l) => l.trim()).length;
+    return lines > mark.lines
+      ? ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED
+      : ANTIGRAVITY_FAILURE_MODE.PRE_SESSION_STALL;
+  } catch {
+    // #3118 fail-closed shape: the transcript indisputably exists but cannot be read — do not
+    // assert the stall case over a file this code cannot check.
+    return ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED;
+  }
+}
+
+export function antigravityDiagnostic(
+  deps: RunnerDeps,
+  evidence: { stderr?: string; mode?: AntigravityFailureMode } = {},
+): string {
   const lines = [
     'Antigravity review failed or returned empty output.',
   ];
@@ -882,10 +936,30 @@ export function antigravityDiagnostic(deps: RunnerDeps): string {
       /* an unreadable log is not worth failing the lane over */
     }
   }
-  lines.push(
-    'If no agy run started, that is the pre-session-stall case: check whether a new ' +
-      '~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch.',
-  );
+  // #3996: the stub carries agy's stderr, as the generic lane stub already does — mode 4 (a
+  // headless tool-permission denial) exits 0 with empty stdout and a populated transcript, and
+  // the stderr line is the only signal that names its cause.
+  const stderr = (evidence.stderr ?? '').trim();
+  if (stderr) lines.push('stderr:', stderr);
+  // #3996: mode 3's tell is stated only when its precondition holds — the mode is computed from
+  // the watermark (#3996 mode 3 in a workspace with history is a no-growth transcript, not an
+  // absent one), never guessed from prose.
+  if (evidence.mode === ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED) {
+    lines.push(
+      'An agy session started this run but no review was recovered, so a pre-launch stall is ' +
+        'ruled out.' +
+        (stderr
+          ? ' See stderr above; a headless run that was auto-denied a tool permission reports ' +
+            'the cause and its fix there.'
+          : ' agy reported nothing on its error stream; inspect the transcript under ' +
+            '~/.gemini/antigravity-cli/brain/<conv-id>/ for where the session stopped.'),
+    );
+  } else {
+    lines.push(
+      'If no agy run started, that is the pre-session-stall case: check whether a new ' +
+        '~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch.',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -1126,7 +1200,13 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
       // pinned model that 404s server-side and exits 0 with empty output, so the model IS the
       // diagnosis — dropping it here would throw away the one piece of evidence the stub exists
       // to preserve.
-      deps.writeFile(plan.reviewPath, `${antigravityDiagnostic(deps)}\n`);
+      deps.writeFile(
+        plan.reviewPath,
+        `${antigravityDiagnostic(deps, {
+          stderr: errContent,
+          mode: antigravityFailureMode(repoRoot, mark, deps),
+        })}\n`,
+      );
       return { slug: plan.slug, ok: true, stubbed: true, model };
     }
   }

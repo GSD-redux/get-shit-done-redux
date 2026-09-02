@@ -46,6 +46,7 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
     "text_mode": false,
     "use_worktrees": true,
     "code_review": true,
+    "code_review_point": "execute:post",
     "code_review_depth": "standard",
     "code_review_depth_overrides": [],
     "plan_bounce": false,
@@ -240,6 +241,7 @@ The key suffix is **not** always the lane slug. Each lane declares the config ke
 | `review.models.codex` | string | `null` | Model id for Codex review (injected into --model), e.g. `"gpt-5"` |
 | `review.models.gemini` | string | `null` | Model id for Gemini review (injected into -m), e.g. `"gemini-2.5-pro"` |
 | `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
+| `review.models.cursor` | string | `null` | Model id for Cursor review (injected into --model), e.g. `"cursor-grok-4.5-high"` |
 | `review.models.kimi-code` | string | `null` | Model id for Kimi Code review (injected into -m) |
 
 ### Resolved model recording (#2295)
@@ -269,7 +271,7 @@ which schema validates them moved.
 One consequence follows: `<cli>` must now name a **declared reviewer lane**. Previously any slug
 matching `[a-zA-Z0-9_-]+` was accepted, so a typo or a key left over from a removed reviewer
 validated silently and was never read. Such a key is now rejected by `config-set`. The declared
-lanes are `gemini`, `claude`, `codex`, `opencode`, `agy` (the Antigravity lane — its key suffix is
+lanes are `gemini`, `claude`, `codex`, `opencode`, `cursor`, `agy` (the Antigravity lane — its key suffix is
 the CLI's own name, not the lane slug), `ollama`, `lm_studio` and `llama_cpp`.
 
 The same applies to `review.max_prompt_tokens_per_reviewer.<slug>`. `review.max_prompt_tokens`
@@ -288,9 +290,10 @@ falls back to that lane's built-in floor. For the `antigravity` lane specificall
 derives its native `agy --print-timeout` flag (roughly 60 seconds under the configured outer
 value), so raising `review.timeouts.antigravity` raises both bounds together — this is how to fix
 a reviewer lane being killed mid-run on a large plan set: `gsd config-set review.timeouts.antigravity 900`.
-Three lanes — `qwen`, `cursor`, and `coderabbit` — take neither a model flag nor a host and do not
-federate a timeout key either, matching the same narrow key-ownership invariant their
-`review.models.*`/host keys already follow (each owns only its own prompt-budget key).
+Two lanes — `qwen` and `coderabbit` — take neither a model flag nor a host and do not federate a
+timeout key either, matching the same narrow key-ownership invariant their `review.models.*`/host
+keys already follow (each owns only its own prompt-budget key). `cursor` gained a model flag
+(`review.models.cursor`, #3653) but still owns no federated timeout key of its own.
 
 ### Reviewer defaults for `/gsd-review`
 
@@ -426,6 +429,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.agent_hint_routing` | boolean | `true` | Per-plan specialist executor routing (#1689). When `true`, a plan whose `agent_hint:` frontmatter names a subagent that resolves on the active runtime is dispatched to that specialist instead of `gsd-executor`. Default `true` — a no-op for plans without `agent_hint:`, so existing dispatch is unchanged. Set `false` to disable. See [PLAN.md `agent_hint`](reference/plan-md.md#per-plan-executor-routing). |
 | `workflow.worktree_skip_hooks` | boolean | `false` | When `true`, executor agents in worktree mode pass `--no-verify` (skipping pre-commit hooks) and post-wave hook validation runs against the merged result instead. Opt-in escape hatch for projects whose hooks cannot run in agent worktrees. Default `false` runs hooks on every commit (#2924). |
 | `workflow.code_review` | boolean | `true` | Enable `/gsd-code-review` and `/gsd-code-review --fix` commands. When `false`, the commands exit with a configuration gate message. Added in v1.34 |
+| `workflow.code_review_point` | string | `execute:post` | Loop point at which the code-review capability's step registers: `execute:post` reviews once, after every wave in a phase has landed (default — unchanged behavior); `execute:wave:post` reviews once per completed wave instead, scoped to what changed since the phase's prior review (the whole phase's diff on the first wave, each subsequent wave's own diff thereafter). Manual `/gsd-code-review <phase>` invocation is unaffected by this key — it is gated by `workflow.code_review` alone and runs regardless of which point is configured. `/gsd-autonomous` and `/gsd-quick` have no wave granularity of their own, so setting this to `execute:wave:post` means code review does not run automatically inside those two flows (consistent with how every other `execute:wave:post`-only capability already behaves for them). Added in #3661 |
 | `workflow.code_review_depth` | string | `standard` | Default review depth for `/gsd-code-review`: `quick` (pattern-matching only), `standard` (per-file analysis), or `deep` (cross-file with import graphs). Can be overridden per-run with `--depth=`. Added in v1.34 |
 | `workflow.code_review_depth_overrides` | array | `[]` | Ordered list of `{ paths: string[], depth }` rules that escalate `/gsd-code-review` depth for specific directories, e.g. `[{ "paths": ["src/auth"], "depth": "deep" }]`. Each rule's `paths` are matched against the review's changed-file set by whole-segment directory-path prefix (`src/auth` matches `src/auth/token.ts`, never `src/authfoo/x.ts` or `docs/src/auth/x.ts`); matching is case-sensitive, following git. Glob syntax (`*`, `?`) is a configuration error, not sugar for a prefix. One matched file escalates the entire review — depth is not applied per file. Resolution order: `--depth=` flag → strongest matching rule → `workflow.code_review_depth` → `standard`; a matching rule wins even when its tier is weaker than the global default. A malformed rule (bad `depth`, glob syntax, absolute path, `..` segment, empty path, non-array `overrides`, non-object rule, malformed `paths`) is a configuration error and the review halts rather than falling back silently. The resolved depth and the matching rule are printed in the review output. Added in #2554 |
 | `workflow.plan_bounce` | boolean | `false` | Run external validation script against generated plans. When enabled, the plan-phase orchestrator pipes each PLAN.md through the script specified by `plan_bounce_script` and blocks on non-zero exit. Added in v1.36 |
@@ -456,6 +460,8 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.drift_threshold` | number | `3` | Minimum number of new structural elements (new directories, barrel exports, migrations, route modules) before the codebase-drift gate takes action. The gate runs at two points: `plan:pre` (before `/gsd-plan-phase` plans — **non-blocking, warn-only**, so plans are authored against a fresh STRUCTURE.md) and `execute:wave:post` (after `/gsd-execute-phase` — honors `workflow.drift_action`). See [#2003](https://github.com/open-gsd/gsd-core/issues/2003). Added in v1.39 |
 | `workflow.drift_action` | string | `warn` | What to do when `workflow.drift_threshold` is exceeded **at `execute:wave:post`** (after `/gsd-execute-phase`). `warn` prints a message suggesting `/gsd-map-codebase --paths …`; `auto-remap` spawns `gsd-codebase-mapper` scoped to the affected paths. The `plan:pre` pre-check is always warn-only regardless of this setting — it never auto-spawns the mapper at plan entry. Added in v1.39 |
 | `workflow.plan_drift_precheck` | boolean | `true` | Enable the non-blocking codebase-drift pre-check at `plan:pre`, before `/gsd-plan-phase` spawns the planner. Surfaces a stale STRUCTURE.md (drift over `workflow.drift_threshold`) as a warn-only advisory pointing to `/gsd-map-codebase`; never blocks planning, never spawns the mapper. Separate from the `execute:wave:post` gates so autonomous/CI runs can silence the plan-time advisory while keeping execute-time drift detection on. Added in v1.6.0. See [#1592](https://github.com/open-gsd/gsd-core/issues/1592). |
+| `workflow.context_drift_precheck` | boolean | `true` | Enable the non-blocking context-drift pre-check at `plan:pre`, before `/gsd-plan-phase` reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own; an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see `workflow.context_drift_action`); never blocks planning on its own. See [#3348](https://github.com/open-gsd/gsd-core/issues/3348). |
+| `workflow.context_drift_action` | string | `warn` | What to do when the context-drift gate finds a stale upstream artifact. `warn` prints an advisory naming the stale artifacts and how to regenerate them; `block` halts `/gsd-plan-phase` until the artifacts are regenerated or the check is disabled. See [#3348](https://github.com/open-gsd/gsd-core/issues/3348). |
 | `workflow.build_command` | string | (none) | Shell command to build the project in the post-merge build gate (Step A of step 5.6 in execute-phase). When unset, the gate auto-detects: Xcode (`.xcodeproj` present) → `xcodebuild build`, `Makefile` with `build:` target → `make build`, Justfile → `just build`, `Cargo.toml` → `cargo build`, `go.mod` → `go build ./...`, Python → `python -m py_compile`, `package.json` with `build` script → `npm run build`. Runs with a 5-minute timeout; failure increments `WAVE_FAILURE_COUNT`. Added in v1.39 |
 | `workflow.test_command` | string | (none) | Shell command to run the project's test suite in the post-merge test gate (Step B of step 5.6 in execute-phase) and the regression gate. When unset, the gate auto-detects: Xcode (`.xcodeproj` present) → `xcodebuild test`, `Makefile` with `test:` target → `make test`, Justfile → `just test`, `package.json` → `npm test`, `Cargo.toml` → `cargo test`, `go.mod` → `go test ./...`, Python → `python -m pytest`. Runs with a 5-minute timeout; failure increments `WAVE_FAILURE_COUNT`. Added in v1.39 |
 
@@ -1278,6 +1284,7 @@ Configure per-CLI model selection for `/gsd-review`. When set, overrides the CLI
 | `review.models.claude` | string | (CLI default) | Model used when `--claude` reviewer is invoked |
 | `review.models.codex` | string | (CLI default) | Model used when `--codex` reviewer is invoked |
 | `review.models.opencode` | string | (CLI default) | Model used when `--opencode` reviewer is invoked |
+| `review.models.cursor` | string | (CLI default) | Model used when the `--cursor` reviewer is invoked (injected into `--model`) |
 | `review.models.agy` | string | (CLI default) | Model used when the `--antigravity` / `--agy` reviewer is invoked. The key suffix is the CLI's own name (`agy`), not the lane slug — the lane declares which key it reads, so the two need not match |
 | `review.models.kimi-code` | string | (CLI default) | Model used when the `--kimi-code` reviewer is invoked (injected into `-m`) |
 | `review.models.ollama` | string | (server default) | Model name passed to Ollama when `--ollama` reviewer is invoked. If unset, the first available model reported by the server is used (e.g. `llama3`). Set to a specific tag: `gsd config-set review.models.ollama codellama` |

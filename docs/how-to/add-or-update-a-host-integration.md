@@ -30,7 +30,7 @@ Read the docs and map them to the closed vocabulary. Do not pick a value unless 
 |---|---|
 | `embeddingMode` | An in-process programmatic plugin/extension API (`imperative`) vs. configuration files only (`declarative`). |
 | `commandSurface` | How custom commands are authored/invoked: `slash-file` (.md), `slash-toml`, `slash-programmatic`, `palette`, `prose-only`. |
-| `dispatch` | Sub-agent delegation: `namedDispatch`, `nested`, `maxDepth` (int; `-1` = documented-unbounded), `background`, `subagentToolkit` (`full`/`read-only`). |
+| `dispatch` | Sub-agent delegation: `namedDispatch`, `nested`, `maxDepth` (int; `-1` = documented-unbounded), `background`, `subagentToolkit` (`full`/`read-only`/`built-in-only`), `backgroundDispatch`, `isolation` (`harness-worktree`/`orchestrator-worktree`/`none`, #2584), `maxConcurrency` (positive integer — how many same-wave executors this host can run concurrently; no engine-side ceiling, unlike `maxDepth`; #3673). |
 | `modelMode` | A programmatic model request/provider API (`active`) vs. instruction/per-agent-field only (`passive`). |
 | `hookBus` | The host fires lifecycle events a plugin subscribes to (`host`), an extension host owns the bus (`engine`), or no bus (`none`). **Independent of `hooksSurface`** — e.g. opencode has `hooksSurface: none` but `hookBus: host`. |
 | `stateIO` | `filesystem`, `sandboxed-storage` (web IDE, no arbitrary FS), or `session-log-append`. |
@@ -48,7 +48,7 @@ not state:
 "hostIntegration": {
   "embeddingMode": "declarative",
   "commandSurface": "slash-file",
-  "dispatch": { "namedDispatch": true, "nested": false, "maxDepth": 1, "background": false, "subagentToolkit": "undocumented" },
+  "dispatch": { "namedDispatch": true, "nested": false, "maxDepth": 1, "background": false, "subagentToolkit": "undocumented", "backgroundDispatch": false, "isolation": "undocumented", "maxConcurrency": "undocumented" },
   "modelMode": "passive",
   "hookBus": "host",
   "stateIO": "filesystem",
@@ -60,7 +60,7 @@ not state:
 **When to use `undocumented`:** only when you searched and the host's docs genuinely do not state the
 axis. It validates, but `negotiateHostCapabilities` **fail-closes** on it (degrades to the most
 restrictive known value) — so it is always safe and never a silent capability claim. A dispatch
-boolean or `maxDepth` may also be `"undocumented"`.
+boolean, `maxDepth`, `isolation`, or `maxConcurrency` may also be `"undocumented"`.
 
 **Do not conflate the orthogonal axes:** `commandStyle` (GSD's emission style) is *not*
 `commandSurface` (the host's surface type); the `hookEvents` dialect is *not* `hookBus` (bus
