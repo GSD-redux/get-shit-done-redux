@@ -24,45 +24,50 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const RUNNER = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
 
 describe('#4020 — run-tests temp root', () => {
+  // setupRunTempRoot mutates the PROCESS env (TMPDIR/TEMP/TMP), so these rows
+  // drive it in an isolated child — an in-process call would poison every other
+  // subtest's os.tmpdir() resolution (observed: ENOENT cascades in the bench).
+  const setupProbe = `
+    const runner = require(${JSON.stringify(path.join(__dirname, '..', 'scripts', 'run-tests.cjs'))});
+    const root = runner.setupRunTempRoot();
+    console.log(JSON.stringify({
+      root,
+      base: require('path').basename(root),
+      parent: require('path').dirname(root),
+      TMPDIR: process.env.TMPDIR, TEMP: process.env.TEMP, TMP: process.env.TMP,
+    }));
+  `;
+
   test('setupRunTempRoot creates a dedicated run temp root and repoints the env', (t) => {
-    const runner = require('../scripts/run-tests.cjs');
-    assert.equal(typeof runner.setupRunTempRoot, 'function',
-      'the runner must export setupRunTempRoot for in-process verification');
     const outer = createTempDir('gsd-4020-outer-');
     t.after(() => cleanup(outer));
 
-    const prev = { ...process.env };
-    t.after(() => { process.env = prev; });
-    process.env.TMPDIR = outer;
-    delete process.env.TEMP;
-    delete process.env.TMP;
-
-    const root = runner.setupRunTempRoot();
-    t.after(() => cleanup(root));
-    assert.ok(path.basename(root).startsWith('gsd-test-run-'),
+    const r = runNode(['-e', setupProbe], { timeoutMs: 30_000, env: { ...process.env, TMPDIR: outer } });
+    assert.equal(r.exitCode, 0, `probe failed: ${r.stderr.slice(-300)}`);
+    const out = JSON.parse(r.stdout.trim().split(/\n/).pop());
+    assert.ok(out.base.startsWith('gsd-test-run-'),
       'the root is a gsd-test-run-* directory, so a sweep is scoped to it');
-    assert.ok(path.dirname(root).startsWith(outer),
+    assert.equal(out.parent, outer,
       'the root lives INSIDE the operator-provided TMPDIR, preserving the workaround');
-    assert.equal(process.env.TMPDIR, root, 'TMPDIR is repointed so children allocate inside the root');
-    assert.equal(process.env.TEMP, root, 'TEMP repointed (Windows children read TEMP, not TMPDIR)');
-    assert.equal(process.env.TMP, root, 'TMP repointed (Windows fallback)');
+    assert.equal(out.TMPDIR, out.root, 'TMPDIR is repointed so children allocate inside the root');
+    assert.equal(out.TEMP, out.root, 'TEMP repointed (Windows children read TEMP, not TMPDIR)');
+    assert.equal(out.TMP, out.root, 'TMP repointed (Windows fallback)');
+    cleanup(out.root);
   });
 
   test('setupRunTempRoot is idempotent for nested run-tests spawns', (t) => {
     // Mirrors the GSD_HOME sandbox contract: a nested run-tests spawn (the harness
     // regression test) inherits the root via env and must REUSE it, never mkdtemp a
     // fresh root per invocation.
-    const runner = require('../scripts/run-tests.cjs');
+    const probe = setupProbe.replace('const root = runner.setupRunTempRoot();',
+      'const first = runner.setupRunTempRoot(); const root = runner.setupRunTempRoot(); console.error(JSON.stringify({ reuse: root === first }));');
     const outer = createTempDir('gsd-4020-idem-');
     t.after(() => cleanup(outer));
-    const prev = { ...process.env };
-    t.after(() => { process.env = prev; });
-    process.env.TMPDIR = outer;
 
-    const first = runner.setupRunTempRoot();
-    t.after(() => cleanup(first));
-    const second = runner.setupRunTempRoot();
-    assert.equal(second, first, 'a second invocation with the root active reuses it');
+    const r = runNode(['-e', probe], { timeoutMs: 30_000, env: { ...process.env, TMPDIR: outer } });
+    assert.equal(r.exitCode, 0, `probe failed: ${r.stderr.slice(-300)}`);
+    assert.ok(JSON.parse(r.stderr.trim().split('\n').pop()).reuse === true,
+      'a second invocation with the root active reuses it');
   });
 
   test('sweepRunTempRoot removes leaked fixtures and spares the reserved sandboxes', (t) => {
