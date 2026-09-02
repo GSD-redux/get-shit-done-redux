@@ -103,6 +103,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_REF: ${{ github.head_ref }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           CHANGED_FILES: ${{ steps.changed_files.outputs.files }}
           CHANGED_FILES_TOTAL: ${{ github.event.pull_request.changed_files }}
         run: |
