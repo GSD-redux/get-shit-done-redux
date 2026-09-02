@@ -68,7 +68,7 @@ The executor MUST:
      already passes. Halt and reconcile the declaration with reality instead.
 
 3. Exit the current execution wave cleanly. Do NOT roll back any prior commits in the same wave.
-4. Update `STATE.md` with `last_gate_trip: {plan_id}/{task_id}` so the user can resume after writing the test.
+4. Update `STATE.md` with `last_gate_trip: {plan_id}/{task_id}` so the user can resume after resolving the reported gate reason.
 
 ## Escalation: end-of-phase TDD review under MVP+TDD
 
