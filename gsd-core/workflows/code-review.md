@@ -225,17 +225,27 @@ surface — so a partial SUMMARY result can no longer silently mask the rest of 
 # #3191: stay POSIX-ERE portable — the boundary is the closing paren + colon,
 # never \b (not a POSIX ERE token; under --extended-regexp it silently matches
 # nothing on macOS regex(3), making this fallback dead on Apple platforms).
-PHASE_SCOPE_NUM="${PADDED_PHASE}"
-case "${PADDED_PHASE}" in
-  0[0-9]*) PHASE_SCOPE_NUM="${PADDED_PHASE#0}|${PADDED_PHASE}" ;;
-esac
-PHASE_COMMITS=$(git log --oneline --all --extended-regexp --grep="^[[:alpha:]]+!?\((phase-)?(${PHASE_SCOPE_NUM})(-[0-9]+)?\)!?:" --format="%H" 2>/dev/null)
+# #3995: a phase number is unique within a MILESTONE, not a repository. The
+# former message grep had no milestone bound, and its tail -1 deliberately
+# selected the OLDEST matching subject — dragging in previous milestones'
+# same-numbered phases and taking a 7-file phase to a 3388-file scope (plus
+# the >50 depth downgrade). The phase's own directory is the unique identity:
+# base = the parent of the first commit that added anything under PHASE_DIR
+# (the same anchor class git-base-branch's phaseStartCommit uses for
+# complexity triggering). Message subjects demonstrably do not carry enough
+# information to identify a phase — this was the grep's fifth failure.
+# KNOWN RESIDUAL: git log -- <dir> does not follow renames, so a LATER
+# milestone that reuses BOTH number and slug re-creates the same literal
+# path and the oldest A-commit is the previous occupant's. Number+slug
+# reuse is the narrow trigger; the reported archived-milestone case (dirs
+# move under milestones/ on archive) is closed.
+PHASE_START=$(git log --format="%H" --diff-filter=A -- "${PHASE_DIR}" 2>/dev/null | tail -1)
 DIFF_BASE=""
-if [ -n "$PHASE_COMMITS" ]; then
-  DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
-  # Verify the parent commit exists (first commit in repo has no parent)
-  if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
-    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
+if [ -n "$PHASE_START" ]; then
+  if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
+    DIFF_BASE="${PHASE_START}^"
+  else
+    DIFF_BASE="${PHASE_START}"
   fi
 fi
 
@@ -520,22 +530,27 @@ Compute the review output path:
 REVIEW_PATH="${PHASE_DIR}/${PADDED_PHASE}-REVIEW.md"
 ```
 
-Compute DIFF_BASE for agent context (in case agent needs it). #3191/#3503: this
-must be the SAME anchored, POSIX-portable conventional-commit-scope derivation
-the Tier-3 scope step uses — the reviewer agent consumes `diff_base` exactly
+Compute DIFF_BASE for agent context (in case agent needs it). #3191/#3995: this
+must be the SAME phase-directory-anchor derivation the Tier-3 scope step uses —
+the reviewer agent consumes `diff_base` exactly
 when `files:` is empty, i.e. the same fail-closed scenario Tier 3 protects, so
 a divergent recomputation here re-arms the mis-scoping one tier down:
 ```bash
-PHASE_SCOPE_NUM="${PADDED_PHASE}"
-case "${PADDED_PHASE}" in
-  0[0-9]*) PHASE_SCOPE_NUM="${PADDED_PHASE#0}|${PADDED_PHASE}" ;;
-esac
-PHASE_COMMITS=$(git log --oneline --all --extended-regexp --grep="^[[:alpha:]]+!?\((phase-)?(${PHASE_SCOPE_NUM})(-[0-9]+)?\)!?:" --format="%H" 2>/dev/null)
-if [ -n "$PHASE_COMMITS" ]; then
-  DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
-  # Verify the parent commit exists (first commit in repo has no parent)
-  if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
-    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
+# #3995: a phase number is unique within a MILESTONE, not a repository. The
+# former message grep had no milestone bound, and its tail -1 deliberately
+# selected the OLDEST matching subject — dragging in previous milestones'
+# same-numbered phases and taking a 7-file phase to a 3388-file scope (plus
+# the >50 depth downgrade). The phase's own directory is the unique identity:
+# base = the parent of the first commit that added anything under PHASE_DIR
+# (the same anchor class git-base-branch's phaseStartCommit uses for
+# complexity triggering). Message subjects demonstrably do not carry enough
+# information to identify a phase — this was the grep's fifth failure.
+PHASE_START=$(git log --format="%H" --diff-filter=A -- "${PHASE_DIR}" 2>/dev/null | tail -1)
+if [ -n "$PHASE_START" ]; then
+  if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
+    DIFF_BASE="${PHASE_START}^"
+  else
+    DIFF_BASE="${PHASE_START}"
   fi
 else
   DIFF_BASE=""
