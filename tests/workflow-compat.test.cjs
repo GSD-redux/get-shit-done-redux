@@ -114,7 +114,7 @@ describe('feat-41: ship.md TDD Audit gate-status extraction', () => {
     t.after(() => cleanup(tmpDir));
     const msg = `test(2-01): probe\n\n${token}: skill\n`;
     const c = runGit(['commit', '--allow-empty', '-m', msg], { cwd: tmpDir });
-    assert.equal(c.outcome, 'EXITED', `probe commit must exit cleanly: ${c.stderr}`);
+    assert.equal(c.outcome, 'exited', `probe commit must exit cleanly: ${c.stderr}`);
     const r = runGit(
       ['log', '-1', `--format=%(trailers:key=${token},valueonly)`],
       { cwd: tmpDir },
