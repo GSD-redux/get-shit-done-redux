@@ -161,9 +161,9 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #      no host subagent machinery, so the role definition must ride the prompt
 #      (#3637 acceptance: resolved agent instructions as launch-level
 #      instructions + provenance of which role definition was used).
-#   4. Read the selected PLAN.md at `${PROJECT_ROOT}/{phase_dir}/{plan_file}`.
+#   4. Read the selected PLAN.md from the repository root at `{phase_dir}/{plan_file}`.
 #      Ignore an optional BOM before leading YAML frontmatter. Set `PLAN_TDD_CONTEXT=true` only
-#      when that frontmatter has `type: tdd` or a quoted scalar `tdd`, or an actual multiline task opening tag has `tdd="true"`
+#      when that frontmatter has `type: tdd` or a quoted scalar `tdd`, or an actual task opening tag (which may be multiline) has `tdd="true"`
 #      (or another quoted true form; whitespace around `=` is allowed) at the start of a non-fenced line. Literal task examples in prose or fenced code blocks
 #      opened by backticks or tildes do not qualify.
 #      Halt if that PLAN.md cannot be read, or if `PLAN_TDD_CONTEXT=true` and

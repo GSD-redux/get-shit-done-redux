@@ -57,7 +57,7 @@ describe('conditional canonical TDD executor context', () => {
     const source = composerSource(WORKTREE);
     const composition = compositionScope(source, 'EXECUTOR_PROMPT=', 'Then create the worktree');
 
-    assert.match(composition, /\$\{PLAN_TDD_CONTEXT \? '- tdd\.md' : ''\}/,
+    assert.match(composition, /\$\{PLAN_TDD_CONTEXT:\+- tdd\.md\}/,
       'the prompt must retain the conditional marker until the orchestrator embeds it');
     assert.match(composition, /printf '%s' "\$EXECUTOR_PROMPT" \| grep -Fq "/,
       'the real pre-spawn checks must detect an unresolved PLAN_TDD_CONTEXT marker');
