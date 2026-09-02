@@ -111,6 +111,72 @@ describe('roadmap-parser: extractCurrentMilestone', () => {
     assert.ok(result.includes('v2.0'), 'version heading preserved');
   });
 
+  test('newest-first layout: archived details below the active milestone do not leak into the window (#3982)', () => {
+    // The archived milestone's title lives in the <summary> TAG, not a
+    // heading, so no milestone-shaped heading bounds the section walk and the
+    // raw currentSection used to swallow the whole <details> block — feeding
+    // archived phases to phase.complete's lowest-outstanding scan.
+    writeState(tmpDir, { milestone: 'v0.3' });
+    const content = [
+      '# Roadmap',
+      '',
+      '### 🚧 v0.3 — Third Milestone (Phases 20-22) — ACTIVE',
+      '',
+      '- [x] **Phase 20: First Thing** - does the first thing.',
+      '- [ ] **Phase 21: Second Thing** - does the second thing.',
+      '- [ ] **Phase 22: Third Thing** - does the third thing.',
+      '',
+      '<details>',
+      '<summary>✅ v0.2 Second Milestone (Phases 10-12) — ARCHIVED</summary>',
+      '',
+      '- [ ] **Phase 10: Never Finished** - was left unchecked when v0.2 closed.',
+      '- [x] **Phase 11: Done Thing** - completed.',
+      '',
+      '</details>',
+      '',
+      '<details>',
+      '<summary>✅ v0.1 First Milestone (Phases 1-2) — ARCHIVED</summary>',
+      '',
+      '- [x] **Phase 1: Done** - completed.',
+      '',
+      '</details>',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 21'), 'the real next phase stays in the window');
+    assert.ok(result.includes('Phase 22'), 'the last current phase stays in the window');
+    assert.ok(!result.includes('Phase 10'), 'an archived milestone\'s unchecked phase must not leak into the current window (#3982)');
+    assert.ok(!result.includes('Never Finished'), 'archived milestone content must not leak (#3982)');
+    assert.ok(!result.includes('Phase 1: Done'), 'a second archived details block must not leak either');
+  });
+
+  test('active milestone own collapsed details are preserved by the closed-only strip (#3982)', () => {
+    // The issue's adversarial fixture: the ACTIVE milestone holds its own
+    // collapsed <details> (deferred scope). A blanket strip would delete
+    // phases 21/22 and reproduce the phase_count: 0 class (#557/#2947).
+    writeState(tmpDir, { milestone: 'v0.3' });
+    const content = [
+      '# Roadmap', '',
+      '### 🚧 v0.3 — Third Milestone (Phases 20-22) — ACTIVE', '',
+      '- [x] **Phase 20: First Thing** - done.',
+      '',
+      '<details>',
+      '<summary>Deferred scope for v0.3</summary>', '',
+      '- [ ] **Phase 21: Second Thing** - deferred.',
+      '- [ ] **Phase 22: Third Thing** - deferred.',
+      '',
+      '</details>', '',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 21'), 'the active milestone\'s own collapsed phases must survive (#3982)');
+    assert.ok(result.includes('Phase 22'), 'the active milestone\'s own collapsed phases must survive (#3982)');
+  });
+
   test('reads milestone from STATE.md and extracts that section', () => {
     writeState(tmpDir, { milestone: 'v2.0' });
     const content = [
