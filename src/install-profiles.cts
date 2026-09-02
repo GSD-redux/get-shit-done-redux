@@ -36,6 +36,7 @@ const {
   readGsdCommandNames: _readGsdCommandNames,
   deriveAgentName: _deriveAgentName,
   applyAgentFrontmatterExtensions: _applyAgentFrontmatterExtensions,
+  appendAgentTools: _appendAgentTools,
 } = conversionModule as {
   applyAgentPathRewrites: (content: string, runtime: string, pathPrefix: string) => string;
   processAttribution: (content: string, attribution: string | null | undefined) => string;
@@ -46,6 +47,7 @@ const {
   // runtime descriptor's hostBehaviors.agentFrontmatterExtensions.
   deriveAgentName: (fileName: string) => string;
   applyAgentFrontmatterExtensions: (content: string, opts: { runtime: string; agentName: string; targetDir?: string | null }) => string;
+  appendAgentTools: (content: string, grants: string[]) => string;
 };
 
 // #2995 (epic #1671 Phase 6.4): agent bodies join the fragment model. Markers are
@@ -59,51 +61,6 @@ const { composeWorkflow: _composeWorkflow } = workflowFragmentsModule as {
 };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installModelOverrideResolver = require('./install-model-override-resolver.cjs');
-
-function _parseToolScalar(value: string): string {
-  if (!value.startsWith('"')) return value;
-  try { return JSON.parse(value) as string; } catch { return value; }
-}
-
-/** Add validated grants without reserializing unrelated frontmatter. */
-function _appendAgentTools(content: string, grants: string[]): string {
-  if (grants.length === 0) return content;
-  const eol = content.includes('\r\n') ? '\r\n' : '\n';
-  const lines = content.split(eol);
-  if (lines[0] !== '---') return content;
-  const frontmatterEnd = lines.indexOf('---', 1);
-  if (frontmatterEnd === -1) return content;
-  const toolsIndex = lines.findIndex((line, index) => index < frontmatterEnd && /^tools:[ \t]*(.*)$/.test(line));
-  if (toolsIndex === -1) return content;
-
-  const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
-  if (!toolsMatch) return content;
-  const existing: string[] = [];
-  let insertAt = toolsIndex + 1;
-  if (toolsMatch[1].trim()) {
-    existing.push(...toolsMatch[1].split(',').map((value) => _parseToolScalar(value.trim())).filter(Boolean));
-  } else {
-    while (insertAt < frontmatterEnd) {
-      const item = /^([ \t]+)-[ \t]*(\S.*)$/.exec(lines[insertAt]);
-      if (!item) break;
-      existing.push(_parseToolScalar(item[2].trim()));
-      insertAt += 1;
-    }
-  }
-  const present = new Set(existing);
-  const additions = grants.filter((grant) => !present.has(grant) && (present.add(grant), true));
-  if (additions.length === 0) return content;
-
-  const serialized = additions.map((grant) => JSON.stringify(grant));
-  if (toolsMatch[1].trim()) {
-    lines[toolsIndex] += `, ${serialized.join(', ')}`;
-  } else {
-    const firstItem = /^([ \t]+)-/.exec(lines[toolsIndex + 1]);
-    const indent = firstItem ? firstItem[1] : '  ';
-    lines.splice(insertAt, 0, ...serialized.map((grant) => `${indent}- ${grant}`));
-  }
-  return lines.join(eol);
-}
 
 // ---------------------------------------------------------------------------
 // Profile definitions
@@ -988,9 +945,8 @@ interface AgentCtx {
  *      gated by hostBehaviors.agentFrontmatterExtensions — no-op for a runtime
  *      that declares nothing, e.g. every non-Claude runtime today)
  *   5. normalizeAgentBodyForRuntime (colon→hyphen refs; no-op for trivial group)
- * When `agentCtx` is absent, only the converter is applied (backward-compat for
- * the feat-1173 synthetic-descriptor tests and the copilot/antigravity paths
- * that handle cross-cutting inside their converters).
+ * When `agentCtx` is absent, only global `agent_tools` augmentation and the
+ * converter run; other cross-cutting remains absent for backward compatibility.
  *
  * @param srcAgentsDir    source agents directory (e.g. agents/)
  * @param resolvedProfile profile filter from resolveProfile()
@@ -1004,8 +960,7 @@ interface AgentCtx {
  *                        every OTHER converter's contract — converters that don't declare a
  *                        3rd parameter simply never read it.
  * @param isGlobal        install scope passed through to the converter
- * @param agentCtx        optional cross-cutting context (ADR-1235 §1); when absent,
- *                        only the converter is applied (backward compat)
+ * @param agentCtx        optional cross-cutting context (ADR-1235 §1)
  */
 function stageAgentsForRuntimeWithConverter(
   srcAgentsDir: string,
@@ -1041,9 +996,7 @@ function stageAgentsForRuntimeWithConverter(
   try {
     // Resolve cmdNames once per staging call (not per file) for performance.
     const cmdNames = agentCtx ? _readGsdCommandNames() : [];
-    const agentTools = agentCtx
-      ? installModelOverrideResolver.readGsdEffectiveAgentTools(agentCtx.targetDir ?? null) as Record<string, string[]> | null
-      : null;
+    const agentTools = installModelOverrideResolver.readGsdEffectiveAgentTools(agentCtx?.targetDir ?? null) as Record<string, string[]> | null;
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith('.md')) continue;
@@ -1061,20 +1014,21 @@ function stageAgentsForRuntimeWithConverter(
       // throws loudly naming the file for a malformed marker, never emitting a
       // half-composed agent.
       content = _composeWorkflow(content, { sourcePath: agentSourcePath });
+      const agentName = _deriveAgentName(entry.name);
+      const grants = [
+        ...(agentTools?.['*'] || []),
+        ...(agentTools?.[agentName] || []),
+      ];
       if (agentCtx) {
         // #2875 Part 2 / row I3: derived exactly as the inline loop does —
         // single-sourced via deriveAgentName (runtime-artifact-conversion.cts).
-        const agentName = _deriveAgentName(entry.name);
         // ADR-1235 §1: pre-converter cross-cutting (matches inline loop order exactly)
         // Step 1: path rewrites (4 base ~/.claude/ regexes; skipped for copilot/antigravity)
         content = _applyAgentPathRewrites(content, agentCtx.runtime, agentCtx.pathPrefix);
         // Step 2: attribution
         content = _processAttribution(content, agentCtx.attribution);
         // Step 3: validated canonical grants, before host conversion.
-        content = _appendAgentTools(content, [
-          ...(agentTools?.['*'] || []),
-          ...(agentTools?.[agentName] || []),
-        ]);
+        content = _appendAgentTools(content, grants);
         // Step 4: converter (runtime-specific frontmatter/body transform)
         content = converter(content, isGlobal, { agentName });
         // Step 5: frontmatter extensions (effort/disallowedTools; no-op unless
@@ -1083,7 +1037,7 @@ function stageAgentsForRuntimeWithConverter(
         // Step 6: normalize colon→hyphen refs (no-op for trivial group)
         content = _normalizeAgentBodyForRuntime(content, agentCtx.runtime, cmdNames);
       } else {
-        // Backward-compat: only apply the converter (no cross-cutting)
+        content = _appendAgentTools(content, grants);
         content = converter(content, isGlobal);
       }
       installFs().writeFileSync(path.join(stageDir, entry.name), content, 'utf8');

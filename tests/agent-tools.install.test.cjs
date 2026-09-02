@@ -8,12 +8,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const fc = require('fast-check');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { cleanup } = require('./helpers.cjs');
 const { installerEnv, RUNTIME_META } = require('./helpers/install-shared.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
+const { appendAgentTools, buildKimiAgentArtifacts, convertClaudeAgentToQwenAgent } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 function parseTools(content) {
   const lines = content.split(/\r?\n/);
@@ -214,4 +216,48 @@ test('reinstall remains idempotent and preserves Claude read-only restrictions (
   assert.ok(artifacts.every((artifact) => parseTools(artifact).filter((tool) => tool === 'mcp__idempotent__grant').length === 1));
   assert.ok(artifacts.some((artifact) => artifact.includes('disallowedTools:')),
     'the existing Claude read-only deny-list must survive augmentation');
+});
+
+test('quoted scalar identity is shared by append, Kimi, and Qwen (#4191)', () => {
+  const inline = '---\nname: gsd-test\ndescription: test\ntools: "WebFetch", \'WebSearch\', "unterminated\n---\n';
+  const block = '---\nname: gsd-test\ndescription: test\ntools:\n  - "WebFetch"\n  - \'WebSearch\'\n  - "unterminated\n---\n';
+
+  for (const content of [inline, block]) {
+    const once = appendAgentTools(content, ['WebFetch', 'WebSearch']);
+    assert.strictEqual(once, content, 'quoted values must already satisfy append idempotency');
+
+    const kimi = buildKimiAgentArtifacts({ subagents: [{ path: 'agents/gsd-test.md', content }] });
+    assert.ok(kimi.subagents[0].yaml.includes('kimi_cli.tools.web:FetchURL'));
+    assert.ok(kimi.subagents[0].yaml.includes('kimi_cli.tools.web:SearchWeb'));
+    assert.ok(!kimi.subagents[0].yaml.includes('unterminated'));
+
+    const qwen = convertClaudeAgentToQwenAgent(content);
+    assert.match(qwen, /^  - WebFetch$/m);
+    assert.match(qwen, /^  - WebSearch$/m);
+    assert.doesNotMatch(qwen, /unterminated/);
+  }
+});
+
+test('fast-check: append preserves stable first-seen order and converges (#4032)', () => {
+  const token = fc.constantFrom('Read', 'Write', 'WebFetch', 'mcp__server__tool', 'Skill');
+  fc.assert(
+    fc.property(
+      fc.constantFrom('inline', 'block'),
+      fc.array(token, { maxLength: 8 }),
+      fc.array(token, { maxLength: 8 }),
+      fc.array(token, { maxLength: 8 }),
+      (form, existing, wildcard, named) => {
+        const frontmatter = form === 'inline'
+          ? `---\ntools: ${existing.join(', ')}\n---\n`
+          : `---\ntools:\n${existing.map((tool) => `  - ${tool}`).join('\n')}\n---\n`;
+        const present = new Set(existing);
+        const additions = [...wildcard, ...named].filter((tool) => !present.has(tool) && (present.add(tool), true));
+        const expected = [...existing, ...additions];
+        const once = appendAgentTools(frontmatter, [...wildcard, ...named]);
+        assert.deepStrictEqual(parseTools(once), expected);
+        assert.strictEqual(appendAgentTools(once, [...wildcard, ...named]), once);
+      },
+    ),
+    { numRuns: 100 },
+  );
 });

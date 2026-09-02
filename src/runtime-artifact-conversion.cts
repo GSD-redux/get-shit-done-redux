@@ -675,6 +675,70 @@ function convertClaudeCommandToKimiCodeSkill(content, skillName, _runtime = null
 
 const KIMI_CANONICAL_GSD_AGENT_RE = /^gsd-[a-z0-9-]+$/;
 
+/** Normalize one complete frontmatter tool scalar without parsing YAML. */
+function decodeToolScalar(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value) return null;
+  if (value.startsWith('"')) {
+    if (!value.endsWith('"')) return null;
+    try {
+      const decoded = JSON.parse(value);
+      return typeof decoded === 'string' && decoded.trim() ? decoded.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+  if (value.startsWith("'")) {
+    if (!/^'(?:[^'\r\n]|'')*'$/.test(value)) return null;
+    const decoded = value.slice(1, -1).replace(/''/g, "'").trim();
+    return decoded || null;
+  }
+  if (value.endsWith('"') || value.endsWith("'")) return null;
+  return value;
+}
+
+/** Append validated canonical grants without reserializing unrelated frontmatter. */
+function appendAgentTools(content: string, grants: string[]): string {
+  if (grants.length === 0) return content;
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = content.split(eol);
+  if (lines[0] !== '---') return content;
+  const frontmatterEnd = lines.indexOf('---', 1);
+  if (frontmatterEnd === -1) return content;
+  const toolsIndex = lines.findIndex((line, index) => index < frontmatterEnd && /^tools:[ \t]*(.*)$/.test(line));
+  if (toolsIndex === -1) return content;
+
+  const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
+  if (!toolsMatch) return content;
+  const existing: string[] = [];
+  let insertAt = toolsIndex + 1;
+  if (toolsMatch[1].trim()) {
+    existing.push(...toolsMatch[1].split(',').map(decodeToolScalar).filter((value): value is string => value !== null));
+  } else {
+    while (insertAt < frontmatterEnd) {
+      const item = /^([ \t]+)-[ \t]*(\S.*)$/.exec(lines[insertAt]);
+      if (!item) break;
+      const decoded = decodeToolScalar(item[2]);
+      if (decoded !== null) existing.push(decoded);
+      insertAt += 1;
+    }
+  }
+  const present = new Set(existing);
+  const additions = grants.filter((grant) => !present.has(grant) && (present.add(grant), true));
+  if (additions.length === 0) return content;
+
+  const serialized = additions.map((grant) => JSON.stringify(grant));
+  if (toolsMatch[1].trim()) {
+    lines[toolsIndex] += `, ${serialized.join(', ')}`;
+  } else {
+    const firstItem = /^([ \t]+)-/.exec(lines[toolsIndex + 1]);
+    const indent = firstItem ? firstItem[1] : '  ';
+    lines.splice(insertAt, 0, ...serialized.map((grant) => `${indent}- ${grant}`));
+  }
+  return lines.join(eol);
+}
+
 function parseKimiAgentSource(source) {
   if (typeof source === 'string') {
     return {
@@ -703,7 +767,8 @@ function parseFrontmatterTools(frontmatter) {
 
     if (collecting) {
       if (trimmed.startsWith('- ')) {
-        tools.push(trimmed.slice(2).trim());
+        const tool = decodeToolScalar(trimmed.slice(2));
+        if (tool !== null) tools.push(tool);
         continue;
       }
       collecting = false;
@@ -718,8 +783,8 @@ function parseFrontmatterTools(frontmatter) {
       const value = trimmed.slice(trimmed.indexOf(':') + 1).trim();
       if (value) {
         for (const tool of value.split(',')) {
-          const name = tool.trim();
-          if (name) tools.push(name);
+          const name = decodeToolScalar(tool);
+          if (name !== null) tools.push(name);
         }
       } else {
         collecting = true;
@@ -2570,7 +2635,7 @@ function convertClaudeAgentToZcodeAgent(content) {
     const inlineTools = /^tools:[ \t]*(.+)$/.exec(line);
     if (inlineTools) {
       const grants = inlineTools[1].split(',').map((tool) => tool.trim()).filter((tool) => tool !== '');
-      const kept = grants.filter((tool) => !tool.startsWith('mcp__'));
+      const kept = grants.filter((tool) => decodeToolScalar(tool)?.startsWith('mcp__') !== true);
       if (kept.length === grants.length) {
         out.push(line); // no mcp__* grants — keep the line byte-identical
       } else if (kept.length > 0) {
@@ -2592,7 +2657,7 @@ function convertClaudeAgentToZcodeAgent(content) {
       }
       const kept = items.filter((item) => {
         const name = /^([ \t]*)-[ \t]*(\S.*)$/.exec(item)[2].trim();
-        return !name.startsWith('mcp__');
+        return decodeToolScalar(name)?.startsWith('mcp__') !== true;
       });
       if (kept.length !== items.length) {
         changed = true;
@@ -3644,6 +3709,7 @@ function processAttribution(
 
 export = {
   processAttribution,
+  appendAgentTools,
   // #2103: public accessor for hostBehaviors.agentFileExtension, exported so
   // surface.cts's _syncGsdDir can derive the .agent.md rename from the SAME
   // descriptor read as install-engine.cts (folds a duplicated hardcoded
