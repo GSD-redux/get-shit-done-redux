@@ -125,6 +125,55 @@ describe('ESLint coverage tracks the bin/lib TS migration (ADR-457 / #537)', () 
 
 
 // ────────────────────────────────────────────────────────────────────────
+// #4141 — Stryker's sandbox is scratch space and must not be linted
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __d, test: __t, before: __b } = require('node:test');
+  const __assert = require('node:assert/strict');
+  const __path = require('node:path');
+  const { ESLint: __ESLint } = require('eslint');
+
+  const __ROOT = __path.resolve(__dirname, '..');
+  // `stryker.config.mjs` sets tempDirName '.stryker-tmp', .gitignore ignores it, and
+  // Stryker itself always ignores it. A run that dies before cleanup (chunk timeout,
+  // CI cancellation, Ctrl+C) leaves a whole sandboxed copy of the tree behind, and
+  // `npm run lint` then lints the copy: the `local/*` plugin is registered only in
+  // path-scoped blocks (tests/**, scripts/**, hooks/**), none of which match
+  // `.stryker-tmp/sandbox-*/…`, so every inline `local/…` disable comment in the copy
+  // becomes "Definition for rule … was not found". Verified as ESLint resolves it, not
+  // as a textual scan of the ignores array — same approach as the #551 block above.
+  const __SANDBOX_FILE = '.stryker-tmp/sandbox-nBAAwa/tests/worktree.test.cjs';
+  const __REAL_FILE = 'tests/worktree.test.cjs';
+
+  let __eslint;
+  __b(() => {
+    __eslint = new __ESLint({ cwd: __ROOT });
+  });
+
+  __d("ESLint ignores Stryker's sandbox (#4141)", () => {
+    __t('a file inside .stryker-tmp is ignored', async () => {
+      __assert.equal(
+        await __eslint.isPathIgnored(__path.join(__ROOT, __SANDBOX_FILE)),
+        true,
+        `${__SANDBOX_FILE} is a Stryker sandbox copy and must never be linted`,
+      );
+    });
+
+    // Control: without this the assertion above would also pass if the ignore
+    // pattern were widened enough to swallow the real tree.
+    __t('the real file at the mirrored path is still linted', async () => {
+      __assert.equal(
+        await __eslint.isPathIgnored(__path.join(__ROOT, __REAL_FILE)),
+        false,
+        `${__REAL_FILE} is committed source and must stay linted`,
+      );
+    });
+  });
+}
+
+
+
+// ────────────────────────────────────────────────────────────────────────
 // RETIRED: folded:bug-3054-stale-gsd-next-references (consolidation epic #1969 B8 #1977)
 // ────────────────────────────────────────────────────────────────────────
 //
