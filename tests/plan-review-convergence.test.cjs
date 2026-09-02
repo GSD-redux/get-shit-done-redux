@@ -32,7 +32,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
-const { readFileNormalized } = require('./helpers.cjs');
+const { readFileNormalized, readWorkflowCombined, createTempDir, cleanup } = require('./helpers.cjs');
+const { runHook, OUTCOME } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fc = require('fast-check');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'plan-review-convergence.md');
@@ -2186,5 +2188,191 @@ describe('#2398 — reviewer-instances cross-reference', () => {
     assert.ok(/consensus gate/.test(ref), 'the reference must name the gate');
     assert.ok(/plan-review-convergence|current_high/.test(ref),
       'and must point at where it takes effect, so a reader configuring instances finds it');
+  });
+});
+
+// ── #3899 ────────────────────────────────────────────────────────────────────
+//
+// The line that resolves REVIEWS.md is real shell an orchestrator executes, and it
+// was wrong: `REVIEWS_FILE=$(ls ${phase_dir}/${padded_phase}-REVIEWS.md 2>/dev/null)`
+// word-splits an unquoted `${phase_dir}`, so a project path containing a space
+// resolves to the empty string with `ls`'s error discarded — and the workflow then
+// blamed the review agent for a path-quoting defect. A glob metacharacter is worse:
+// it does not resolve to empty, it resolves to whatever sibling the pattern happens
+// to match, so the convergence loop reads a different phase's REVIEWS.md and never
+// notices.
+//
+// Every text assertion in this file would have passed against that line. So this
+// block EXECUTES the fragment against real fixtures instead of reading it.
+
+/**
+ * The REVIEWS.md resolution fragment, extracted from the workflow and RUN.
+ *
+ * Anchored to the post-review verification step, not searched document-wide: filtering
+ * the whole file for "a bash fence that assigns REVIEWS_FILE" would keep passing if the
+ * real fence stopped assigning it and some unrelated fence started — the harness would
+ * then execute the wrong block and report green. The span runs from the step's opening
+ * sentence to the next `###` heading, which is the same boundary the #1956 fact-drift
+ * suite anchors on above (`AFTER_AGENT_LINE`).
+ */
+function extractReviewsFileResolution3899() {
+  // The workflow markdown IS the runtime instruction; this fence is the shell an
+  // orchestrator runs. It is extracted to be executed below, not string-matched.
+  const workflow = readWorkflowCombined(WORKFLOW_PATH);
+  const start = workflow.search(/^After agent returns, verify REVIEWS\.md exists/m);
+  assert.ok(start >= 0, 'workflow must retain the "After agent returns…" verification step');
+  const rest = workflow.slice(start);
+  const nextHeading = rest.search(/^### /m);
+  const span = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+
+  const blocks = span.split('```').filter((f) => /^bash\n/.test(f) && /^REVIEWS_FILE=/m.test(f));
+  assert.equal(
+    blocks.length,
+    1,
+    `expected exactly one bash fence assigning REVIEWS_FILE in the verification step, found ${blocks.length}`,
+  );
+  return blocks[0].replace(/^bash\n/, '');
+}
+
+/** Run the extracted fragment with `phase_dir` / `padded_phase` bound, and echo what it resolved. */
+function runReviewsFileResolution3899(phaseDir, paddedPhase = '01') {
+  const dir = createTempDir('gsd-3899-gate-');
+  try {
+    const script = path.join(dir, 'resolve.sh');
+    fs.writeFileSync(
+      script,
+      `${extractReviewsFileResolution3899()}\nprintf '%s' "\${REVIEWS_FILE}"\n`,
+    );
+    return runHook(script, [], {
+      interpreter: 'bash',
+      env: { ...process.env, phase_dir: phaseDir, padded_phase: paddedPhase },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+  } finally {
+    cleanup(dir);
+  }
+}
+
+/**
+ * Build a phase directory literally named `dirName` under a fresh temp root and hand
+ * its absolute path to `fn`. `siblings` create decoy phase directories beside it, each
+ * carrying its own REVIEWS.md — that is what turns a glob metacharacter from
+ * "resolves by accident" into "resolves to the wrong file".
+ */
+function withPhaseDir3899(dirName, { reviews = 'real', siblings = [] }, fn) {
+  const root = createTempDir('gsd-3899-phase-');
+  try {
+    for (const sibling of siblings) {
+      fs.mkdirSync(path.join(root, sibling), { recursive: true });
+      fs.writeFileSync(path.join(root, sibling, '01-REVIEWS.md'), 'decoy\n');
+    }
+    const phaseDir = path.join(root, dirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    const reviewsFile = path.join(phaseDir, '01-REVIEWS.md');
+    if (reviews !== null) fs.writeFileSync(reviewsFile, `${reviews}\n`);
+    return fn(phaseDir, reviewsFile);
+  } finally {
+    cleanup(root);
+  }
+}
+
+describe('#3899 REVIEWS.md path resolution is path-safe and fails closed', () => {
+  const posixOnly = { skip: process.platform === 'win32' ? 'POSIX-only bash fragment' : false };
+
+  test('a phase_dir containing a space resolves to the real file', posixOnly, () => {
+    withPhaseDir3899('My Projects', {}, (phaseDir, reviewsFile) => {
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.equal(r.exitCode, 0, `guard rejected an existing file: ${r.stderr}`);
+      assert.equal(r.stdout, reviewsFile);
+    });
+  });
+
+  test('a glob metacharacter resolves to the real file, never a decoy sibling', posixOnly, () => {
+    // `glob[1]dir` is a bash character class matching the literal directory `glob1dir`,
+    // so the unquoted form silently reads the decoy's REVIEWS.md and reports success.
+    withPhaseDir3899('glob[1]dir', { siblings: ['glob1dir'] }, (phaseDir, reviewsFile) => {
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.equal(r.exitCode, 0, `guard rejected an existing file: ${r.stderr}`);
+      assert.equal(r.stdout, reviewsFile);
+      assert.equal(fs.readFileSync(r.stdout, 'utf8').trim(), 'real');
+    });
+  });
+
+  test('a missing reviews file exits non-zero and names the path, not the agent', posixOnly, () => {
+    withPhaseDir3899('My Projects', { reviews: null }, (phaseDir, reviewsFile) => {
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'an absent reviews file must fail closed');
+      assert.ok(
+        r.stderr.includes(reviewsFile),
+        `the error must identify the expected location, got: ${r.stderr}`,
+      );
+      assert.ok(
+        !/review agent did not produce/i.test(r.stderr),
+        `a path failure must not be attributed to the review agent, got: ${r.stderr}`,
+      );
+    });
+  });
+
+  test('an empty phase_dir fails with a diagnostic naming phase_dir', posixOnly, () => {
+    const r = runReviewsFileResolution3899('');
+    assert.equal(r.outcome, OUTCOME.EXITED);
+    assert.notEqual(r.exitCode, 0, 'an empty phase_dir must fail closed');
+    assert.match(r.stderr, /phase_dir/, `the error must identify phase_dir, got: ${r.stderr}`);
+  });
+
+  // This -r arm is developer-box-only when CI runs as root or on Windows.
+  test('an unreadable reviews file exits non-zero', {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permission bits'
+        : typeof process.getuid === 'function' && process.getuid() === 0
+          ? 'root bypasses the read permission bit'
+          : false,
+  }, () => {
+    withPhaseDir3899('My Projects', {}, (phaseDir, reviewsFile) => {
+      fs.chmodSync(reviewsFile, 0o000);
+      const r = runReviewsFileResolution3899(phaseDir);
+      fs.chmodSync(reviewsFile, 0o600); // let cleanup() remove it
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'an unreadable reviews file must fail closed');
+      assert.ok(r.stderr.includes(reviewsFile), `the error must name the path, got: ${r.stderr}`);
+    });
+  });
+
+  test('a directory standing in for the reviews file exits non-zero', posixOnly, () => {
+    withPhaseDir3899('My Projects', { reviews: null }, (phaseDir, reviewsFile) => {
+      // `[ -r ]` alone is true for a readable DIRECTORY, so the gate would pass and hand
+      // a directory to the consumers that read the file.
+      fs.mkdirSync(reviewsFile);
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'a directory is not a reviews file — it must fail closed');
+      assert.ok(r.stderr.includes(reviewsFile), `the error must name the path, got: ${r.stderr}`);
+    });
+  });
+
+  test('the resolution keeps no silent-empty path — no subshell, no discarded stderr', () => {
+    const fragment = extractReviewsFileResolution3899();
+    const lines = fragment.split('\n');
+    const assignment = lines.find((line) => /^REVIEWS_FILE=/.test(line));
+    assert.ok(assignment, 'no REVIEWS_FILE assignment in the extracted fence');
+    // Both subshell spellings: `$(ls …)` is what shipped, and a backtick rewrite would
+    // reintroduce the identical word-splitting through a form `$(`-only matching misses.
+    assert.ok(
+      !/\$\(|`/.test(assignment),
+      `the assignment must not run a subshell, got: ${assignment}`,
+    );
+    // Scoped to the lines that touch REVIEWS_FILE rather than the whole fence: an unrelated
+    // future redirect elsewhere in the block is not this bug, and banning it globally would
+    // red the suite for a change that cannot reintroduce the defect.
+    const discarded = lines.filter((l) => /REVIEWS_FILE/.test(l) && /2>\s*\/dev\/null/.test(l));
+    assert.deepEqual(
+      discarded,
+      [],
+      'the existence check must not discard stderr — that is what hid the path error',
+    );
   });
 });
