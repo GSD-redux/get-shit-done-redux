@@ -730,6 +730,41 @@ node gsd-tools.cjs task resolve-content --plan .planning/phases/03-name/03-1-PLA
 
 ---
 
+### `task red-evidence-verdict --task-file <path> --trailer <json> --changed-files <paths> --raw`
+
+Judges a RED commit's `red-evidence:` trailer against the task's `<red_contract>` declaration.
+Pure evaluation — never throws, never invokes a resolver. Called by the MVP+TDD gate in
+`execute-phase.md`'s per-task loop. See the RED Predicate in
+[`gsd-core/references/tdd.md`](../gsd-core/references/tdd.md).
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--task-file` | **Yes** | Path to the task file (or task element) carrying the `<red_contract>` declaration |
+| `--trailer` | **Yes** | The RED commit's raw `red-evidence:` trailer text (or its JSON payload) |
+| `--changed-files` | **Yes** | Newline-delimited paths from `git show --name-only` on the RED commit |
+| `--raw` | No | Machine-readable JSON output |
+
+**Exit codes:**
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Evaluated — see `verdict` below |
+| non-zero | **Usage error.** `--task-file` not found, outside the project, or not a regular file; a required flag is missing |
+
+**Output fields (JSON, exit 0 only):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `verdict` | `string` | `authorize`, `red_commit_not_failing`, or `unexpected_pass` |
+| `reason` | `string` | Human-readable explanation of the verdict |
+| `declared_file` | `string` | Present on `authorize` only — the file the trailer declares, for the caller's own changed-files membership check |
+
+```bash
+node gsd-tools.cjs task red-evidence-verdict --task-file .planning/phases/03-name/03-1-PLAN.md --trailer "$RED_TRAILER" --changed-files "$(git show --name-only --format= "$RED_SHA")" --raw
+```
+
+---
+
 ## Navigation Commands
 
 ### `/gsd-next`
