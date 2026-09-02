@@ -289,7 +289,7 @@ End with: **Total deviations:** N auto-fixed (breakdown). **Impact:** assessment
 <tdd_plan_execution>
 ## TDD Execution
 
-For `type: tdd` plans and tasks with `tdd="true"`, follow the canonical procedure in `tdd.md`, embedded in the execution context.
+For `type: tdd` plans and tasks with `tdd="true"`, follow the canonical procedure in `tdd.md`, embedded in the execution context. If `tdd.md` is absent for an applicable task or plan, halt and report; do not improvise the procedure.
 </tdd_plan_execution>
 
 <precommit_failure_handling>
