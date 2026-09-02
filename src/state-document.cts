@@ -530,10 +530,14 @@ export function stateCurrentPositionSlice(body: string): string | null {
  *
  * On an empty field the same-line `[ \t]*` gap (below) captures nothing, so the
  * bare `prefix + value` would glue the value to the label (`**Status:**value`);
- * this inserts the missing separator. A non-empty field's prefix already ends in
- * its original space/tab, so `[ \t]$` is true and the output stays byte-identical
- * to prior behaviour. An empty new value inserts no separator, avoiding a dangling
- * trailing space. See #4010.
+ * this inserts the missing separator. A non-empty field whose label-to-value
+ * separator is ordinary space/tab keeps that separator in the prefix, so `[ \t]$`
+ * is true and the output stays byte-identical to prior behaviour. The one
+ * exception is a non-empty field written with NO separator at all (a hand-edited
+ * `**Status:**value`): the narrowed gap captures nothing, `[ \t]$` is false, and a
+ * single space is inserted — an intentional normalization, not byte-identical, and
+ * with no GSD-template trigger. An empty new value inserts no separator, avoiding a
+ * dangling trailing space. See #4010.
  */
 function joinFieldReplacement(prefix: string, newValue: string): string {
   const value = `${newValue}`;

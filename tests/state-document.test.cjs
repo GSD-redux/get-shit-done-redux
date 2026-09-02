@@ -170,6 +170,18 @@ describe('stateReplaceField — empty field preserves the following line (#4010)
     assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
   });
 
+  // Boundary: a NON-EMPTY field written with no label-to-value separator at all
+  // (a hand-edited `**Status:**Planning`). The narrowed `[ \t]*` gap captures
+  // nothing, so joinFieldReplacement synthesizes a single space — an intentional
+  // normalization, NOT byte-identical to the pre-fix glued output. Pins that the
+  // following line still survives and exactly one space is inserted, matching the
+  // scoped byte-identity claim in joinFieldReplacement's JSDoc. (#4010)
+  test('non-empty bold field with no separator gains one inserted space, next line survives', () => {
+    const input = '**Status:**Planning\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
   test('E2E: transitionCore update of an empty field preserves the next line (ADR-3180 Decision 4(c))', () => {
     const { transitionCore } = require('../gsd-core/bin/lib/state-transition.cjs');
     const content = '## Current Position\n\n**Status:**\n**Current Plan:** 2 of 5';
