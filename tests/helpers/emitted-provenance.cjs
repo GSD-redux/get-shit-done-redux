@@ -172,6 +172,16 @@ const ANTIGRAVITY_SKILL_TRANSFORM_SRCS = [
   'bin/install.js',
 ];
 
+// #4002: zcode's command AND skill bodies flow through `_applyRuntimeRewrites`
+// (converter: null — the rewrite pass is their only path-rewriting step), so a
+// converter change moves emitted bytes with no commands/gsd source changing.
+// Same permanent-attribution shape as ANTIGRAVITY_SKILL_TRANSFORM_SRCS (#3738),
+// scoped to runtime 'zcode' for the same reason.
+const ZCODE_BODY_TRANSFORM_SRCS = [
+  'src/runtime-artifact-conversion.cts',
+  'bin/install.js',
+];
+
 /**
  * A `sources` entry ending in `/` is a PREFIX, not a file: it means "any repo path
  * under this directory legitimately explains this emitted path". Used where an
@@ -495,7 +505,13 @@ const PROVENANCE_RULES = [
     sources: (m) => [`${COMMANDS_SRC}/${stripSkillPrefix(m[1])}.md`],
     // #3738: see ANTIGRAVITY_SKILL_TRANSFORM_SRCS above — antigravity's skill
     // bytes are converter-produced, so a converter change explains the ripple.
-    transforms: (_m, ctx) => (ctx.runtime === 'antigravity' ? ANTIGRAVITY_SKILL_TRANSFORM_SRCS : []),
+    // #4002: zcode's skills flow through the same rewrite pass (see
+    // ZCODE_BODY_TRANSFORM_SRCS), so the converter change explains theirs too.
+    transforms: (_m, ctx) => {
+      if (ctx.runtime === 'antigravity') return ANTIGRAVITY_SKILL_TRANSFORM_SRCS;
+      if (ctx.runtime === 'zcode') return ZCODE_BODY_TRANSFORM_SRCS;
+      return [];
+    },
   },
   {
     id: 'skills-nested-from-commands',
@@ -506,6 +522,9 @@ const PROVENANCE_RULES = [
     // source — attributing to the router would be wrong for every nested skill.
     pattern: /^([^/]+)\/skills\/([^/]+)\/SKILL\.md$/,
     sources: (m) => [`${COMMANDS_SRC}/${stripSkillPrefix(m[2])}.md`],
+    // #4002: zcode's nested router children pass through the same rewrite pass
+    // as its flat skills — see ZCODE_BODY_TRANSFORM_SRCS.
+    transforms: (_m, ctx) => (ctx.runtime === 'zcode' ? ZCODE_BODY_TRANSFORM_SRCS : []),
   },
   {
     id: 'flat-commands-from-commands',
@@ -513,6 +532,9 @@ const PROVENANCE_RULES = [
     roots: ['commands', 'command'],
     pattern: /^gsd-([^/]+)\.md$/,
     sources: (m) => [`${COMMANDS_SRC}/${m[1]}.md`],
+    // #4002: zcode command bodies pass through _applyRuntimeRewrites with
+    // converter: null — see ZCODE_BODY_TRANSFORM_SRCS above.
+    transforms: (_m, ctx) => (ctx.runtime === 'zcode' ? ZCODE_BODY_TRANSFORM_SRCS : []),
   },
 
   // ── Descriptor-declared native plugin / extension ─────────────────────────

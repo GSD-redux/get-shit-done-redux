@@ -81,25 +81,35 @@ fi
 </step>
 
 <step name="check_config_gate">
-Check if code review is active via the capability registry:
+Check if code review is active via `workflow.code_review` (the capability's on/off toggle — independent of `workflow.code_review_point`, the loop-point selector; a manual invocation must work regardless of which automatic point is currently configured):
 
 ```bash
-EXECUTE_POST_HOOKS_JSON=$(gsd_run loop render-hooks execute:post --raw)
+CODE_REVIEW_ENABLED=$(gsd_run query config-get workflow.code_review --raw 2>/dev/null || echo "true")
 ```
 
-Resolve active step hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "step"` and `ref.skill == "code-review"`.
-
-If no active code-review step hook exists:
+If `CODE_REVIEW_ENABLED` is not `"true"`:
 ```
 Code review skipped (code-review capability inactive)
 ```
 Exit workflow.
 
-Default is active through the Capability Registry schema — only skip when the registry resolves no active code-review step hook. This check runs AFTER phase validation so invalid phase errors are shown first.
+Default is active (`workflow.code_review` schema default is `true`) — only skip when explicitly disabled. This check runs AFTER phase validation so invalid phase errors are shown first.
 </step>
 
 <step name="compute_file_scope">
 Three-tier scoping with explicit precedence:
+
+Compute the phase's last review commit, if any. This narrows Tiers 2 and 3 below to what
+changed since that review (wave-scoped reviews under `workflow.code_review_point=execute:wave:post`):
+
+```bash
+# #3661: incremental scoping — when this phase has a prior review, later tiers
+# narrow to what changed since it (wave-scoped reviews under
+# workflow.code_review_point=execute:wave:post). Empty on a phase's first review
+# (the entire execute:post-default path), in which case Tiers 2 and 3 below are
+# unchanged from today.
+LAST_REVIEW_COMMIT=$(git log --format=%H -1 -- "${PHASE_DIR}/${PADDED_PHASE}-REVIEW.md" 2>/dev/null)
+```
 
 **Tier 1 — --files override (highest precedence per D-08):**
 
@@ -144,6 +154,14 @@ if [ -z "$FILES_OVERRIDE" ]; then
     # `$VAR` word-splits under bash but not zsh, collapsing every element onto
     # one iteration there.
     for summary in $(printf '%s' "$SUMMARIES"); do
+      # #3661: skip a SUMMARY.md unchanged since the phase's last review — this
+      # summary's plan was already reviewed. No-op (every summary is "changed") when
+      # LAST_REVIEW_COMMIT is empty. Fails OPEN on any git error (file stays in scope)
+      # — never silently drop a file because a git command errored.
+      if [ -n "$LAST_REVIEW_COMMIT" ] && git diff --quiet "${LAST_REVIEW_COMMIT}" HEAD -- "$summary" 2>/dev/null; then
+        continue
+      fi
+
       # Extract key_files.created and key_files.modified using node for reliable YAML parsing
       # This avoids fragile awk parsing that breaks on indentation differences
       EXTRACTED=$(node -e "
@@ -241,7 +259,11 @@ surface — so a partial SUMMARY result can no longer silently mask the rest of 
 # move under milestones/ on archive) is closed.
 PHASE_START=$(git log --format="%H" --diff-filter=A -- "${PHASE_DIR}" 2>/dev/null | tail -1)
 DIFF_BASE=""
-if [ -n "$PHASE_START" ]; then
+if [ -n "$LAST_REVIEW_COMMIT" ]; then
+  # #3661: a prior review exists — narrow the diff base to since that review
+  # (wave-scoped) instead of the whole phase.
+  DIFF_BASE="$LAST_REVIEW_COMMIT"
+elif [ -n "$PHASE_START" ]; then
   if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
     DIFF_BASE="${PHASE_START}^"
   else
@@ -774,7 +796,7 @@ If `--files` validation fails unexpectedly on macOS, install coreutils or use ab
 
 <success_criteria>
 - [ ] Phase validated before config gate check
-- [ ] Capability gate checked (execute:post code-review hook)
+- [ ] Capability gate checked (`workflow.code_review` config key)
 - [ ] --fix/--all/--auto flags parsed via code-review-flags.cjs typed IR (not ad-hoc bash)
 - [ ] Depth resolved with validation (quick|standard|deep)
 - [ ] File scope computed with 3 tiers: --files > SUMMARY.md > git diff
