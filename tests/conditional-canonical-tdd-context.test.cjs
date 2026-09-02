@@ -14,42 +14,6 @@ const EXECUTOR = path.join(ROOT, 'agents', 'gsd-executor.md');
 const EXECUTE_PLAN = path.join(ROOT, 'gsd-core', 'workflows', 'execute-plan.md');
 const TDD_REFERENCE = path.join(ROOT, 'gsd-core', 'references', 'tdd.md');
 
-const fixtures = {
-  nonTdd: `---\nphase: 1\ntype: execute\n---\n\nExamples may say type: tdd and tdd="true".\n`,
-  dedicatedTdd: `---\nphase: 1\ntype: tdd\n---\n\n<objective>Dedicated cycle</objective>\n`,
-  crlfQuotedTdd: `---\r\nphase: 1\r\ntype: "tdd"\r\n---\r\n\r\n<objective>Dedicated cycle</objective>\r\n`,
-  bomCrlfQuotedTdd: `\uFEFF---\r\nphase: 1\r\ntype: 'tdd'\r\n---\r\n\r\n<objective>Dedicated cycle</objective>\r\n`,
-  mixedTdd: `---\nphase: 1\ntype: execute\n---\n\n<task type="auto" tdd = 'true'>\n  <name>Cycle</name>\n</task>\n`,
-  falseTddTask: `---\nphase: 1\ntype: execute\n---\n\n<task type="auto" tdd="false">\n  <name>Not a cycle</name>\n</task>\n`,
-  multilineTdd: `---\nphase: 1\ntype: execute\n---\n\n<task\n  type="auto"\n  tdd = "true"\n>\n  <name>Cycle</name>\n</task>\n`,
-  fencedTaskExample: `---\nphase: 1\ntype: execute\n---\n\n\`\`\`xml\n<task type="auto" tdd="true">\n</task>\n\`\`\`\n`,
-  tildeFencedTaskExample: `---\nphase: 1\ntype: execute\n---\n\n~~~xml\n<task type="auto" tdd="true">\n</task>\n~~~\n`,
-  proseTaskExample: `---\nphase: 1\ntype: execute\n---\n\nA literal <task type="auto" tdd="true"> example is not a task.\n`,
-};
-
-function planNeedsTddContext(plan) {
-  plan = plan.replace(/^\uFEFF/, '');
-  const frontmatter = plan.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? '';
-  if (/^type:\s*(?:tdd|"tdd"|'tdd')\s*$/m.test(frontmatter)) return true;
-
-  let fenced = false;
-  let taskOpening = '';
-  for (const line of plan.split(/\r?\n/)) {
-    if (/^\s*(?:```|~~~)/.test(line)) {
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) continue;
-    if (!taskOpening && /^\s*<task\b/i.test(line)) taskOpening = line;
-    else if (taskOpening) taskOpening += `\n${line}`;
-    if (taskOpening.includes('>')) {
-      if (/\btdd\s*=\s*["']true["']/i.test(taskOpening)) return true;
-      taskOpening = '';
-    }
-  }
-  return false;
-}
-
 function composerSource(file) {
   return fs.readFileSync(file, 'utf8');
 }
@@ -65,11 +29,12 @@ function assertConditionalComposer(source, name, startMarker, endMarker) {
   source = compositionScope(source, startMarker, endMarker);
   assert.match(source, /selected PLAN\.md|selected plan/i, `${name} must inspect the selected plan at compose time`);
   assert.match(source, /frontmatter[^\n]*type:\s*tdd|type:\\s\*tdd/i, `${name} must include dedicated TDD plans`);
-  assert.match(source, /<task\\b[^\n]*tdd=\\"true\\"|task opening tag[^\n]*tdd="true"/i, `${name} must include mixed TDD plans`);
+  assert.match(source, /task opening tag[^\n]*tdd="true"/i, `${name} must include mixed TDD plans`);
   assert.match(source, /quoted scalar/i, `${name} must accept YAML-quoted type: tdd`);
   assert.match(source, /optional BOM/i, `${name} must accept a BOM before frontmatter`);
   assert.match(source, /whitespace[^\n]*=/i, `${name} must accept whitespace around task attributes`);
-  assert.match(source, /multiline task opening tag/i, `${name} must accept multiline task opening tags`);
+  assert.match(source, /task opening tag[^\n]*may be multiline/i, `${name} must accept single-line and multiline task opening tags`);
+  assert.match(source, /repository root[^\n]*\{phase_dir\}\/\{plan_file\}/i, `${name} must use a compose-time path, not an executor-only variable`);
   assert.match(source, /fenced[^\n]*prose|prose[^\n]*fenced/i, `${name} must reject literal task examples`);
   assert.match(source, /tildes/i, `${name} must reject tilde-fenced literal task examples`);
   assert.match(source, /conditional[^\n]*tdd\.md|tdd\.md[^\n]*conditional/i, `${name} must conditionally embed the canonical reference`);
@@ -78,19 +43,6 @@ function assertConditionalComposer(source, name, startMarker, endMarker) {
 }
 
 describe('conditional canonical TDD executor context', () => {
-  test('selected-plan fixtures accept supported syntax and reject literal examples', () => {
-    assert.equal(planNeedsTddContext(fixtures.nonTdd), false);
-    assert.equal(planNeedsTddContext(fixtures.dedicatedTdd), true);
-    assert.equal(planNeedsTddContext(fixtures.crlfQuotedTdd), true);
-    assert.equal(planNeedsTddContext(fixtures.bomCrlfQuotedTdd), true);
-    assert.equal(planNeedsTddContext(fixtures.mixedTdd), true);
-    assert.equal(planNeedsTddContext(fixtures.falseTddTask), false);
-    assert.equal(planNeedsTddContext(fixtures.multilineTdd), true);
-    assert.equal(planNeedsTddContext(fixtures.fencedTaskExample), false);
-    assert.equal(planNeedsTddContext(fixtures.tildeFencedTaskExample), false);
-    assert.equal(planNeedsTddContext(fixtures.proseTaskExample), false);
-  });
-
   test('both dispatch backends conditionally compose the canonical reference from the selected plan', () => {
     const backends = [
       ['harness-worktree prompt', composerSource(HARNESS), 'subagent_type="{EXECUTOR_TYPE}"', 'After each `Agent()` returns'],
@@ -105,7 +57,7 @@ describe('conditional canonical TDD executor context', () => {
     const source = composerSource(WORKTREE);
     const composition = compositionScope(source, 'EXECUTOR_PROMPT=', 'Then create the worktree');
 
-    assert.match(composition, /\$\{PLAN_TDD_CONTEXT:\+- tdd\.md\}/,
+    assert.match(composition, /\$\{PLAN_TDD_CONTEXT \? '- tdd\.md' : ''\}/,
       'the prompt must retain the conditional marker until the orchestrator embeds it');
     assert.match(composition, /printf '%s' "\$EXECUTOR_PROMPT" \| grep -Fq "/,
       'the real pre-spawn checks must detect an unresolved PLAN_TDD_CONTEXT marker');
