@@ -56,8 +56,8 @@ describe('#4003 — safe_resume_gate commit-scope greps', () => {
     const w = fs.readFileSync(WORKFLOW, 'utf8');
     assert.ok(w.includes('PHASE_N=$((10#${PHASE_NUMBER}))') && w.includes('PLAN_N=$((10#${PLAN_ID}))'),
       'the TDD block derives zero-stripped components');
-    assert.ok(w.includes('RED_COMMIT=$(git log --oneline -E --grep="${PLAN_SCOPE_RE}" -- "**/*.test.*"'),
-      'the RED grep must use the same anchored padding-tolerant scope');
+    assert.ok(w.includes('RED_COMMIT=$(git log --oneline -E ${TDD_MILESTONE_BASE:+"$TDD_MILESTONE_BASE..HEAD"} --grep="${PLAN_SCOPE_RE}" -- "**/*.test.*"'),
+      'the RED grep must use the same anchored padding-tolerant scope, milestone-bounded');
     assert.ok(!w.includes('--grep="^test(${PHASE_NUMBER}-${PLAN_ID})"'),
       'the padded-literal RED grep must not remain');
     assert.ok(w.includes('TDD_MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")'),
