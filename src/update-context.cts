@@ -213,7 +213,7 @@ export function resolveUpdateContext({
   if (globalRuntime) {
     return { installedVersion: '0.0.0', scope: 'GLOBAL', runtime: globalRuntime, gsdDir: globalDir };
   }
-  return { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: 'claude', gsdDir: '' };
+  return { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: '', gsdDir: '' };
 }
 
 export interface LoadUpdateContextOpts {

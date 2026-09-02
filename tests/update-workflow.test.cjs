@@ -32,6 +32,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const UPDATE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md');
+const UPDATE_COMMAND = path.join(__dirname, '..', 'commands', 'gsd', 'update.md');
 
 function codeOnly(file) {
   // Strip fenced-block prose is unnecessary here; we assert on the whole doc
@@ -60,18 +61,18 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
 
     const mutationSpies = [
-      'check-latest-version.cjs',
-      'detect-custom-files --config-dir',
-      'npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG"',
-      'rm -f "$HOME/.cache/gsd/gsd-update-check"',
-      'restore-custom-files --config-dir "$GSD_DIR" --apply',
-      '/gsd:update --sync',
-      '/gsd:update --reapply',
-      'check_local_patches',
+      { name: 'version check', text: src, needle: 'check-latest-version.cjs', after: end },
+      { name: 'custom-file detection', text: src, needle: 'detect-custom-files --config-dir', after: end },
+      { name: 'resolved installer', text: src, needle: 'npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG"', after: end },
+      { name: 'update-cache removal', text: src, needle: 'rm -f "$HOME/.cache/gsd/gsd-update-check"', after: end },
+      { name: 'restore apply', text: src, needle: 'restore-custom-files --config-dir "$GSD_DIR" --apply', after: end },
+      { name: 'skill sync route', text: codeOnly(UPDATE_COMMAND), needle: '--sync', after: 0 },
+      { name: 'patch reapply route', text: codeOnly(UPDATE_COMMAND), needle: '--reapply', after: 0 },
+      { name: 'patch check', text: src, needle: 'check_local_patches', after: end },
     ];
-    for (const mutation of mutationSpies) {
-      assert.equal(step.indexOf(mutation), -1, `unresolved path reaches ${mutation}`);
-      assert.ok(src.indexOf(mutation, end) >= end, `${mutation} must remain after the exit`);
+    for (const { name, text, needle, after } of mutationSpies) {
+      assert.equal(step.indexOf(needle), -1, `unresolved path reaches ${name}`);
+      assert.ok(text.indexOf(needle, after) >= after, `${name} must remain after the exit`);
     }
   });
 });
@@ -145,7 +146,7 @@ test('issue #815: version check threads the tag through check-latest-version.cjs
 
 test('issue #815: install uses the selected tag, not a hardcoded @latest', () => {
   const robust = WF.match(/npx -y --package=@opengsd\/gsd-core@"\$TAG" -- gsd-core/g) || [];
-  assert.ok(robust.length >= 3, `expected >=3 tag-parameterized npx invocations, found ${robust.length}`);
+  assert.ok(robust.length >= 2, `expected >=2 tag-parameterized npx invocations, found ${robust.length}`);
   assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
     'install lines must not hardcode @latest once --next exists');
   assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,

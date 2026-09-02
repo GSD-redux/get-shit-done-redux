@@ -57,10 +57,10 @@ if [ -n "$UC" ]; then
   TARGET_RUNTIME="$(uc_field runtime)"
   GSD_DIR="$(uc_field gsdDir)"
 else
-  # No tool resolvable / projection failed -> treat as a fresh install.
+  # No tool resolvable / projection failed -> no update target is known.
   INSTALLED_VERSION="0.0.0"
   INSTALL_SCOPE="UNKNOWN"
-  TARGET_RUNTIME="claude"
+  TARGET_RUNTIME=""
   GSD_DIR=""
 fi
 
@@ -74,14 +74,25 @@ Parse output:
 - Line 1 = installed version (`0.0.0` means unknown version)
 - Line 2 = install scope (`LOCAL`, `GLOBAL`, or `UNKNOWN`)
 - Line 3 = target runtime (`claude`, `opencode`, `kilo`, `codex`, `antigravity`)
-- Line 4 = resolved GSD config dir (e.g. `/Users/me/.claude`, `/Users/me/.gemini`); empty if scope is `UNKNOWN`. Capture this as `GSD_DIR` and pass it to subsequent steps so they don't re-derive the runtime path.
-- If scope is `UNKNOWN`, proceed to install using the `--claude --global` fallback.
+- Line 4 = resolved GSD config dir (e.g. `/Users/me/.claude`, `/Users/me/.gemini`); empty when no installed target is resolved. Capture this as `GSD_DIR` and pass it to subsequent steps so they don't re-derive the runtime path.
 
 `update-context` reproduces the previous detection cascade — preferred-config-dir fast path, local-over-global with same-path dedup (so `CWD=$HOME` does not misdetect as LOCAL), env-var overrides (`CLAUDE_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `KILO_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, …), and semver validation — but as a tested projection rather than ~280 lines of inline bash. Branch coverage lives in `tests/update-context.test.cjs`.
 
 If multiple runtime installs are detected and the invoking runtime cannot be determined from execution_context, ask the user which runtime to update before running install.
 
 **If VERSION file missing (version resolves to `0.0.0`):** report the installed version as Unknown and proceed to install (treated as `0.0.0` for comparison).
+
+**If `INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty:**
+
+```text
+UPDATE_TARGET_UNRESOLVED
+
+GSD could not resolve an installed update target. No update was performed.
+
+Rerun from a valid installed runtime: `/gsd-update`. For a fresh installation, run `npx -y --package=@opengsd/gsd-core@{TAG} -- gsd-core --global`.
+```
+
+Exit.
 </step>
 
 <step name="parse_update_channel">
@@ -121,34 +132,25 @@ Extract `section_manifest` from `INIT_UPDATE` — gates the `channel-banner` sec
 <step name="check_latest_version">
 Check npm for latest version via the deterministic script. **Do NOT run `npm view` or `npm search` directly** — the package name must come from the script, not from a free choice at execution time. (#2992: LLM-driven prescriptions of npm package names produced wrong-package queries; moving the package name into a script constant closes that gap.)
 
-The `GSD_DIR` value emitted by `get_installed_version` (line 4) resolves to the runtime-specific config dir (`~/.claude/`, `~/.gemini/`, `~/.codex/`, etc.), so the script invocation works for every runtime — not just Claude. If `GSD_DIR` is empty (scope `UNKNOWN`), skip this step and go directly to install.
+The `GSD_DIR` value emitted by `get_installed_version` (line 4) resolves to the runtime-specific config dir (`~/.claude/`, `~/.gemini/`, `~/.codex/`, etc.), so the script invocation works for every runtime — not just Claude. An unresolved target exits in `get_installed_version` before this step.
 
-`LATEST_RESULT` is a JSON document with the documented shape `{ ok: bool, version: string, reason: string, detail?: string }`. Parse via `jq` ONLY when the script actually ran. When `GSD_DIR` is empty (scope `UNKNOWN`), skip the check entirely and seed the parsed fields with their no-op values so downstream logic does not mistake an unset `LATEST_RESULT` for a failed network check (#2993 CR feedback):
+`LATEST_RESULT` is a JSON document with the documented shape `{ ok: bool, version: string, reason: string, detail?: string }`. Parse via `jq` ONLY when the script actually ran. When the script cannot run or returns nothing, preserve its failure as a meaningful diagnostic (#2993 CR feedback):
 
 ```bash
-if [ -z "$GSD_DIR" ]; then
-  # No install detected — fall through to install step; version-check is skipped.
-  LATEST_RESULT=""
-  LATEST_STATUS=0
+LATEST_RESULT="$(node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG" 2>/dev/null)"
+LATEST_STATUS=$?
+# #2993 CR: when node is missing or the script doesn't exist, LATEST_RESULT
+# is empty and piping it to `jq` produces a parse error on stderr while
+# leaving LATEST_OK / LATEST_REASON as empty strings. Fail the check with a
+# meaningful reason instead of a blank diagnostic.
+if [ -n "$LATEST_RESULT" ]; then
+  LATEST_OK="$(printf '%s' "$LATEST_RESULT" | jq -r '.ok // false')"
+  LATEST_VERSION="$(printf '%s' "$LATEST_RESULT" | jq -r '.version // empty')"
+  LATEST_REASON="$(printf '%s' "$LATEST_RESULT" | jq -r '.reason // empty')"
+else
   LATEST_OK=false
   LATEST_VERSION=""
-  LATEST_REASON="no_install_detected"
-else
-  LATEST_RESULT="$(node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG" 2>/dev/null)"
-  LATEST_STATUS=$?
-  # #2993 CR: when node is missing or the script doesn't exist, LATEST_RESULT
-  # is empty and piping it to `jq` produces a parse error on stderr while
-  # leaving LATEST_OK / LATEST_REASON as empty strings. Fail the check with a
-  # meaningful reason instead of a blank diagnostic.
-  if [ -n "$LATEST_RESULT" ]; then
-    LATEST_OK="$(printf '%s' "$LATEST_RESULT" | jq -r '.ok // false')"
-    LATEST_VERSION="$(printf '%s' "$LATEST_RESULT" | jq -r '.version // empty')"
-    LATEST_REASON="$(printf '%s' "$LATEST_RESULT" | jq -r '.reason // empty')"
-  else
-    LATEST_OK=false
-    LATEST_VERSION=""
-    LATEST_REASON="script_not_found_or_node_unavailable"
-  fi
+  LATEST_REASON="script_not_found_or_node_unavailable"
 fi
 ```
 
@@ -385,11 +387,6 @@ npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG" --local
 **If GLOBAL install:**
 ```bash
 npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG" --global
-```
-
-**If UNKNOWN install:**
-```bash
-npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core --claude --global
 ```
 
 Capture output. If install fails, show error and exit.
