@@ -26,11 +26,29 @@
  */
 
 const INJECTION_PATTERNS = Object.freeze([
-  /ignore\s+(all\s+)?previous\s+instructions/i,
-  /ignore\s+(all\s+)?above\s+instructions/i,
-  /disregard\s+(all\s+)?previous/i,
-  /forget\s+(all\s+)?(your\s+)?instructions/i,
-  /override\s+(system|previous)\s+(prompt|instructions)/i,
+  // #4016: ONE filler-tolerant imperative-override pattern. It REPLACES the
+  // five narrow verb patterns (ignore x2 / disregard / forget / override) that
+  // used to sit here: they tolerated no filler between verb and noun, so a
+  // planted "forget all of your ..." phrasing (measured in the wild) matched
+  // nothing. A single pattern rather than narrow-plus-combined because both
+  // consumers count one finding PER PATTERN toward the severity threshold
+  // (3 = HIGH, blockable under security.injection_blocking): overlapping
+  // patterns made one sentence count twice and pushed a two-phrasing LOW
+  // payload to HIGH (PR #4061 review).
+  //   verbs    ignore|disregard|forget|discard|override. `override` carries
+  //            the old `override system|previous prompt|instructions` family;
+  //            `discard` is the synonym seen in the same planted phrasings.
+  //   fillers  at least ONE of all|of|the|your|my|<qualifier> must sit between
+  //            verb and noun (a lookahead, no repetition). Bare "override
+  //            rules" / "ignore instructions" are ordinary repo prose
+  //            (measured: 6 hits across docs and source) and stay unmatched.
+  //   tails    `disregard (all) previous` with no noun, and bare `forget` +
+  //            `instructions`, are kept verbatim because the old narrow
+  //            patterns accepted them; the superset is pinned by
+  //            tests/injection-patterns-parity.security.test.cjs.
+  //   known FP determined linter-doc prose such as "ignore (the) rules" trips
+  //            a single-pattern LOW advisory; one pattern can never block.
+  /(?:ignore|disregard|forget|discard|override)\s+(?=(?:all|of|the|your|my|system|previous|prior|above|earlier)\s)(?:all\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+)?(?:(?:system|previous|prior|above|earlier)\s+)?(?:instructions|directives|prompts?|rules)|disregard\s+(?:all\s+)?previous|forget\s+instructions/i,
   /you\s+are\s+now\s+(?:a|an|the)\s+/i,
   /act\s+as\s+(?:a|an|the)\s+(?!plan|phase|wave)/i,
   /pretend\s+(?:you(?:'re| are)\s+|to\s+be\s+)/i,
@@ -40,14 +58,6 @@ const INJECTION_PATTERNS = Object.freeze([
   /\[SYSTEM\]/i,
   /\[INST\]/i,
   /<<\s*SYS\s*>>/i,
-  // #4016: filler-tolerant imperative-override family. The narrow patterns
-  // above tolerate no filler between the verb and the noun, so a planted
-  // "Forget all of your instructions" (measured in the wild) matched nothing.
-  // Appended rather than replacing the narrow four to stay merge-friendly;
-  // overlap means one sentence can count twice toward severity thresholds.
-  // Known FP class: "ignore (the) rules" in linter-doc prose trips a LOW
-  // advisory.
-  /(?:ignore|disregard|forget|discard)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+)?(?:previous\s+|prior\s+|above\s+|earlier\s+)?(?:instructions|directives|prompts?|rules)/i,
 ]);
 
 module.exports = { INJECTION_PATTERNS };
