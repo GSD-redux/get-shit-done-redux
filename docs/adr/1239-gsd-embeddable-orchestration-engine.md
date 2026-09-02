@@ -319,6 +319,91 @@ Each phase is its own `approved-*` sub-issue + PR, dependency-ordered. **Phase 0
 - **Naming.** The sub-field is `dispatch.isolation` with values `harness-worktree | orchestrator-worktree | none` (+ the `undocumented` sentinel). A sub-field over a new axis, and mechanism-specific values over abstract ones, both follow the `effortSurface`/#2481 precedent — terse `dispatch` sub-field naming (`nested`, `background`), the kebab-compound enum idiom (`slash-file`, `read-only`, `prose-only`), and "name only what a host actually has" (which excluded `config-file` for the same reason). A future non-worktree isolation adds `*-container` then, evidence-backed.
 - **Rollout.** v1 proves the `orchestrator-worktree` backend end-to-end on Codex; the other orchestrator-worktree hosts (`kimi`, `kimi-code`, `opencode`) are descriptor-value + per-host-validation follow-ups on the *same* backend, and the `harness-worktree` hosts (`claude`, `cursor`) need only the scheduler to pass their native flag. Two research findings shape the code: the Codex sandbox constraint (the orchestrator performs the git operations) and the OpenCode descriptor bug (`background`/`backgroundDispatch` stale — tracked as #2598).
 
+## Quick-batch binding — `dispatch.maxConcurrency`, single-writer ownership, and batch recovery (#3672, quick-batch Phase 0)
+
+> **Amendment (2026-09-01): locks the architecture gate the maintainer required before any `quick-batch` implementation PR** (epic [#3344](https://github.com/open-gsd/gsd-core/issues/3344), maintainer condition #2 on that issue). Phase 0 is docs-only and closes its own sub-issue [#3672](https://github.com/open-gsd/gsd-core/issues/3672), not the epic — the same convention the Codex-binding amendment above established. Baseline: `next` at `900504f98`.
+
+### Canonical terminology
+
+- **Command:** `quick-batch`.
+- **Batch control state:** `.planning/quick-batches/<batch-id>/BATCH.json` — a sibling family to `.planning/quick/`, never a child of it (`src/audit.cts:scanQuickTasks` treats every child directory of `.planning/quick/` as a quick task; a `BATCH.json` living there would be misread as one).
+- **Item** — one entry in the batch's task list; each item still produces a normal `.planning/quick/<quick-id>-<slug>/` artifact set (PLAN + SUMMARY), unchanged from ordinary `/gsd:quick`.
+- **Wave** — a set of items dispatched concurrently, bounded by dependency readiness, file-overlap freedom, and effective capacity.
+
+### Single-writer ownership (locks maintainer condition #2, first bullet)
+
+The **foreground coordinator** is the only writer of `BATCH.json`, `.planning/STATE.md`, and roadmap/project metadata. Leaf agents (`gsd-planner`, `gsd-executor`, optional researcher/checker, verifier) **return structured results only** — they never open `BATCH.json`, never append a STATE row, and never touch `ROADMAP.md`. This is not a new mechanism: it is the same invariant `execute-plan` already enforces by gating shared-state writes on `IS_WORKTREE` (the `.git`-is-a-file primitive — see the Codex binding's `orchestrator-worktree` adapter above, "Preserved invariant"), applied to the quick-batch coordinator instead of the phase executor. A leaf running inside a coordinator-created worktree trips the identical guard for free.
+
+Corollary: quick-batch introduces **no new agent role**. It dispatches the same `gsd-planner` / `gsd-executor` / verifier leaves ordinary `/gsd:quick` uses, directly — never by telling a child to invoke `/gsd:quick` itself (that would create a second, nested shared-state writer, exactly what this section forbids).
+
+### The `dispatch.maxConcurrency` sub-field (locks maintainer condition #2, second bullet)
+
+**Decision — add `maxConcurrency` as a numeric sub-field of the existing `dispatch` axis** (`DispatchCapability` in `src/host-integration.cts`), not a new top-level axis — the identical reasoning the Codex-binding amendment used for `isolation` above: it is only ever consumed alongside the other dispatch fields when a scheduler decides how a wave fans out, `dispatch` already holds per-host fan-out properties, and each sub-field is negotiated independently with its own fail-closed floor (`SAFE_DEFAULTS.dispatch`, `src/host-integration.cts:130`) and its own `undocumented` warning — no new top-level `VALID_` set, no new negotiation branch, no new profile-baseline entry.
+
+- **Type:** an optional positive integer within JavaScript's safe-integer range — never fractional, zero, or negative. It counts **concurrently running leaf workers and excludes the foreground coordinator** (a value of `1` means the coordinator plus one leaf, not one process total).
+- **Fail-closed values:** missing, the `undocumented` sentinel, non-numeric, fractional (including `NaN`), zero, negative, or outside the safe-integer range all resolve to the fallback below, each producing a warning exactly as `dispatch.maxDepth` and `dispatch.isolation` already do (`src/host-integration.cts:461-475` — sentinel-specific warning text distinct from "missing or not a number," per the #2603 precedent cited in that block, so a descriptor carrying the documented sentinel is never confused with a genuinely malformed one).
+- **Negotiation:** effective value = the host's declared (or live-resolved — see transport below) value **only if** it is a valid positive safe integer; otherwise the fail-closed default. Unlike `maxDepth`, there is no `min(host, engine)` reduction — GSD imposes no separate intrinsic worker ceiling at the negotiation layer (the same "GSD owns the vocabulary" reasoning the `isolation` sub-field uses, `src/host-integration.cts:476-483`); a user-supplied `--jobs N` ceiling is applied later, at the quick-batch scheduler (Phase 4), not here.
+- **`SAFE_DEFAULTS.dispatch.maxConcurrency` = `1`.** The fail-closed floor for this sub-field is identical to the transport-level fallback below — missing the axis entirely and having every source fail are the same outcome by design.
+
+### The live-capacity transport (locks #3672's "exact provider and cross-process transport" requirement — the open question the contributor asked a maintainer to close)
+
+**Precedence, in order:**
+
+1. **Live value** — an environment variable, `GSD_DISPATCH_MAX_CONCURRENCY`, read once by the CLI query layer at invocation time. Set by whatever actually knows the *live* session/host budget: the wrapping harness, a CI runner constraining parallelism, or the user's own shell. This is the "negotiated live adapter/session value" the epic and #3672 name.
+2. **Descriptor value** — `runtime.hostIntegration.dispatch.maxConcurrency` in `capabilities/<runtime>/capability.json`, resolved through the standard per-sub-field negotiation described above.
+3. **Fallback** — `1`.
+
+**Why the live value is an environment variable, and why it is read outside `negotiateHostCapabilities`.** `src/host-integration.cts` documents itself as "Pure, additive, no-I/O" — every function in it is side-effect-free by design (module header, `src/host-integration.cts:3-11`), and `negotiateHostCapabilities` is explicitly a pure descriptor-merge function with no host round-trip. No host in this repo's matrix exposes a live "how many concurrent subagents can you run right now" API (the Codex-binding research above confirms hosts expose static config, not a queryable live ceiling) — so the only real cross-process channel available to `gsd-tools` at invocation time is the process environment it inherits from whatever spawned it. This is not a new mechanism: this repo already carries a family of invocation-scoped `GSD_*` environment variables for signals a static descriptor cannot express (e.g. `GSD_AUDIT`, `GSD_TEST_MODE`, `GSD_PHASE_GATE_OVERRIDE`), and it keeps `host-integration.cts` pure — **the env var is read once, in the CLI query layer (`gsd-tools.cjs` / `src/commands.cts`), and passed into negotiation as an ordinary value**, never read inside `host-integration.cts` itself. A malformed `GSD_DISPATCH_MAX_CONCURRENCY` (non-numeric, fractional, ≤0, unsafe) is treated exactly like a malformed descriptor value: it does not throw, and precedence falls through to the descriptor, then to `1`.
+
+### `gsd-tools query dispatch-capacity` contract
+
+- **Raw mode** (default): prints exactly one positive integer — the effective capacity — and nothing else.
+- **JSON mode** (`--json`): `{ runtime, capacity, declared, source, reason }` where `source ∈ { "live", "descriptor", "fallback" }` names which precedence tier won, `declared` is the raw pre-validation value at that tier (or `null`), and `reason` is a stable machine-readable string (e.g. `"missing"`, `"undocumented"`, `"non_integer"`, `"unsafe_integer"`, `"non_positive"`, `"ok"`) — the same shape as the existing `{ runtime, isolation, ... }` pattern the `dispatch.isolation` CLI surface already established, so a future capacity-consuming caller and an existing isolation-consuming caller read symmetric contracts.
+- This query is the **single workflow consumer** of the axis (per #3344's acceptance criteria) — no other call site reads `dispatch.maxConcurrency` or `GSD_DISPATCH_MAX_CONCURRENCY` directly.
+
+### Degradation ladder — interface point 2 (Dispatch) gains a capacity row
+
+| Interface point | Full | Degraded | Absent → fallback |
+|---|---|---|---|
+| 2 Dispatch — capacity | live or descriptor value: a valid positive safe integer, used as-is (subject to `--jobs N` and isolation, below) | *(no rung — see below)* | missing / `undocumented` / invalid: fails closed to `1` |
+
+### Interaction with `dispatch.isolation`
+
+`isolation` is architecturally prior to `maxConcurrency`: a **mutating** wave (any wave that writes files, not a read-only planning/research pass) is forced to **one** worker whenever `dispatch.isolation === 'none'`, regardless of what capacity resolves to — there is no isolation primitive to protect concurrent mutating workers from each other, so capacity above 1 is moot for that wave shape. A non-mutating wave (planning-only, `--validate`/`--research` stages) is not subject to this cap, since GSD writes nothing during it. `harness-worktree` and `orchestrator-worktree` both permit capacity-bounded concurrent mutating workers, each isolated in its own worktree.
+
+### Spawn backpressure, recovery, and deterministic merges (locks #3672's isolation/backpressure/recovery requirement)
+
+- **Backpressure.** A refused or backpressured spawn returns its item to `pending` in `BATCH.json` — it never increases fan-out to compensate, and it never loses batch state. The coordinator retries within the same or a later wave; it does not treat a refusal as a failure.
+- **Manifest-scoped worktree ownership.** Exactly the existing invariant from `executeWorktreeWaveCleanupPlan` (`src/worktree-safety.cts:1005-1217`; the Codex-binding section above also cites this function but at a stale line number — verify against the live symbol, not that citation): the coordinator creates, merges, and cleans up **only** worktrees recorded in `BATCH.json`. It never sweeps or infers ownership of an unrecorded worktree, however plausible its name looks.
+- **Deterministic wave and merge ordering.** Waves are built from the DAG (declared dependencies) combined with file-overlap freedom (Phase 2's extracted partitioner, applied to normalized planned paths), for the **same input order → same waves, every run**. Merges within a wave apply in deterministic input order, and every merge applies the existing committed-diff-vs-declared-scope check (#2596) before releasing dependents — a scope violation is reported and the worktree is preserved for diagnosis, never silently merged.
+- **Interruption and resume.** `BATCH.json` is the sole source of truth for what is complete. Resume skips completed items, retries only eligible non-complete stages, and re-evaluates blocked dependents. STATE completion is recorded **exactly once per quick directory/ID**, using that ID as an idempotency key on the existing `appendQuickTaskRow` path (`src/markdown-table.cts`) — repeated resume never duplicates a row. A corrupt or unrecognized manifest fails closed: quick-batch refuses to guess global Git or planning state from partial artifacts or from an arbitrary Git worktree's mere existence.
+- **Base divergence.** Each wave after the first starts from the **current merged batch base** — not the batch's original base. A base that has diverged in a way the coordinator cannot reconcile is refused with a recoverable diagnostic, never silently rebased or guessed past.
+
+### Implementing epic (already filed — [#3344](https://github.com/open-gsd/gsd-core/issues/3344))
+
+Each phase is its own `approved-*` sub-issue + PR, dependency-ordered, exactly the convention the Codex-binding epic above established. **Phase 0 (this amendment) is docs-only and closes only its own sub-issue, not the epic.**
+
+- **Phase 0 — this ADR-1239 amendment.** [#3672](https://github.com/open-gsd/gsd-core/issues/3672). The design lock: terminology, single-writer ownership, the `dispatch.maxConcurrency` sub-field, the live-capacity transport and precedence, the `dispatch-capacity` query contract, the isolation interaction, and the backpressure/recovery/merge-ordering rules above. Docs-only.
+- **Phase 1 — the sub-field, descriptors, and query.** [#3673](https://github.com/open-gsd/gsd-core/issues/3673). `dispatch.maxConcurrency` schema + `SAFE_DEFAULTS`/validator parity + per-sub-field negotiation; all 19 runtime descriptors carry a sourced value or `undocumented`; `gsd-tools query dispatch-capacity` (raw + JSON); `docs/reference/host-integration-capability-matrix.md` gains the row. No behavior change to any existing command.
+- **Phase 2 — the shared file-overlap wave partitioner.** [#3674](https://github.com/open-gsd/gsd-core/issues/3674). Behavior-preserving extraction of the existing greedy first-fit partitioner out of `src/claude-orchestration.cts` into a pure, generic, no-path-normalization helper; execute-phase adapted to call it with proven byte/behavior parity. Independent of Phase 1; both are prerequisites for Phase 3.
+- **Phase 3 — quick-batch core primitives.** [#3675](https://github.com/open-gsd/gsd-core/issues/3675). Parsing, collision-safe quick-ID preallocation, `BATCH.json` schema/transitions, dependency validation, deterministic wave construction (consuming Phase 2's partitioner over normalized planned paths), resume decisions, and exactly-once STATE completion. Pure/state primitives and CLI-testable core operations only — no user-facing command yet. **Depends on Phases 1 and 2.**
+- **Phase 4 — the command and execution workflow.** [#3676](https://github.com/open-gsd/gsd-core/issues/3676). `quick-batch` + generated skill; direct leaf dispatch (planner/researcher/checker/executor/verifier — never a nested `/gsd:quick`); capacity-bounded isolation-aware wave execution; serialized worktree lifecycle, merge, and failure propagation. **Depends on Phases 1–3.**
+- **Phase 5 — hardening and final acceptance.** [#3677](https://github.com/open-gsd/gsd-core/issues/3677). Security (path confinement, prompt-injection, manifest tampering, arbitrary-worktree-ownership attempts), portability (Unicode, Windows paths, BSD/GNU utility differences), fault injection across every durable crash window, generated-artifact parity, documentation, and final evidence mapped to every acceptance criterion in #3344. **Depends on Phases 1–4.** Closes its own sub-issue; epic #3344 closes only after full maintainer acceptance.
+
+`/adr-phase-coverage` must confirm every deliverable is claimed by exactly one phase before code starts on Phase 1 — already checked against #3344's full acceptance checklist during this Phase 0 pass; two epic-level assertions (no automatic broad-prompt decomposition; audit-scanner recognition of batch-produced quick tasks) are implied by the Phase 3/4 design rather than stated as a phase AC line, and must be made explicit test rows in those phases' own design docs rather than assumed.
+
+### Decisions & rollout
+
+- **Form.** This lands as an amendment to ADR-1239, the sibling of the OpenCode and Codex bindings above — quick-batch is the third worked host-integration consumer, and the first to add a *numeric* (not enum) dispatch sub-field.
+- **Naming.** `dispatch.maxConcurrency`, a `dispatch` sub-field over a new axis, following the `isolation`/#2584 precedent directly above. `GSD_DISPATCH_MAX_CONCURRENCY` for the live transport, following the repo's existing `GSD_*` invocation-scoped env var convention rather than inventing a new naming scheme.
+- **Rollout.** Phases 1 and 2 are independent of each other and both gate Phase 3; Phases 3–5 are strictly stacked. No phase before Phase 4 changes the behavior of any existing command — `dispatch.maxConcurrency` and the partitioner extraction are additive/behavior-preserving until quick-batch itself consumes them.
+
+### Consequences
+
+**Positive.** The hardest open question blocking #3344 — where a *live* capacity signal comes from and how it is prioritized against a static descriptor — is answered once, centrally, rather than improvised inside the quick-batch scheduler; the answer reuses this ADR's existing sub-field negotiation machinery instead of inventing a second capability system. Single-writer ownership is stated as an architectural invariant here, not left implicit in quick-batch's own code, so a future reviewer can check new code against a recorded decision (`why_is_this_here`) instead of inferring intent from a diff.
+
+**Negative / forever-cost.** A new numeric closed-shape sub-field across 19 descriptors (mechanical but wide, matching the `isolation` amendment's own cost profile); one new environment variable joining a class of change that, per this project's own contributor conventions, tends to ripple across multiple resolver surfaces rather than staying contained to one; the live/descriptor/fallback precedence must be kept correct as new runtimes are added, each of which must declare a sourced value or inherit `undocumented`.
+
 ## Alternatives considered
 
 1. **Projection-only (ADR-1016 as-is)** — rejected: never embeds; reverses the dependency.

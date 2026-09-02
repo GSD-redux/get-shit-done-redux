@@ -317,7 +317,7 @@ const LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib');
  * returning the parsed JSON result and the git argv list that was actually
  * executed (so "git commit never ran" is asserted directly, not inferred).
  */
-function commitWithFailingAdd({ cwd, files, failFor = [], stderr = 'fatal: injected staging failure', timeout = false, amend = false, gitVerb = 'add' }) {
+function commitWithFailingAdd({ cwd, files, failFor = [], stderr = 'fatal: injected staging failure', timeout = false, amend = false, gitVerb = 'add', matchArg = null }) {
   const callsOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2608-')), 'calls.json');
   // `timeout` is `false` | `true` (alias for `'posix'`) | `'posix'` | `'windows'` —
   // #3050: the shared isSpawnTimeout predicate only requires `error.code ===
@@ -333,11 +333,12 @@ const failFor = ${JSON.stringify(failFor)};
 const stderrText = ${JSON.stringify(stderr)};
 const timeoutShape = ${JSON.stringify(timeoutShape)};
 const gitVerb = ${JSON.stringify(gitVerb)};
+const matchArg = ${JSON.stringify(matchArg)};
 const real = projection.execGit;
 const calls = [];
 projection.execGit = (args, opts) => {
   calls.push(args);
-  if (args[0] === gitVerb && failFor.includes(args[args.length - 1])) {
+  if (args[0] === gitVerb && (matchArg === null || args.includes(matchArg)) && failFor.includes(args[args.length - 1])) {
     if (timeoutShape === 'posix') {
       // The exact shape spawnSync produces on a POSIX timeout, which
       // shell-command-projection surfaces as signal + error.code.
@@ -776,6 +777,386 @@ describe('#2608: commit --files fails closed when git add fails', () => {
     });
 
     assert.equal(result.reason, 'nothing_to_commit');
+  });
+});
+
+describe('#3859: an unanswered sequencer probe must not open the empty-diff guard', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempGitProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // `execGit` reports a spawn timeout as `exitCode: 1` (`_spawnResult`:
+  // `result.status ?? 1`) — byte-identical to the code `rev-parse --verify`
+  // returns for a ref that does not exist. So "the probe says no merge" and
+  // "the probe never answered" are the same value, and the #3776 guard read
+  // both as "no merge". These arms pin the conservative reading.
+  //
+  // The seam is `commitWithFailingAdd`'s injected `execGit` with
+  // `gitVerb: 'rev-parse'`: `args[0]` is `rev-parse` and `args[args.length-1]`
+  // is the ref, so `failFor: ['MERGE_HEAD']` selects exactly that one probe and
+  // leaves every other git call real.
+
+  // Leaves a conflicted merge or cherry-pick in progress with `bystander`
+  // committed and unmodified — the empty-diff shape that reaches the guard.
+  const BYSTANDER = path.posix.join('.planning', 'bystander.md');
+  function conflictedSequence(kind) {
+    const shared = path.posix.join('.planning', 'shared.md');
+    fs.writeFileSync(path.join(tmpDir, shared), 'base\n');
+    fs.writeFileSync(path.join(tmpDir, BYSTANDER), 'bystander\n');
+    gitOrThrow(['add', '--', shared, BYSTANDER], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'shared base'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    const trunk = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS }).trim();
+    gitOrThrow(['checkout', '-b', 'side'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    fs.writeFileSync(path.join(tmpDir, shared), 'side\n');
+    gitOrThrow(['commit', '-am', 'side edit'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['checkout', trunk], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    fs.writeFileSync(path.join(tmpDir, shared), 'trunk\n');
+    gitOrThrow(['commit', '-am', 'trunk edit'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    // Deliberately conflicting — that is what leaves the sequencer ref behind.
+    spawnSync('git', [kind === 'merge' ? 'merge' : 'cherry-pick', 'side'], {
+      cwd: tmpDir, encoding: 'utf8', timeout: STAGING_GIT_TIMEOUT_MS,
+    });
+    fs.writeFileSync(path.join(tmpDir, shared), 'resolved\n');
+    gitOrThrow(['add', '--', shared], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+  }
+
+  for (const shape of ['posix', 'windows']) {
+    test(`a timed-out MERGE_HEAD probe (${shape}) reaches git instead of silently abandoning the merge`, () => {
+      conflictedSequence('merge');
+      assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'MERGE_HEAD')),
+        'fixture must leave a merge in progress');
+
+      const { result, gitCalls } = commitWithFailingAdd({
+        cwd: tmpDir,
+        files: [BYSTANDER],
+        failFor: ['MERGE_HEAD'],
+        gitVerb: 'rev-parse',
+        timeout: shape,
+      });
+
+      assert.notEqual(result.reason, 'nothing_to_commit',
+        'an unanswered merge probe must not be read as "no merge in progress" — doing so decides '
+        + 'nothing_to_commit from a pathspec git will not honour and leaves the merge unconcluded');
+      assert.equal(result.reason, 'commit_failed',
+        'git must be the one to refuse the partial commit, loudly, as it did before #3776');
+      assert.ok(gitCalls.some((a) => a[0] === 'commit'),
+        'the guard must fall through to git commit rather than returning early');
+      assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'MERGE_HEAD')),
+        'the merge must still be in progress — silently abandoning it is the defect');
+    });
+  }
+
+  test('a timed-out CHERRY_PICK_HEAD probe reaches git too', () => {
+    conflictedSequence('cherry-pick');
+    assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'CHERRY_PICK_HEAD')),
+      'fixture must leave a cherry-pick in progress');
+
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [BYSTANDER],
+      failFor: ['CHERRY_PICK_HEAD'],
+      gitVerb: 'rev-parse',
+      timeout: true,
+    });
+
+    assert.notEqual(result.reason, 'nothing_to_commit',
+      'the cherry-pick probe carries the identical conflation — #3776 added it, so it is in scope here');
+    assert.equal(result.reason, 'commit_failed');
+    assert.ok(gitCalls.some((a) => a[0] === 'commit'));
+    assert.ok(fs.existsSync(path.join(tmpDir, '.git', 'CHERRY_PICK_HEAD')),
+      'the cherry-pick must still be in progress');
+  });
+
+  // THE ADAPTATION, PINNED. The obvious implementation — treat the timeout as
+  // `isMergeInProgress` — also flips `canScope`, which is PRE-EXISTING and
+  // gates the pathspec. A spurious timeout would then turn a scoped commit into
+  // a bare one and record whatever else happened to be staged, under a message
+  // describing only the named file: #2112, reintroduced by the fix for a
+  // misreport. The timeout must reach `partialCommitRefused` and nothing else.
+  test('a timed-out MERGE_HEAD probe outside a merge still commits ONLY the named paths', () => {
+    const named = path.posix.join('.planning', 'named.md');
+    const unrelated = path.posix.join('.planning', 'unrelated.md');
+    fs.writeFileSync(path.join(tmpDir, named), 'seed\n');
+    fs.writeFileSync(path.join(tmpDir, unrelated), 'seed\n');
+    gitOrThrow(['add', '--', named, unrelated], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'seed'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+
+    // A real change to the named file, and an UNRELATED file sitting staged in
+    // the index — the #2112 shape a bare commit would sweep up.
+    fs.writeFileSync(path.join(tmpDir, named), 'named edit\n');
+    fs.writeFileSync(path.join(tmpDir, unrelated), 'unrelated edit\n');
+    gitOrThrow(['add', '--', unrelated], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [named],
+      failFor: ['MERGE_HEAD'],
+      gitVerb: 'rev-parse',
+      timeout: true,
+    });
+
+    assert.equal(result.committed, true, 'the commit must still happen — there is a real diff');
+    const commitCall = gitCalls.find((a) => a[0] === 'commit');
+    assert.ok(commitCall, 'git commit must have run');
+    assert.ok(commitCall.includes('--') && commitCall.includes(named),
+      'the pathspec must survive the timeout: routing it through isMergeInProgress would drop it');
+    assert.deepEqual(committedFiles(tmpDir), [named],
+      'only the named path may land — the staged unrelated file must not be swept in (#2112)');
+  });
+
+  // NEGATIVE CONTROL for the conservative reading: outside a merge, treating an
+  // unanswered probe as "refused" must not manufacture a DIFFERENT answer. It
+  // falls through to git, git says there is nothing to commit, and the caller
+  // sees the same reason it would have seen anyway.
+  test('a timed-out MERGE_HEAD probe on a genuinely empty diff still reports nothing_to_commit', () => {
+    const rel = path.posix.join('.planning', 'quiet.md');
+    fs.writeFileSync(path.join(tmpDir, rel), 'unchanged\n');
+    gitOrThrow(['add', '--', rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'quiet'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [rel],
+      failFor: ['MERGE_HEAD'],
+      gitVerb: 'rev-parse',
+      timeout: true,
+    });
+
+    assert.equal(result.reason, 'nothing_to_commit',
+      'the conservative reading defers to git, which reports the same thing the guard would have');
+    assert.ok(gitCalls.some((a) => a[0] === 'commit'),
+      'and it gets there by asking git, not by short-circuiting on an unanswered probe');
+  });
+
+  // Round 4, review finding 1 + its coverage half. The `stagedPaths.length === 0`
+  // disjunct is NOT gated on `partialCommitRefused`, so an all-missing `--files`
+  // list during a merge or cherry-pick returns `nothing_to_commit` while the
+  // sequencer ref is still live and the resolved content sits staged.
+  //
+  // These arms pin that as the DELIBERATE answer, not an oversight. Gating the
+  // disjunct sends this case to a BARE `git commit` (stagedPaths is empty, so
+  // `canScope` is false), which git permits during a merge and which CONCLUDES
+  // it — recording the whole index under a message naming a path that does not
+  // exist, and reporting `committed: true`. Trading a report that writes nothing
+  // for one that silently writes everything is the trade the timeout routing
+  // above already refuses.
+  //
+  // The behaviour is also pre-existing: before this fix the identical
+  // short-circuit ran ABOVE the MERGE_HEAD probe, so it never consulted the
+  // sequencer either. Nothing here is a regression pin; these are behaviour
+  // pins, and they red on the gated implementation rather than at base.
+  for (const kind of ['merge', 'cherry-pick']) {
+    const ref = kind === 'merge' ? 'MERGE_HEAD' : 'CHERRY_PICK_HEAD';
+    test(`all named --files paths missing during a ${kind} reports nothing_to_commit and leaves the ${kind} open`, () => {
+      conflictedSequence(kind);
+      assert.ok(fs.existsSync(path.join(tmpDir, '.git', ref)),
+        `fixture must leave a ${kind} in progress`);
+      const before = headCount(tmpDir);
+      const missing = path.posix.join('.planning', 'never-produced.md');
+      assert.ok(!fs.existsSync(path.join(tmpDir, missing)),
+        'the named path must genuinely be absent from disk');
+
+      const { result, gitCalls } = commitWithFailingAdd({
+        cwd: tmpDir,
+        files: [missing],
+        failFor: [],
+      });
+
+      assert.equal(result.reason, 'nothing_to_commit',
+        'every named path was skipped before git add (#2014), so there is nothing declared to commit');
+      assert.equal(result.committed, false);
+      assert.ok(!gitCalls.some((a) => a[0] === 'commit'),
+        'git commit must NOT run — a bare commit here would conclude the sequencer with the whole index');
+      assert.equal(headCount(tmpDir), before,
+        'and no commit may be recorded');
+      assert.ok(fs.existsSync(path.join(tmpDir, '.git', ref)),
+        `the ${kind} must still be in progress — the caller's own resolution is untouched`);
+      assert.equal(
+        gitOrThrow(['diff', '--cached', '--name-only'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS }).trim(),
+        path.posix.join('.planning', 'shared.md'),
+        'and the staged resolution is still staged, not swallowed');
+    });
+  }
+});
+
+
+describe('#3859: an unanswered dry-run probe must not close the assume-unchanged path', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempGitProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Round 3. The `git commit --dry-run --porcelain` probe is the ONE probe in
+  // the guard whose rc 0 is the reassuring answer ("git would record
+  // something, stand aside"). `execGit` reports a spawn timeout as
+  // `exitCode: 1` (`_spawnResult`: `result.status ?? 1`) — byte-identical to
+  // git's own "nothing to record" — so an unanswered probe read as a
+  // confirmed one, the guard returned `nothing_to_commit`, and content the
+  // caller named in `--files` was never committed. The diff probe is safe by
+  // construction (rc 0 is the DANGEROUS answer there, and a timeout can only
+  // produce non-zero); the two sequencer probes carry an explicit
+  // `isSpawnTimeout` disjunct. This probe now stands aside on anything but a
+  // CONFIRMED rc 1 with no spawn error — the same "only a confirmed answer
+  // decides" rule the diff probe already follows, from the other direction.
+  //
+  // Seam: `commitWithFailingAdd`'s injected `execGit` with `gitVerb: 'commit'`
+  // AND `matchArg: '--dry-run'` — the real `git commit … -- <path>` shares
+  // both `args[0]` and its last argument with the probe, so the verb alone
+  // would intercept the commit this arm exists to prove still happens.
+  function assumeUnchangedModified() {
+    const rel = path.posix.join('.planning', 'assumed.md');
+    fs.writeFileSync(path.join(tmpDir, rel), 'seed\n');
+    gitOrThrow(['add', '--', rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'seed assumed'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['update-index', '--assume-unchanged', '--', rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    fs.writeFileSync(path.join(tmpDir, rel), 'modified under assume-unchanged\n');
+    return rel;
+  }
+
+  for (const shape of ['posix', 'windows']) {
+    test(`a timed-out dry-run probe (${shape}) still commits the modified assume-unchanged path`, () => {
+      const rel = assumeUnchangedModified();
+
+      const { result, gitCalls } = commitWithFailingAdd({
+        cwd: tmpDir,
+        files: [rel],
+        failFor: [rel],
+        gitVerb: 'commit',
+        matchArg: '--dry-run',
+        timeout: shape,
+      });
+
+      assert.notEqual(result.reason, 'nothing_to_commit',
+        'an unanswered dry run must not be read as "nothing would be recorded" — that drops content '
+        + 'the caller named in --files and reports there was nothing to write');
+      assert.equal(result.committed, true, 'the commit must still happen — git would have recorded it');
+      assert.ok(gitCalls.some((a) => a[0] === 'commit' && a.includes('--dry-run')),
+        'the probe must have been the call that timed out');
+      assert.ok(gitCalls.some((a) => a[0] === 'commit' && !a.includes('--dry-run')),
+        'and the guard must fall through to the real git commit');
+      assert.equal(
+        gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS }),
+        'modified under assume-unchanged\n',
+        'and the content it records must be the working-tree content');
+    });
+  }
+
+  // A genuine git error from the dry run (rc 128, no spawn error) is not a
+  // "nothing to record" answer either. It falls through to git, which fails
+  // the same way it would have — loudly — rather than manufacturing a no-op.
+  test('a dry-run probe that errors (rc 128) still reaches git instead of reporting nothing_to_commit', () => {
+    const rel = assumeUnchangedModified();
+
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [rel],
+      failFor: [rel],
+      gitVerb: 'commit',
+      matchArg: '--dry-run',
+      timeout: false,
+    });
+
+    assert.notEqual(result.reason, 'nothing_to_commit',
+      'rc 128 is a failed probe, not a confirmed empty one');
+    assert.equal(result.committed, true);
+    assert.ok(gitCalls.some((a) => a[0] === 'commit' && !a.includes('--dry-run')));
+  });
+
+  // The `ls-files -v` read is an optimisation, never a gate: when it cannot
+  // answer, the dry run runs anyway. Pinned, because the reviewer named it
+  // as untested and a later "tidy-up" that returns false on a failed read
+  // would drop the content by a different door.
+  test('a timed-out ls-files probe falls through to the dry run, and the path is still committed', () => {
+    const rel = assumeUnchangedModified();
+
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [rel],
+      failFor: [rel],
+      gitVerb: 'ls-files',
+      timeout: true,
+    });
+
+    assert.equal(result.committed, true,
+      'an unreadable tag list must not decide anything — the dry run answers instead');
+    assert.ok(gitCalls.some((a) => a[0] === 'commit' && a.includes('--dry-run')),
+      'the dry run must have run despite the unanswered ls-files read');
+    assert.equal(
+      gitOrThrow(['show', 'HEAD:' + rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS }),
+      'modified under assume-unchanged\n');
+  });
+
+  // NEGATIVE CONTROL for the conservative reading, mirroring the sequencer
+  // arms': an UNMODIFIED assume-unchanged path in a clean tree, dry run timed
+  // out. Standing aside must not manufacture a DIFFERENT answer — it falls
+  // through to git, git says there is nothing to commit, and the caller sees
+  // the same reason the guard would have given.
+  test('a timed-out dry-run probe on an unmodified assume-unchanged path still reports nothing_to_commit', () => {
+    const rel = path.posix.join('.planning', 'assumed.md');
+    fs.writeFileSync(path.join(tmpDir, rel), 'seed\n');
+    gitOrThrow(['add', '--', rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'seed assumed'], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+    gitOrThrow(['update-index', '--assume-unchanged', '--', rel], { cwd: tmpDir, timeoutMs: STAGING_GIT_TIMEOUT_MS });
+
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [rel],
+      failFor: [rel],
+      gitVerb: 'commit',
+      matchArg: '--dry-run',
+      timeout: true,
+    });
+
+    assert.equal(result.reason, 'nothing_to_commit',
+      'the conservative reading defers to git, which reports the same thing the probe would have');
+    assert.ok(gitCalls.some((a) => a[0] === 'commit' && !a.includes('--dry-run')),
+      'and it gets there by asking git, not by short-circuiting on an unanswered probe');
+  });
+
+  // Round 4, review finding 3. The probe's safety rests on `git commit
+  // --dry-run` not running `pre-commit`, which git 2.54 satisfies on its own —
+  // so this arm pins the FLAG, not an outcome, and that is deliberate: the
+  // outcome it protects is unobservable on a git that already declines to run
+  // the hook. On a git that DID run it, a rejecting hook exits 1, the closure
+  // reads that as a confirmed "nothing to record", and the caller's content is
+  // dropped under a `nothing_to_commit` report — #3776 re-entered through the
+  // probe. `--no-verify` removes the dependency on the version rather than
+  // documenting it.
+  //
+  // It is a seam assertion over the argv the guard actually issued, not a
+  // source grep: the flag is read off the executed call, so deleting it from
+  // the probe reds this arm.
+  test('the dry-run probe carries --no-verify so a hook-firing git cannot close the guard', () => {
+    const rel = assumeUnchangedModified();
+
+    const { gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: [rel],
+      failFor: [],
+    });
+
+    const dryRuns = gitCalls.filter((a) => a[0] === 'commit' && a.includes('--dry-run'));
+    assert.equal(dryRuns.length, 1,
+      'the assume-unchanged branch must have reached the dry-run probe exactly once');
+    assert.ok(dryRuns[0].includes('--no-verify'),
+      'the probe must not be able to execute a pre-commit hook, whatever the git version does by default');
+    // And the REAL commit must not inherit it — #3776 is a bug about a hook
+    // whose message reached the caller wrongly, never a licence to skip hooks.
+    const realCommits = gitCalls.filter((a) => a[0] === 'commit' && !a.includes('--dry-run'));
+    assert.ok(realCommits.length > 0, 'the guard must have fallen through to a real commit');
+    assert.ok(realCommits.every((a) => !a.includes('--no-verify')),
+      'the real commit still runs the caller\'s hooks — only the probe is exempt');
   });
 });
 

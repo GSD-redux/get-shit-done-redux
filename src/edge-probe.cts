@@ -46,10 +46,21 @@ export interface TaxonomyEntry {
   probe: string;
 }
 
-/** A SPEC requirement; `shapes` is an optional authored override of classification. */
+/**
+ * A SPEC requirement; `shapes` is an optional authored override of classification.
+ *
+ * `text_en` (#3717) is an optional English translation of `text`, read by shape
+ * classification in preference to `text` when present (`text_en ?? text`). `SHAPE_CUES`
+ * are English-only word-boundary patterns, so a non-English `text` (e.g. a project running
+ * with `response_language` set) classifies to zero shapes unless `text_en` supplies an
+ * English rendering. `text` itself is unaffected and keeps its own meaning (the
+ * requirement's own text, in whatever language the SPEC uses) — only classification reads
+ * `text_en` preferentially.
+ */
 export interface Requirement {
   id: string;
   text: string;
+  text_en?: string;
   shapes?: Shape[];
 }
 
@@ -135,7 +146,7 @@ export const EDGE_VALIDATORS: Validators = {
  */
 export function validateRequirement(requirement: Requirement): void {
   coreValidateRequirement(requirement);
-  const r = requirement as unknown as { shapes?: unknown; text?: unknown };
+  const r = requirement as unknown as { shapes?: unknown; text?: unknown; text_en?: unknown };
   if (r.shapes != null && !Array.isArray(r.shapes)) {
     throw new Error(`requirement ${requirement.id} shapes must be an array when present`);
   }
@@ -143,6 +154,15 @@ export function validateRequirement(requirement: Requirement): void {
     throw new Error(
       `requirement ${requirement.id} text must be a non-empty string when no shapes override is provided`,
     );
+  }
+  // text_en (#3717) is optional, but when present it must be a non-empty string. An empty
+  // string is NOT caught by `??` (only null/undefined are), so an unvalidated `text_en: ''`
+  // would silently win `text_en ?? text` and classify against '' — the same fail-open shape
+  // #1110/#2773 already exist to eliminate, just moved one field over. Validated
+  // unconditionally (not gated on whether `shapes` will make it unused) so bad data fails
+  // closed even when it happens to be dead for this particular call.
+  if (r.text_en != null && !(typeof r.text_en === 'string' && r.text_en.trim())) {
+    throw new Error(`requirement ${requirement.id} text_en must be a non-empty string when present`);
   }
 }
 
@@ -172,7 +192,11 @@ export function proposeEdges(requirement: Requirement): Edge[] {
     }
     shapes = requirement.shapes;
   } else {
-    shapes = classifyShape(requirement.text);
+    // #3717: prefer the English translation when present — SHAPE_CUES are English-only
+    // word-boundary patterns, so a non-English `text` (e.g. response_language projects)
+    // would otherwise classify to zero shapes. validateRequirement (called above) has
+    // already guaranteed text_en, if present, is a non-empty string.
+    shapes = classifyShape(requirement.text_en ?? requirement.text);
     if (shapes.length === 0) {
       // Prose present but no shape cue matched. Do NOT silently drop it (#1110): an
       // edge-relevant requirement whose phrasing missed every cue would otherwise vanish from

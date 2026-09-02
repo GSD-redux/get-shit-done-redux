@@ -156,6 +156,10 @@ test('enhancement #191: published package no longer exposes gsd-sdk artifacts', 
 });
 
 test('enhancement #191: installer does not maintain gsd-sdk shim compatibility path', () => {
+  // allow-test-rule: structural-regression-guard (#3545) — asserting the
+  // ABSENCE of a retired flag/function reference from install.js is a source
+  // structure fact (dead-code regression), not something observable by
+  // exercising the installer's runtime behavior.
   const installJs = fs.readFileSync(INSTALL_PATH, 'utf8');
 
   assert.equal(/\b--sdk\b/.test(installJs), false,
