@@ -95,7 +95,7 @@ export function inferPreferredRuntime({ fs, env, preferredConfigDir }: InferPref
   if (env['KILO_CONFIG_DIR'] || env['KILO_CONFIG']) return 'kilo';
   if (env['OPENCODE_CONFIG_DIR'] || env['OPENCODE_CONFIG']) return 'opencode';
   if (env['CLAUDE_CONFIG_DIR']) return 'claude';
-  return 'claude';
+  return '';
 }
 
 export interface EnvRuntimeDirsOpts {
