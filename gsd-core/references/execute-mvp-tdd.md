@@ -51,6 +51,13 @@ The executor MUST:
    3. Re-run /gsd execute-phase
    ```
 
+   `missing_red_evidence` differs from the other three `Write a failing test` reasons: the RED
+   commit already exists, made without evidence, so the remedy is amending that commit's trailer,
+   not writing another failing test:
+   1. Re-run the RED test and record its `red-evidence:` trailer.
+   2. Amend the existing `test({phase}-{plan})` commit with that trailer.
+   3. Re-run `/gsd execute-phase`
+
    `unexpected_pass` differs from the other four: it means the run the executor performed exited
    0, so the declared behavior already holds. The required next step above does not apply — writing
    another failing test or retrying loops forever against a test that already passes. Halt and
