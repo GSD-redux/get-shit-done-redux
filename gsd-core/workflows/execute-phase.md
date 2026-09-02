@@ -183,16 +183,11 @@ Before trusting `STATE.md` or dispatching any executor, derive `CURRENT_PLAN_ID`
 from the active incomplete plan in `INIT`, then search recent history:
 ```bash
 SUMMARY_PATH="{phase_dir}/{plan_padded}-SUMMARY.md"
-# #4003: the commit protocol (agents/gsd-executor.md <task_commit_protocol>) specifies
-# test({phase}-{plan}) with NO padding rule — both spellings are live in real histories —
-# so both components are zero-stripped and matched ANCHORED at the commit-scope position.
-# A bare substring grep over the padded id matches other milestones' same-numbered plans
-# and misses this plan's own unpadded commits.
+# #4003: no padding rule in the commit protocol, so zero-strip both components and
+# match ANCHORED at the commit scope; bound to the latest reachable tag (milestone marker).
 PHASE_N=$((10#{phase_number}))
 PLAN_N=$((10#{plan_padded}))
 PLAN_SCOPE_RE="^[a-z]+\((0*${PHASE_N})-(0*${PLAN_N})\):"
-# Milestone bound: the most recent reachable tag is the milestone marker (complete-milestone's
-# git_tag step). A repo with no tags degrades to the anchored grep alone — still positional.
 MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 PLAN_COMMITS=$(git log --oneline -E ${MILESTONE_BASE:+"$MILESTONE_BASE..HEAD"} --grep="${PLAN_SCOPE_RE}" -30)
 ```
@@ -209,10 +204,8 @@ Offer these recovery options:
 if [ "$TDD_MODE" = "true" ]; then
   IS_BEHAVIOR_ADDING=$(gsd_run query task.is-behavior-adding "$TASK_FILE" --pick is_behavior_adding)
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
-    # #4003: same anchored, zero-pad-tolerant scope as safe_resume_gate — the protocol
-    # promises no padding, and a padded-literal grep hard-halts on a correct RED commit.
-    # Same milestone bound too: a prior milestone's same-numbered RED commit must not
-    # satisfy this gate.
+    # #4003: same anchored scope and milestone bound as safe_resume_gate — a padded
+    # literal grep hard-halts on a correct unpadded RED commit.
     PHASE_N=$((10#${PHASE_NUMBER}))
     PLAN_N=$((10#${PLAN_ID}))
     PLAN_SCOPE_RE="^[a-z]+\((0*${PHASE_N})-(0*${PLAN_N})\):"
@@ -859,7 +852,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    ```bash
    # For each plan in this wave, check if the executor finished:
    SUMMARY_EXISTS=$(test -f "{phase_dir}/{plan_number}-{plan_padded}-SUMMARY.md" && echo "true" || echo "false")
-   # #4003: anchored, zero-pad-tolerant scope (see safe_resume_gate); the --since bound stays.
+   # #4003: anchored, zero-pad-tolerant scope (see safe_resume_gate); --since stays.
    SPOT_PHASE_N=$((10#{phase_number}))
    SPOT_PLAN_N=$((10#{plan_padded}))
    COMMITS_FOUND=$(git log --oneline --all -E --grep="^[a-z]+\((0*${SPOT_PHASE_N})-(0*${SPOT_PLAN_N})\):" --since="1 hour ago" | head -1)
