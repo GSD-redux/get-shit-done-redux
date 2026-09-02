@@ -139,7 +139,8 @@ function readGsdAgentTools(config: Record<string, unknown> | null): AgentTools |
     result[selector] = Array.isArray(value)
       ? value.filter((entry): entry is string => typeof entry === 'string')
         .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0 && !/[\u0000-\u001F\u007F-\u009F,\u2028\u2029]/.test(entry))
+        .filter((entry) => entry.length > 0
+          && !/[\s\u0000-\u001F\u007F-\u009F,#"'\u2028\u2029]/.test(entry))
       : [];
   }
   return result;

@@ -15,31 +15,16 @@ const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const { appendAgentTools, buildKimiAgentArtifacts, convertClaudeAgentToQwenAgent, _decodeToolScalar } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+const { parseFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 function parseTools(content) {
-  const lines = content.split(/\r?\n/);
-  const tools = [];
-  let collecting = false;
-  for (let index = 1; index < lines.length && lines[index] !== '---'; index += 1) {
-    const line = lines[index];
-    if (collecting) {
-      const item = /^([ \t]*)-[ \t]*(\S.*)$/.exec(line);
-      if (item) {
-        tools.push(parseScalar(item[2].trim()));
-        continue;
-      }
-      collecting = false;
-    }
-    const inline = /^tools:[ \t]*(.*)$/.exec(line);
-    if (!inline) continue;
-    if (inline[1].trim()) tools.push(...inline[1].split(',').map((value) => parseScalar(value.trim())));
-    else collecting = true;
-  }
-  return tools;
-}
-
-function parseScalar(value) {
-  return value.startsWith('"') ? JSON.parse(value) : value;
+  const tools = parseFrontmatter(content).tools;
+  if (tools === undefined || tools === null) return [];
+  if (typeof tools === 'object' && !Array.isArray(tools)) return [];
+  return (Array.isArray(tools) ? tools : [tools])
+    .flatMap((value) => String(value).replace(/\s+#.*$/, '').split(/[,\s]+/))
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function installClaude(t, { defaults, projectConfig } = {}) {
@@ -123,6 +108,11 @@ test('Claude installer appends wildcard then named grants exactly once (#4032)',
   });
 
   const tools = parseTools(installed.agent('gsd-executor'));
+  assert.match(
+    installed.agent('gsd-executor'),
+    /^tools:.*mcp__global__one, mcp__shared__tool, mcp__agent__two$/m,
+    'Claude inline tools must remain plain comma-separated tool names',
+  );
   assert.deepStrictEqual(
     tools.slice(-3),
     ['mcp__global__one', 'mcp__shared__tool', 'mcp__agent__two'],
@@ -201,9 +191,12 @@ test('Kimi receives canonical grants before its existing mapper runs (#4032)', (
     'Kimi must map a configured canonical WebFetch tool through its existing converter');
 });
 
-test('hostile values fail closed while quoted scalar data remains parseable (#4032)', (t) => {
-  const rejected = [null, 1, '', '  ', 'mcp__bad,comma', 'mcp__bad\nline', 'mcp__bad\u0085nel', 'mcp__bad\u2028line'];
-  const accepted = ['mcp__safe__:terminal', '#comment', '"quote"', '\\backslash'];
+test('hostile values fail closed while inline Claude tools remain valid tokens (#4032)', (t) => {
+  const rejected = [
+    null, 1, '', '  ', 'mcp__bad,comma', 'mcp__bad\0nul', 'mcp__bad\nline', 'mcp__bad\u0085nel', 'mcp__bad\u2028line',
+    '#comment', 'tool: value', 'Bash(git log:*)', '"quote"', "'quote'",
+  ];
+  const accepted = ['mcp__safe__:terminal', 'Agent(worker)', '\\backslash'];
   const installed = installClaude(t, { defaults: { agent_tools: { '*': [...rejected, ...accepted] } } });
   const content = installed.agent('gsd-executor');
   const frontmatter = content.slice(4, content.indexOf('\n---', 4));
@@ -211,6 +204,8 @@ test('hostile values fail closed while quoted scalar data remains parseable (#40
   assert.strictEqual(typeof parsed.tools, 'string', 'the emitted inline tools scalar must remain valid YAML');
   assert.deepStrictEqual(parseTools(content).slice(-accepted.length), accepted);
   assert.ok(rejected.every((value) => typeof value !== 'string' || !parseTools(content).includes(value)));
+  assert.ok(rejected.every((value) => typeof value !== 'string' || !value.trim() || !content.includes(value.trim())),
+    'rejected entries must not leak into the installed artifact under a different tokenization');
 });
 
 test('reinstall remains idempotent and preserves Claude read-only restrictions (#4032)', (t) => {

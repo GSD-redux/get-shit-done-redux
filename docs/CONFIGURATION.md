@@ -196,11 +196,12 @@ the global wildcard but replaces the global `gsd-executor` list:
 }
 ```
 
-Each selector value must be an array. A usable entry is a string which, after trimming, is
-non-empty and contains none of: a comma, U+0000–U+001F, U+007F–U+009F, U+2028, or U+2029.
+Each selector value must be an array. A usable entry is a single tool token which, after trimming,
+is non-empty and contains no whitespace, comma, `#`, quote, U+0000–U+001F, U+007F–U+009F,
+U+2028, or U+2029.
 Invalid entries are ignored. An explicitly present but invalid project selector resolves to no
-grant for that selector; it does not restore the global value. New grants are always emitted as
-quoted JSON strings, so they cannot change frontmatter structure.
+grant for that selector; it does not restore the global value. Inline grants remain plain
+comma-separated tool names as required by Claude; block-sequence entries are YAML-quoted.
 
 Run `gsd install <runtime>` again after changing `agent_tools`; installed artifacts do not read
 configuration at agent-spawn time. The shared staging path gives Claude, Codex, and Qwen their

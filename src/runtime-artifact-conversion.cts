@@ -738,13 +738,12 @@ function appendAgentTools(content: string, grants: string[]): string {
   const additions = grants.filter((grant) => !present.has(grant) && (present.add(grant), true));
   if (additions.length === 0) return content;
 
-  const serialized = additions.map((grant) => JSON.stringify(grant));
   if (toolsMatch[1].trim()) {
-    lines[toolsIndex] += `, ${serialized.join(', ')}`;
+    lines[toolsIndex] += `, ${additions.join(', ')}`;
   } else {
     const firstItem = /^([ \t]+)-/.exec(lines[toolsIndex + 1]);
     const indent = firstItem ? firstItem[1] : '  ';
-    lines.splice(insertAt, 0, ...serialized.map((grant) => `${indent}- ${grant}`));
+    lines.splice(insertAt, 0, ...additions.map((grant) => `${indent}- ${JSON.stringify(grant)}`));
   }
   return lines.join(eol);
 }
