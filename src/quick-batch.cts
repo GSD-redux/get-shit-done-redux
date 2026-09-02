@@ -658,9 +658,9 @@ function loadBatch(cwd: string, batchId: string): Result<QuickBatchManifest> {
         : `unable to read BATCH.json for batch ${batchId}: ${e.message}`,
     };
   }
-  const parsed = safeJsonParse(raw, { maxLength: 1048576, label: `BATCH.json for batch ${batchId}` });
+  const parsed = safeJsonParse(raw, { maxLength: 1048576 });
   if (!parsed.ok) {
-    return { ok: false, reason: parsed.error ?? `BATCH.json for batch ${batchId} is not valid JSON` };
+    return { ok: false, reason: `BATCH.json for batch ${batchId} is not valid JSON: ${parsed.error ?? 'unknown parse error'}` };
   }
   return validateBatchSchema(parsed.value, batchId);
 }
