@@ -911,13 +911,16 @@ function stageSkillsForRuntimeAsSkills(
  * did with its own `targetDir` variable. Optional — a caller with no
  * `targetDir` in scope (e.g. the feat-1173 synthetic-descriptor seam tests)
  * degrades to `null`, matching `readGsdEffectiveEffortConfig(null)`'s own
- * global-only-config contract.
+ * global-only-config contract. `projectDir` separates project config discovery
+ * from that artifact destination for global installs (#4032).
  */
 interface AgentCtx {
   runtime: string;
   pathPrefix: string;
   attribution: string | null | undefined;
   targetDir?: string | null;
+  /** Project/config discovery root; defaults to targetDir for compatibility. */
+  projectDir?: string | null;
 }
 
 /**
@@ -996,7 +999,7 @@ function stageAgentsForRuntimeWithConverter(
   try {
     // Resolve cmdNames once per staging call (not per file) for performance.
     const cmdNames = agentCtx ? _readGsdCommandNames() : [];
-    const agentTools = installModelOverrideResolver.readGsdEffectiveAgentTools(agentCtx?.targetDir ?? null);
+    const agentTools = installModelOverrideResolver.readGsdEffectiveAgentTools(agentCtx?.projectDir ?? agentCtx?.targetDir ?? null);
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith('.md')) continue;

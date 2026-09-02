@@ -36,6 +36,8 @@ interface AgentCtx {
    *  resolution can read config exactly as the inline agent loop's own
    *  `targetDir` variable did. */
   targetDir?: string | null;
+  /** Project/config discovery root, distinct from global artifact destinations. */
+  projectDir?: string | null;
 }
 
 interface ArtifactKind {
@@ -114,6 +116,7 @@ interface CreateRuntimeArtifactInstallPlanArgs {
   homedir?: () => string;
   platform?: NodeJS.Platform;
   resolveAttribution?: (runtime: string) => string | null | undefined;
+  projectDir?: string | null;
   deps?: Dependencies;
 }
 
@@ -164,6 +167,7 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
     homedir,
     platform,
     resolveAttribution,
+    projectDir,
     deps = {},
   } = args;
   const conversionExports = _require('./runtime-artifact-conversion.cjs') as RuntimeArtifactConversionExports;
@@ -203,7 +207,13 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
   const attribution = resolveAttribution ? resolveAttribution(layout.runtime) : undefined;
   // #2875 Part 2 (row I1): layout.configDir IS the install root the inline
   // agent loop called `targetDir` — same value, same resolution.
-  const agentCtx: AgentCtx = { runtime: layout.runtime, pathPrefix, attribution, targetDir: layout.configDir };
+  const agentCtx: AgentCtx = {
+    runtime: layout.runtime,
+    pathPrefix,
+    attribution,
+    targetDir: layout.configDir,
+    projectDir: projectDir ?? layout.configDir,
+  };
 
   for (const kind of layout.kinds) {
     let stagedDir: string;

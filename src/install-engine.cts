@@ -1042,7 +1042,7 @@ function installRuntimeArtifacts(
   resolvedProfile: any,
   resolveAttribution: ResolveAttribution = () => undefined,
   capabilityRegistry?: any,
-  deps: { fs?: any; os?: any; env?: Record<string, string | undefined> } = {},
+  deps: { fs?: any; os?: any; env?: Record<string, string | undefined>; cwd?: () => string } = {},
 ): any {
   return withInstallFs(deps.fs, (): any => {
     // A removed descriptor kind is no longer visited by the layout loop, so it
@@ -1083,6 +1083,7 @@ function installRuntimeArtifacts(
       homedir: () => os.homedir(),
       platform: process.platform,
       resolveAttribution,
+      projectDir: scope === 'global' ? (deps.cwd ?? process.cwd)() : configDir,
     });
 
     const cleanupDirs = planResult.ok ? planResult.plan.cleanupDirs : planResult.cleanupDirs;

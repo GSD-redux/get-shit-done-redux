@@ -105,6 +105,8 @@ interface AgentCtx {
    *  per-agent model-override resolution below. Mirrors install-profiles.cts's
    *  identically-named AgentCtx field — see its doc comment. */
   targetDir?: string | null;
+  /** Project/config discovery root, distinct from global artifact destinations. */
+  projectDir?: string | null;
 }
 
 interface ArtifactKind {
