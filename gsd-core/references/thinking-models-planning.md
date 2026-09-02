@@ -38,6 +38,8 @@ This is the reasoning step that produces the rating. The taxonomy itself, the em
 
 **Counters:** Plans that prescribe avoidable dependencies, abstractions, files, or speculative flexibility before execution begins.
 
+This check complements the planner's RESEARCH.md `dont_hand_roll` guidance and the plan checker's Dimension 12 (Pattern Compliance): those sources identify capabilities and established patterns, while this check orders otherwise sufficient implementation choices. The executor applies the related check later in `thinking-models-execution.md`, after the plan has already selected an approach.
+
 After preserving locked user decisions and complete requirement coverage, choose the first option that is demonstrably sufficient for the task's `<done>` condition:
 
 1. Existing project behavior, helper, or established pattern

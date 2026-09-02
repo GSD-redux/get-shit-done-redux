@@ -182,6 +182,16 @@ describe('thinking-models-planning.md defines the minimum-solution check', () =>
     }
   });
 
+  test('distinguishes the check from adjacent planning and execution guidance', () => {
+    for (const existingGuidance of [
+      'dont_hand_roll',
+      'Dimension 12 (Pattern Compliance)',
+      'thinking-models-execution.md',
+    ]) {
+      assert.ok(content.includes(existingGuidance), `missing cross-reference to ${existingGuidance}`);
+    }
+  });
+
   test('cannot reduce scope or override required planning constraints', () => {
     for (const boundary of [
       'locked user decisions',
