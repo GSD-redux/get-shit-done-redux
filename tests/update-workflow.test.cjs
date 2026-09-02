@@ -58,7 +58,7 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.match(step, /GSD_DIR=""/);
     assert.match(
       step,
-      /otherwise (?:leave )?empty/,
+      /otherwise leave (?:it )?empty/,
       'an unrecognized execution_context path must not infer Claude',
     );
     assert.doesNotMatch(step, /otherwise `?claude`?\./);
