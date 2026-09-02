@@ -43,6 +43,7 @@ body:
         - Antigravity
         - Cursor
         - Windsurf
+        - ZCode (Z.ai)
         - Multiple (specify in description)
     validations:
       required: true
