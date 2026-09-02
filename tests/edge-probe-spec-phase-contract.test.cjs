@@ -504,3 +504,59 @@ test('#2773: no Step 5.5 exit path leaks the $REQS_JSON temp file', () => {
     `every exit between the mktemp and the unconditional cleanup must rm -f "$REQS_JSON" first; leaking exits: ${JSON.stringify(leaks)}`,
   );
 });
+
+// ─── #3717: durable text_en field (follow-up to the #2773 doc-only stopgap) ───
+//
+// #2773 shipped a documented convention: for a response_language project, Step 5.5's `text`
+// field silently carried the English TRANSLATION rather than the SPEC's own requirement
+// prose. #3717 (approved scope: Form 1 only, `text_en` field) makes this an explicit,
+// validatable field: `text` goes back to meaning "the requirement's own text" (in
+// response_language, when set), and `text_en` carries the translation the classifier reads.
+//
+// These three tests only check the WORKFLOW PROSE instructs populating text_en correctly —
+// the same prose-assertion pattern the #2773 tests above already use for Step 5.5, not a new
+// testing technique. The actual machine check the #2773 doc-only stopgap lacked is
+// ENGINE-level, not workflow-level: text_en is now a real, validated Requirement field —
+// validateRequirement fail-closes on an empty value, and classifyShape/proposeEdges
+// demonstrably prefer it over text — a property the #2773 prose-only convention had no way
+// to enforce. See tests/edge-probe.test.cjs for that engine-level coverage.
+
+test('#3717: Step 5.5 documents populating text_en for response_language projects', () => {
+  const block = extractStep55Block(readSpecPhase());
+  assert.ok(block.length > 0, 'Step 5.5 block must be extractable from spec-phase.md');
+
+  assert.match(
+    block,
+    /text_en/,
+    'Step 5.5 must name the text_en field — the durable #3717 fix for non-English requirement classification',
+  );
+  assert.match(
+    block,
+    /response_language/,
+    'Step 5.5 must still name response_language as the setting that triggers populating text_en',
+  );
+});
+
+test('#3717: Step 5.5 documents that text stays the original SPEC-language requirement text', () => {
+  const block = extractStep55Block(readSpecPhase());
+  assert.ok(block.length > 0, 'Step 5.5 block must be extractable from spec-phase.md');
+
+  // The #2773-era stopgap had `text` secretly carry the English translation. The #3717
+  // durable fix keeps `text` meaning the requirement's own text (original language) and
+  // moves the translation into the new text_en field — this must be documented, not just
+  // implemented, or the next reader re-introduces the #2773 overload by habit.
+  assert.match(
+    block,
+    /`?text`?[^\n]*(original language|SPEC's own|requirement's own|unchanged)|(original language)[^\n]*`?text`?/i,
+    'Step 5.5 must state that text carries the SPEC requirement in its own (original) language — not the translation',
+  );
+});
+
+test('#3717: the edge-probe reference documents the text_en field', () => {
+  const ref = fs.readFileSync(EDGE_PROBE_REF_PATH, 'utf8');
+  assert.match(
+    ref,
+    /text_en/,
+    'the edge-probe reference `## Inputs` contract must document the optional text_en field and its text_en ?? text fallback',
+  );
+});

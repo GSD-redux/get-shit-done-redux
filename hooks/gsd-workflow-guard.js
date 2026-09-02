@@ -366,7 +366,8 @@ process.stdin.on('end', () => {
           'This edit will not be tracked in STATE.md or produce a SUMMARY.md. ' +
           'Consider using /gsd:fast for trivial fixes or /gsd:quick for larger changes ' +
           'to maintain project state tracking. ' +
-          'If this is intentional (e.g., user explicitly asked for a direct edit), proceed normally.'
+          'If this is intentional (e.g., user explicitly asked for a direct edit), proceed normally.',
+        code: 'WORKFLOW_ADVISORY'
       }
     };
 

@@ -430,3 +430,50 @@ describe('Fix 3: reserved-key guard on hostIntegration and hostIntegration.dispa
       'Must produce an error for "prototype" reserved key on dispatch; got: ' + errors.join(', '));
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3673 — ADR-1239 Phase 1: all 19 shipped descriptors carry
+// dispatch.maxConcurrency (a real sourced integer or the "undocumented"
+// sentinel — never silently absent), and every one validates clean.
+// ---------------------------------------------------------------------------
+
+describe('#3673 dispatch.maxConcurrency — all 19 shipped descriptors', () => {
+  const registry = require(path.join(__dirname, '../gsd-core/bin/lib/capability-registry.cjs'));
+
+  test('registry carries exactly 19 runtime descriptors', () => {
+    assert.strictEqual(Object.keys(registry.runtimes).length, 19,
+      `expected exactly 19 shipped runtimes; got: ${Object.keys(registry.runtimes).sort().join(', ')}`);
+  });
+
+  test('every shipped descriptor declares dispatch.maxConcurrency as a number or "undocumented" — never absent', () => {
+    for (const [id, cap] of Object.entries(registry.runtimes)) {
+      const mc = cap && cap.runtime && cap.runtime.hostIntegration && cap.runtime.hostIntegration.dispatch
+        && cap.runtime.hostIntegration.dispatch.maxConcurrency;
+      assert.ok(mc !== undefined,
+        `${id}: runtime.hostIntegration.dispatch.maxConcurrency must be present (number or "undocumented")`);
+      assert.ok(typeof mc === 'number' || mc === 'undocumented',
+        `${id}: runtime.hostIntegration.dispatch.maxConcurrency must be a number or "undocumented"; got: ${JSON.stringify(mc)}`);
+    }
+  });
+
+  test('claude declares the one real sourced value (20)', () => {
+    assert.strictEqual(registry.runtimes.claude.runtime.hostIntegration.dispatch.maxConcurrency, 20);
+  });
+
+  test('every other shipped descriptor declares "undocumented" (not researched for this axis)', () => {
+    for (const [id, cap] of Object.entries(registry.runtimes)) {
+      if (id === 'claude') continue;
+      assert.strictEqual(cap.runtime.hostIntegration.dispatch.maxConcurrency, 'undocumented',
+        `${id}: expected "undocumented" (only claude has a cited value)`);
+    }
+  });
+
+  test('validateCapability accepts all 19 shipped descriptors\' dispatch.maxConcurrency with zero errors', () => {
+    for (const [id, cap] of Object.entries(registry.runtimes)) {
+      const errors = validateCapability(cap, id);
+      const mcErrors = errors.filter((e) => e.includes('maxConcurrency'));
+      assert.strictEqual(mcErrors.length, 0,
+        `${id}: shipped dispatch.maxConcurrency must validate clean; got: ${JSON.stringify(mcErrors)}`);
+    }
+  });
+});

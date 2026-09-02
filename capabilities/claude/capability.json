@@ -85,7 +85,8 @@
         "background": true,
         "subagentToolkit": "full",
         "backgroundDispatch": false,
-        "isolation": "harness-worktree"
+        "isolation": "harness-worktree",
+        "maxConcurrency": 20
       },
       "modelMode": "passive",
       "hookBus": "host",

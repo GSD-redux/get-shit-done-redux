@@ -208,7 +208,8 @@ Provide structured feedback on plan quality, completeness, and risks.
 {research if present}
 
 ### Plans to Review
-{all PLAN.md contents}
+For each `*-PLAN.md` in the phase directory, in glob order, include its full content preceded by a `####` header carrying the plan's **repo-relative path** (e.g. `#### .planning/phases/<phase>/<NN>-PLAN.md`). The path header is the citable anchor for findings about the plan itself — cite it as `<repo-relative plan path>:<line>` (name the heading in prose beside the citation if it helps the reader); reserve `path:line` for repo files the plan references.
+{per-plan: `#### <repo-relative plan path>` + full plan contents}
 
 ## Review Instructions
 
@@ -261,12 +262,15 @@ RUN_DIR="{run_dir}"   # from gather_context
 cp "$INSTRUCTIONS_BLOCK_FILE" "${RUN_DIR}/gsd-review-instructions.md"
 cp "$ROADMAP_SECTION_FILE" "${RUN_DIR}/gsd-review-roadmap.md"
 
-# Plan files: copy each PLAN.md to a predictable numbered path
-PLAN_INDEX=0
+# Plan files: copy each PLAN.md to a predictable path named after its source
+# plan id (#3959: a bare padded index discards provenance — the budget tool's
+# per-plan `### <file>` header then renders a run-dir artifact name no reviewer
+# or consensus step can resolve. The plan id keeps the gsd-review-plan-*.md glob
+# prepare_trimmed_prompt_for_reviewer consumes.)
 for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
-  PADDED_IDX=$(printf '%02d' "$PLAN_INDEX")
-  cp "$PLAN_FILE" "${RUN_DIR}/gsd-review-plan-${PADDED_IDX}.md"
-  PLAN_INDEX=$((PLAN_INDEX + 1))
+  PLAN_BASENAME=$(basename "$PLAN_FILE")
+  PLAN_ID="${PLAN_BASENAME%-PLAN.md}"
+  cp "$PLAN_FILE" "${RUN_DIR}/gsd-review-plan-${PLAN_ID}.md"
 done
 
 # #3301: plan coverage manifest — tell reviewers exactly which plan ids exist and

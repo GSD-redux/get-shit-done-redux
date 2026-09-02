@@ -541,6 +541,252 @@ describe('no-source-grep rule — widening (#3502)', () => {
       ],
     });
   });
+
+  // ─── fold + hooks widening (#3545 / Phase 7 of #3464) ─────────────────────
+  //
+  // One RuleTester case per row of
+  // .gsd/phase/chore-3545-fold-hooks-widening-migration/50-test-matrix.md,
+  // rows 1-8. Covers `fold` (a bare-Identifier readFileSync
+  // path argument resolved ONE hop back to its VariableDeclarator init) and
+  // `hooks` (now a recognized source directory alongside bin/lib/gsd-core/src).
+
+  test('#3545 row 1: baseline inline literal src path — unchanged by fold/hooks widening', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const s = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3545 row 2: one-hop identifier bound to a src-dir path is now flagged (fold)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const p = path.join(__dirname, '..', 'src', 'x.cjs');
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3545 row 3: one-hop identifier bound to a hooks-dir path is now flagged (fold + hooks)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const p = path.join(__dirname, '..', 'hooks', 'x.cjs');
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3545 row 4: identifier bound to a non-path value is not flagged (fold negative space)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const p = process.env.FOO;
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3545 row 5: identifier bound to a non-source-extension path is not flagged (fold negative space)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const p = path.join(__dirname, '..', 'src', 'x.md');
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3545 row 6: two-hop indirection is not flagged — fold only resolves one hop (boundary)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const a = path.join(__dirname, '..', 'src', 'x.cjs');
+            const p = a;
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3545 row 7: assignment-bound path is not flagged — fold only resolves a VariableDeclarator init (boundary)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            let p;
+            p = path.join(__dirname, '..', 'src', 'x.cjs');
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3545 row 8: "hooks" as a substring of a longer quoted segment is not flagged (hasSourceDir requires an exact quoted segment)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const p = path.join(__dirname, '..', 'my-hooks-dir', 'x.cjs');
+            const s = fs.readFileSync(p, 'utf-8');
+            s.includes('y');
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // One RuleTester case per row of the widen-regex.exec()-detection matrix,
+  // epic #3464 phase 8: `regex.exec(tracked)` must be flagged the same way
+  // `regex.test(tracked)` already is, sharing the identical
+  // looksLikeRegexReceiver / trackedInfo(args[0]) detection path.
+
+  test('#3464p8 row 1: re.exec(trackedSrc) — flagged (new .exec() detection)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const re = /foo/;
+            const trackedSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf8');
+            re.exec(trackedSrc);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3464p8 row 2: re.test(trackedSrc) — still flagged (unchanged baseline)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const re = /foo/;
+            const trackedSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf8');
+            re.test(trackedSrc);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noSourceGrep' }],
+        },
+      ],
+    });
+  });
+
+  test('#3464p8 row 3: re.exec(untrackedString) — not flagged (argument is not source-derived)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const re = /foo/;
+            const untrackedString = 'hello';
+            re.exec(untrackedString);
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3464p8 row 4: someObj.exec(trackedSrc) — not flagged (receiver is not a bare Identifier/regex literal)', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const fs = require('fs');
+            const path = require('path');
+            const trackedSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'x.cjs'), 'utf8');
+            getRegex().exec(trackedSrc);
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3464p8 row 5: re.exec() with zero arguments — not flagged, does not throw', () => {
+    ruleTester.run('no-source-grep', noSourceGrep, {
+      valid: [
+        {
+          code: `
+            const re = /foo/;
+            re.exec();
+          `,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
 });
 
 // ─── no-source-grep site-scoped suppression (#3508 / Phase 4 of #3464) ──────

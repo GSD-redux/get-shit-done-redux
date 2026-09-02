@@ -27,21 +27,19 @@ FALLOW_STDERR_TMP=$(mktemp)
 # Phase scope uses fallow's native changed-files scoping (--changed-since <base>).
 # Derive the phase base commit; if none is found, fall back to repo scope (fallow
 # auto-detects the base branch). #3191/#3503: the grep is the SAME anchored,
-# POSIX-portable conventional-commit-scope derivation the workflow's Tier-3
-# scope step uses (subject-line `type((phase-)?N(-plan)?):`, padded or unpadded
-# phase spelling). Free prose in commit bodies — "deferred to Phase N per
-# D-09", "### Phase N" format examples — never captures the base, and a bare
-# digit substring matches version strings, dates, and other phases; the oldest
-# such false match would silently widen --changed-since far past the phase.
+# Phase-directory-anchor derivation, lockstep with the workflow's Tier-3
+# scope step (#3191/#3995): base = the parent of the first commit that added
+# anything under the phase's own directory. Commit subjects carry no milestone
+# bound — a same-numbered phase in a previous milestone used to win the grep.
 FALLOW_SCOPE_ARGS=()
 if [ \"$FALLOW_SCOPE\" = \"phase\" ]; then
-  PHASE_SCOPE_NUM=\"${PADDED_PHASE}\"
-  case \"$PADDED_PHASE\" in
-    0[0-9]*) PHASE_SCOPE_NUM=\"${PADDED_PHASE#0}|${PADDED_PHASE}\" ;;
-  esac
-  FALLOW_PHASE_COMMITS=$(git log --oneline --all --extended-regexp --grep=\"^[[:alpha:]]+!?\((phase-)?(${PHASE_SCOPE_NUM})(-[0-9]+)?\)!?:\" --format=\"%H\" 2>/dev/null)
-  if [ -n \"$FALLOW_PHASE_COMMITS\" ]; then
-    FALLOW_BASE=$(echo \"$FALLOW_PHASE_COMMITS\" | tail -1)^
+  # #3995: phase-directory anchor — same derivation as the Tier-3 scope step
+  # (lockstep per #3191). A phase number is unique within a milestone, not a
+  # repository; the former message grep matched previous milestones'
+  # same-numbered phases and tail -1 selected the oldest.
+  FALLOW_PHASE_START=$(git log --format=\"%H\" --diff-filter=A -- \"${PHASE_DIR}\" 2>/dev/null | tail -1)
+  if [ -n \"$FALLOW_PHASE_START\" ]; then
+    FALLOW_BASE=\"${FALLOW_PHASE_START}^\"
     FALLOW_SCOPE_ARGS=(--changed-since \"$FALLOW_BASE\")
   fi
 fi

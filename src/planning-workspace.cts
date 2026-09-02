@@ -19,6 +19,10 @@ import { platformEnsureDir, retryRenameSync } from './shell-command-projection.c
 import { realClock } from './clock.cjs';
 import type { Clock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import activeWorkstreamStore = require('./active-workstream-store.cjs');
 const {
   createSharedPointerAdapter,
@@ -569,32 +573,56 @@ function describeUnresolvedWorkstreamReason(reason: 'invalid_name' | 'missing_wo
  * form (`CONTEXT.md`) and the padded-prefix convention (`NN-CONTEXT.md`,
  * `NN.N-CONTEXT.md`, etc.) used by gsd-discuss-phase output.
  *
- * Returns the filename (not the full path) of the first match, or null if
- * no CONTEXT.md exists in the directory.
- *
  * Canonical dual-form predicate extracted here to eliminate the 5-site
  * duplication that previously existed across init.cjs, roadmap.cjs,
  * core.cjs, gap-checker.cjs (#3739).
  *
- * @param absDirOrFiles - Absolute path to the phase directory,
- *   OR an already-read files array (avoids a redundant readdirSync at call sites
- *   that already hold a directory listing).
+ * Two call shapes, two return shapes (#4014, epic #3473 B4-unreadable):
+ *
+ * - Array-input form (`files: string[]`, an already-read directory listing —
+ *   avoids a redundant readdirSync at call sites that already hold one, and
+ *   lets a caller pass an already phase-scoped listing): UNCHANGED —
+ *   returns the matched filename or `null`, never throws (there is no I/O
+ *   to fail on an in-memory array).
+ * - Directory-string form (`absDir: string`): performs the `readdirSync`
+ *   itself and returns `{ file, files, scope }` — `file`/`files` are the
+ *   match and the raw listing, `scope` is `SCOPE.COMPLETE` on a successful
+ *   read (including ENOENT, which is a genuine "nothing there yet" answer,
+ *   not a failure) or `SCOPE.UNREADABLE` on any other read error
+ *   (EACCES/EIO/…). This form never throws — a caller that used to see an
+ *   exception on an unreadable directory now sees `scope: SCOPE.UNREADABLE`
+ *   instead, so an unreadable phase dir is reported distinctly from a
+ *   genuinely empty one rather than being silently indistinguishable from
+ *   it (#1883's original defect this closes at the source).
  */
-function findContextMdIn(absDirOrFiles: string | string[]): string | null {
-  try {
-    const files = Array.isArray(absDirOrFiles)
-      ? absDirOrFiles
-      : fs.readdirSync(absDirOrFiles);
+function findContextMdIn(files: string[]): string | null;
+function findContextMdIn(absDir: string): { file: string | null; files: string[]; scope: Scope };
+function findContextMdIn(
+  absDirOrFiles: string | string[],
+): string | null | { file: string | null; files: string[]; scope: Scope } {
+  const matchIn = (files: string[]): string | null => {
     if (files.includes('CONTEXT.md')) return 'CONTEXT.md';
     return files.find((f: string) => f.endsWith('-CONTEXT.md')) ?? null;
+  };
+
+  if (Array.isArray(absDirOrFiles)) {
+    return matchIn(absDirOrFiles);
+  }
+
+  try {
+    const files = fs.readdirSync(absDirOrFiles);
+    return { file: matchIn(files), files, scope: SCOPE.COMPLETE };
   } catch (err) {
-    // #1883: distinguish genuine absence from a permission/I-O failure. ENOENT
-    // ("nothing there") keeps the long-standing null contract the callers rely
-    // on; every other error (EACCES, EIO, …) is a real read failure that must
-    // propagate — otherwise an unreadable phase dir is silently reported as
-    // "no CONTEXT.md" and the discuss/plan gates wrongly skip context.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
+    // #1883 / #4014: distinguish genuine absence from a permission/I-O
+    // failure. ENOENT ("nothing there") keeps the long-standing "real empty"
+    // contract callers rely on; every other error (EACCES, EIO, …) is a real
+    // read failure — reported as SCOPE.UNREADABLE rather than thrown, so a
+    // caller no longer needs its own try/catch to keep an unreadable phase
+    // dir from being silently reported the same as "no CONTEXT.md".
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { file: null, files: [], scope: SCOPE.COMPLETE };
+    }
+    return { file: null, files: [], scope: SCOPE.UNREADABLE };
   }
 }
 

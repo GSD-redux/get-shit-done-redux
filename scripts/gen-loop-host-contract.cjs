@@ -30,7 +30,13 @@ const CONTRACT_PATH = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'loop-host-contr
 // The five step workflows in pipeline order
 const STEP_WORKFLOWS = [
   { file: 'discuss-phase.md', step: 'discuss' },
-  { file: 'plan-phase.md',    step: 'plan' },
+  {
+    file: 'plan-phase.md',
+    step: 'plan',
+    auxiliaryHosts: [
+      { file: 'quick.md', point: 'plan:pre', kinds: ['contribution'], into: 'planner' },
+    ],
+  },
   { file: 'execute-phase.md', step: 'execute' },
   { file: 'verify-work.md',   step: 'verify' },
   { file: 'ship.md',          step: 'ship' },
@@ -295,7 +301,7 @@ function buildContract(workflowsDir) {
   const contract = [];
   const allErrors = [];
 
-  for (const { file, step } of STEP_WORKFLOWS) {
+  for (const { file, step, auxiliaryHosts = [] } of STEP_WORKFLOWS) {
     const filePath = path.join(resolvedDir, file);
     let content;
     try {
@@ -324,6 +330,34 @@ function buildContract(workflowsDir) {
     // Cross-check roles
     const roleErrors = crossCheckRoles(content, entry.agentRoles, file);
     allErrors.push(...roleErrors);
+
+    for (const auxiliary of auxiliaryHosts) {
+      let auxiliaryContent;
+      try {
+        auxiliaryContent = fs.readFileSync(path.join(resolvedDir, auxiliary.file), 'utf8');
+      } catch (err) {
+        allErrors.push('Could not read auxiliary host ' + auxiliary.file + ': ' + String(err.message));
+        continue;
+      }
+
+      const wiredPoints = scanWiredPoints(auxiliaryContent);
+      if (!wiredPoints.has(auxiliary.point)) {
+        allErrors.push(
+          auxiliary.file + ': auxiliary host missing expected point "' + auxiliary.point + '"',
+        );
+        continue;
+      }
+
+      const wiredKinds = scanWiredKinds(auxiliaryContent, auxiliary.into).get(auxiliary.point) || new Set();
+      for (const kind of auxiliary.kinds) {
+        if (!wiredKinds.has(kind)) {
+          allErrors.push(
+            auxiliary.file + ': auxiliary host point "' + auxiliary.point +
+            '" missing expected kind "' + kind + '"',
+          );
+        }
+      }
+    }
 
     contract.push(entry);
   }
@@ -437,7 +471,10 @@ function main() {
  * registry generator, conformance gate) must derive from this rather than maintaining
  * a separate hardcoded list.
  */
-const HOST_LOOP_FILES = STEP_WORKFLOWS.map((w) => 'gsd-core/workflows/' + w.file);
+const HOST_LOOP_FILES = STEP_WORKFLOWS.flatMap(({ file, auxiliaryHosts = [] }) => [
+  'gsd-core/workflows/' + file,
+  ...auxiliaryHosts.map((host) => 'gsd-core/workflows/' + host.file),
+]);
 
 /**
  * Pure function: scan a text string for `loop render-hooks <point>` call sites.
@@ -475,9 +512,11 @@ const HOOK_KINDS = ['contribution', 'step', 'gate'];
  * - A deferral line (one carrying an `@`-included path to the generic
  *   contract, e.g. `@gsd-core/references/loop-hook-dispatch.md`) that names a
  *   kind (`kind == "step"`) covers that kind; a deferral line with no kind
- *   discriminator ("apply each entry") covers every kind. A bare §-citation
- *   of the reference (validation guidance only, no `@`) covers nothing —
- *   plan-phase cites the gate-validation section while dispatching only gates.
+ *   discriminator ("apply each entry") covers every kind only when no role
+ *   target is required. With `expectedInto`, the same segment must explicitly
+ *   name both the kind and that exact `into` target. A bare §-citation of the
+ *   reference (validation guidance only, no `@`) covers nothing — plan-phase
+ *   cites the gate-validation section while dispatching only gates.
  * - Otherwise a kind is covered when some LINE dispatches it unconditionally:
  *   a `kind == "<kind>"` discriminator with NO same-line narrowing to one
  *   hook (`ref.skill ==`, `ref.agent ==`, `ref.command ==`). A narrowed line
@@ -491,19 +530,26 @@ const HOOK_KINDS = ['contribution', 'step', 'gate'];
  * Pure: same input, same output; CRLF-safe (line splitting tolerates \r).
  *
  * @param {string} region  Dispatch text following one call site.
+ * @param {string} [expectedInto]  Optional role target required in the same segment.
  * @returns {Set<string>}
  */
-function coveredKindsInRegion(region) {
+function coveredKindsInRegion(region, expectedInto) {
   const covered = new Set();
   // Same-SEGMENT narrowing to ONE hook voids credit: `ref.skill ==`, `capId ==`,
-  // and `into ==` each special-case a subset, not the kind generally
+  // and `into ==` each special-case a subset, not the kind generally. An
+  // auxiliary host may name the one role it actually hosts via `expectedInto`;
+  // any other role target still voids credit.
   // (plan-phase's `kind == "contribution" and capId == "security"` is the
   // hand-rolled shape; `into == "planner"` covers only planner-targeted
   // contributions). Segments, not lines: execute-phase legitimately writes
   // "dispatch `kind == "step"` hooks per … . `ref.skill == "code-review"`:" —
   // the deferral is one sentence, the specialization the next; narrowing in a
   // DIFFERENT segment must not void the deferral's credit.
-  const narrowingRe = /(?:ref\.(?:skill|agent|command)|capId|into)\s*={2,3}/;
+  const identityNarrowingRe = /(?:ref\.(?:skill|agent|command)|capId)\s*={2,3}/;
+  const intoNarrowingRe = /into\s*={2,3}/;
+  const expectedIntoRe = expectedInto
+    ? new RegExp(`into\\s*={2,3}\\s*["']${escapeRegExp(expectedInto)}["']`)
+    : null;
   // Negated mentions describe an absence, not a dispatch ("Branch 1 — no active
   // step hooks (`activeHooks` has no entry with `kind == "step"`)" — ship.md).
   const negationRe = /\b(?:no|without|absent|lacks?|missing)\b[^.|]*kind\s*={2,3}/;
@@ -519,17 +565,22 @@ function coveredKindsInRegion(region) {
       }
       if (kindDiscriminators.length === 0) {
         // A deferral with no kind discriminator ("apply each entry per …")
-        // still covers every kind.
-        if (deferralRe.test(segment)) for (const kind of HOOK_KINDS) covered.add(kind);
+        // still covers every kind for generic hosts. An auxiliary host with a
+        // required role target must state both its kind and target explicitly.
+        if (!expectedInto && deferralRe.test(segment)) for (const kind of HOOK_KINDS) covered.add(kind);
         continue;
       }
       if (negationRe.test(segment)) continue;
+      const narrowed = identityNarrowingRe.test(segment) ||
+        (expectedInto
+          ? !expectedIntoRe.test(segment)
+          : intoNarrowingRe.test(segment));
       if (deferralRe.test(segment)) {
         // Deferral naming kinds ("dispatch `kind == "step"` hooks per …").
-        if (!narrowingRe.test(segment)) for (const kind of kindDiscriminators) covered.add(kind);
+        if (!narrowed) for (const kind of kindDiscriminators) covered.add(kind);
         continue;
       }
-      if (!narrowingRe.test(segment)) for (const kind of kindDiscriminators) covered.add(kind);
+      if (!narrowed) for (const kind of kindDiscriminators) covered.add(kind);
     }
   }
   return covered;
@@ -540,9 +591,10 @@ function coveredKindsInRegion(region) {
  * per point, the union of hook kinds its dispatch regions cover (#3606).
  *
  * @param {string} text  Content of a workflow file (or any text).
+ * @param {string} [expectedInto]  Optional role target an auxiliary host must dispatch.
  * @returns {Map<string, Set<string>>}  point → covered kinds.
  */
-function scanWiredKinds(text) {
+function scanWiredKinds(text, expectedInto) {
   const result = new Map();
   const siteRe = CALL_SITE_RE;
   const sites = [];
@@ -552,7 +604,7 @@ function scanWiredKinds(text) {
   for (let i = 0; i < sites.length; i++) {
     const regionEnd = i + 1 < sites.length ? sites[i + 1].start : Math.min(text.length, sites[i].start + REGION_CAP);
     const region = text.slice(sites[i].start, regionEnd);
-    const covered = coveredKindsInRegion(region);
+    const covered = coveredKindsInRegion(region, expectedInto);
     if (!result.has(sites[i].point)) result.set(sites[i].point, new Set());
     for (const kind of covered) result.get(sites[i].point).add(kind);
   }

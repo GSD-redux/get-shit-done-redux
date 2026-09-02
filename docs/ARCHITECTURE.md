@@ -926,6 +926,7 @@ For a conceptual overview of how the hook and guard layers fit into the broader 
 - Scans content for prompt injection patterns (role override, instruction bypass, system tag injection)
 - Advisory-only — logs detection, does not block
 - Patterns are inlined (subset of `security.cjs`) for hook independence
+- **Output contract:** `hookSpecificOutput` carries both `additionalContext` and `findings` — an array of `{ ruleId, match }` records (`INJECTION-PATTERN` or `INVISIBLE-UNICODE`), module-local to this hook (not shared with `gsd-read-injection-scanner.js`'s own `RULE_IDS`). The advisory is rendered from `findings` via a single mapper, so the two cannot disagree. Consumers should read `findings` rather than parsing the advisory text.
 
 **Read Injection Scanner** (`gsd-read-injection-scanner.js`):
 
@@ -935,7 +936,7 @@ For a conceptual overview of how the hook and guard layers fit into the broader 
 - Skips content shorter than 20 characters, and skips excluded paths (`.planning/`, `REVIEW.md`, `CHECKPOINT*`, security/injection docs, and GSD's own staged hook bundle)
 - Rule ids: the `MD-LINK-*` markdown-link rules mirrored from `security.cjs`'s `MARKDOWN_LINK_PATTERNS`, plus `INJECTION-PATTERN`, `INVISIBLE-UNICODE`, and `UNICODE-TAG-BLOCK`
 - Patterns are shared with `gsd-prompt-guard.js` via `hooks/lib/injection-patterns.js` (#3504); the markdown-link list is inlined for hook independence
-- **Output contract:** `hookSpecificOutput` carries both `additionalContext` (the human-readable advisory sentence) and `findings` — an array of `{ ruleId, match }` records naming each rule that fired. `findings` is the structured surface; the advisory is rendered from it, so the two cannot disagree. `match` is `null` for rules with no captured text (`INVISIBLE-UNICODE`, `UNICODE-TAG-BLOCK`). Consumers should read `findings` rather than parsing the advisory text.
+- **Output contract:** `hookSpecificOutput` carries `additionalContext` (the human-readable advisory sentence), `findings` — an array of `{ ruleId, match }` records naming each rule that fired — plus `severity` (`LOW` for 1-2 matches, `HIGH` for 3+) and `source` (the scanned file path, URL, or `search: <query>` string). `findings` and `severity` are the structured surface; the advisory is rendered from them, so the three cannot disagree. `match` is `null` for rules with no captured text (`INVISIBLE-UNICODE`, `UNICODE-TAG-BLOCK`). Consumers should read `findings`/`severity`/`source` rather than parsing the advisory text.
 
 **Workflow Guard** (`gsd-workflow-guard.js`):
 
@@ -943,6 +944,7 @@ For a conceptual overview of how the hook and guard layers fit into the broader 
 - Detects edits outside GSD workflow context (no active `/gsd-` command or Task subagent)
 - Advises using `/gsd-quick` or `/gsd-fast` for state-tracked changes
 - Opt-in via `hooks.workflow_guard: true` (default: false)
+- **Output contract:** the advisory leg's `hookSpecificOutput` carries `code: 'WORKFLOW_ADVISORY'` alongside `additionalContext`. This is distinct from the hook's separate force-add block leg (`code: 'WORKTREE_AGENT_FORCE_ADD_FORBIDDEN'`, `decision: 'block'`) — the two are disambiguated by `code`, never by presence.
 
 ---
 
