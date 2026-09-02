@@ -51,17 +51,21 @@ The executor MUST:
    3. Re-run /gsd execute-phase
    ```
 
-   `missing_red_evidence` differs from the other three `Write a failing test` reasons: the RED
-   commit already exists, made without evidence, so the remedy is amending that commit's trailer,
-   not writing another failing test:
-   1. Re-run the RED test and record its `red-evidence:` trailer.
-   2. Amend the existing `test({phase}-{plan})` commit with that trailer.
-   3. Re-run `/gsd execute-phase`
+   The required next step above applies as written only to `missing_red_commit` and
+   `red_commit_not_failing`. The other three reasons each need a different remedy:
 
-   `unexpected_pass` differs from the other four: it means the run the executor performed exited
-   0, so the declared behavior already holds. The required next step above does not apply — writing
-   another failing test or retrying loops forever against a test that already passes. Halt and
-   reconcile the declaration with reality instead.
+   - **`missing_red_evidence`**: the RED commit already exists, made without evidence, so the
+     remedy is amending that commit's trailer, not writing another failing test:
+     1. Re-run the RED test and record its `red-evidence:` trailer.
+     2. Amend the existing `test({phase}-{plan})` commit with that trailer.
+     3. Re-run `/gsd execute-phase`
+   - **`feat_before_test`**: a `feat({phase}-{plan})` commit already precedes any RED test commit
+     for this plan, so writing a new failing test afterward leaves that ordering violation intact
+     and the gate stays tripped. The remedy is reordering or rewriting commit history so the RED
+     test commit precedes the `feat({phase}-{plan})` commit, then re-running `/gsd execute-phase`.
+   - **`unexpected_pass`**: the run the executor performed exited 0, so the declared behavior
+     already holds. Writing another failing test or retrying loops forever against a test that
+     already passes. Halt and reconcile the declaration with reality instead.
 
 3. Exit the current execution wave cleanly. Do NOT roll back any prior commits in the same wave.
 4. Update `STATE.md` with `last_gate_trip: {plan_id}/{task_id}` so the user can resume after writing the test.
