@@ -11,6 +11,20 @@
  *   (b) totality — every input item appears in exactly one output stage,
  *       never lost or duplicated
  *   (c) the core invariant — no two items in the same stage share a file
+ *
+ * Duplicate `id`s are a real, intentionally-supported input shape (see
+ * `partitionByFileOverlap`'s doc comment) and properties (a) and (b) verify
+ * it correctly — (a) needs no per-item identity at all, and (b) only compares
+ * the sorted id multiset, so it never needs to pick out *which* physical item
+ * a given output id refers to. Property (c) is different: checking "do these
+ * two co-staged items' file sets overlap" requires reconstructing which
+ * physical item (files included) produced each id in the output, and under
+ * duplicate ids that reconstruction is ambiguous — a stage's "p208" could be
+ * either physical p208 occurrence, and picking the wrong one produces a false
+ * failure (see #3674 regression: `p0(f1)`, `p208(f1)`, `p208([])` staged
+ * correctly as `[[p0,p208#2],[p208#1]]`, misread as `[[p0,p208#1],...]` by an
+ * id-order reconstruction). So (c) alone constrains its generated items to
+ * unique ids, where the reconstruction is unambiguous by construction.
  */
 
 const { describe, test } = require('node:test');
@@ -55,11 +69,16 @@ describe('partitionByFileOverlap: properties', () => {
 
   test('property: no two plans in the same stage share a modified file', () => {
     fc.assert(fc.property(
-      fc.array(itemArb, { minLength: 0, maxLength: 60 }),
+      // Unique ids only: this property reconstructs which physical item
+      // produced each output id, and that reconstruction is ambiguous when
+      // ids duplicate (see the module doc comment above). Properties (a)
+      // and (b) still fuzz duplicate ids via the shared `itemArb`.
+      fc.uniqueArray(itemArb, { minLength: 0, maxLength: 60, selector: (it) => it.id }),
       (items) => {
         const stages = partitionByFileOverlap(items);
-        // Duplicate ids are possible (not deduplicated) — build a positional
-        // lookup instead of an id-keyed one so every occurrence is checked.
+        // Positional lookup (not strictly required once ids are unique, but
+        // kept for symmetry with the reconstruction shape and to tolerate
+        // any future relaxation of the uniqueness constraint above).
         const remaining = items.map((i) => ({ id: i.id, files: new Set(i.files) }));
         for (const stageIds of stages) {
           const stageItems = stageIds.map((id) => {
