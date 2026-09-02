@@ -125,6 +125,12 @@ describe('quick workflow: research step', () => {
     assert.ok(plannerStart > researchStart, 'Step 5 should follow Step 4.75');
 
     const researchSection = content.slice(researchStart, plannerStart);
+    const parseStart = content.indexOf('Parse JSON for:');
+    const parseEnd = content.indexOf('\n\n', parseStart);
+    assert.ok(parseStart !== -1, 'init parse-list anchor should exist');
+    assert.ok(parseEnd > parseStart, 'init parse list should be non-empty');
+    const parseList = content.slice(parseStart, parseEnd);
+
     const agentStart = researchSection.indexOf('Agent(');
     const agentEnd = researchSection.indexOf('\n)', agentStart);
     assert.ok(agentStart !== -1, 'research Agent call should exist');
@@ -136,9 +142,7 @@ describe('quick workflow: research step', () => {
         hostSkillBinding: content.includes(
           'AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)'
         ),
-        modelParsed: content
-          .slice(content.indexOf('Parse JSON for:'), content.indexOf('\n', content.indexOf('Parse JSON for:')))
-          .includes('researcher_model'),
+        modelParsed: parseList.includes('researcher_model'),
         researcherPersona: researchAgent.includes('${AGENT_SKILLS_RESEARCHER}'),
         researcherSubagent: researchAgent.includes('subagent_type="gsd-phase-researcher"'),
         researcherModel: researchAgent.includes('model="{researcher_model}"'),
