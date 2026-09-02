@@ -19,7 +19,7 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const ROOT = path.join(__dirname, '..');
 const GSD_TOOLS = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 const { cleanup } = require('./helpers.cjs');
-const { inferPreferredRuntime, resolveUpdateContext } = require(
+const { RUNTIME_DIRS, inferPreferredRuntime, resolveUpdateContext } = require(
   path.join(ROOT, 'gsd-core', 'bin', 'lib', 'update-context.cjs'),
 );
 
@@ -51,6 +51,17 @@ function marker(dir) { return `${dir}/gsd-core/workflows/update.md`; }
 
 test('unknown preferred config does not infer Claude', () => {
   assert.equal(inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir: '/opt/unknown' }), '');
+});
+
+test('known runtime directories infer their table runtime without config markers', () => {
+  for (const [runtime, relativeDir] of RUNTIME_DIRS) {
+    const preferredConfigDir = path.resolve(HOME, relativeDir);
+    assert.equal(
+      inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir }),
+      runtime,
+      preferredConfigDir,
+    );
+  }
 });
 
 describe('resolveUpdateContext: scope cascade', () => {
