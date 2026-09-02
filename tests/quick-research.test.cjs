@@ -157,6 +157,34 @@ describe('quick workflow: research step', () => {
     );
   });
 
+  test('executor dispatch keeps its own persona', () => {
+    content = expandWorkflowSections(workflowPath);
+    const executorStart = content.indexOf('Step 6: Spawn executor');
+    const reviewStart = content.indexOf('Step 6.25', executorStart);
+    assert.ok(executorStart !== -1, 'Step 6 executor anchor should exist');
+    assert.ok(reviewStart > executorStart, 'Step 6.25 should follow the executor');
+
+    const executorSection = content.slice(executorStart, reviewStart);
+    const agentStart = executorSection.indexOf('Agent(');
+    const agentEnd = executorSection.indexOf('\n)', agentStart);
+    assert.ok(agentStart !== -1, 'executor Agent call should exist');
+    assert.ok(agentEnd > agentStart, 'executor Agent payload should be non-empty');
+    const executorAgent = executorSection.slice(agentStart, agentEnd);
+
+    assert.deepStrictEqual(
+      {
+        executorPersona: executorAgent.includes('${AGENT_SKILLS_EXECUTOR}'),
+        plannerPersona: executorAgent.includes('${AGENT_SKILLS_PLANNER}'),
+        researcherPersona: executorAgent.includes('${AGENT_SKILLS_RESEARCHER}'),
+      },
+      {
+        executorPersona: true,
+        plannerPersona: false,
+        researcherPersona: false,
+      }
+    );
+  });
+
   test('research step writes RESEARCH.md', () => {
     content = expandWorkflowSections(workflowPath);
     const researchSection = content.substring(

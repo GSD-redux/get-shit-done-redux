@@ -1951,6 +1951,17 @@ describe('cmdInitQuick', () => {
     cleanup(tmpDir);
   });
 
+  test('init quick resolves the default researcher_model without overrides', () => {
+    // #3936: the quick research step dispatches gsd-phase-researcher, so init
+    // quick must resolve that agent's balanced-profile model without an override.
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.researcher_model, 'sonnet',
+      'default balanced profile should resolve the research agent model');
+  });
+
   test('init quick resolves researcher_model from model_overrides', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
       model_profile: 'balanced',
