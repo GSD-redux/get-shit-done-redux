@@ -1643,6 +1643,28 @@ function validateRuntimeBody(cap) {
           ' (or "undocumented") (got: ' + JSON.stringify(d.isolation) + ')',
         );
       }
+
+      // maxConcurrency — ADR-1239 Phase 1 (#3673). A numeric dispatch
+      // sub-field (not a closed-vocabulary enum member — same numeric
+      // dispatch sub-field treatment as maxDepth above; unlike maxDepth,
+      // 0 and negative values are invalid — 1 is the fail-closed floor, not
+      // a legitimate "no concurrency" declaration).
+      // OPTIONAL, like isolation: added after existing descriptors, so an
+      // omitted maxConcurrency is legitimate — negotiateHostCapabilities
+      // degrades it to 1 (the safe floor) and warns, exactly as for any
+      // other undeclared dispatch sub-field. Only a PRESENT value is
+      // checked against the positive-safe-integer contract.
+      if (d.maxConcurrency === undefined) {
+        // absent — nothing to validate; negotiateHostCapabilities fails it closed.
+      } else if (
+        d.maxConcurrency !== 'undocumented' &&
+        (!Number.isSafeInteger(d.maxConcurrency) || d.maxConcurrency < 1)
+      ) {
+        errors.push(
+          'runtime.hostIntegration.dispatch.maxConcurrency must be a positive safe integer or "undocumented" ' +
+          '(got: ' + JSON.stringify(d.maxConcurrency) + ')',
+        );
+      }
     }
   }
 
@@ -3619,11 +3641,12 @@ const HOOK_GROUP_KINDS = Object.freeze({
  * double-report.
  *
  * KNOWN LIMITATION (#3606): coverage is the UNION across all call sites for a
- * point in the five STEP_WORKFLOWS host files. Consumers outside that universe
- * (quick.md, autonomous.md, code-review*.md, audit-milestone.md,
+ * point in HOST_LOOP_FILES. Quick's plan:pre planner contribution seam has an
+ * additional generator-owned per-file check. Other consumers outside that
+ * universe (autonomous.md, code-review*.md, audit-milestone.md,
  * secure-phase.md, validate-phase.md) are not per-file checked — a narrowed
- * consumer there passes as long as one host file covers the point. Per-file
- * coverage maps are the tightening path.
+ * consumer there passes as long as one host file covers the point. More
+ * per-file coverage maps are the tightening path.
  *
  * @param {object}   cap       Validated capability object.
  * @param {Map<string, Set<string>>} wiredKinds  Per point, the hook kinds the

@@ -24,6 +24,7 @@ const REPO_ROOT = path.join(__dirname, '..');
 const INSTALL_BIN = path.join(REPO_ROOT, 'bin', 'install.js');
 const { cleanupLegacyGsdCc } = require(INSTALL_BIN);
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const LEGACY_PKG_SIGNAL = 'get-shit-done-cc';
 
@@ -103,17 +104,24 @@ describe('#3799: cleanupLegacyGsdCc honors an explicit configDirs scope', () => 
 });
 
 describe('#3799: --no-legacy-cleanup and --config-dir CLI flags', () => {
-  const HELP_TEXT = fs.readFileSync(INSTALL_BIN, 'utf-8');
-
   test('the --no-legacy-cleanup flag exists and is documented in --help', () => {
+    const result = runNode([INSTALL_BIN, '--help']);
+    assert.equal(result.outcome, 'exited', `install.js --help did not exit cleanly: ${result.stderr}`);
     assert.ok(
-      HELP_TEXT.includes('--no-legacy-cleanup'),
-      'the escape hatch must be documented in the installer help text',
+      result.stdout.includes('--no-legacy-cleanup'),
+      'the escape hatch must be documented in the installer --help output',
     );
   });
 
   test('the install() call site threads the config-dir scope and the skip flag', () => {
-    const src = HELP_TEXT; // same file read — the shipped installer source
+    // allow-test-rule: structural-implementation-guard (#3545) — structural assertion
+    // on install()'s internal wiring (that its cleanupLegacyGsdCc call site threads configDirs/
+    // skipNoLegacyCleanup) — install() is a ~2500-line, side-effect-heavy
+    // top-level installer routine, so exercising this specific plumbing
+    // behaviorally would require a full install() run; the source-slice
+    // check is the minimum-cost regression guard for the exact #3799 defect
+    // shape
+    const src = fs.readFileSync(INSTALL_BIN, 'utf-8');
     // Slice the install() body up to its cleanup call so the conditional
     // spread's braces cannot defeat a single-regex match.
     const fnStart = src.indexOf('function install(isGlobal, runtime = DEFAULT_RUNTIME');

@@ -55,7 +55,7 @@ describe('runtime-name-policy windsurf alias parity — manifest vs FALLBACK_ALI
   test('manifest and FALLBACK_ALIASES windsurf alias sets are identical', () => {
     // Read FALLBACK_ALIASES from source to detect manual drift before a build.
     const srcPath = path.join(ROOT, 'src', 'runtime-name-policy.cts');
-    // allow-test-rule: source-text-is-the-product
+    // allow-test-rule: source-text-is-the-product (#3464)
     // FALLBACK_ALIASES source text IS the product contract for runtimes that can't load the manifest at runtime; verifying
     // both surfaces contain the same windsurf aliases catches manual-mirror drift.
     const src = fs.readFileSync(srcPath, 'utf8');

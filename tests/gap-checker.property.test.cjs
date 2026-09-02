@@ -901,5 +901,136 @@ describe('#3885 (ADR-3473 §8.5): runGapAnalysis distinguishes unreadable from a
       cleanup(tmpDir);
     }
   });
+
+  // #4014 (epic #3473 B4-unreadable) matrix row 12: runGapAnalysis now
+  // consumes `scope` from findContextMdIn(phaseDir) and surfaces it as the
+  // additive `phase_dir_scope` field — the typed SCOPE-enum sibling of the
+  // pre-existing `phase_dir_read_error` string field asserted above.
+  test('#4014 matrix row 12: unreadable phase dir reports phase_dir_scope:unreadable', (t) => {
+    setup();
+    try {
+      injectReaddirFailure(t, phaseDir, 'EACCES');
+      const result = runGapAnalysis(tmpDir, phaseDir);
+      assert.strictEqual(result.phase_dir_scope, 'unreadable',
+        `an unreadable phase directory must report phase_dir_scope 'unreadable'; got: ${result.phase_dir_scope}`);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('#4014: readable phase dir reports phase_dir_scope:complete (must not regress)', () => {
+    setup();
+    try {
+      const result = runGapAnalysis(tmpDir, phaseDir);
+      assert.strictEqual(result.phase_dir_scope, 'complete');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('#4014: genuinely absent phase dir reports phase_dir_scope:complete (boundary — not unreadable)', () => {
+    tmpDir = createTempProject();
+    const missingPhaseDir = path.join(tmpDir, '.planning', 'phases', '09-nonexistent');
+    try {
+      const result = runGapAnalysis(tmpDir, missingPhaseDir);
+      assert.strictEqual(result.phase_dir_scope, 'complete',
+        `a genuinely absent phase directory must report phase_dir_scope 'complete', not 'unreadable'; got: ${result.phase_dir_scope}`);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4014 (epic #3473 B4-unreadable) matrix row 15 — independence: the SAME
+// injected-unreadable phase directory must be reported distinguishably from
+// an empty one, using the SAME SCOPE.UNREADABLE value, across all three CLI
+// surfaces this issue touches: `roadmap analyze` (roadmap.cts), gap-checker
+// (gap-checker.cts), and one `init` bundle (init.cts). All three surfaces are
+// exercised in-process (each module's exported function called directly,
+// mirroring the identical direct-call style already used above and in
+// init.test.cjs's #3885 block) against one shared fixture, so a single
+// `fs.readdirSync` monkeypatch on the same phase directory drives all three.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#4014 matrix row 15: unreadable-vs-empty identity is consistent across roadmap/gap-checker/init', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { createTempProject, cleanup } = require('./helpers.cjs');
+  const { runGapAnalysis } = require('../gsd-core/bin/lib/gap-checker.cjs');
+  const roadmapLib = require('../gsd-core/bin/lib/roadmap.cjs');
+  const initMod = require('../gsd-core/bin/lib/init.cjs');
+
+  function injectReaddirFailure(t, targetPath, code) {
+    const resolved = path.resolve(targetPath);
+    const origReaddirSync = fs.readdirSync.bind(fs);
+    t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (path.resolve(String(p)) === resolved) {
+        const err = new Error(`${code}: simulated failure, scandir '${p}'`);
+        err.code = code;
+        throw err;
+      }
+      return origReaddirSync(p, ...rest);
+    });
+  }
+
+  // `output()` writes via `fs.writeSync(1, ...)`, bypassing console.log — see
+  // init.test.cjs's captureFd1 for the identical rationale/pattern.
+  function captureFd1(run) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync;
+    fs.writeSync = function patchedWriteSync(fd, data, offset, length) {
+      if (fd !== 1) return origWriteSync.apply(fs, arguments);
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      const start = offset ?? 0;
+      const len = length ?? (buf.length - start);
+      chunks.push(Buffer.from(buf.subarray(start, start + len)));
+      return len;
+    };
+    try {
+      run();
+    } finally {
+      fs.writeSync = origWriteSync;
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  }
+
+  test('the same unreadable phase directory reports SCOPE.UNREADABLE consistently on all three surfaces', (t) => {
+    const tmpDir = createTempProject();
+    try {
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '# Roadmap\n\n### Phase 3: API\n**Goal:** Build API\n',
+      );
+
+      injectReaddirFailure(t, phaseDir, 'EACCES');
+
+      // Surface 1: gap-checker.
+      const gapResult = runGapAnalysis(tmpDir, phaseDir);
+      assert.strictEqual(gapResult.phase_dir_scope, 'unreadable',
+        `gap-checker surface: got phase_dir_scope=${gapResult.phase_dir_scope}`);
+
+      // Surface 2: roadmap analyze.
+      const analyzeOutput = captureFd1(() => roadmapLib.cmdRoadmapAnalyze(tmpDir, false));
+      const phase3 = analyzeOutput.phases.find((p) => p.number === '3');
+      assert.ok(phase3, `phase 3 must appear in analyze output; got: ${JSON.stringify(analyzeOutput.phases)}`);
+      assert.strictEqual(phase3.context_scope, 'unreadable',
+        `roadmap analyze surface: got context_scope=${phase3.context_scope}`);
+
+      // Surface 3: one init bundle (cmdInitPlanPhase).
+      const initOutput = captureFd1(() => initMod.cmdInitPlanPhase(tmpDir, '03', false));
+      assert.strictEqual(initOutput.context_scope, 'unreadable',
+        `init surface: got context_scope=${initOutput.context_scope}`);
+
+      // All three used the SAME typed SCOPE.UNREADABLE value — no ad-hoc
+      // per-surface string vocabulary.
+      assert.strictEqual(gapResult.phase_dir_scope, phase3.context_scope);
+      assert.strictEqual(phase3.context_scope, initOutput.context_scope);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });
 

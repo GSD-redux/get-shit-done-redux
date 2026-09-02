@@ -1096,21 +1096,21 @@ describe('#2289 context-monitor: injection events still warn (unchanged)', () =>
     assert.notStrictEqual(stdout, '', 'PostToolUse must still emit a warning envelope');
     const parsed = JSON.parse(stdout);
     assert.strictEqual(parsed.hookSpecificOutput.hookEventName, 'PostToolUse');
-    assert.match(parsed.hookSpecificOutput.additionalContext, /CONTEXT WARNING/);
+    assert.strictEqual(parsed.hookSpecificOutput.severity, 'warning');
   });
 
   test('PostToolUse at 20% → CRITICAL envelope', () => {
     const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 20, used: 80 });
     const parsed = JSON.parse(stdout);
     assert.strictEqual(parsed.hookSpecificOutput.hookEventName, 'PostToolUse');
-    assert.match(parsed.hookSpecificOutput.additionalContext, /CONTEXT CRITICAL/);
+    assert.strictEqual(parsed.hookSpecificOutput.severity, 'critical');
   });
 
   test('AfterTool at 30% → WARNING envelope with hookEventName AfterTool', () => {
     const { stdout } = runMonitor({ event: 'AfterTool', remaining: 30 });
     const parsed = JSON.parse(stdout);
     assert.strictEqual(parsed.hookSpecificOutput.hookEventName, 'AfterTool');
-    assert.match(parsed.hookSpecificOutput.additionalContext, /CONTEXT WARNING/);
+    assert.strictEqual(parsed.hookSpecificOutput.severity, 'warning');
   });
 
   test('explicit PostToolUse WITH Gemini env → explicit name wins over the AfterTool fallback', () => {
@@ -1119,7 +1119,7 @@ describe('#2289 context-monitor: injection events still warn (unchanged)', () =>
     const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 30, gemini: true });
     const parsed = JSON.parse(stdout);
     assert.strictEqual(parsed.hookSpecificOutput.hookEventName, 'PostToolUse');
-    assert.match(parsed.hookSpecificOutput.additionalContext, /CONTEXT WARNING/);
+    assert.strictEqual(parsed.hookSpecificOutput.severity, 'warning');
   });
 
   // Threshold boundaries on the emit path: 36 = no warn, 35 = warn, 25 = critical, 26 = warn.
@@ -1130,12 +1130,12 @@ describe('#2289 context-monitor: injection events still warn (unchanged)', () =>
 
   test('PostToolUse at 35% (WARNING boundary) → WARNING envelope', () => {
     const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 35 });
-    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT WARNING/);
+    assert.strictEqual(JSON.parse(stdout).hookSpecificOutput.severity, 'warning');
   });
 
   test('PostToolUse at 25% (CRITICAL boundary) → CRITICAL envelope', () => {
     const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 25 });
-    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT CRITICAL/);
+    assert.strictEqual(JSON.parse(stdout).hookSpecificOutput.severity, 'critical');
   });
 });
 

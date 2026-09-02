@@ -3290,3 +3290,138 @@ describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory
     });
   }
 });
+
+// ─── #3981: blocking PreToolUse guards must not fail open on a host stall ────
+
+describe('bug #3981: blocking-guard timeout budget + migration', () => {
+  let targetDir;
+  beforeEach(() => { targetDir = createTempDir('gsd-3981-'); });
+  afterEach(() => { cleanup(targetDir); });
+
+  // Local to this describe: the #1754 helpers above are scoped to their own
+  // describe, so re-require the seam and rebuild the runner here.
+  const { applySettingsJsonHooks } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+  const { captureConsole } = require('./helpers.cjs');
+  function runApplySettingsJsonHooks(dir, presentHooks) {
+    fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
+    for (const hook of presentHooks) {
+      fs.writeFileSync(path.join(dir, 'hooks', hook), '// stub\n');
+    }
+    const settings = {};
+    const localCmd = (hookFile) => `node ${path.join(dir, 'hooks', hookFile)}`;
+    const localShellCmd = (hookFile) => `bash ${path.join(dir, 'hooks', hookFile)}`;
+    captureConsole(() => {
+      applySettingsJsonHooks(settings, {
+        runtime: 'claude',
+        isGlobal: false,
+        targetDir: dir,
+        postToolEvent: 'PostToolUse',
+        hookEvents: 'claude',
+        extendedHookEvents: [],
+        hooksSurface: 'settings-json',
+        updateCheckCommand: localCmd('gsd-check-update.js'),
+        contextMonitorCommand: localCmd('gsd-context-monitor.js'),
+        promptGuardCommand: localCmd('gsd-prompt-guard.js'),
+        readGuardCommand: localCmd('gsd-read-guard.js'),
+        readInjectionScannerCommand: localCmd('gsd-read-injection-scanner.js'),
+        configReloadCommand: null,
+        hookOpts: { portableHooks: false, runtime: 'claude' },
+        localCmd,
+        localShellCmd,
+      });
+    });
+    return { settings };
+  }
+
+  const BLOCKING_GUARDS = [
+    'gsd-prompt-guard.js',
+    'gsd-workflow-guard.js',
+    'gsd-worktree-path-guard.js',
+    'gsd-agent-isolation-guard.js',
+    'gsd-write-guard.js',
+    'gsd-validate-commit.sh',
+  ];
+
+  test('blocking PreToolUse guards register with a host-stall-proof timeout (#3981)', () => {
+    const { settings } = runApplySettingsJsonHooks(targetDir, ['gsd-prompt-guard.js']);
+    const entry = (settings.hooks.PreToolUse || []).find((e) =>
+      (e.hooks || []).some((h) => h.command && h.command.includes('gsd-prompt-guard.js')));
+    assert.ok(entry, 'prompt guard should be registered on a fresh install');
+    const h = entry.hooks.find((x) => x.command.includes('gsd-prompt-guard.js'));
+    assert.equal(h.timeout, 120,
+      `Claude Code treats a timed-out hook as non-blocking, so a 5 s budget silently disables the gate under host stalls; expected 120, got ${h.timeout}`);
+  });
+
+  test('managed timeout:5 blocking-guard entries are migrated to 120 (#3981)', () => {
+    // Same shape as the context-monitor backfill: raising the source constant
+    // alone never reaches an existing settings.json, because registration
+    // skips entries whose command is already referenced.
+    for (const guard of BLOCKING_GUARDS) {
+      const settings = {
+        hooks: {
+          PreToolUse: [{
+            matcher: 'Write|Edit',
+            hooks: [{ type: 'command', command: `node ${path.join(targetDir, 'hooks', guard)}`, timeout: 5 }],
+          }],
+        },
+      };
+      const localCmd = (hookFile) => `node ${path.join(targetDir, 'hooks', hookFile)}`;
+      captureConsole(() => {
+        applySettingsJsonHooks(settings, {
+          runtime: 'claude',
+          isGlobal: false,
+          targetDir,
+          postToolEvent: 'PostToolUse',
+          hookEvents: 'claude',
+          extendedHookEvents: [],
+          hooksSurface: 'settings-json',
+          updateCheckCommand: null,
+          contextMonitorCommand: null,
+          promptGuardCommand: null,
+          readGuardCommand: null,
+          readInjectionScannerCommand: null,
+          configReloadCommand: null,
+          hookOpts: { portableHooks: false, runtime: 'claude' },
+          localCmd,
+          localShellCmd: localCmd,
+        });
+      });
+      const h = settings.hooks.PreToolUse[0].hooks[0];
+      assert.equal(h.timeout, 120,
+        `existing managed ${guard} entry at timeout:5 must be migrated to 120, got ${h.timeout}`);
+    }
+  });
+
+  test('non-managed timeout:5 entries are left alone (#3981)', () => {
+    const mine = { type: 'command', command: 'node /usr/local/bin/my-own-hook.js', timeout: 5 };
+    const settings = { hooks: { PreToolUse: [{ matcher: 'Write', hooks: [mine] }] } };
+    const localCmd = (hookFile) => `node ${path.join(targetDir, 'hooks', hookFile)}`;
+    captureConsole(() => {
+      applySettingsJsonHooks(settings, {
+        runtime: 'claude', isGlobal: false, targetDir,
+        postToolEvent: 'PostToolUse', hookEvents: 'claude', extendedHookEvents: [],
+        hooksSurface: 'settings-json', updateCheckCommand: null, contextMonitorCommand: null,
+        promptGuardCommand: null, readGuardCommand: null, readInjectionScannerCommand: null,
+        configReloadCommand: null, hookOpts: { portableHooks: false, runtime: 'claude' },
+        localCmd, localShellCmd: localCmd,
+      });
+    });
+    assert.equal(mine.timeout, 5, 'the migration must only touch entries referencing managed GSD guards');
+  });
+
+  test('advisory hook budgets are unchanged (#3981)', () => {
+    const { settings } = runApplySettingsJsonHooks(targetDir, ['gsd-read-guard.js', 'gsd-context-monitor.js']);
+    const events = Object.values(settings.hooks).flat();
+    const findTimeout = (basename) => {
+      for (const entry of events) {
+        if (!Array.isArray(entry.hooks)) continue;
+        for (const h of entry.hooks) {
+          if (h.command && h.command.includes(basename)) return h.timeout;
+        }
+      }
+      return undefined;
+    };
+    assert.equal(findTimeout('gsd-read-guard.js'), 5, 'advisory read guard keeps its 5 s budget');
+    assert.equal(findTimeout('gsd-context-monitor.js'), 10, 'context monitor keeps its 10 s budget');
+  });
+});
