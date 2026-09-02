@@ -118,7 +118,7 @@ describe('#4020 — run-tests temp root', () => {
     t.after(() => cleanup(target));
 
     const r = runNode(
-      [RUNNER, '--files', target],
+      [RUNNER, '--files', path.basename(target)],
       { timeoutMs: 120_000, env: { ...process.env, TMPDIR: sandbox, TEMP: sandbox, TMP: sandbox } },
     );
     assert.equal(r.exitCode, 0, `runner should pass: ${r.stderr.slice(-400)}`);
@@ -141,7 +141,7 @@ describe('#4020 — run-tests temp root', () => {
     t.after(() => cleanup(target));
 
     const r = runNode(
-      [RUNNER, '--files', target],
+      [RUNNER, '--files', path.basename(target)],
       { timeoutMs: 120_000, env: { ...process.env, TMPDIR: inherited, TEMP: inherited, TMP: inherited } },
     );
     assert.equal(r.exitCode, 0, `nested runner should pass: ${r.stderr.slice(-400)}`);
