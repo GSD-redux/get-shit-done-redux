@@ -1,8 +1,9 @@
 # Executor session-survivability dispatch
 
 Read and follow this fragment from `execute-phase.md` step 3 after resolving
-`SESSION_OUTLIVES_TURN`. It controls executor invocation only; it does not
-change verifier dispatch, isolation selection, or worktree ownership.
+`SESSION_OUTLIVES_TURN`. It controls executor invocation; verifier dispatch
+is handled in `execute-phase.md` step 10, while isolation selection and worktree
+ownership remain unchanged.
 
 ## harness Agent dispatch
 

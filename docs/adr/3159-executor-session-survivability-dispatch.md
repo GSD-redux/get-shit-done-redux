@@ -34,12 +34,13 @@ When `workflow.session_outlives_turn` is `false`:
 - **Harness Agent backend (`session-survivability-dispatch.md`):** Dispatches `gsd-executor` with an explicit, literal `run_in_background: false` instruction; the tool call returns synchronously before the next plan executor is dispatched. Subagents are retained; execution is not forced inline into the orchestrator prompt.
 - **Orchestrator-worktree process backend (`executor-isolation-dispatch.md`):** Spawns the executor child process synchronously in the foreground and waits for completion before proceeding, while preserving worktree ownership, wave merging, and cleanup contracts.
 - **No-isolation sequential backend:** Uses the same foreground/awaited executor mode when worktrees are disabled or a plan must use the main working tree.
+- **Phase verifier dispatch (`verify_phase_goal`):** Threads `run_in_background: false` so that the final verification subagent of the phase is awaited in the foreground before the turn ends.
 - Both true and false branches are expressed as distinct literal instructions in workflow fragments rather than relying on placeholder interpolation or omitted flags.
 
 ### 3. Scope Fence (D-03)
 
-This configuration governs **executor dispatch only**:
-- Verifier dispatch (`gsd-verifier`) remains unchanged.
+This configuration governs **`execute-phase` dispatches** (executors and phase verifier):
+- Standalone workflows outside `execute-phase` (`map-codebase`, `docs-update`, `plan-phase`, `manager`, `debug`) are not governed by this flag.
 - Git worktree isolation and ownership selection (`workflow.use_worktrees`) remain unchanged.
 - Tool availability, capability descriptors, and runtime identity resolution remain unchanged.
 
@@ -47,9 +48,9 @@ This configuration governs **executor dispatch only**:
 
 - **Runtime-Name Branching:** Branching on specific host names (e.g., `RUNTIME === 'codex'`) was rejected because host wrappers and one-shot configurations vary independently of the underlying engine.
 - **Inline Execution:** Forcing inline execution instead of subagent invocation was rejected because it causes excessive context exhaustion and drops subagent role specialization.
-- **Modifying Verifier Dispatch:** Altering the verifier was rejected because verification is already a single sequential gate at the end of a phase.
+- **Leaving Verifier Dispatch Untouched:** Omitting verifier dispatch from session survivability was rejected because default harness dispatch backgrounds `Agent()` calls, which would orphan the verifier at the end of the phase on one-shot hosts.
 
 ## Consequences & Verification Limits
 
-- **Consequences:** Integrators on one-shot wrapper hosts can safely execute GSD phases sequentially by configuring `workflow.session_outlives_turn: false` without forfeiting subagent isolation or breaking defaults for long-running hosts. Setting `session_outlives_turn: false` runs multi-plan waves sequentially in the foreground; wall-clock execution scales with total plan count rather than wave parallelization. Combining `session_outlives_turn: false` with `workflow.use_worktrees: true` uses an isolated worktree sequentially for each plan. Post-wave validation gates, merges, and cleanup continue to execute at the wave boundary.
-- **Verification Limits:** Automated unit, workflow-product, and runtime-converter tests verify that configuration and canonical instructions emit the correct literal branches. They do **not** simulate live process termination of arbitrary external wrapper hosts, which remains a host integration concern.
+- **Consequences:** Integrators on one-shot wrapper hosts can safely execute GSD phases sequentially by configuring `workflow.session_outlives_turn: false` without forfeiting subagent isolation or breaking defaults for long-running hosts. Setting `session_outlives_turn: false` runs multi-plan waves sequentially in the foreground and awaits the verifier in the foreground; wall-clock execution scales with total plan count rather than wave parallelization. Combining `session_outlives_turn: false` with `workflow.use_worktrees: true` uses an isolated worktree sequentially for each plan. Post-wave validation gates, merges, and cleanup continue to execute at the wave boundary.
+- **Verification Limits:** Automated unit, workflow-product, and runtime-converter tests verify that configuration and canonical instructions emit the correct literal branches and parameter guidance for executor and verifier dispatches. They do **not** simulate live process termination of arbitrary external wrapper hosts, which remains a host integration concern.

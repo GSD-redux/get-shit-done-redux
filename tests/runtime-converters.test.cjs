@@ -2667,7 +2667,7 @@ describe('#3159: runtime conversion and projection of session-survivability disp
     }
   });
 
-  test('rejects runtime-name selector and preserves scope exclusivity from verifier dispatch', () => {
+  test('rejects runtime-name selector and verifies session survivability in verifier dispatch', () => {
     const sessionSource = fs.readFileSync(SESSION_DISPATCH_PATH, 'utf8');
     const isolationSource = fs.readFileSync(ISOLATION_DISPATCH_PATH, 'utf8');
     const executeWorkflow = fs.readFileSync(WORKFLOW_EXECUTE_PATH, 'utf8');
@@ -2676,10 +2676,10 @@ describe('#3159: runtime conversion and projection of session-survivability disp
     assert.doesNotMatch(sessionSource, /if\s*\[\s*"\$RUNTIME"|case\s*"\$RUNTIME"|RUNTIME\s*===/);
     assert.doesNotMatch(isolationSource, /if\s*\[\s*"\$RUNTIME"|case\s*"\$RUNTIME"|RUNTIME\s*===/);
 
-    // Scope control: verifier dispatch is untouched by session_outlives_turn
+    // Verifier dispatch carries session survivability guidance
     const verifierStep = executeWorkflow.slice(executeWorkflow.indexOf('<step name="verify_phase_goal">'));
-    assert.doesNotMatch(verifierStep, /session_outlives_turn/i);
-    assert.doesNotMatch(verifierStep, /SESSION_OUTLIVES_TURN/);
+    assert.match(verifierStep, /SESSION_OUTLIVES_TURN/);
+    assert.match(verifierStep, /run_in_background:\s*false/);
 
     // Isolation and worktree ownership remain intact
     assert.match(isolationSource, /worktree/i);

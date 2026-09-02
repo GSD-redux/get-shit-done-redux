@@ -102,21 +102,21 @@ describe('#3159: session-survivability executor dispatch', () => {
     assert.doesNotMatch(falseRegion, /\{EXECUTOR_PROMPT\}/);
   });
 
-  test('carries the resolved mode to worktree process dispatch without touching verifier dispatch', () => {
+  test('carries the resolved mode to worktree process dispatch and verifier dispatch', () => {
     const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
     const isolation = fs.readFileSync(ISOLATION_DISPATCH_PATH, 'utf8');
     assert.match(isolation, /already-resolved `SESSION_OUTLIVES_TURN` mode without re-reading configuration/);
     assert.match(isolation, /true.*background[\s\S]*false.*synchronously[\s\S]*wait/s);
     assert.doesNotMatch(isolation, /workflow\.session_outlives_turn/);
     const verifierRegion = workflow.slice(workflow.indexOf('<step name="verify_phase_goal">'));
-    assert.doesNotMatch(verifierRegion, /session_outlives_turn/);
+    assert.match(verifierRegion, /SESSION_OUTLIVES_TURN/);
+    assert.match(verifierRegion, /run_in_background:\s*false/);
   });
 
   test('uses foreground dispatch when a session-survivability config read is malformed or fails', () => {
     const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
     assert.match(workflow, /workflow\.session_outlives_turn --raw 2>\/dev\/null \|\| echo "false"/);
     assert.match(workflow, /\[ "\$SESSION_OUTLIVES_TURN" = "true" \] \|\| SESSION_OUTLIVES_TURN="false"/);
-    assert.match(workflow, /\[ "\$USE_WORKTREES" = "false" \] \|\| USE_WORKTREES="true"/);
   });
 
   test('applies session survivability to the no-isolation sequential path', () => {

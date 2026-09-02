@@ -104,7 +104,6 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
 SESSION_OUTLIVES_TURN=$(gsd_run query config-get workflow.session_outlives_turn --raw 2>/dev/null || echo "false")
-[ "$USE_WORKTREES" = "false" ] || USE_WORKTREES="true"
 # Configuration-read failure fails closed to foreground dispatch. The registered
 # default still preserves background execution when the key is absent.
 [ "$SESSION_OUTLIVES_TURN" = "true" ] || SESSION_OUTLIVES_TURN="false"
@@ -712,21 +711,18 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Sequential dispatch for parallel execution (waves with 2+ agents):**
    When `SESSION_OUTLIVES_TURN` is `true` (default), dispatch each `Agent()` call
-   **one at a time with `run_in_background: true`**. Do NOT send all Agent calls
-   in a single message: simultaneous `git worktree add` calls race on `.git/config.lock`.
-   Agents still run in parallel once their worktrees are created.
-   When `SESSION_OUTLIVES_TURN` is `false`, dispatch each `Agent()` call with
-   `run_in_background: false` sequentially, waiting for each executor to complete
-   before dispatching the next plan's executor.
+   one at a time with `run_in_background: true` (simultaneous `git worktree add`
+   calls race on `.git/config.lock`). Agents still run in parallel once created.
+   When `SESSION_OUTLIVES_TURN` is `false`, dispatch each with `run_in_background: false`
+   sequentially and wait for each executor to complete before the next dispatch.
 
    ```text
    # CORRECT: one Agent() per message with run_in_background: true (or false if session_outlives_turn=false)
    # WRONG: multiple Agent() calls in one message -> .git/config.lock contention
    ```
 
-   Read and follow `execute-phase/steps/session-survivability-dispatch.md` for the
-   executor-only `SESSION_OUTLIVES_TURN` branch. It supplies literal background
-   and foreground Agent calls; verifier dispatch and isolation selection stay here.
+   Read `execute-phase/steps/session-survivability-dispatch.md` for literal
+   executor `SESSION_OUTLIVES_TURN` branches (verifier dispatch is in step 10).
 
    ```text
    # For SESSION_OUTLIVES_TURN=false, pass run_in_background: false and wait;
@@ -893,10 +889,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **This fallback applies to all runtimes.** Claude Code's default background
    Agent() dispatch may not return a completion signal, so verify rather than
-   waiting indefinitely. When `SESSION_OUTLIVES_TURN` is `false`, the foreground
-   Agent() call provides its result directly; use that result as the primary
-   completion signal and only use these spot-checks if the host still reports no
-   result.
+   waiting indefinitely. When `SESSION_OUTLIVES_TURN` is `false`, use the foreground
+   result directly and only fallback to spot-checks if no result is returned.
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
@@ -1306,7 +1300,13 @@ Verify phase achieved its GOAL, not just completed tasks.
 VERIFIER_SKILLS=$(gsd_run query agent-skills gsd-verifier)
 ```
 
+Apply the already-resolved `SESSION_OUTLIVES_TURN` mode here too: pass
+`run_in_background: false` when `SESSION_OUTLIVES_TURN` is `false` so the
+verifier runs synchronously in the foreground before the turn ends.
+
 ```
+# For SESSION_OUTLIVES_TURN=false, pass run_in_background: false and wait;
+# for SESSION_OUTLIVES_TURN=true, pass run_in_background: true (or omit).
 Agent(
   description="Verify phase {phase_number} goal achievement",
   prompt="Verify phase {phase_number} goal achievement.
