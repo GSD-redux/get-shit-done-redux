@@ -211,10 +211,13 @@ if [ "$TDD_MODE" = "true" ]; then
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
     # #4003: same anchored, zero-pad-tolerant scope as safe_resume_gate — the protocol
     # promises no padding, and a padded-literal grep hard-halts on a correct RED commit.
+    # Same milestone bound too: a prior milestone's same-numbered RED commit must not
+    # satisfy this gate.
     PHASE_N=$((10#${PHASE_NUMBER}))
     PLAN_N=$((10#${PLAN_ID}))
     PLAN_SCOPE_RE="^[a-z]+\((0*${PHASE_N})-(0*${PLAN_N})\):"
-    RED_COMMIT=$(git log --oneline -E --grep="${PLAN_SCOPE_RE}" -- "**/*.test.*" "**/*.spec.*" "tests/" | head -1)
+    TDD_MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    RED_COMMIT=$(git log --oneline -E ${TDD_MILESTONE_BASE:+"$TDD_MILESTONE_BASE..HEAD"} --grep="${PLAN_SCOPE_RE}" -- "**/*.test.*" "**/*.spec.*" "tests/" | head -1)
     if [ -z "$RED_COMMIT" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
       echo "TDD GATE TRIPPED: missing RED commit for ${PLAN_ID}/${TASK_ID}"

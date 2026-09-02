@@ -60,7 +60,21 @@ describe('#4003 — safe_resume_gate commit-scope greps', () => {
       'the RED grep must use the same anchored padding-tolerant scope');
     assert.ok(!w.includes('--grep="^test(${PHASE_NUMBER}-${PLAN_ID})"'),
       'the padded-literal RED grep must not remain');
+    assert.ok(w.includes('TDD_MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")'),
+      'the RED grep carries the same milestone bound as the resume gate (#4003 review)');
+    assert.ok(w.includes('${TDD_MILESTONE_BASE:+"$TDD_MILESTONE_BASE..HEAD"}'),
+      'the RED grep range bound is applied');
     assert.ok(w.includes('if [ "$TDD_MODE" = "true" ]'), '#4011 TDD_MODE keying preserved');
+  });
+
+  test('tdd.md gate-enforcement examples use the anchored padding-tolerant scope', () => {
+    const ref = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md'), 'utf8');
+    assert.ok(!ref.includes('--grep="^test(${PHASE}-${PLAN})"'),
+      'the padded-literal example grep must not remain');
+    assert.ok(ref.includes('--grep="^test\\((0*${PHASE_N})-(0*${PLAN_N})\\):"'),
+      'the RED example is anchored and zero-pad-tolerant');
+    assert.ok(ref.includes('PHASE_N=$((10#${PHASE})); PLAN_N=$((10#${PLAN}))'),
+      'the examples derive zero-stripped components');
   });
 
   test('completion spot-check uses the anchored scope and keeps its time bound', () => {
