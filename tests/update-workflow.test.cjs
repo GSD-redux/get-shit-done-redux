@@ -56,6 +56,12 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.ok(unresolved >= 0, 'unresolved target must have a typed result');
     assert.match(step, /TARGET_RUNTIME=""/);
     assert.match(step, /GSD_DIR=""/);
+    assert.match(
+      step,
+      /otherwise (?:leave )?empty/,
+      'an unrecognized execution_context path must not infer Claude',
+    );
+    assert.doesNotMatch(step, /otherwise `?claude`?\./);
     assert.match(step, /INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty/);
     assert.match(step, /rerun from a valid installed runtime/i);
     assert.match(step, /Rerun from a valid installed runtime: `\/gsd:update`\./);
