@@ -231,6 +231,11 @@
   },
   {
     "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1083",
+    "message": "This { is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
     "code": "2086",
     "message": "Double quote to prevent globbing and word splitting."
   },

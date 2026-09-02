@@ -884,14 +884,17 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
   // from the issue — version string + date, another phase's plan whose scope
   // number is a digit-superset, a prose "Phase N" mention in another phase's
   // subject — plus the phase's real first scope commit and an unrelated HEAD.
-  function buildFixture(prefix, phaseCommitMessage) {
+  function buildFixture(prefix, phaseCommitMessage, opts = {}) {
+    // opts.skipPhaseDir: the fail-closed row (T5) commits NO phase directory,
+    // so the directory anchor must resolve nothing.
+    const commitPhaseDir = opts.skipPhaseDir !== true;
     const repo = createTempGitProject(prefix);
     const phaseDir = path.join(repo, '.planning', 'phases', '06-ctx');
     fs.mkdirSync(phaseDir, { recursive: true });
     const commits = [
       ['c1.txt', 'chore: bump to v2.06.0 on 2026-01-05'],
       ['c2.txt', 'docs(60-01): unrelated phase-plan work'],
-      [PHASE06_PLAN_REL, phaseCommitMessage],
+      [commitPhaseDir ? PHASE06_PLAN_REL : 'c3.txt', phaseCommitMessage],
       ['c4.txt', 'chore: Phase 60 cleanup'],
       ['c5.txt', 'docs: touch README'],
     ];
@@ -991,7 +994,7 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
     'T5: with no genuine phase scope commit, every derivation yields NO base (fail-closed preserved)',
     SKIP_WIN32,
     () => {
-      const { repo } = buildFixture('gsd-3191-closed-', 'feat: scanner core'); // no phase-06 scope commit anywhere
+      const { repo } = buildFixture('gsd-3191-closed-', 'feat: scanner core', { skipPhaseDir: true }); // no committed phase dir anywhere
       try {
         for (const [label, snippet] of [
           ['tier3', extractTier3Derivation()],
