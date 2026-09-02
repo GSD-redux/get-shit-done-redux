@@ -286,6 +286,18 @@ describe('reconstructFrontmatter', () => {
       );
     });
 
+    test('exponent, hex, octal, binary and sexagesimal forms are quoted and survive js-yaml', () => {
+      for (const v of ['1e3', '0x1F', '0o17', '0b101', '12:30']) {
+        assert.strictEqual(lineFor({ k: v }, 'k'), `k: "${v}"`, v);
+        assert.strictEqual(yaml.load(reconstructFrontmatter({ k: v })).k, v, v);
+      }
+    });
+
+    test('a leading-zero all-digit id stays bare — the documented, scoped trade-off', () => {
+      assert.strictEqual(lineFor({ current_phase: '02' }, 'current_phase'), 'current_phase: 02');
+      assert.strictEqual(lineFor({ plan: '01' }, 'plan'), 'plan: 01');
+    });
+
     test('free-text with no YAML-special characters stays unquoted — no blanket quoting', () => {
       assert.strictEqual(
         lineFor({ current_phase_name: 'Test Phase' }, 'current_phase_name'),

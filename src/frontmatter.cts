@@ -823,11 +823,17 @@ function agentScalarNeedsDoubleQuoting(s: string): boolean {
 }
 
 /**
- * #4053 — Quote a non-integer numeric scalar (`22.10`, `1.0`) so a spec YAML
- * reader keeps it a string; bare `22.10` reloads as the float 22.1, colliding
- * with `22.1`. Narrower than `agentScalarNeedsDoubleQuoting`: all-digit values
- * (counts, and leading-zero ids like `02`) stay bare, so the state-rebuild
- * idempotency baseline is unchanged.
+ * #4053 — Quote a numeric-looking scalar that is not all-digit (`22.10`,
+ * `1.0`, `1e3`, `0x1F`) so a spec YAML reader keeps it a string: bare `22.10`
+ * reloads as the float 22.1 and collides with `22.1`, a different phase.
+ *
+ * All-digit strings stay bare as a deliberate, scoped trade-off — not a
+ * safety guarantee. A leading-zero value (`02`, `017`) also mis-parses under
+ * a spec reader (to 2, 17). It is left unquoted because zero-padded ids
+ * (`plan: 01`, `phase: 02`) are the pervasive GSD convention, quoting them
+ * all is the blanket quoting #4053 asked to avoid, and the loss is padding
+ * rather than identity: `02` and `2` normalize to the same phase; `22.1` and
+ * `22.10` do not.
  */
 function generalScalarNeedsNumericQuoting(s: string): boolean {
   return YAML_NUMERIC_RE.test(s) && !/^\d+$/.test(s);
