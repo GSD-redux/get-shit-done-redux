@@ -6,11 +6,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const fc = require('fast-check');
 const { runNode } = require('./helpers/process-seam.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup } = require('./helpers.cjs');
 const { installerEnv, RUNTIME_META } = require('./helpers/install-shared.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
@@ -44,7 +43,7 @@ function parseScalar(value) {
 }
 
 function installClaude(t, { defaults, projectConfig } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4032-claude-'));
+  const root = createTempDir('gsd-4032-claude-');
   t.after(() => cleanup(root));
   if (defaults !== undefined) {
     fs.mkdirSync(path.join(root, '.gsd'), { recursive: true });
@@ -70,7 +69,7 @@ function installClaude(t, { defaults, projectConfig } = {}) {
 }
 
 function installRuntime(t, runtime, { defaults, repeat = false, scope = 'local' } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-4032-${runtime}-`));
+  const root = createTempDir(`gsd-4032-${runtime}-`);
   t.after(() => cleanup(root));
   if (defaults !== undefined) {
     fs.mkdirSync(path.join(root, '.gsd'), { recursive: true });

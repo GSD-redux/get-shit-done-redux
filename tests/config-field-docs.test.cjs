@@ -214,6 +214,15 @@ describe('config-field-docs', () => {
     );
   });
 
+  test('agent_tools is registered in the central schema and public configuration docs (#4032)', () => {
+    const manifest = JSON.parse(fs.readFileSync(CONFIG_SCHEMA_MANIFEST_PATH, 'utf-8'));
+    assert.ok(manifest.validKeys.includes('agent_tools'),
+      'agent_tools must be accepted by the central config schema');
+    const publicDocs = fs.readFileSync(DOCS_CONFIG_PATH, 'utf-8');
+    assert.ok(tableRowForKey(publicDocs, 'agent_tools.<selector>'),
+      'agent_tools must have a public configuration table row');
+  });
+
   test('documents sub_repos field (CONFIG_DEFAULTS, no namespace form)', () => {
     // sub_repos is in CONFIG_DEFAULTS but has no NAMESPACE_MAP entry
     // (it uses a planning.sub_repos nested lookup but is documented as a
