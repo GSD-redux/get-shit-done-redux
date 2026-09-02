@@ -1165,6 +1165,47 @@ EOF
     }
   });
 
+  test('a backslash-newline continuation before -m is joined, not treated as a separator (round 9)', () => {
+    // `git commit \` newline `  -m <heredoc>` was refused because every guard
+    // read the newline as a separator — disclosed in round 8 as a fail-closed
+    // limit, re-raised in round 9 as a Major. bash's rule is local: a newline
+    // preceded by an ODD run of backslashes is a continuation (both removed);
+    // an EVEN run is a literal backslash plus a REAL newline. Both windows are
+    // joined the same way before any guard runs. Not bash-version dependent —
+    // the join is plain parameter expansion — but run under each bash on the
+    // machine anyway, since the round-8 classes were.
+    const bashes = ['/bin/bash', '/opt/homebrew/bin/bash'].filter((b) => fs.existsSync(b));
+    assert.ok(bashes.length >= 1, 'at least one bash must exist');
+    const run = (bash, command) => spawnHook(path.join(HOOKS_DIR, 'gsd-validate-commit.sh'), {
+      input: JSON.stringify({ tool_input: { command } }), encoding: 'utf-8', cwd: tmpDir, interpreter: bash,
+    });
+    for (const bash of bashes) {
+      // The idiom itself, on both sides of the message.
+      assert.strictEqual(run(bash, `git commit \\\n  -m ${HD_OK}`).status, 0,
+        `${bash}: a continuation before -m is joined by bash, so it must be joined here and resolve`);
+      assert.strictEqual(run(bash, `git commit --allow-empty \\\n  --no-verify \\\n  -m ${HD_OK}`).status, 0,
+        `${bash}: several continuations resolve`);
+      assert.strictEqual(run(bash, `git commit -m ${HD_OK} \\\n  --allow-empty`).status, 0,
+        `${bash}: a continuation in the suffix window resolves`);
+
+      // ACCEPT-DIRECTION CONTROLS. An even run is a literal backslash followed
+      // by a REAL newline, which is a separator and must still refuse.
+      const evenRun = run(bash, `git commit \\\\\n  -m ${HD_OK}`);
+      assert.strictEqual(evenRun.status, 2,
+        `${bash}: backslash-backslash-newline is a literal \\ then a real separator; joining it would let a later command's -m be taken for this commit's`);
+      // A plain newline is unchanged.
+      assert.strictEqual(run(bash, `git commit\n  -m ${HD_OK}`).status, 2, `${bash}: a bare newline is still a separator`);
+      // Continuation GLUE: bash joins `"$(…)"\` newline `suffix` into one argument,
+      // so the glue guard must see it glued and refuse, same as without the newline.
+      assert.strictEqual(run(bash, `git commit -m ${HD_OK}\\\nsuffix`).status, 2,
+        `${bash}: a continuation glued to the closing quote is glue, and the joined text must show it`);
+      // A later command's heredoc-shaped -m after a continuation is STILL a later
+      // command once the real separator is reached.
+      assert.strictEqual(run(bash, `git commit --amend --no-edit \\\n  --allow-empty\necho -m ${HD_OK}`).status, 2,
+        `${bash}: joining continuations must not hide the real newline separator that follows`);
+    }
+  });
+
   test('a newline is a command separator for the first-message guard (round 7)', () => {
     // The separator scan covered `;`, `&` and `|` but not a literal newline, so
     // a LATER command's heredoc-shaped -m was taken for this commit's message.

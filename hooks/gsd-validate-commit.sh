@@ -181,6 +181,41 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # is also legal English inside a commit message, but may legally appear
       # on EITHER side of the message on the command line.
       MSG_SUFFIX="${CMD#*"$MSG_MATCH"}"
+      # LINE CONTINUATIONS ARE NOT SEPARATORS (review of #3816, rounds 8 and 9).
+      # `git commit \` newline `  -m "$(cat <<'EOF' …` is an ordinary way to
+      # spread an invocation over lines, and every guard below reads a newline in
+      # a window as a command separator, so the whole form was refused. That was
+      # disclosed as a fail-closed limit in round 8 because "is this newline a
+      # continuation" looked like the segmentation question this file has
+      # reverted twice. It is not: bash's rule is local and character-level. A
+      # newline preceded by an ODD run of backslashes is a continuation and bash
+      # removes both; an EVEN run (`\\` then newline) is a literal backslash
+      # followed by a real newline, which IS a separator. So the windows are
+      # joined the way bash joins them, in three bash-3.2-safe steps: every `\\`
+      # pair is parked on \x01, a byte no real command line carries, any
+      # backslash-newline that remains is a lone (odd) one and is removed, then
+      # the pairs are restored. Applied to BOTH windows, BEFORE the dequote
+      # copies are derived, so every scan sees the joined text.
+      #
+      # KNOWN OVER-BLOCK, fail-closed: a literal \x01 that IS present in the
+      # command is restored as `\\`, so an option-shaped token carrying one
+      # (`-\x01m`) reads as `-\\m`, dequotes to `-m`, and refuses where it did
+      # not before (independent review, round 9). Refusing is the recoverable
+      # direction; a control byte in an option name is not a spelling anyone
+      # types, and it is not a hole in the accept direction.
+      #
+      # Direction check: a continuation glued to the closing quote
+      # (`"$(…)"\` newline `suffix`) joins to `"$(…)"suffix`, which the glue
+      # guard refuses exactly as bash would have glued it; `\\` + newline keeps
+      # its newline and is still refused by the separator guard. Measured on
+      # bash 3.2.57 and 5.3.15 in tests/hooks-opt-in.test.cjs.
+      CONT_PARK=$'\x01'
+      MSG_PREFIX="${MSG_PREFIX//\\\\/$CONT_PARK}"
+      MSG_PREFIX="${MSG_PREFIX//\\$'\n'/}"
+      MSG_PREFIX="${MSG_PREFIX//$CONT_PARK/\\\\}"
+      MSG_SUFFIX="${MSG_SUFFIX//\\\\/$CONT_PARK}"
+      MSG_SUFFIX="${MSG_SUFFIX//\\$'\n'/}"
+      MSG_SUFFIX="${MSG_SUFFIX//$CONT_PARK/\\\\}"
 
       # QUOTE-SPLICED SPELLINGS (independent review of #3816, round 6). Bash
       # removes quotes before git ever sees an argument, so the same option has
