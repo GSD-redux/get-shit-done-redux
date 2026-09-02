@@ -756,6 +756,8 @@ for each plan B in plan_order:
 
 **Rule:** Same-wave plans must have zero `files_modified`/`files_deleted` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
 
+**External review ordering:** When a PR opening has known automatic external review and the plan includes internal review lanes, schedule the accepted internal-review fixes before the final open. If an open-time property exists, re-check it immediately before opening, with nothing intervening; post-open CI, review, and tracking may follow. Examples: @gsd-core/references/planner-antipatterns.md ("External Review Before PR Open").
+
 Non-file coupling: @~/.claude/gsd-core/references/planner-coupling.md
 </step>
 
