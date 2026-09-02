@@ -253,6 +253,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/config-loader.cjs',
       'gsd-core/bin/lib/phase-locator.cjs',
       'gsd-core/bin/lib/plan-dependency-graph.cjs',
+      // #3674: tsc-generated runtime artifact — lint the src/file-overlap-partitioner.cts source, not this.
+      'gsd-core/bin/lib/file-overlap-partitioner.cjs',
       'gsd-core/bin/lib/roadmap-parser.cjs',
       'gsd-core/bin/lib/drift.cjs',
       'gsd-core/bin/lib/cjs-command-router-adapter.cjs',
