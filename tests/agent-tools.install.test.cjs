@@ -54,25 +54,29 @@ function installClaude(t, { defaults, projectConfig } = {}) {
 }
 
 function installRuntime(t, runtime, { defaults, projectConfig, repeat = false, scope = 'local' } = {}) {
-  const root = createTempDir(`gsd-4032-${runtime}-`);
-  t.after(() => cleanup(root));
+  const root = createTempDir(`gsd-4032-${runtime}-project-`);
+  const home = createTempDir(`gsd-4032-${runtime}-home-`);
+  t.after(() => {
+    cleanup(root);
+    cleanup(home);
+  });
   if (defaults !== undefined) {
-    fs.mkdirSync(path.join(root, '.gsd'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.gsd', 'defaults.json'), JSON.stringify(defaults), 'utf8');
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify(defaults), 'utf8');
   }
   if (projectConfig !== undefined) {
     fs.mkdirSync(path.join(root, '.planning'), { recursive: true });
     fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify(projectConfig), 'utf8');
   }
   const configDir = scope === 'global'
-    ? path.join(root, RUNTIME_META[runtime].globalSuffix)
+    ? path.join(home, RUNTIME_META[runtime].globalSuffix)
     : path.join(root, RUNTIME_META[runtime].localDir);
   const args = ['--preserve-symlinks', '--preserve-symlinks-main', path.join(REPO_ROOT, 'bin', 'install.js'), `--${runtime}`];
   if (scope === 'global') args.push('--global', '--config-dir', configDir);
   else args.push('--local');
   const run = () => runNode(args, {
     cwd: root,
-    env: installerEnv({ HOME: root, USERPROFILE: root }),
+    env: installerEnv({ HOME: home, USERPROFILE: home }),
     timeoutMs: INSTALL_TIMEOUT_MS,
   });
   const result = run();
@@ -81,7 +85,7 @@ function installRuntime(t, runtime, { defaults, projectConfig, repeat = false, s
     const rerun = run();
     assert.strictEqual(rerun.exitCode, 0, `${runtime} reinstall failed:\n${rerun.stderr}`);
   }
-  return { root, configDir };
+  return { root, home, configDir };
 }
 
 function emittedAgentArtifacts(install, agentName) {
