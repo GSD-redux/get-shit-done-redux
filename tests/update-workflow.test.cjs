@@ -57,6 +57,7 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.match(step, /GSD_DIR=""/);
     assert.match(step, /INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty/);
     assert.match(step, /rerun from a valid installed runtime/i);
+    assert.match(step, /Rerun from a valid installed runtime: `\/gsd:update`\./);
     assert.match(step, /npx -y --package=@opengsd\/gsd-core@latest -- gsd-core --global/);
     assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
 
@@ -74,6 +75,21 @@ describe('#4153 regression: unresolved update targets stop before later workflow
       assert.equal(step.indexOf(needle), -1, `unresolved path reaches ${name}`);
       assert.ok(text.indexOf(needle, after) >= after, `${name} must remain after the exit`);
     }
+  });
+
+  test('latest-result parsing stays Node-only and preserves the false default', () => {
+    const latestStart = src.indexOf('<step name="check_latest_version">');
+    const latestEnd = src.indexOf('</step>', latestStart);
+
+    assert.ok(latestStart >= 0, 'check_latest_version step must exist');
+    assert.ok(latestEnd > latestStart, 'check_latest_version step must close');
+    const latest = src.slice(latestStart, latestEnd);
+
+    assert.doesNotMatch(latest, /jq -r/, 'latest-result parsing must not require jq');
+    assert.match(latest, /LATEST_OK="\$\(uc_field ok "\$LATEST_RESULT"\)"/);
+    assert.match(latest, /LATEST_OK="\$\{LATEST_OK:-false\}"/);
+    assert.match(latest, /LATEST_VERSION="\$\(uc_field version "\$LATEST_RESULT"\)"/);
+    assert.match(latest, /LATEST_REASON="\$\(uc_field reason "\$LATEST_RESULT"\)"/);
   });
 });
 
