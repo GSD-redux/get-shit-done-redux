@@ -528,8 +528,8 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `external-descriptor-trust.cjs` | Defense-in-depth path-containment check for third-party plugin descriptors (#1681) |
 | `external-job.cjs` | Produces scheduler manifests for asynchronous external jobs; SLURM is the first backend (#1164) |
 | `fallow-runner.cjs` | Fallow audit adapter for `/gsd-code-review`: binary resolution (`node_modules/.bin` then `PATH`), actionable missing-binary errors, and structural findings normalization |
-| `file-overlap-partitioner.cjs` | Generic greedy first-fit file-overlap partitioner (#3674) — `partitionByFileOverlap(items: {id, files}[]) → string[][]`, extracted from `claude-orchestration.cjs`'s `partitionStages` behavior-preserving; no `Plan`/`Wave` dependency, no path normalization, no dependency-graph ordering. Compiled from `src/file-overlap-partitioner.cts` |
 | `federated-config.cjs` | Defensive merge of capability-declared config slices into the loadConfig return value — ADR-857 phase 3b; exports `mergeFederatedConfig({ configSchema, isCentralKey, userConfig })` → `{ values, validKeys, warnings }`; live for migrated Capability keys that are atomically removed from the central config schema |
+| `file-overlap-partitioner.cjs` | Generic greedy first-fit file-overlap partitioner (#3674) — `partitionByFileOverlap(items: {id, files}[]) → string[][]`, extracted from `claude-orchestration.cjs`'s `partitionStages` behavior-preserving; no `Plan`/`Wave` dependency, no path normalization, no dependency-graph ordering. Compiled from `src/file-overlap-partitioner.cts` |
 | `frontmatter.cjs` | YAML frontmatter CRUD operations |
 | `gap-checker.cjs` | Post-planning gap analysis (#2493): unified REQUIREMENTS.md + CONTEXT.md decisions vs PLAN.md coverage report (`gsd-tools gap-analysis`) |
 | `gate-predicate-evaluator.cjs` | Evaluates capability gate predicates — `command-exit-zero` and `artifact-frontmatter` (#2008) |
