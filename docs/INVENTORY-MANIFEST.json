@@ -478,6 +478,8 @@
       "prohibition-enforcement.cjs",
       "project-root.cjs",
       "prompt-budget.cjs",
+      "quick-batch-command-router.cjs",
+      "quick-batch-dispatch.cjs",
       "quick-batch.cjs",
       "real-home-guard.cjs",
       "refactor-trigger-command-router.cjs",
