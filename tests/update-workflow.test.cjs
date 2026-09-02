@@ -85,7 +85,12 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.ok(latestEnd > latestStart, 'check_latest_version step must close');
     const latest = src.slice(latestStart, latestEnd);
 
-    assert.doesNotMatch(latest, /jq -r/, 'latest-result parsing must not require jq');
+    assert.doesNotMatch(latest, /(?:^|[;&|]\s*|\n\s*)jq(?:\s|$)/m, 'latest-result parsing must not invoke jq');
+    assert.match(
+      latest,
+      /if LATEST_RESULT="\$\(node [^\n]+\)"; then\s+LATEST_STATUS=0\s+else\s+LATEST_STATUS=\$\?\s+fi/,
+      'latest-version failure must be captured when errexit is active',
+    );
     assert.match(latest, /LATEST_OK="\$\(uc_field ok "\$LATEST_RESULT"\)"/);
     assert.match(latest, /LATEST_OK="\$\{LATEST_OK:-false\}"/);
     assert.match(latest, /LATEST_VERSION="\$\(uc_field version "\$LATEST_RESULT"\)"/);

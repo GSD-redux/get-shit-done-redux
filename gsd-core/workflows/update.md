@@ -137,8 +137,11 @@ The `GSD_DIR` value emitted by `get_installed_version` (line 4) resolves to the 
 `LATEST_RESULT` is a JSON document with the documented shape `{ ok: bool, version: string, reason: string, detail?: string }`. Parse it with the Node-only `uc_field` helper. When the script cannot run or returns nothing, preserve its failure as a meaningful diagnostic (#2993 CR feedback):
 
 ```bash
-LATEST_RESULT="$(node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG" 2>/dev/null)"
-LATEST_STATUS=$?
+if LATEST_RESULT="$(node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG" 2>/dev/null)"; then
+  LATEST_STATUS=0
+else
+  LATEST_STATUS=$?
+fi
 # #2993 CR: when node is missing or the script doesn't exist, LATEST_RESULT
 # is empty. Fail the check with a meaningful reason instead of a blank
 # diagnostic.
