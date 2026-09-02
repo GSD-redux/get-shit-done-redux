@@ -145,13 +145,21 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 # contain no single-quote character.
 #
 # ORCHESTRATOR BUILD-TIME EMBEDS (do these BEFORE the spawn, in order):
-#   1. Inline each file listed in <execution_context> verbatim, in order.
+#   1. Read the selected PLAN.md from the repository root at `{phase_dir}/{plan_file}`.
+#      Ignore an optional BOM before leading YAML frontmatter. Set `PLAN_TDD_CONTEXT=true` only
+#      when that frontmatter has `type: tdd` or a quoted scalar `tdd`, or an actual task opening tag (which may be multiline) has `tdd="true"`
+#      (or another quoted true form; whitespace around `=` is allowed) at the start of a non-fenced line. Literal task examples in prose or fenced code blocks
+#      opened by backticks or tildes do not qualify.
+#      Halt if that PLAN.md cannot be read, or if `PLAN_TDD_CONTEXT=true` and
+#      `tdd.md` cannot be read. The conditional canonical tdd.md entry below
+#      must be included only when `PLAN_TDD_CONTEXT=true`.
+#   2. Inline each file listed in <execution_context> verbatim, in order.
 #      An unreadable source file is a halt condition (#3637 fail-closed),
 #      never a skip — a child without these texts is not a gsd-executor.
-#   2. Substitute this plan's {plan_number}, {phase_number}, {phase_name},
+#   3. Substitute this plan's {plan_number}, {phase_number}, {phase_name},
 #      {phase_dir}, and {plan_file} placeholders (same values the harness
 #      path substitutes into its Agent() prompt).
-#   3. Inline the gsd-executor ROLE DEFINITION: read `agents/gsd-executor.md`
+#   4. Inline the gsd-executor ROLE DEFINITION: read `agents/gsd-executor.md`
 #      (resolved against the install root the same way the harness runtime
 #      resolves subagent types) and inline it verbatim at the provenance
 #      marker below. The agent-skills query alone is NOT sufficient — its
@@ -161,14 +169,6 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #      no host subagent machinery, so the role definition must ride the prompt
 #      (#3637 acceptance: resolved agent instructions as launch-level
 #      instructions + provenance of which role definition was used).
-#   4. Read the selected PLAN.md from the repository root at `{phase_dir}/{plan_file}`.
-#      Ignore an optional BOM before leading YAML frontmatter. Set `PLAN_TDD_CONTEXT=true` only
-#      when that frontmatter has `type: tdd` or a quoted scalar `tdd`, or an actual task opening tag (which may be multiline) has `tdd="true"`
-#      (or another quoted true form; whitespace around `=` is allowed) at the start of a non-fenced line. Literal task examples in prose or fenced code blocks
-#      opened by backticks or tildes do not qualify.
-#      Halt if that PLAN.md cannot be read, or if `PLAN_TDD_CONTEXT=true` and
-#      `tdd.md` cannot be read. The conditional canonical tdd.md entry below
-#      must be included only when `PLAN_TDD_CONTEXT=true`.
 EXECUTOR_PROMPT='<objective>
 Execute plan {plan_number} of phase {phase_number}-{phase_name}.
 Commit each task atomically. Create SUMMARY.md.

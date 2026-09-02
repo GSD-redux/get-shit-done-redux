@@ -395,7 +395,7 @@ If spawned as continuation agent (`<completed_tasks>` in prompt):
 </continuation_handling>
 
 <tdd_execution>
-For a task with `tdd="true"`, or for an entire plan with frontmatter `type: tdd`, follow the canonical TDD procedure in `gsd-core/references/tdd.md`. Read that reference before starting the applicable task or plan.
+For a task with `tdd="true"`, or for an entire plan with frontmatter `type: tdd`, follow the canonical TDD procedure in `tdd.md`, embedded in your execution context.
 </tdd_execution>
 
 ## MVP+TDD Gate

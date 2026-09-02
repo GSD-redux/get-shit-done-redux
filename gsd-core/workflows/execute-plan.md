@@ -289,7 +289,7 @@ End with: **Total deviations:** N auto-fixed (breakdown). **Impact:** assessment
 <tdd_plan_execution>
 ## TDD Execution
 
-For `type: tdd` plans and tasks with `tdd="true"`, read and follow the canonical procedure in `~/.claude/gsd-core/references/tdd.md`.
+For `type: tdd` plans and tasks with `tdd="true"`, follow the canonical procedure in `tdd.md`, embedded in the execution context.
 </tdd_plan_execution>
 
 <precommit_failure_handling>

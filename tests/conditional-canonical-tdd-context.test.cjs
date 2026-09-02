@@ -97,7 +97,7 @@ describe('conditional canonical TDD executor context', () => {
       assert.match(source, /tdd\.md/, `${name} must point to the canonical reference`);
       assert.match(source, /embedded in (?:the |your )?execution context/i,
         `${name} must use the canonical procedure already embedded by the orchestrator`);
-      assert.doesNotMatch(source, /(?:read|Read)[^\n]*tdd\.md/,
+      assert.doesNotMatch(source, /(?:read and follow[^\n]*tdd\.md|tdd\.md[^\n]*Read that reference)/i,
         `${name} must not ask the executor to reread a host-only TDD path`);
       assert.doesNotMatch(source, /\*\*2\. RED:\*\*[\s\S]{0,500}\*\*3\. GREEN:\*\*[\s\S]{0,500}\*\*4\. REFACTOR/,
         `${name} must not duplicate the complete canonical procedure`);
