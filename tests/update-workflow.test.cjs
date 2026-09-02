@@ -39,6 +39,43 @@ function codeOnly(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
+describe('#4153 regression: unresolved update targets stop before later workflow steps', () => {
+  const src = codeOnly(UPDATE_MD);
+  const start = src.indexOf('<step name="get_installed_version">');
+  const end = src.indexOf('</step>', start);
+
+  test('the unresolved path is explicit, ordered, and contains no mutation', () => {
+    assert.ok(start >= 0, 'get_installed_version step must exist');
+    assert.ok(end > start, 'get_installed_version step must close');
+    const step = src.slice(start, end);
+    const unresolved = step.indexOf('UPDATE_TARGET_UNRESOLVED');
+    const exit = step.indexOf('Exit.', unresolved);
+
+    assert.ok(unresolved >= 0, 'unresolved target must have a typed result');
+    assert.match(step, /TARGET_RUNTIME=""/);
+    assert.match(step, /GSD_DIR=""/);
+    assert.match(step, /INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty/);
+    assert.match(step, /rerun from a valid installed runtime/i);
+    assert.match(step, /npx -y --package=@opengsd\/gsd-core@\{TAG\} -- gsd-core --global/);
+    assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
+
+    const mutationSpies = [
+      'check-latest-version.cjs',
+      'detect-custom-files --config-dir',
+      'npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG"',
+      'rm -f "$HOME/.cache/gsd/gsd-update-check"',
+      'restore-custom-files --config-dir "$GSD_DIR" --apply',
+      '/gsd:update --sync',
+      '/gsd:update --reapply',
+      'check_local_patches',
+    ];
+    for (const mutation of mutationSpies) {
+      assert.equal(step.indexOf(mutation), -1, `unresolved path reaches ${mutation}`);
+      assert.ok(src.indexOf(mutation, end) >= end, `${mutation} must remain after the exit`);
+    }
+  });
+});
+
 describe('#498 regression: update.md backup uses GSD_DIR, not the removed LOCAL_DIR/GLOBAL_DIR', () => {
   const src = codeOnly(UPDATE_MD);
 
@@ -223,13 +260,15 @@ __t3130('bug #3130: update.md contains no bare npx invocations (cache-stale form
   );
 });
 
-__t3130('bug #3130: update.md has >=3 robust npx invocations (--package= + -- separator)', () => {
-  // Three sibling invocations: local, global, and unknown/fallback.
-  // The tag is now a $TAG variable (latest by default, next under --next/--rc).
-  const robust = (src3130.match(/npx -y --package=@opengsd\/gsd-core@\S+ -- gsd-core/g) || []);
-  assert3130.ok(
-    robust.length >= 3,
-    `Expected >=3 robust npx invocations in update.md, found ${robust.length}`,
+__t3130('bug #3130: update.md has exactly two robust resolved-install invocations', () => {
+  const start = src3130.indexOf('<step name="run_update">');
+  const end = src3130.indexOf('</step>', start);
+  assert3130.ok(start >= 0 && end > start, 'run_update step must exist');
+  const robust = (src3130.slice(start, end).match(/npx -y --package=@opengsd\/gsd-core@\S+ -- gsd-core/g) || []);
+  assert3130.strictEqual(
+    robust.length,
+    2,
+    `Expected two resolved-install npx invocations in update.md, found ${robust.length}`,
   );
 });
   });

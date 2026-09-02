@@ -84,9 +84,29 @@ describe('resolveUpdateContext: scope cascade', () => {
     assert.equal(r.runtime, 'codex');
   });
 
-  test('no install anywhere -> UNKNOWN / claude / empty gsdDir', () => {
+  test('no install anywhere -> UNKNOWN / empty runtime / empty gsdDir', () => {
     const r = resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs: fakeFs({}) });
-    assert.deepEqual(r, { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: 'claude', gsdDir: '' });
+    assert.deepEqual(r, { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: '', gsdDir: '' });
+    assert.deepEqual(
+      resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs: fakeFs({}) }),
+      r,
+      'unresolved resolution must remain deterministic',
+    );
+  });
+
+  test('multiple installs honor an explicit preferred runtime', () => {
+    const claude = `${HOME}/.claude`;
+    const codex = `${HOME}/.codex`;
+    const fs = fakeFs({
+      [ver(claude)]: '1.40.0\n', [marker(claude)]: 'x',
+      [ver(codex)]: '1.41.0\n', [marker(codex)]: 'x',
+    });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: {}, fs, preferredRuntime: 'codex',
+    });
+    assert.equal(r.runtime, 'codex');
+    assert.equal(r.scope, 'GLOBAL');
+    assert.ok(sameDir(r.gsdDir, codex), `gsdDir was ${r.gsdDir}`);
   });
 });
 
