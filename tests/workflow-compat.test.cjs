@@ -76,7 +76,7 @@ describe('workflow CLI compatibility (#1759)', () => {
 'use strict';
 
 // feat(#41): /gsd-ship generate_pr_body emits a TDD Audit table + an aggregate
-// `gate_status:` trailer so the per-commit TDD gate trail survives squash-merge.
+// `gate-status:` trailer so the per-commit TDD gate trail survives squash-merge.
 // These assertions pin the shipped workflow prose in gsd-core/workflows/ship.md.
 
 const fs = require('node:fs');
@@ -89,15 +89,42 @@ function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
 }
 
-describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
+describe('feat-41: ship.md TDD Audit gate-status extraction', () => {
   const workflow = readRepoFile('gsd-core/workflows/ship.md');
 
   test('adds a "## TDD Audit" section to the generated PR body', () => {
     assert.match(workflow, /## TDD Audit/);
   });
 
-  test('extracts gate_status via Git native trailer machinery, not a raw body grep', () => {
-    assert.match(workflow, /trailers:key=gate_status/);
+  test('shipped TDD-Audit trailer token round-trips through git (#3962)', (t) => {
+    // `_` is not a valid git trailer token character, so a `gate-status:`
+    // trailer is invisible to interpret-trailers and %(trailers:key=...) -- the
+    // audit read returned empty for every commit and self-suppression hid it.
+    // Extract the token the shipped workflow actually reads, then prove REAL
+    // git can match a commit carrying that exact trailer.
+    const { createTempGitProject, cleanup } = require('./helpers.cjs');
+    const { runGit } = require('./helpers/process-seam.cjs');
+    const tokenMatch = workflow.match(/trailers:key=([A-Za-z-]+),/);
+    assert.ok(tokenMatch, 'ship.md must read %(trailers:key=<token>,...) with a simple token');
+    const token = tokenMatch[1];
+    assert.ok(!token.includes('_'),
+      `trailer token "${token}" contains "_" -- git ignores such trailers entirely (#3962)`);
+
+    const tmpDir = createTempGitProject('gsd-3962-');
+    t.after(() => cleanup(tmpDir));
+    const msg = `test(2-01): probe\n\n${token}: skill\n`;
+    const c = runGit(['commit', '--allow-empty', '-m', msg], { cwd: tmpDir });
+    assert.equal(c.outcome, 'EXITED', `probe commit must exit cleanly: ${c.stderr}`);
+    const r = runGit(
+      ['log', '-1', `--format=%(trailers:key=${token},valueonly)`],
+      { cwd: tmpDir },
+    );
+    assert.equal(r.stdout.trim(), 'skill',
+      `a commit carrying "${token}: skill" must read back as "skill" via the shipped token`);
+  });
+
+  test('extracts gate-status via Git native trailer machinery, not a raw body grep', () => {
+    assert.match(workflow, /trailers:key=gate-status/);
   });
 
   test('scopes the scan to the merge-base..HEAD range', () => {
@@ -110,8 +137,8 @@ describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
     assert.match(workflow, /--no-merges/);
   });
 
-  test('renders a Test commit / Impl commit / gate_status table', () => {
-    assert.match(workflow, /Test commit[\s\S]*Impl commit[\s\S]*gate_status/);
+  test('renders a Test commit / Impl commit / gate-status table', () => {
+    assert.match(workflow, /Test commit[\s\S]*Impl commit[\s\S]*gate-status/);
   });
 
   test('pairs conventional-commit test: rows with their impl commit', () => {
@@ -123,7 +150,7 @@ describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
     assert.match(workflow, /[Ee]scape[\s\S]{0,60}\|/);
   });
 
-  test('counts commits lacking a recognized gate_status trailer as missing', () => {
+  test('counts commits lacking a recognized gate-status trailer as missing', () => {
     assert.match(workflow, /missing/);
   });
 
@@ -134,7 +161,7 @@ describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
   test('emits the aggregate trailer in the exact, stable key order', () => {
     assert.match(
       workflow,
-      /gate_status:\s*skill=[^,]*,\s*fallback=[^,]*,\s*exempt=[^,]*,\s*missing=/,
+      /gate-status:\s*skill=[^,]*,\s*fallback=[^,]*,\s*exempt=[^,]*,\s*missing=/,
     );
   });
 
@@ -145,7 +172,7 @@ describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
 
   // ─── #2431: TDD Audit section self-suppresses when all commits are missing ─
   //
-  // The execute pipeline only writes `gate_status:` git trailers when TDD mode
+  // The execute pipeline only writes `gate-status:` git trailers when TDD mode
   // is active. Without TDD mode, every commit is `missing` and the section is
   // pure noise. The fix adds a self-suppress instruction: skip the section
   // entirely when every commit normalizes to `missing`. This is data-driven
@@ -159,16 +186,16 @@ describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
   });
 
   test('#2431: step 9 (aggregate trailer) is also gated on real values existing', () => {
-    // The aggregate gate_status trailer is the companion to the TDD Audit
-    // section; both must be skipped together when no real gate_status exists.
+    // The aggregate gate-status trailer is the companion to the TDD Audit
+    // section; both must be skipped together when no real gate-status exists.
     // `\z` is a Perl/Ruby end-of-input anchor with NO meaning in JavaScript — it
     // matched a literal `z`, so the lazy span silently stopped at the first `z`
     // whenever `**10.` was absent, truncating the captured step. `$` (no /m flag)
     // is the JS end-of-input anchor.
-    const step9 = workflow.match(/\*\*9\.\s*Aggregate gate_status trailer[\s\S]*?(?=\*\*10\.|$)/);
+    const step9 = workflow.match(/\*\*9\.\s*Aggregate gate-status trailer[\s\S]*?(?=\*\*10\.|$)/);
     assert.ok(step9, 'step 9 must exist in the workflow');
     assert.match(step9[0], /step 8|at least one|real/i,
-      'step 9 must reference step 8 or require at least one real gate_status value (#2431)');
+      'step 9 must reference step 8 or require at least one real gate-status value (#2431)');
   });
 
   test('#2431: does NOT read workflow.tdd_mode inline (ADR-857 Phase 6 compliant)', () => {
@@ -191,13 +218,13 @@ describe('feat-41: ship.md TDD Audit gate_status extraction', () => {
     assert.match(workflow, /skipping[\s\S]{0,80}(refactor|docs|chore)/i);
   });
 
-  test('normalizes the gate_status cell to a known token, never raw trailer text', () => {
+  test('normalizes the gate-status cell to a known token, never raw trailer text', () => {
     assert.match(workflow, /normaliz[a-z]*[\s\S]{0,120}missing/i);
     assert.match(workflow, /never the raw/i);
   });
 
-  test('treats a commit with multiple gate_status trailers as missing', () => {
-    assert.match(workflow, /more than one[\s\S]{0,40}gate_status/i);
+  test('treats a commit with multiple gate-status trailers as missing', () => {
+    assert.match(workflow, /more than one[\s\S]{0,40}gate-status/i);
   });
 
   test('hardens every table cell against pipe/newline injection', () => {
