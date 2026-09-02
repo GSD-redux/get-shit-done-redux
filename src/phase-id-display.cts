@@ -10,7 +10,7 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseId = require('./phase-id.cjs');
-const { parsePhaseId, renderPhaseId } = phaseId;
+const { parsePhaseId, renderMilestoneId, renderPhaseId } = phaseId;
 
 function canonicalNumeric(value: string): string {
   let offset = 0;
@@ -62,13 +62,21 @@ function renderBracketPhaseDisplay(
   }
 }
 
-/** Render only the bracket milestone label, still through parse/render. */
+/** Render only the bracket milestone label, still through canonical parsing. */
 function renderBracketMilestoneDisplay(
   milestone: unknown,
   projectCode: unknown,
 ): string | null {
-  const display = renderBracketPhaseDisplay(milestone, '00', projectCode);
-  return display === null ? null : display.slice(0, display.indexOf(' '));
+  const project = typeof projectCode === 'string' ? projectCode : '';
+  const mm = milestoneToken(milestone);
+  if (!project || mm === null) return null;
+
+  try {
+    // The sentinel phase is a validation vehicle, not a rendering artifact.
+    return renderMilestoneId(parsePhaseId(`${project}.${mm}-00`));
+  } catch {
+    return null;
+  }
 }
 
 export = {

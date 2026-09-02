@@ -19,7 +19,15 @@ const path = require('node:path');
 
 const fc = require('./helpers/fast-check-setup.cjs');
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
-const { parsePhaseId, renderPhaseId, toDir } = require('../gsd-core/bin/lib/phase-id.cjs');
+const {
+  parsePhaseId,
+  renderMilestoneId,
+  renderPhaseId,
+  toDir,
+} = require('../gsd-core/bin/lib/phase-id.cjs');
+const {
+  renderBracketMilestoneDisplay,
+} = require('../gsd-core/bin/lib/phase-id-display.cjs');
 const statusline = require('../hooks/gsd-statusline.js');
 
 const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -114,6 +122,30 @@ function legacyProject(t) {
   return cwd;
 }
 
+function malformedBracketProject(t) {
+  const cwd = createTempProject('adr-612-display-malformed-');
+  t.after(() => cleanup(cwd));
+  const planning = path.join(cwd, '.planning');
+  fs.writeFileSync(
+    path.join(planning, 'config.json'),
+    JSON.stringify({ phase_id_convention: 'bracket', project_code: 'GSD' }),
+  );
+  fs.writeFileSync(
+    path.join(planning, 'ROADMAP.md'),
+    [
+      '# Roadmap',
+      '',
+      '## [GSD.02] v2.0: Display',
+      '',
+    ].join('\n'),
+  );
+  writeState(planning);
+  const phaseDir = path.join(planning, 'phases', 'gsd.02-05.03-recovered-display-name');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  fs.writeFileSync(path.join(phaseDir, '05.03-01-PLAN.md'), '# Plan\n');
+  return cwd;
+}
+
 function runJson(command, cwd) {
   const result = runGsdTools(command, cwd);
   assert.ok(result.success, `${command} failed: ${result.error}`);
@@ -187,6 +219,44 @@ describe('#3638: canonical bracket display examples', () => {
 
     assert.match(runJson('progress table', cwd).rendered, /\| 05\.03 \| display slice \|/);
     assert.match(runJson('stats table', cwd).rendered, /\| 05\.03 \| Display Slice \|/);
+  });
+
+  test('progress recovers a malformed bracket directory name without a display_id', (t) => {
+    const output = runJson('progress json', malformedBracketProject(t));
+
+    assert.equal(output.phases.length, 1);
+    assert.deepEqual(
+      {
+        number: output.phases[0].number,
+        name: output.phases[0].name,
+        hasDisplayId: Object.hasOwn(output.phases[0], 'display_id'),
+      },
+      { number: '05.03', name: 'recovered display name', hasDisplayId: false },
+    );
+  });
+
+  test('stats recovers a malformed bracket directory name without a display_id', (t) => {
+    const output = runJson('stats json', malformedBracketProject(t));
+
+    assert.equal(output.phases.length, 1);
+    assert.deepEqual(
+      {
+        number: output.phases[0].number,
+        name: output.phases[0].name,
+        hasDisplayId: Object.hasOwn(output.phases[0], 'display_id'),
+      },
+      { number: '05.03', name: 'recovered display name', hasDisplayId: false },
+    );
+  });
+});
+
+describe('#3638: bracket milestone renderer', () => {
+  test('pins the milestone label as the shared phase-display prefix', () => {
+    const id = parsePhaseId('[GSD.02] 05.03-01');
+
+    assert.equal(renderMilestoneId(id), '[GSD.02]');
+    assert.equal(renderPhaseId(id), `${renderMilestoneId(id)} 05.03-01`);
+    assert.equal(renderBracketMilestoneDisplay('v2.0', 'GSD'), '[GSD.02]');
   });
 });
 

@@ -121,6 +121,14 @@ function bracketPhaseDirProjection(dir: string): BracketPhaseDirProjection {
   };
 }
 
+function recoverBracketPhaseName(dir: string, phaseToken: string): string {
+  const tokenBoundary = `-${phaseToken}`;
+  const tokenOffset = dir.indexOf(tokenBoundary);
+  if (tokenOffset === -1) return '';
+  const afterToken = dir.slice(tokenOffset + tokenBoundary.length).replace(/^-/, '');
+  return afterToken ? afterToken.replace(/-/g, ' ') : '';
+}
+
 interface GroupFilesBySubrepoResult {
   grouped: Record<string, string[]>;
   unmatched: string[];
@@ -2702,8 +2710,9 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
           // A malformed/tolerated directory must not suppress every later row.
           // It cannot receive a canonical display_id because parsePhaseId
           // rejected it, but the convention-aware token keeps it observable.
-          phaseNum = extractPhaseToken(dir, phaseIdConvention) || dir;
-          phaseName = '';
+          const phaseToken = extractPhaseToken(dir, phaseIdConvention);
+          phaseNum = phaseToken || dir;
+          phaseName = recoverBracketPhaseName(dir, phaseToken);
         }
       } else {
         const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
@@ -3116,8 +3125,9 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
           phaseName = projection.name;
           displayId = projection.display_id;
         } catch {
-          phaseNum = extractPhaseToken(dir, phaseIdConvention) || dir;
-          phaseName = '';
+          const phaseToken = extractPhaseToken(dir, phaseIdConvention);
+          phaseNum = phaseToken || dir;
+          phaseName = recoverBracketPhaseName(dir, phaseToken);
         }
       } else {
         // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.
