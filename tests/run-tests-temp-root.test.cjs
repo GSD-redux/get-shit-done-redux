@@ -162,5 +162,17 @@ describe('#4020 — run-tests temp root', () => {
     // The sweep may legitimately clean the root's CONTENTS between chunks; the
     // property under test is that the nested runner never rmSyncs the root ITSELF.
     assert.ok(fs.existsSync(inherited), 'the inherited root survives the nested runner\'s exit');
+    // OWNER-ONLY SWEEP: the nested runner runs while the OUTER chunk's sibling
+    // test files may be live — it must not sweep THEIR fixtures out from under
+    // them (macOS CI: template.test.cjs lost its plan file to exactly that).
+    const sibling = path.join(inherited, 'gsd-sibling-live-fixture');
+    fs.mkdirSync(sibling);
+    const r2 = runNode(
+      [RUNNER, '--files', path.basename(target)],
+      { timeoutMs: 120_000, env: { ...process.env, TMPDIR: inherited, TEMP: inherited, TMP: inherited } },
+    );
+    assert.equal(r2.exitCode, 0, `second nested runner should pass: ${r2.stderr.slice(-300)}`);
+    assert.ok(fs.existsSync(sibling),
+      'a nested runner never sweeps the shared root — sibling fixtures survive');
   });
 });

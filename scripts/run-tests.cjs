@@ -1460,14 +1460,23 @@ function main() {
       // #4020: bound peak temp usage to ONE chunk, not the whole run — sweep
       // the leaked fixture trees the chunk's tests left behind, then fail fast
       // if residue persists (a fixture nothing cleans, wedged open), before the
-      // temp filesystem fills. PROTECTED: ancestors of the runner's own selected
-      // files — a harness may stage synthetic test files under the temp root and
-      // later chunks still need them (tests/run-tests-harness.test.cjs #3597).
-      const swept = sweepRunTempRoot(runTempRoot, sweepProtectSet);
-      if (swept > 0) {
-        console.error(`run-tests: temp sweep after chunk ${i + 1}/${chunks.length} — removed ${swept} leaked entr${swept === 1 ? 'y' : 'ies'}`);
+      // temp filesystem fills. OWNER-ONLY: a nested run-tests spawn (the harness
+      // regression test) REUSES the outer run's root and runs while the outer
+      // chunk's OTHER test files are live — its sweep would delete their
+      // fixtures mid-run (macOS CI: template.test.cjs's plan file vanished and
+      // its classifier silently fell back to 'standard'). Only the process that
+      // created the root manages its lifecycle; the inheritor leaves sweeping to
+      // the owner. PROTECTED (for the owner): ancestors of the runner's own
+      // selected files — a harness may stage synthetic test files under the temp
+      // root and later chunks still need them (tests/run-tests-harness.test.cjs
+      // #3597).
+      if (createdRunTempRoot) {
+        const swept = sweepRunTempRoot(runTempRoot, sweepProtectSet);
+        if (swept > 0) {
+          console.error(`run-tests: temp sweep after chunk ${i + 1}/${chunks.length} — removed ${swept} leaked entr${swept === 1 ? 'y' : 'ies'}`);
+        }
+        assertTempRootBounded(runTempRoot);
       }
-      assertTempRootBounded(runTempRoot);
     } catch (err) {
       const elapsedMs = Number(process.hrtime.bigint() - chunkStartedAt) / 1e6;
       // When the per-chunk timeout fires, execFileSync kills the child and
