@@ -27,12 +27,12 @@ const fc = require('./helpers/fast-check-setup.cjs');
 
 const {
   createBatch,
-  loadBatch,
   computeWaves,
   resumeBatch,
   completeQuickItem,
 } = require('../gsd-core/bin/lib/quick-batch.cjs');
 const { makeFakeClock } = require('./helpers/clock.cjs');
+const { cleanup } = require('./helpers.cjs');
 
 function mkTmpProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quick-batch-prop-'));
@@ -41,7 +41,7 @@ function mkTmpProject() {
 }
 
 function cleanupDir(dir) {
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 }
 
 function stateWithQuickTasksSection() {

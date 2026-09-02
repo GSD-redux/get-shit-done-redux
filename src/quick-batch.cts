@@ -329,7 +329,7 @@ function validateDag(items: QuickBatchItemInput[]): Result<number[][]> {
   }
 
   const WHITE = 0, GRAY = 1, BLACK = 2;
-  const color: number[] = new Array(items.length).fill(WHITE);
+  const color: number[] = new Array<number>(items.length).fill(WHITE);
   const stack: number[] = [];
   let cycleDiagnostic: string | null = null;
 
@@ -568,8 +568,8 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
       client_id: typeof it.client_id === 'string' ? it.client_id : null,
       description: it.description,
       status: it.status as QuickBatchItemStatus,
-      depends_on: it.depends_on as string[],
-      planned_files: it.planned_files as string[],
+      depends_on: it.depends_on,
+      planned_files: it.planned_files,
       directory: typeof it.directory === 'string' ? it.directory : null,
       worktree: typeof it.worktree === 'string' ? it.worktree : null,
     });

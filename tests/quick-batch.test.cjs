@@ -38,7 +38,7 @@ const {
 const { auditOpenArtifacts } = require('../gsd-core/bin/lib/audit.cjs');
 const { appendQuickTaskRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { makeFakeClock } = require('./helpers/clock.cjs');
-const { runGsdTools } = require('./helpers.cjs');
+const { runGsdTools, cleanup } = require('./helpers.cjs');
 
 // ─── Shared fixtures ────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ function mkTmpProject() {
 }
 
 function cleanupDir(dir) {
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 }
 
 /** A minimal, valid "Quick Tasks Completed" STATE.md section (with-status variant). */
@@ -177,7 +177,7 @@ describe('quick-batch: task-list parsing', () => {
     try {
       const fifoPath = path.join(dir, '.planning', 'a-fifo');
       try {
-        execFileSync('mkfifo', [fifoPath], { stdio: 'ignore' });
+        execFileSync('mkfifo', [fifoPath], { stdio: 'ignore', timeout: 5000 });
       } catch {
         // Documented skip: mkfifo unavailable on this CI platform (e.g. Windows).
         return;
