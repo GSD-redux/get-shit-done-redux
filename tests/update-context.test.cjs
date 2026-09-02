@@ -19,7 +19,7 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const ROOT = path.join(__dirname, '..');
 const GSD_TOOLS = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 const { cleanup } = require('./helpers.cjs');
-const { resolveUpdateContext } = require(
+const { inferPreferredRuntime, resolveUpdateContext } = require(
   path.join(ROOT, 'gsd-core', 'bin', 'lib', 'update-context.cjs'),
 );
 
@@ -48,6 +48,10 @@ const CWD = '/work/proj';
 
 function ver(dir) { return `${dir}/gsd-core/VERSION`; }
 function marker(dir) { return `${dir}/gsd-core/workflows/update.md`; }
+
+test('unknown preferred config does not infer Claude', () => {
+  assert.equal(inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir: '/opt/unknown' }), '');
+});
 
 describe('resolveUpdateContext: scope cascade', () => {
   test('GLOBAL claude install under $HOME/.claude', () => {
