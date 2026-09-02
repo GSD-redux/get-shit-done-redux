@@ -39,9 +39,14 @@ const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 // render during it stamps the PRE-compaction reading with a CURRENT timestamp
 // (Codex review of #3808, round 3) — so "newer than the watermark" alone still
 // admits it. Everything inside this window is dropped instead. The cost is
-// bounded and benign: a healthy reading dropped here behaves identically to an
-// accepted one (it would exit above-threshold anyway), and a genuine
-// exhaustion warning is delayed by at most this window after a compact.
+// bounded: a healthy reading dropped here behaves identically to an accepted
+// one (it would exit above-threshold anyway). A genuine exhaustion reading
+// inside the window is SKIPPED, not queued — its warning and its #1974
+// breadcrumb both fire on the next reading after the window, so they are
+// delayed by at most this window when a later reading comes, and lost when
+// none does, i.e. when the session ends inside the window (review of #3808,
+// round 9). That loss is accepted over the alternative, which is trusting a
+// reading that may be the pre-compaction value under a fresh timestamp.
 const COMPACT_GRACE_SECONDS = 60;
 // How far AHEAD of this process's clock a watermark may be and still be
 // honored. PreCompact stamps it from the same clock as the reader, so the
@@ -99,6 +104,27 @@ function readEventName(data) {
 // wrote, which may be a perfectly valid sentinel; it does not reliably mean
 // "defaults on the next call". Advisory debounce bookkeeping is the right place
 // to accept that.
+// The read-side twin of writeSentinel (review of #3808, round 9). Both
+// sentinel files this hook reads — the compaction watermark and the warn
+// state — must be read the same way: lstat first so a planted link, FIFO or
+// directory is refused before any open; O_NOFOLLOW so a link raced in between
+// is refused by the kernel too (0 on Windows, where lstat already carries the
+// check); a 4096-byte bound so a planted large file cannot stall a
+// synchronous read. Rounds 4 and 7 each wrote that sequence inline at their
+// own call site, which left two copies to keep in step by hand. One place
+// now. Refusal THROWS; every caller already wraps the read in a try/catch and
+// degrades to "no file", which is the same behaviour the inline copies had.
+function readSentinel(target) {
+  const st = fs.lstatSync(target);
+  if (!st.isFile() || st.size > 4096) throw new Error('not a plain sentinel');
+  const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  try {
+    const buf = Buffer.alloc(st.size);
+    fs.readSync(fd, buf, 0, st.size, 0);
+    return buf.toString('utf8');
+  } finally { fs.closeSync(fd); }
+}
+
 function writeSentinel(target, payload) {
   try {
     try {
@@ -154,6 +180,16 @@ process.stdin.on('end', () => {
     // docs/context-monitor.md, "PreCompact reset". Constraints the code itself
     // must keep are stated at their lines below.
     if (readEventName(data) === 'PreCompact') {
+      // ORDERING ASSUMPTION, stated rather than enforced (review of #3808,
+      // round 9): this reset and the debounce writeSentinel(warnPath) further
+      // down are two writers to the same file, and nothing here serialises
+      // them. A debounce invocation that read the pre-compaction state and
+      // lands its write AFTER this unlink would resurrect exactly the stale
+      // sentinel this block removes. The hook relies on the host dispatching a
+      // session's hooks one at a time, which Claude Code does; the other
+      // runtimes this hook is installed for are assumed to, and that is not
+      // tested. A lock file would close it at the cost of a second file to
+      // harden on every platform; not taken here.
       // BOTH files: with the sentinel gone but the bridge still holding the
       // pre-compaction reading (fresh for STALE_SECONDS), the next PostToolUse
       // would fire a spurious CRITICAL off a context the compaction just freed
@@ -274,16 +310,7 @@ process.stdin.on('end', () => {
     // sentinel path uses, plus a size bound, applied to the file this PR adds.
     // Every refusal degrades to "no watermark", never throws.
     try {
-      const st = fs.lstatSync(watermarkPath);
-      if (!st.isFile() || st.size > 4096) throw new Error('not a plain watermark');
-      const wfd = fs.openSync(watermarkPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-      let raw;
-      try {
-        const buf = Buffer.alloc(st.size);
-        fs.readSync(wfd, buf, 0, st.size, 0);
-        raw = buf.toString('utf8');
-      } finally { fs.closeSync(wfd); }
-      const watermark = JSON.parse(raw);
+      const watermark = JSON.parse(readSentinel(watermarkPath));
       if (
         watermark && typeof watermark.at === 'number'
         && watermark.at <= now + WATERMARK_SKEW_SECONDS
@@ -331,16 +358,7 @@ process.stdin.on('end', () => {
     // refusal degrades to the default warnData this catch already produces,
     // so a normal regular file behaves exactly as before.
     try {
-      const st = fs.lstatSync(warnPath);
-      if (!st.isFile() || st.size > 4096) throw new Error('not a plain sentinel');
-      const rfd = fs.openSync(warnPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-      let raw;
-      try {
-        const buf = Buffer.alloc(st.size);
-        fs.readSync(rfd, buf, 0, st.size, 0);
-        raw = buf.toString('utf8');
-      } finally { fs.closeSync(rfd); }
-      warnData = JSON.parse(raw);
+      warnData = JSON.parse(readSentinel(warnPath));
       firstWarn = false;
     } catch (e) {
       // Missing or corrupted sentinel → firstWarn stays true, warnData stays at defaults
