@@ -1081,30 +1081,52 @@ EOF
     assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0, 'non-vacuity: canonical form still resolves');
   });
 
-  test('an option NAME built by a command substitution is unresolvable (round 8)', () => {
-    // Stripping `$` collapses the dollar-QUOTE forms onto their literals, but
-    // `--clean$(printf up)=verbatim` is a different thing: bash RUNS a program to
-    // finish the option name, so the argv git receives is not derivable from this
-    // string at all. Measured accepting a 75-byte subject recorded as 72.
-    assert.strictEqual(
-      runHookCmd(`git commit --allow-empty -m ${HD_LONG_DIRTY} --clean$(printf up)=verbatim`).status, 2,
-      'an option name finished by running a program cannot be read off the command line');
-    assert.strictEqual(runHookCmd(`git commit -$(printf m) WIP -m ${HD_OK}`).status, 2,
-      'the same applies to a short option name');
+  test('an option NAME carrying a shell expansion is unresolvable (round 9)', () => {
+    // Rounds 6-8 each tried to EMULATE what bash does to an argument before git
+    // sees it -- remove quotes, then backslashes, then the `$` of a dollar-quote
+    // -- and review found another missed transform every time. Round 9 found
+    // four more, all measured accepting `WIP` as the real subject on bash 3.2.57
+    // and 5.3.15 while the plain spelling of the same command is refused.
+    //
+    // The last two settle the strategy: an option name finished by a PARAMETER
+    // expansion depends on a variable's runtime value, and one finished by a
+    // PATHNAME expansion depends on the contents of the working directory.
+    // Neither is derivable from the command string at all, so the rule is no
+    // longer "normalise and match the literal" but "an option NAME carrying a
+    // shell expansion or quoting construct is unresolvable, and unresolvable
+    // refuses" -- which covers the spellings nobody has thought of yet.
+    for (const [label, cmd] of [
+      ['$() substitution', `git commit --allow-empty -m ${HD_LONG_DIRTY} --clean$(printf up)=verbatim`],
+      ['backtick substitution', 'git commit --allow-empty -m ' + HD_LONG_DIRTY + ' --clean`printf up`=verbatim'],
+      ['ANSI-C octal escape', `git commit --allow-empty -$'\\155' WIP -m ${HD_OK}`],
+      ['ANSI-C hex escape', `git commit --allow-empty -$'\\x6d' WIP -m ${HD_OK}`],
+      ['parameter expansion', `x= git commit --allow-empty -\${x}m WIP -m ${HD_OK}`],
+      ['pathname expansion', `git commit --allow-empty -? WIP -m ${HD_OK}`],
+      ['short-option substitution', `git commit -$(printf m) WIP -m ${HD_OK}`],
+    ]) {
+      assert.strictEqual(runHookCmd(cmd).status, 2,
+        `${label}: an option name the shell finishes cannot be read off the command line, so the `
+        + 'later heredoc must not be resolved and measured as though it were the subject');
+    }
 
-    // SCOPE, in both directions. The class is a `-`-leading token whose characters
-    // up to the substitution contain no `=` — an option NAME being assembled. A
-    // substitution in the VALUE is something this file never models and must stay
-    // allowed, or the guard refuses the ordinary `--author="$(git config …)"`
-    // idiom. Without these rows the assertions above would also pass for a guard
-    // that simply refuses every `$(`.
+    // SCOPE, in both directions. The class is a `-`-leading token whose
+    // characters up to the construct contain no `=` -- an option NAME being
+    // assembled. A construct in the VALUE is something this file never models
+    // and must stay allowed, or the guard refuses the ordinary
+    // `--author="$(git config user.name)"` idiom. Without these rows the
+    // assertions above would also pass for a guard that refuses every `$`.
     for (const [label, cmd] of [
       ['spaced value', `git commit --author "$(git config user.name)" -m ${HD_OK}`],
       ['glued value', `git commit --author="$(git config user.name)" -m ${HD_OK}`],
+      ['backtick value', 'git commit --author="`git config user.name`" -m ' + HD_OK],
+      ['parameter expansion value', `git commit --date="\${NOW}" -m ${HD_OK}`],
+      ['glob character in a value', `git commit --author="a*b <x@y.z>" -m ${HD_OK}`],
       ['value in the suffix window', `git commit -m ${HD_OK} --author="$(id -un)"`],
+      ['pathspec after --', `git commit -m ${HD_OK} -- src/*.js`],
     ]) {
       assert.strictEqual(runHookCmd(cmd).status, 0,
-        `${label}: a substitution AFTER the \`=\` builds an option value, not an option name`);
+        `${label}: a construct in an option VALUE, or outside an option name entirely, is not an `
+        + 'option name being assembled and must still resolve');
     }
   });
 

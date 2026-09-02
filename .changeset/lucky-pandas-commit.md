@@ -11,14 +11,23 @@ abbreviated spellings of it (`--cle=verbatim` and anything else that is an unamb
 a message argument claimed by a bundled short option, since git reads `-am 'first'` as `-a -m` and
 takes that first message as the subject; a `cat` reached by anything but a canonical system path (`cat`, `/bin/cat`, `/usr/bin/cat`), since an arbitrary executable merely named `cat` is not known to echo its stdin; a substitution composed with more text on either side of the terminator; and a `"` inside the subject line itself, which the quote-bounded capture cannot span.
 
-Option names are matched against the command with the three things bash removes before git sees
-an argument taken out of it: quote characters, syntactic backslashes, and the `$` that introduces
-a dollar-quote. A spliced spelling like `--clean""up=verbatim`, `-""m`, `--clean\up=verbatim`,
-`-\m`, `-$"m"` or `--mes$'sage'=WIP` is therefore recognised as the option it actually is rather
-than slipping past a literal match. Where an option NAME is finished by a command substitution
-instead — `--clean$(printf up)=verbatim` — the argv git receives cannot be derived from the
-command line at all, so resolution is refused rather than guessed; a substitution supplying an
-option VALUE, as in the ordinary `--author="$(git config user.name)"`, is unaffected. A message option is also recognised when its value is attached (`-mWIP`,
+Option names are handled in two layers, because trying to reproduce bash's argument processing
+by itself does not terminate. The first layer normalises the removals that are deterministic —
+quote characters, syntactic backslashes, and the `$` that introduces a dollar-quote — so a spliced
+spelling like `--clean""up=verbatim`, `-""m`, `--clean\up=verbatim`, `-\m`, `-$"m"` or
+`--mes$'sage'=WIP` is recognised as the option it actually is rather than slipping past a literal
+match.
+
+The second layer is the general rule, and it is what the guarantee rests on: **an option NAME
+carrying a shell expansion or quoting construct is unresolvable, and unresolvable refuses.** A
+name finished by a command substitution in either spelling (`--clean$(printf up)=verbatim`,
+``--clean`printf up`=verbatim``), by an ANSI-C escape (`-$'\155'`, `-$'\x6d'`), by a parameter
+expansion (`-${x}m`), or by a pathname expansion (`-?` where a file named `-m` exists) does not
+resolve. The last two are the reason the rule is framed this way rather than as a longer list of
+removals: a parameter expansion depends on a variable's value at run time and a pathname expansion
+on the contents of the working directory, so neither is derivable from the command text at all.
+The scope is the NAME — a construct supplying a VALUE, as in the ordinary
+`--author="$(git config user.name)"`, is unaffected and still resolves. A message option is also recognised when its value is attached (`-mWIP`,
 which git reads as `-m WIP`) and when its name is abbreviated (`--mes=WIP`), and a newline is
 treated as a command separator alongside `;`, `&` and `|`, so a later command's `-m` is never
 mistaken for this commit's message. Where more than one `cleanup` directive appears, resolution

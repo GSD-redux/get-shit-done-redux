@@ -303,7 +303,46 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # This is a SHAPE, not a segmentation: it never tries to decide where
       # git's own command ends. Two attempts at that were reverted for opening
       # accept-direction holes, and the reasoning above still stands.
-      SUBST_NAME_CLASS='(^|[[:space:]])-[^[:space:]=]*[$]\('
+      # WIDENED, and the strategy changed with it (independent review, round 9).
+      # The `$(`-only spelling above was the fourth patch in a row that tried to
+      # EMULATE what bash does to an argument before git sees it -- round 6
+      # removed quotes, round 7 backslashes, round 8 the `$` of a dollar-quote,
+      # and each time review found another transform that had been missed. Round
+      # 9 found four more, all measured accepting `WIP` as the real subject on
+      # bash 3.2.57 and 5.3.15 while the plain spelling of the same command is
+      # refused:
+      #
+      #     -$'\155' WIP        ANSI-C octal escape decodes to `m`
+      #     -$'\x6d' WIP        ANSI-C hex escape decodes to `m`
+      #     -`printf m` WIP     command substitution, backtick spelling
+      #     x= … -${x}m WIP     parameter expansion
+      #     -? WIP              pathname expansion, with a file named `-m`
+      #
+      # The last two settle the strategy: an option name finished by a PARAMETER
+      # expansion depends on a variable's runtime value, and one finished by a
+      # PATHNAME expansion depends on the contents of the working directory.
+      # Neither is derivable from the command string at any level of effort, so
+      # emulation cannot be completed -- not "has not been completed yet".
+      #
+      # So the rule is no longer "normalise it and match the literal". It is: an
+      # option NAME containing a shell expansion or quoting construct is
+      # UNRESOLVABLE, and unresolvable refuses. One rule covers every spelling
+      # above, and every spelling nobody has thought of yet, in the fail-closed
+      # direction. The dequoting passes above are kept: they still normalise the
+      # deterministic removals so the guards RECOGNISE `--clean""up=` and `-\m`
+      # rather than merely refusing them, which keeps the existing rows honest.
+      #
+      # SCOPED TO THE NAME, NOT THE VALUE, exactly as before: the class is a
+      # `-`-leading token whose characters up to the substitution contain no `=`.
+      # `--author="$(git config user.name)"` and `--author "$(…)"` put the
+      # construct in the VALUE and still resolve, pinned in both directions.
+      # Scanned on the RAW windows, because the dequoted copies have had `$` and
+      # the quote characters removed and the shape is no longer visible there.
+      #
+      # The class is bracket-only and holds no backslash, per round 8: a POSIX
+      # bracket expression has no escape mechanism, and a backslash written
+      # inside one becomes a literal member on bash 3.2.
+      SUBST_NAME_CLASS='(^|[[:space:]])-[^[:space:]=]*[$`?*[]'
       if [[ "$MSG_PREFIX" =~ $SUBST_NAME_CLASS ]] \
         || [[ "$MSG_SUFFIX" =~ $SUBST_NAME_CLASS ]]; then RESOLVE=0; fi
       SEP_CLASS='[;&|]'
