@@ -5188,6 +5188,16 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       );
     });
 
+    test('boundary: cap declaring an execute:wave:pre step is accepted against real getWiredKinds(ROOT) (#4148)', () => {
+      const cap = makeCapWithStep('execute:wave:pre');
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const errs = validateHooksWired(cap, getWiredKinds(ROOT));
+      assert.deepEqual(
+        errs, [],
+        `execute:wave:pre must dispatch step hooks before executor spawning. Errors: ${errs.join('; ')}`,
+      );
+    });
+
     // ─── #3866: the verify lane must be open to every hook kind ────────────────
     //
     // verify-work.md's verify_pre_hooks step historically dispatched only
