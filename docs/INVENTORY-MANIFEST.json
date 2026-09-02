@@ -379,6 +379,7 @@
       "external-job.cjs",
       "fallow-runner.cjs",
       "federated-config.cjs",
+      "file-overlap-partitioner.cjs",
       "frontmatter.cjs",
       "gap-checker.cjs",
       "gate-predicate-evaluator.cjs",
