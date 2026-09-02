@@ -89,7 +89,7 @@ UPDATE_TARGET_UNRESOLVED
 
 GSD could not resolve an installed update target. No update was performed.
 
-Rerun from a valid installed runtime: `/gsd-update`. For a fresh installation, run `npx -y --package=@opengsd/gsd-core@{TAG} -- gsd-core --global`.
+Rerun from a valid installed runtime: `/gsd-update`. For a fresh installation, run `npx -y --package=@opengsd/gsd-core@latest -- gsd-core --global`.
 ```
 
 Exit.

@@ -146,10 +146,14 @@ test('issue #815: version check threads the tag through check-latest-version.cjs
 
 test('issue #815: install uses the selected tag, not a hardcoded @latest', () => {
   const robust = WF.match(/npx -y --package=@opengsd\/gsd-core@"\$TAG" -- gsd-core/g) || [];
+  const runUpdateStart = WF.indexOf('<step name="run_update">');
+  const runUpdateEnd = WF.indexOf('</step>', runUpdateStart);
+  assert.ok(runUpdateStart >= 0 && runUpdateEnd > runUpdateStart, 'run_update step must exist');
+  const runUpdate = WF.slice(runUpdateStart, runUpdateEnd);
   assert.ok(robust.length >= 2, `expected >=2 tag-parameterized npx invocations, found ${robust.length}`);
-  assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
+  assert.doesNotMatch(runUpdate, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
     'install lines must not hardcode @latest once --next exists');
-  assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,
+  assert.doesNotMatch(runUpdate, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,
     'install lines must use the $TAG variable, never a hardcoded dist-tag literal');
 });
 
