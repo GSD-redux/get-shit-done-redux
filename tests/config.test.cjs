@@ -2467,7 +2467,10 @@ describe('bug #3212 execute-phase stall detection and safe resume', () => {
     const workflow = read('gsd-core/workflows/execute-phase.md');
 
     assert.match(workflow, /<step name="safe_resume_gate"/, 'execute-phase must define a safe_resume_gate step');
-    assert.match(workflow, /git log --oneline --grep="\$\{CURRENT_PLAN_ID\}"/, 'safe resume gate must check commits for the current plan id');
+    // #4003: the gate greps an anchored, zero-pad-tolerant scope regex derived from the
+    // current plan id (a bare padded substring matched other milestones' plans).
+    assert.match(workflow, /PLAN_SCOPE_RE="\^\[a-z\]\+\\\(\(0\*\$\{PHASE_N\}\)-\(0\*\$\{PLAN_N\}\)\\\):"/, 'safe resume gate must derive an anchored plan-scope regex');
+    assert.match(workflow, /--grep="\$\{PLAN_SCOPE_RE\}"/, 'safe resume gate must check commits for the current plan id');
     assert.match(workflow, /SUMMARY.md is missing/, 'safe resume gate must detect production commits with missing SUMMARY.md');
     assert.match(workflow, /close out manually/, 'safe resume gate must offer manual close-out recovery');
     assert.match(workflow, /re-execute from scratch/, 'safe resume gate must offer re-execute recovery');
