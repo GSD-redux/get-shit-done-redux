@@ -53,7 +53,9 @@ Parse `$QB_PARSE_JSON` for `jobs` (`"auto"` or an integer), `validate` (bool), `
 Extract the raw task-list text / `--file <path>` from `$ARGUMENTS` (everything that is not `--jobs <v>`, `--validate`, `--research`, `--resume <id>`, or `--file <path>`'s own flag pair).
 
 ```bash
-INIT=$(gsd_run query init.quick-batch $([ "$VALIDATE_MODE" = true ] && echo --validate) $([ "$RESEARCH_MODE" = true ] && echo --research))
+VALIDATE_PARAM=""; if [ "$VALIDATE_MODE" = true ]; then VALIDATE_PARAM="--validate"; fi
+RESEARCH_PARAM=""; if [ "$RESEARCH_MODE" = true ]; then RESEARCH_PARAM="--research"; fi
+INIT=$(gsd_run query init.quick-batch $VALIDATE_PARAM $RESEARCH_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS_PLANNER=$(gsd_run query agent-skills gsd-planner)
 AGENT_SKILLS_EXECUTOR=$(gsd_run query agent-skills gsd-executor)
@@ -63,6 +65,10 @@ AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)
 ```
 
 Parse `$INIT` for: `planner_model`, `executor_model`, `checker_model`, `verifier_model`, `researcher_model`, `commit_docs`, `quick_dir`, `quick_batches_dir`, `roadmap_exists`, `planning_exists`.
+
+<!-- #2517 model-omit-on-inherit -->
+
+> **Model omission (#2517).** Every `Agent()` dispatch below (planner, researcher, plan-checker, executor, verifier) MUST omit the `model` parameter entirely when the value it would carry (`planner_model`, `checker_model`, `executor_model`, `verifier_model`, `researcher_model`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes, where the installer writes `resolve_model_ids:"omit"`. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
 
 ```bash
 STATE_PATH="${quick_dir%/quick}/STATE.md"

@@ -5,7 +5,7 @@ argument-hint: ""
 allowed-tools:
   - Read
   - Skill
-requires: [discuss-phase, spec-phase, plan-phase, execute-phase, verify-work, phase, progress, next, ultraplan-phase, plan-review-convergence, add-tests, ai-integration-phase, autonomous, fast, mvp-phase, quick]
+requires: [discuss-phase, spec-phase, plan-phase, execute-phase, verify-work, phase, progress, next, ultraplan-phase, plan-review-convergence, add-tests, ai-integration-phase, autonomous, fast, mvp-phase, quick, quick-batch]
 ---
 
 Route to the appropriate phase-pipeline skill based on the user's intent.
@@ -33,5 +33,6 @@ workflow-advance command.
 | Execute a trivial task inline | gsd-fast |
 | Plan a phase as a vertical MVP slice | gsd-mvp-phase |
 | Execute a quick task with GSD guarantees | gsd-quick |
+| Batch several quick-shaped tasks together | gsd-quick-batch |
 
 Invoke the matched skill directly using the Skill tool.
