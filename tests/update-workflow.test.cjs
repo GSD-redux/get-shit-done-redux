@@ -57,7 +57,7 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.match(step, /GSD_DIR=""/);
     assert.match(step, /INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty/);
     assert.match(step, /rerun from a valid installed runtime/i);
-    assert.match(step, /npx -y --package=@opengsd\/gsd-core@\{TAG\} -- gsd-core --global/);
+    assert.match(step, /npx -y --package=@opengsd\/gsd-core@latest -- gsd-core --global/);
     assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
 
     const mutationSpies = [
