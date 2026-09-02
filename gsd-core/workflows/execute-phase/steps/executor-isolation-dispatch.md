@@ -161,6 +161,12 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #      no host subagent machinery, so the role definition must ride the prompt
 #      (#3637 acceptance: resolved agent instructions as launch-level
 #      instructions + provenance of which role definition was used).
+#   4. Read the selected PLAN.md at `${PROJECT_ROOT}/{phase_dir}/{plan_file}`.
+#      Set `PLAN_TDD_CONTEXT=true` only when YAML frontmatter has `type: tdd`
+#      or a task opening tag has `tdd="true"`; prose examples do not qualify.
+#      Halt if that PLAN.md cannot be read, or if `PLAN_TDD_CONTEXT=true` and
+#      `tdd.md` cannot be read. The conditional canonical tdd.md entry below
+#      must be included only when `PLAN_TDD_CONTEXT=true`.
 EXECUTOR_PROMPT='<objective>
 Execute plan {plan_number} of phase {phase_number}-{phase_name}.
 Commit each task atomically. Create SUMMARY.md.
@@ -181,7 +187,7 @@ the executor workflow from repository search.
   SUMMARY commit semantics and the gitignored-planning skip contract)
 - summary.md template
 - checkpoints.md
-- tdd.md
+${PLAN_TDD_CONTEXT:+- tdd.md}
 - worktree-path-safety.md
 - agents/gsd-executor.md (the ROLE DEFINITION you are executing — its steps
   0/0a/0b per-commit HEAD/cwd-drift/path-guard discipline applies to every
@@ -316,4 +322,3 @@ The executor never touches `STATE.md`/`ROADMAP.md`, and that guard needs no new 
 Merge-back, validation, and cleanup are the **existing** gauntlet, unchanged: the serialized `worktree.cleanup-wave` merge loop that stops the wave and retains the worktree on conflict, and manifest-only cleanup (never glob-inferred). Because the manifest shape is identical, the orchestrator path reuses it verbatim.
 
 > **Declared-scope conformance (#2596):** ADR-1239 specifies that *both* isolation adapters route their merge through a check that each plan branch's committed diff stayed inside its declared `files_modified` scope. That check now exists, advisory-first, and is wired into **both** paths: this one passes `--files "$PLAN_FILES"` to `worktree create` above, the harness path passes it to `worktree record-agent`, and `cleanup-wave` runs the one comparison for both. A path outside the declared scope is reported in the result's `warnings` array; it does not block the merge. Promotion to a hard gate is a separate, disclosed change.
-

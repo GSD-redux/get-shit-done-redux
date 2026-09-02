@@ -29,7 +29,21 @@ function composerSource(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
-function assertConditionalComposer(source, name) {
+function compositionScope(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start);
+  assert.ok(start !== -1 && end !== -1, 'executor prompt composition bounds must exist');
+  return source.slice(start, end);
+}
+
+function composePrompt(scope, plan) {
+  const marker = /\$\{PLAN_TDD_CONTEXT(?:\s*\?[^}]*|:\+[^}]*)\}/;
+  assert.match(scope, marker, 'prompt must contain one conditional canonical-reference entry');
+  return scope.replace(marker, planNeedsTddContext(plan) ? fs.readFileSync(TDD_REFERENCE, 'utf8') : '');
+}
+
+function assertConditionalComposer(source, name, startMarker, endMarker) {
+  source = compositionScope(source, startMarker, endMarker);
   assert.match(source, /selected PLAN\.md|selected plan/i, `${name} must inspect the selected plan at compose time`);
   assert.match(source, /frontmatter[^\n]*type:\s*tdd|type:\\s\*tdd/i, `${name} must include dedicated TDD plans`);
   assert.match(source, /<task\\b[^\n]*tdd=\\"true\\"|task opening tag[^\n]*tdd="true"/i, `${name} must include mixed TDD plans`);
@@ -46,8 +60,18 @@ describe('conditional canonical TDD executor context', () => {
   });
 
   test('both dispatch backends conditionally compose the canonical reference from the selected plan', () => {
-    assertConditionalComposer(composerSource(HARNESS), 'harness-worktree prompt');
-    assertConditionalComposer(composerSource(WORKTREE), 'orchestrator-worktree prompt');
+    const backends = [
+      ['harness-worktree prompt', composerSource(HARNESS), 'subagent_type="{EXECUTOR_TYPE}"', 'After each `Agent()` returns'],
+      ['orchestrator-worktree prompt', composerSource(WORKTREE), 'First build the executor prompt', 'Then create the worktree'],
+    ];
+    for (const [name, source, start, end] of backends) {
+      assertConditionalComposer(source, name, start, end);
+      const scope = compositionScope(source, start, end);
+      for (const [fixtureName, plan] of Object.entries(fixtures)) {
+        const cycleCount = (composePrompt(scope, plan).match(/\*\*RED - Write failing test:\*\*/g) ?? []).length;
+        assert.equal(cycleCount, fixtureName === 'nonTdd' ? 0 : 1, `${name} ${fixtureName} cycle count`);
+      }
+    }
   });
 
   test('tdd.md is the only shipped owner of the complete RED/GREEN/REFACTOR procedure', () => {

@@ -395,30 +395,7 @@ If spawned as continuation agent (`<completed_tasks>` in prompt):
 </continuation_handling>
 
 <tdd_execution>
-When executing task with `tdd="true"`:
-
-**1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
-
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run (MUST fail), commit: `test({phase}-{plan}): add failing test for [feature]`
-
-**3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
-
-**4. REFACTOR (if needed):** Clean up, run tests (MUST still pass), commit only if changes: `refactor({phase}-{plan}): clean up [feature]`
-
-**Error handling:** RED doesn't fail ��� investigate. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
-
-## Plan-Level TDD Gate Enforcement (type: tdd plans)
-
-When the plan frontmatter has `type: tdd`, the entire plan follows the RED/GREEN/REFACTOR cycle as a single feature. Gate sequence is mandatory:
-
-**Fail-fast rule:** If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
-
-**Gate sequence validation:** After completing the plan, verify in git log:
-1. A `test(...)` commit exists (RED gate)
-2. A `feat(...)` commit exists after it (GREEN gate)
-3. Optionally a `refactor(...)` commit exists after GREEN (REFACTOR gate)
-
-If RED or GREEN gate commits are missing, add a warning to SUMMARY.md under a `## TDD Gate Compliance` section.
+For a task with `tdd="true"`, or for an entire plan with frontmatter `type: tdd`, follow the canonical TDD procedure in `gsd-core/references/tdd.md`. Read that reference before starting the applicable task or plan.
 </tdd_execution>
 
 ## MVP+TDD Gate

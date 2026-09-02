@@ -289,16 +289,7 @@ End with: **Total deviations:** N auto-fixed (breakdown). **Impact:** assessment
 <tdd_plan_execution>
 ## TDD Execution
 
-For `type: tdd` plans — RED-GREEN-REFACTOR:
-
-1. **Infrastructure** (first TDD plan only): detect project, install framework, config, verify empty suite
-2. **RED:** Read `<behavior>` → failing test(s) → run (MUST fail) → commit: `test({phase}-{plan}): add failing test for [feature]`
-3. **GREEN:** Read `<implementation>` → minimal code → run (MUST pass) → commit: `feat({phase}-{plan}): implement [feature]`
-4. **REFACTOR:** Clean up → tests MUST pass → commit: `refactor({phase}-{plan}): clean up [feature]`
-
-Errors: RED doesn't fail → investigate test/existing feature. GREEN doesn't pass → debug, iterate. REFACTOR breaks → undo.
-
-See `~/.claude/gsd-core/references/tdd.md` for structure.
+For `type: tdd` plans and tasks with `tdd="true"`, read and follow the canonical procedure in `~/.claude/gsd-core/references/tdd.md`.
 </tdd_plan_execution>
 
 <precommit_failure_handling>
