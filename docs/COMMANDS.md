@@ -733,13 +733,14 @@ node gsd-tools.cjs task resolve-content --plan .planning/phases/03-name/03-1-PLA
 ### `task red-evidence-verdict --task-file <path> --trailer <json> --changed-files <paths> --raw`
 
 Judges a RED commit's `red-evidence:` trailer against the task's `<red_contract>` declaration.
-Pure evaluation — never throws, never invokes a resolver. Called by the MVP+TDD gate in
+The evaluator itself never throws; it returns `red_commit_not_failing` on any malformed or
+ambiguous input. Called by the MVP+TDD gate in
 `execute-phase.md`'s per-task loop. See the RED Predicate in
 [`gsd-core/references/tdd.md`](../gsd-core/references/tdd.md).
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--task-file` | **Yes** | Path to the task file (or task element) carrying the `<red_contract>` declaration |
+| `--task-file` | **Yes** | Path to the regular task file carrying the `<red_contract>` declaration |
 | `--trailer` | **Yes** | The RED commit's raw `red-evidence:` trailer text (or its JSON payload) |
 | `--changed-files` | **Yes** | Newline-delimited paths from `git show --name-only` on the RED commit |
 | `--raw` | No | Machine-readable JSON output |
