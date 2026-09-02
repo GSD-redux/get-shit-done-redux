@@ -38,15 +38,17 @@ function parseGateContract(content) {
     // TDD_MODE re-couples a discipline gate to a product-scope flag and makes
     // workflow.tdd_mode=true silently inert on non-MVP phases.
     hasTddOnlyGateCondition: lines.some(line => /\$TDD_MODE.{0,40}=.{0,20}"true"/.test(line) && !/MVP_MODE/.test(line)),
-    hasNoMvpTddConjunct: !lines.some(line => /MVP_MODE/.test(line) && /TDD_MODE/.test(line) && /(if|&&|and)/i.test(line)),
+    // Scoped to shell-condition lines only — explanatory prose legitimately
+    // mentions both flags on one line.
+    hasNoMvpTddConjunct: !lines.some(line =>
+      (/if \[|\] &&|&& \[/.test(line)) && /MVP_MODE/.test(line) && /TDD_MODE/.test(line)),
     hasTddOnlyEscalation: !/mvp_mode\s*(=|&&|and)/i.test((content.split('tdd review escalation')[1] || '') ),
     hasGateLabel: lowerLines.some(line => line.includes('mvp+tdd gate') || line.includes('mvp-tdd gate') || line.includes('tdd gate')),
     hasRedCommitRule: lowerLines.some(line => line.includes('failing-test commit') || line.includes('missing red commit') || line.includes('test(')),
     // Must assert the REAL refusal semantics, not merely the words "blocking" + "mvp+tdd"
     // (which "advisory (blocking: false) ... under MVP+TDD" would satisfy as a false green).
     hasBlockingEscalation:
-      content.toLowerCase().includes('mvp+tdd')
-      && (content.toLowerCase().includes('refuse to mark the phase complete')
+      (content.toLowerCase().includes('refuse to mark the phase complete')
         || content.toLowerCase().includes('phase blocked')),
     hasReferenceDoc: lowerLines.some(line => line.includes('execute-mvp-tdd.md')),
     // Must NOT have an unconditional "proceed regardless of gate results" that overrides the block.
