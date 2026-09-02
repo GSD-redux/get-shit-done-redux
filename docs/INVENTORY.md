@@ -381,7 +381,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `executor-examples.md` | Worked examples for the gsd-executor agent. |
 | `plan-checker-examples.md` | Worked example for the gsd-plan-checker agent (Scope Exceeded), moved out of the inline `<examples>` block to keep worked examples structurally separate from the agent contract, matching the other agents' reference layout. `@`-inlined at load (eager), so this costs ~0.6 KB of runtime context versus keeping it inline — a readability trade, not a size-cap remedy (#3724). |
 | `doc-conflict-engine.md` | Shared conflict-detection contract for ingest/import workflows. |
-| `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under MVP+TDD — pre-task failing-test verification, end-of-phase blocking review. |
+| `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under TDD mode — pre-task failing-test verification, end-of-phase blocking review. |
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
 | `verify-mvp-mode.md` | UAT framing rules for MVP-mode phases — user-flow-first ordering, deferred technical checks, user-story-format guard. |
 

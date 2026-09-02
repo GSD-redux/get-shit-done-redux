@@ -194,15 +194,14 @@ Offer these recovery options:
 - `mark-and-skip` — record the anomaly and move on only with explicit confirmation.
 </step>
 
-**MVP+TDD gate.** Task-scoped enforcement runs inside plan execution (immediately before each implementation step), where `TASK_FILE`, `PLAN_ID`, and `TASK_ID` are defined. Keep the same predicate and RED-commit contract:
+**TDD gate.** Task-scoped enforcement runs inside plan execution (immediately before each implementation step), where `TASK_FILE`, `PLAN_ID`, and `TASK_ID` are defined. #4011: keys on `TDD_MODE` alone — coupling to `MVP_MODE` left this inert on non-MVP phases, contradicting `gsd-core/references/tdd.md`'s contract that `workflow.tdd_mode` binds every `type: tdd` plan. Same predicate and RED-commit contract:
 ```bash
-if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
+if [ "$TDD_MODE" = "true" ]; then
   IS_BEHAVIOR_ADDING=$(gsd_run query task.is-behavior-adding "$TASK_FILE" --pick is_behavior_adding)
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
     BASE_BRANCH=$(gsd_run query git.base-branch 2>/dev/null || echo "")
     RED_RANGE=""
-    # Prefer origin/<base>: a stale local base widens the range (see
-    # gsd-core/references/tdd.md).
+    # origin/<base> avoids a stale local base
     if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="origin/${BASE_BRANCH}..HEAD"
     elif [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "${BASE_BRANCH}" >/dev/null 2>&1; then
@@ -210,31 +209,30 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
     fi
     if [ -z "$RED_RANGE" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      echo "MVP+TDD GATE TRIPPED: cannot_resolve_base_branch for ${PLAN_ID}/${TASK_ID}"
+      echo "TDD GATE TRIPPED: cannot_resolve_base_branch for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
 TAB=$(printf '\t')
-    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject; newest
-    # SUBJECT match wins, trailer judged AFTER (see gsd-core/references/tdd.md).
+    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject; newest subject wins, trailer judged after.
     RED_RECORD=$(git log "$RED_RANGE" --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
       | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]*${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
     RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1)
     if [ -z "$RED_SHA" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      echo "MVP+TDD GATE TRIPPED: missing_red_commit for ${PLAN_ID}/${TASK_ID}"
+      echo "TDD GATE TRIPPED: missing_red_commit for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
     RED_TRAILER=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f2)
     if [ -z "$RED_TRAILER" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      echo "MVP+TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
+      echo "TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
-    # quotePath=false: escapes non-ASCII paths (#3770 G9).
+    # quotePath=false escapes non-ASCII paths
     RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --changed-files "$(git -c core.quotePath=false show --name-only --format= "$RED_SHA")" --pick verdict) || exit 1
     if [ "$RED_VERDICT" != "authorize" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      echo "MVP+TDD GATE TRIPPED: ${RED_VERDICT} for ${PLAN_ID}/${TASK_ID}"
+      echo "TDD GATE TRIPPED: ${RED_VERDICT} for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
   fi
@@ -1277,16 +1275,16 @@ CHECK_EXIT=$?
 
 **Gate evaluation** uses the same two-step contract as `execute:wave:post` above.
 
-**TDD review escalation (overrides the advisory default for the `tdd.review-checkpoint` gate only).** The tdd `execute:post` gate is declared `blocking: false`, so by the generic contract above it displays its `message`/table and continues. There is ONE documented exception (see `~/.claude/gsd-core/references/execute-mvp-tdd.md`): when `MVP_MODE=true` AND `TDD_MODE=true` AND `GATE_RESULT.block == true` (one or more TDD plans miss a RED or GREEN gate commit), the end-of-phase TDD review escalates from advisory to **blocking under MVP+TDD** — refuse to mark the phase complete and present:
+**TDD review escalation (overrides the advisory default for the `tdd.review-checkpoint` gate only).** The tdd `execute:post` gate is declared `blocking: false`, so by the generic contract above it displays its `message`/table and continues. There is ONE documented exception (see `~/.claude/gsd-core/references/execute-mvp-tdd.md`): when `TDD_MODE=true` AND `GATE_RESULT.block == true` (one or more TDD plans miss a RED or GREEN gate commit; #4011 — no MVP condition), the end-of-phase TDD review escalates from advisory to **blocking under TDD** — refuse to mark the phase complete and present:
 
 ```
-Phase blocked: {N} TDD plan(s) violate the RED→GREEN gate sequence under MVP+TDD.
+Phase blocked: {N} TDD plan(s) violate the RED→GREEN gate sequence under TDD.
 Resolve and re-run /gsd execute-phase, or override with /gsd execute-phase {phase} --force-mvp-gate to ship anyway.
 ```
 
-(`--force-mvp-gate` is the documented, not-yet-implemented escape hatch.) Outside MVP+TDD, TDD-review violations remain advisory (table shown, execution continues).
+(`--force-mvp-gate` is the documented, not-yet-implemented escape hatch.) Outside TDD mode, TDD-review violations remain advisory (table shown, execution continues).
 
-**Proceed rule:** If `MVP_MODE && TDD_MODE && GATE_RESULT.block == true` for `tdd.review-checkpoint`: STOP — do NOT proceed to `close_parent_artifacts`, `regression_gate`, `verify_phase_goal`, or `phase.complete`. Otherwise proceed normally.
+**Proceed rule:** If `TDD_MODE && GATE_RESULT.block == true` for `tdd.review-checkpoint`: STOP — do NOT proceed to `close_parent_artifacts`, `regression_gate`, `verify_phase_goal`, or `phase.complete`. Otherwise proceed normally.
 </step>
 
 <!-- gsd:section id="gap-closure-artifacts" when="state:gap-closure-phase" -->
