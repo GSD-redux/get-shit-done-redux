@@ -1130,6 +1130,41 @@ EOF
     }
   });
 
+  test('the round-9 class over-blocks two spellings, and both have working forms', () => {
+    // Disclosed rather than narrowed. The class refuses a `-`-leading token that
+    // carries an expansion before any `=`, and two legitimate-looking spellings
+    // fall inside it. Narrowing to exclude them was considered and rejected:
+    // dropping the bare-`$` member reopens `-$xm` (with `xm=m` bash hands git a
+    // real `-m`), and skipping tokens after `--` means deciding where git's
+    // options end from a substring scan, which is the class this file has
+    // already reverted twice for opening accept-direction holes. Refusing a
+    // commit git would take is the recoverable direction; accepting a
+    // non-conforming subject is not.
+    for (const [label, cmd] of [
+      ['attached short-option value from an expansion', `git commit -S$SIGNING_KEY -m ${HD_OK}`],
+      ['attached short-option value, quoted', `git commit -S"$SIGNING_KEY" -m ${HD_OK}`],
+      ['unquoted dash-leading glob after --', `git commit -m ${HD_OK} -- -*.txt`],
+    ]) {
+      assert.strictEqual(runHookCmd(cmd).status, 2, `${label}: known fail-closed limit of the round-9 class`);
+    }
+
+    // The working spellings, which is what makes the limit acceptable. Note the
+    // pathspec ones in particular: a glob only reaches git as a PATHSPEC when it
+    // is quoted, because an unquoted one is expanded by the shell before git
+    // sees it. So the spelling that actually passes a glob to git is the one
+    // that resolves here.
+    for (const [label, cmd] of [
+      ['detached signing key', `git commit -S "$SIGNING_KEY" -m ${HD_OK}`],
+      ['long signing option', `git commit --gpg-sign="$SIGNING_KEY" -m ${HD_OK}`],
+      ['single-quoted glob pathspec', `git commit -m ${HD_OK} -- '-*.txt'`],
+      ['double-quoted glob pathspec', `git commit -m ${HD_OK} -- "-*.txt"`],
+      ['magic pathspec', `git commit -m ${HD_OK} -- ':(exclude)-*.txt'`],
+    ]) {
+      assert.strictEqual(runHookCmd(cmd).status, 0,
+        `${label}: the spelling a developer reaches for must still resolve`);
+    }
+  });
+
   test('a newline is a command separator for the first-message guard (round 7)', () => {
     // The separator scan covered `;`, `&` and `|` but not a literal newline, so
     // a LATER command's heredoc-shaped -m was taken for this commit's message.
