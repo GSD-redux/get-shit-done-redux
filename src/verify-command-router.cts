@@ -23,6 +23,7 @@ interface VerifyModule {
   cmdVerifyKeyLinks(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdVerifySchemaDrift(cwd: string, phase: string | undefined, skip: boolean, raw: boolean): void;
   cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void;
+  cmdVerifyContextDrift(cwd: string, phase: string | undefined, raw: boolean): void;
 }
 
 interface RouteVerifyCommandOptions {
@@ -59,6 +60,7 @@ function routeVerifyCommand({ verify, args, cwd, raw, error }: RouteVerifyComman
       // per ADR/PRD 3524 §3 / L160 (CJS-only by design). Routing through
       // recursive dispatch would re-enter this router path.
       'codebase-drift': () => verify.cmdVerifyCodebaseDrift(cwd, raw),
+      'context-drift': () => verify.cmdVerifyContextDrift(cwd, args[2], raw),
     },
   });
 }

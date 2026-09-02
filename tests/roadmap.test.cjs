@@ -4312,4 +4312,303 @@ describe('#3885 (ADR-3473 §8.5): countPhasePlansAndSummaries distinguishes unre
       `ENOENT must be treated as genuinely absent, not reported as an error; got: ${phase.context_read_error}`,
     );
   });
+
+  // ─── #4014 (epic #3473 B4-unreadable) matrix rows 7-9 ───────────────────
+  //
+  // `countPhasePlansAndSummaries` (not exported — driven through
+  // cmdRoadmapAnalyze, the same style as T61/T62/T64 above) gains a
+  // `context_scope` field on its result, surfaced on `AnalyzePhase` as
+  // `context_scope` — the typed SCOPE-enum sibling of the existing
+  // `context_read_error` string field.
+
+  test('#4014 matrix row 7: readable phase dir with CONTEXT.md reports has_context:true, context_scope:complete', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'CONTEXT.md'), '# context\n');
+
+    const output = runAnalyzeCapturingStdout(tmpDir);
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, true);
+    assert.strictEqual(phase.context_scope, 'complete');
+    assert.strictEqual(phase.context_read_error ?? null, null);
+  });
+
+  test('#4014 matrix row 8: unreadable phase dir reports context_scope:unreadable, distinct from a genuinely empty phase dir', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const restore = injectReaddirFailure(phaseDir, 'EACCES');
+    let output;
+    try {
+      output = runAnalyzeCapturingStdout(tmpDir);
+    } finally {
+      restore();
+    }
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, false);
+    assert.strictEqual(phase.context_scope, 'unreadable',
+      `an unreadable phase directory must report context_scope 'unreadable', distinct from a genuinely empty one; got: ${phase.context_scope}`);
+  });
+
+  test('#4014 matrix row 9: genuinely absent phase dir reports context_scope:complete (boundary — not unreadable)', () => {
+    // No phase directory created at all — matches T64's ENOENT-shaped absence.
+    const output = runAnalyzeCapturingStdout(tmpDir);
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, false);
+    assert.strictEqual(phase.context_scope, 'complete',
+      `a genuinely absent phase directory must report context_scope 'complete', not 'unreadable'; got: ${phase.context_scope}`);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #3957 (epic #3473 B9) — a no-op decline reports the real condition.
+// .gsd/phase/enhance-3957-noop-real-condition/{40-design,50-test-matrix}.md
+// Rows 11-18 of the test matrix. In-process (not runGsdTools's subprocess):
+// a subprocess's legacy result shape drops stderr on a clean (exit 0) run
+// (tests/helpers.cjs toLegacyShape), and a no-op decline is exactly that.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () => {
+  const roadmapLib = require('../gsd-core/bin/lib/roadmap.cjs');
+
+  // Mirrors state.test.cjs's captureCliIO — see that file's doc comment.
+  function captureCliIO(fn) {
+    const originalWriteSync = fs.writeSync;
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    let stdout = '';
+    let stderr = '';
+    fs.writeSync = (fd, data, offset, length) => {
+      if (fd !== 1) return originalWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      stdout += chunk;
+      return Buffer.byteLength(chunk, 'utf8');
+    };
+    process.stderr.write = (chunk) => {
+      stderr += String(chunk);
+      return true;
+    };
+    try {
+      fn();
+    } finally {
+      fs.writeSync = originalWriteSync;
+      process.stderr.write = originalStderrWrite;
+    }
+    return { stdout, stderr };
+  }
+
+  describe('cmdRoadmapUpdatePlanProgress', () => {
+    let tmpDir;
+    afterEach(() => { if (tmpDir) cleanup(tmpDir); });
+
+    // Row 11 (signature D — false success, B9.4). Run once to produce a real
+    // change, then re-run against the now-up-to-date ROADMAP.md.
+    test('update-plan-progress: idempotent re-run reports updated:false, does not rewrite', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap', '',
+          '- [ ] **Phase 1: Test** - description', '',
+          '### Phase 1: Test', '**Goal:** Test goal', '**Plans:** TBD', '',
+          '## Progress', '',
+          '| Phase | Milestone | Plans Complete | Status | Completed |',
+          '|-------|-----------|----------------|--------|-----------|',
+          '| 1. Test | v1.0 | 0/1 | Planned | - |',
+          '',
+        ].join('\n'),
+      );
+      const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+      fs.mkdirSync(p1, { recursive: true });
+      fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan 1');
+      fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary 1');
+      fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+      const first = captureCliIO(() => { roadmapLib.cmdRoadmapUpdatePlanProgress(tmpDir, '1', false); });
+      const firstOut = JSON.parse(first.stdout);
+      assert.strictEqual(firstOut.updated, true, 'setup: first run must be a real change');
+
+      const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+      const beforeSecond = fs.readFileSync(roadmapPath, 'utf-8');
+      const beforeMtime = fs.statSync(roadmapPath).mtimeMs;
+
+      const second = captureCliIO(() => { roadmapLib.cmdRoadmapUpdatePlanProgress(tmpDir, '1', false); });
+      const secondOut = JSON.parse(second.stdout);
+
+      assert.strictEqual(secondOut.updated, false, 'idempotent re-run must not report updated:true');
+      assert.strictEqual(
+        secondOut.reason,
+        "no changes were needed — ROADMAP.md already reflects this phase's plan/summary counts and status",
+      );
+      assert.strictEqual(fs.readFileSync(roadmapPath, 'utf-8'), beforeSecond, 'ROADMAP.md bytes must not change');
+      assert.strictEqual(fs.statSync(roadmapPath).mtimeMs, beforeMtime, 'ROADMAP.md must not be rewritten (no write call)');
+      assert.match(
+        second.stderr,
+        /^\[gsd-tools\] WARNING: roadmap update-plan-progress skipped — no changes were needed;/,
+      );
+    });
+
+    // Row 12 (boundary — must not regress; pre-existing coverage exists
+    // above under "updates progress and checks checkbox on completion").
+    test('update-plan-progress: real change still reports updated:true', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap', '',
+          '### Phase 1: Test', '**Goal:** Test goal', '**Plans:** TBD', '',
+          '## Progress', '',
+          '| Phase | Milestone | Plans Complete | Status | Completed |',
+          '|-------|-----------|----------------|--------|-----------|',
+          '| 1. Test | v1.0 | 0/2 | Planned | - |',
+          '',
+        ].join('\n'),
+      );
+      const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+      fs.mkdirSync(p1, { recursive: true });
+      fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan 1');
+      fs.writeFileSync(path.join(p1, '01-02-PLAN.md'), '# Plan 2');
+      fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary 1');
+
+      const { stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapUpdatePlanProgress(tmpDir, '1', false); });
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, true);
+      assert.strictEqual(stderr, '', 'a real change must not emit a decline disclosure');
+      const roadmapContent = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+      assert.ok(roadmapContent.includes('1/2'), 'roadmap should contain updated plan count');
+    });
+
+    // Row 13 (helper adoption — same reason/computed values, stderr now emitted).
+    test('update-plan-progress: missing roadmap still discloses via stderr', () => {
+      // createTempProject() never writes a ROADMAP.md itself — no ROADMAP.md
+      // is created at all, which is the fixture this row needs.
+      tmpDir = createTempProject();
+      const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+      fs.mkdirSync(p1, { recursive: true });
+      fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan 1');
+
+      const { stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapUpdatePlanProgress(tmpDir, '1', false); });
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, 'ROADMAP.md not found');
+      assert.strictEqual(out.plan_count, 1);
+      assert.strictEqual(out.summary_count, 0);
+      assert.match(stderr, /^\[gsd-tools\] WARNING: roadmap update-plan-progress skipped — ROADMAP\.md not found\./);
+    });
+
+    // Row 14 (helper adoption — the issue's own cited "correct" example).
+    test('update-plan-progress: zero plans still discloses via stderr', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap', '', '### Phase 1: Test', '**Goal:** Test goal', ''].join('\n'),
+      );
+      const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+      fs.mkdirSync(p1, { recursive: true });
+      fs.writeFileSync(path.join(p1, '01-CONTEXT.md'), '# Context');
+
+      const { stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapUpdatePlanProgress(tmpDir, '1', false); });
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, 'No plans found');
+      assert.strictEqual(out.plan_count, 0);
+      assert.strictEqual(out.summary_count, 0);
+      assert.match(stderr, /^\[gsd-tools\] WARNING: roadmap update-plan-progress skipped — no plans found for this phase\./);
+    });
+  });
+
+  describe('cmdRoadmapAnnotateDependencies', () => {
+    let tmpDir;
+    afterEach(() => { if (tmpDir) cleanup(tmpDir); });
+
+    // Row 15 (signature A) — the phase number does not resolve to any phase
+    // directory at all (distinct from "resolves with zero plans", row 16).
+    test('annotate-dependencies: unresolvable phase reports phase-not-found', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap', '', '### Phase 1: Foundation', '**Goal:** Set up project', ''].join('\n'),
+      );
+      // No .planning/phases/* directory for phase 2 anywhere on disk.
+
+      const { stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapAnnotateDependencies(tmpDir, '2', false); });
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, 'phase 2 not found');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: roadmap annotate-dependencies skipped — phase "2" not found\./);
+    });
+
+    // Row 16 (boundary vs #15) — the phase resolves to a real directory, but
+    // that directory has zero plan files in it.
+    test('annotate-dependencies: phase with no plans reports no-plans, distinct from phase-not-found', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        ['# Roadmap', '', '### Phase 1: Foundation', '**Goal:** Set up project', ''].join('\n'),
+      );
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+
+      const { stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapAnnotateDependencies(tmpDir, '1', false); });
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, 'phase 1 has no plans');
+      assert.notStrictEqual(out.reason, 'phase 1 not found', 'must be a distinct string from the not-found case');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: roadmap annotate-dependencies skipped — phase "1" has no plans\./);
+    });
+
+    // Row 17 (helper adoption).
+    test('annotate-dependencies: missing roadmap still discloses via stderr', () => {
+      // createTempProject() never writes a ROADMAP.md itself — no ROADMAP.md
+      // is created at all, which is the fixture this row needs.
+      tmpDir = createTempProject();
+
+      const { stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapAnnotateDependencies(tmpDir, '1', false); });
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, 'ROADMAP.md not found');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: roadmap annotate-dependencies skipped — ROADMAP\.md not found\./);
+    });
+
+    // Row 18 (helper adoption) — every plan file in the phase is unreadable.
+    // Method-monkeypatch fault injection (CONTRIBUTING's cross-platform IO
+    // rule) rather than chmod: a real PLAN.md exists and is discoverable by
+    // findPhaseInternal, but fs.readFileSync throws for that exact path,
+    // deterministically on every platform/CI user (root Docker included).
+    test('annotate-dependencies: unreadable plans still discloses via stderr', () => {
+      tmpDir = createTempProject();
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        [
+          '# Roadmap', '',
+          '### Phase 1: Foundation', '**Goal:** Set up project', '**Plans:** 1 plan', '',
+          'Plans:', '- [ ] 01-01-PLAN.md — Set up DB', '',
+        ].join('\n'),
+      );
+      const p1 = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+      fs.mkdirSync(p1, { recursive: true });
+      const planPath = path.join(p1, '01-01-PLAN.md');
+      // A minimal, well-formed PLAN.md — content is irrelevant since the
+      // injected fs.readFileSync failure below fires before it is ever read.
+      fs.writeFileSync(planPath, '---\nphase: "1"\nplan: "01-01"\nwave: 1\n---\n\n<objective>\nPlan 1\n</objective>\n');
+
+      const originalReadFileSync = fs.readFileSync;
+      fs.readFileSync = (filePath, ...rest) => {
+        if (filePath === planPath) throw new Error('simulated unreadable plan file (#3957 row 18)');
+        return originalReadFileSync(filePath, ...rest);
+      };
+      let stdout, stderr;
+      try {
+        ({ stdout, stderr } = captureCliIO(() => { roadmapLib.cmdRoadmapAnnotateDependencies(tmpDir, '1', false); }));
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+
+      const out = JSON.parse(stdout);
+      assert.strictEqual(out.updated, false);
+      assert.strictEqual(out.reason, 'could not read plan frontmatter');
+      assert.match(stderr, /^\[gsd-tools\] WARNING: roadmap annotate-dependencies skipped — could not read plan frontmatter/);
+    });
+  });
 });

@@ -46,6 +46,7 @@ const FULL_CONFIG = {
   'review.models.claude': 'C',
   'review.models.codex': 'X',
   'review.models.opencode': 'O',
+  'review.models.cursor': 'U',
   'review.models.agy': 'A',
   'review.models.kimi-code': 'K',
   'review.models.ollama': 'M',
@@ -85,7 +86,7 @@ const GOLDEN = [
   { slug: 'coderabbit', binary: 'coderabbit', argv: ['review', '--prompt-only'], stdin: false, out: 'stdout', timeout: 360000 },
   { slug: 'opencode', binary: 'opencode', argv: ['run', '--model', 'O', '--effort', 'high', '--format', 'json', '-'], stdin: true, out: 'stdout', timeout: 660000 },
   { slug: 'qwen', binary: 'qwen', argv: ['-'], stdin: true, out: 'stdout', timeout: 900000 },
-  { slug: 'cursor', binary: 'cursor-agent', argv: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
+  { slug: 'cursor', binary: 'cursor-agent', argv: ['-p', '--model', 'U', '--mode', 'ask', '--trust', '--output-format', 'text', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
   // resolveLanePlan fully resolves {{nativeTimeout}} itself (#3274) — this row proves the
   // unconfigured default reproduces the original literal exactly.
   { slug: 'antigravity', binary: 'agy', argv: ['--print-timeout', '540s', '--model', 'A', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 600000 },
@@ -277,12 +278,33 @@ describe('reviewer lane invocation — model resolution', () => {
   });
 
   test('a lane declaring no model key emits no model argument', () => {
-    for (const slug of ['qwen', 'cursor', 'coderabbit']) {
+    for (const slug of ['qwen', 'coderabbit']) {
       const lane = REVIEWER_LANES.find((l) => l.slug === slug);
       assert.equal(lane.modelConfigKey, null, `${slug} should declare no model key`);
-      const r = resolve(slug, { config: { 'review.models.qwen': 'X', 'review.models.cursor': 'X' } });
+      const r = resolve(slug, { config: { 'review.models.qwen': 'X' } });
       assert.ok(!r.plan.argv.includes('X'));
     }
+  });
+
+  test('cursor now declares a model key and arg (#3653) — no longer null', () => {
+    const lane = REVIEWER_LANES.find((l) => l.slug === 'cursor');
+    assert.equal(lane.modelConfigKey, 'review.models.cursor');
+    assert.equal(lane.invoke.modelArg, '--model');
+  });
+
+  test('an unconfigured cursor lane invokes exactly as it does today (#3653, byte-identical)', () => {
+    const r = resolve('cursor', { config: {} });
+    assert.deepStrictEqual(
+      r.plan.argv,
+      ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', r.plan.argv[r.plan.argv.length - 1]],
+    );
+  });
+
+  test('a configured review.models.cursor reaches --model, positioned right after -p (#3653)', () => {
+    const r = resolve('cursor', { config: { 'review.models.cursor': 'cursor-grok-4.5-high' } });
+    const i = r.plan.argv.indexOf('-p');
+    assert.equal(r.plan.argv[i + 1], '--model');
+    assert.equal(r.plan.argv[i + 2], 'cursor-grok-4.5-high');
   });
 
   test('unset, empty, whitespace and the literal string "null" all mean unconfigured', () => {

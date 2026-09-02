@@ -231,6 +231,11 @@
   },
   {
     "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
+    "code": "1083",
+    "message": "This { is literal. Check expression (missing ;/\\n?) or quote it."
+  },
+  {
+    "file": "gsd-core/workflows/code-review/steps/structural-pre-pass.md",
     "code": "2086",
     "message": "Double quote to prevent globbing and word splitting."
   },
@@ -491,33 +496,18 @@
   },
   {
     "file": "gsd-core/workflows/pause-work.md",
-    "code": "1102",
-    "message": "Shells disambiguate $(( differently or not at all. For $(command substitution), add space after $( . For $((arithmetics)), fix parsing errors."
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
   },
   {
     "file": "gsd-core/workflows/pause-work.md",
-    "code": "1102",
-    "message": "Shells disambiguate $(( differently or not at all. For $(command substitution), add space after $( . For $((arithmetics)), fix parsing errors."
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
   },
   {
     "file": "gsd-core/workflows/pause-work.md",
-    "code": "1102",
-    "message": "Shells disambiguate $(( differently or not at all. For $(command substitution), add space after $( . For $((arithmetics)), fix parsing errors."
-  },
-  {
-    "file": "gsd-core/workflows/pause-work.md",
-    "code": "1106",
-    "message": "In arithmetic contexts, use < instead of -lt"
-  },
-  {
-    "file": "gsd-core/workflows/pause-work.md",
-    "code": "1106",
-    "message": "In arithmetic contexts, use < instead of -lt"
-  },
-  {
-    "file": "gsd-core/workflows/pause-work.md",
-    "code": "1106",
-    "message": "In arithmetic contexts, use < instead of -lt"
+    "code": "2012",
+    "message": "Use find instead of ls to better handle non-alphanumeric filenames."
   },
   {
     "file": "gsd-core/workflows/pause-work.md",
@@ -528,21 +518,6 @@
     "file": "gsd-core/workflows/pause-work.md",
     "code": "2102",
     "message": "Ranges can only match single chars (mentioned due to duplicates)."
-  },
-  {
-    "file": "gsd-core/workflows/pause-work.md",
-    "code": "2205",
-    "message": "(..) is a subshell. Did you mean [ .. ], a test expression?"
-  },
-  {
-    "file": "gsd-core/workflows/pause-work.md",
-    "code": "2205",
-    "message": "(..) is a subshell. Did you mean [ .. ], a test expression?"
-  },
-  {
-    "file": "gsd-core/workflows/pause-work.md",
-    "code": "2205",
-    "message": "(..) is a subshell. Did you mean [ .. ], a test expression?"
   },
   {
     "file": "gsd-core/workflows/plan-phase.md",

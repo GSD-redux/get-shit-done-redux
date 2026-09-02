@@ -83,17 +83,12 @@ describe('config-field-docs', () => {
   });
 
   test('every CONFIG_DEFAULTS key appears in the doc', () => {
-    // Extract CONFIG_DEFAULTS keys from config-loader.cjs source (moved from core.cjs by ADR-857 phase 2e)
-    const coreSource = fs.readFileSync(CORE_PATH, 'utf-8');
-    const defaultsMatch = coreSource.match(
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own config-loader.cjs source, fixed-size author-controlled content
-      /const CONFIG_DEFAULTS\s*=\s*\{([\s\S]*?)\r?\n\};/
-    );
-    assert.ok(defaultsMatch, 'Could not find CONFIG_DEFAULTS in config-loader.cjs');
+    // Read CONFIG_DEFAULTS' actual keys straight from the module (moved from
+    // core.cjs by ADR-857 phase 2e) instead of regex-parsing its source text.
+    const { CONFIG_DEFAULTS } = require(CORE_PATH);
+    assert.ok(CONFIG_DEFAULTS && typeof CONFIG_DEFAULTS === 'object', 'Could not find CONFIG_DEFAULTS export in config-loader.cjs');
 
-    const body = defaultsMatch[1];
-    // Match property keys (word characters before the colon)
-    const keys = [...body.matchAll(/^\s*(\w+)\s*:/gm)].map(m => m[1]);
+    const keys = Object.keys(CONFIG_DEFAULTS);
     assert.ok(keys.length > 0, 'Could not extract any keys from CONFIG_DEFAULTS');
 
     // CONFIG_DEFAULTS uses flat keys; the doc may use namespaced equivalents.

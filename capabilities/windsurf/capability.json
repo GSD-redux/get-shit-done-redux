@@ -72,7 +72,8 @@
         "background": "undocumented",
         "subagentToolkit": "undocumented",
         "backgroundDispatch": "undocumented",
-        "isolation": "none"
+        "isolation": "none",
+        "maxConcurrency": "undocumented"
       },
       "modelMode": "passive",
       "hookBus": "host",
