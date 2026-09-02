@@ -20,6 +20,7 @@ const fixtures = {
   crlfQuotedTdd: `---\r\nphase: 1\r\ntype: "tdd"\r\n---\r\n\r\n<objective>Dedicated cycle</objective>\r\n`,
   bomCrlfQuotedTdd: `\uFEFF---\r\nphase: 1\r\ntype: 'tdd'\r\n---\r\n\r\n<objective>Dedicated cycle</objective>\r\n`,
   mixedTdd: `---\nphase: 1\ntype: execute\n---\n\n<task type="auto" tdd = 'true'>\n  <name>Cycle</name>\n</task>\n`,
+  falseTddTask: `---\nphase: 1\ntype: execute\n---\n\n<task type="auto" tdd="false">\n  <name>Not a cycle</name>\n</task>\n`,
   multilineTdd: `---\nphase: 1\ntype: execute\n---\n\n<task\n  type="auto"\n  tdd = "true"\n>\n  <name>Cycle</name>\n</task>\n`,
   fencedTaskExample: `---\nphase: 1\ntype: execute\n---\n\n\`\`\`xml\n<task type="auto" tdd="true">\n</task>\n\`\`\`\n`,
   tildeFencedTaskExample: `---\nphase: 1\ntype: execute\n---\n\n~~~xml\n<task type="auto" tdd="true">\n</task>\n~~~\n`,
@@ -83,6 +84,7 @@ describe('conditional canonical TDD executor context', () => {
     assert.equal(planNeedsTddContext(fixtures.crlfQuotedTdd), true);
     assert.equal(planNeedsTddContext(fixtures.bomCrlfQuotedTdd), true);
     assert.equal(planNeedsTddContext(fixtures.mixedTdd), true);
+    assert.equal(planNeedsTddContext(fixtures.falseTddTask), false);
     assert.equal(planNeedsTddContext(fixtures.multilineTdd), true);
     assert.equal(planNeedsTddContext(fixtures.fencedTaskExample), false);
     assert.equal(planNeedsTddContext(fixtures.tildeFencedTaskExample), false);
@@ -116,6 +118,13 @@ describe('conditional canonical TDD executor context', () => {
 
     assert.match(composition, /\$\{PLAN_TDD_CONTEXT[^\n]*survives[^\n]*halt/i,
       'the harness path must halt rather than send an unresolved marker to Agent()');
+  });
+
+  test('harness-worktree uses the conditional TDD entry with an empty false arm', () => {
+    const composition = compositionScope(composerSource(HARNESS), 'subagent_type="{EXECUTOR_TYPE}"', 'After each `Agent()` returns');
+
+    assert.match(composition, /\$\{PLAN_TDD_CONTEXT \? '- `~\/\.claude\/gsd-core\/references\/tdd\.md`' : ''\}/,
+      'the harness TDD entry must be conditional, with no tdd.md entry when the selected plan is ineligible');
   });
 
   test('tdd.md is the only shipped owner of the complete RED/GREEN/REFACTOR procedure', () => {
