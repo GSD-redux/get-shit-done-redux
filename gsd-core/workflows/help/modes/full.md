@@ -196,19 +196,12 @@ Result: Creates `.planning/quick/NNN-slug/PLAN.md`, `.planning/quick/NNN-slug/NN
 ---
 
 **`/gsd:quick-batch [--file <path>] [--jobs auto|N] [--validate] [--research] [--resume <batch-id>] [task list]`**
-Batch several `/gsd:quick`-shaped tasks together — one coordinator plans, dispatches, and merges them as one run.
+Batch several `/gsd:quick`-shaped tasks together (inline list or `--file <path>`) — one coordinator plans, dispatches, and merges them as one run.
 
-- Task list: an inline bulleted/numbered list (≥2 items) or `--file <path>`
-- `--jobs auto|N` — `auto` uses the negotiated dispatch capacity as-is; `N` caps effective concurrency at `min(task count, N, capacity)`
-- `--validate` — per-item plan-checker loop (max 2 iterations) plus post-merge verification
-- `--research` — per-item researcher dispatched before planning
-- `--resume <batch-id>` — skip task-list parsing/batch creation, dispatch only the batch's still-eligible items
-- Not supported: `--discuss` and `--full` are rejected with a usage error before any dispatch
+Flags: `--jobs auto|N` (cap concurrency at `min(tasks, N, capacity)`) · `--validate` (plan-checker + post-merge verification) · `--research` (per-item researcher) · `--resume <batch-id>` (dispatch only eligible items). `--discuss`/`--full` are rejected.
 
-Usage: `/gsd:quick-batch --file .planning/my-tasks.md`
 Usage: `/gsd:quick-batch --jobs 3 --validate`
-Usage: `/gsd:quick-batch --resume 260101-abc`
-Result: Per-item artifacts under `.planning/quick/`, batch state in `.planning/quick-batches/<batch-id>/BATCH.json`
+Result: Per-item artifacts under `.planning/quick/`; batch state in `.planning/quick-batches/<batch-id>/BATCH.json`
 
 ---
 
