@@ -690,19 +690,13 @@ function decodeToolScalar(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const value = raw.trim();
   if (!value) return null;
-  if (value.startsWith('"')) {
-    if (!value.endsWith('"') || /[\r\n]/.test(value)) return null;
+  if (value.startsWith('"') || value.startsWith("'")) {
     try {
       const decoded = frontmatterModule.parseFrontmatter('---\ntool: ' + value + '\n---\n').tool;
       return typeof decoded === 'string' && decoded.trim() ? decoded.trim() : null;
     } catch {
       return null;
     }
-  }
-  if (value.startsWith("'")) {
-    if (!/^'(?:[^'\r\n]|'')*'$/.test(value)) return null;
-    const decoded = value.slice(1, -1).replace(/''/g, "'").trim();
-    return decoded || null;
   }
   if (value.endsWith('"') || value.endsWith("'")) return null;
   return value;
