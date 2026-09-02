@@ -14919,3 +14919,53 @@ describe('#3701 phase complete — next_phase follows roadmap order, not disk', 
     );
   });
 });
+
+// ─── #3982: phase.complete must not pick an archived details-block phase ─────
+
+describe('bug #3982: archived details leak into lowest-outstanding scan', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3982-'));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '20-first-thing'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---', 'milestone: v0.3', 'current_phase: 20', '---', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap', '',
+      '### 🚧 v0.3 — Third Milestone (Phases 20-22) — ACTIVE', '',
+      '- [x] **Phase 20: First Thing** - does the first thing.',
+      '- [ ] **Phase 21: Second Thing** - does the second thing.',
+      '- [ ] **Phase 22: Third Thing** - does the third thing.',
+      '',
+      '<details>',
+      '<summary>✅ v0.2 Second Milestone (Phases 10-12) — ARCHIVED</summary>', '',
+      '- [ ] **Phase 10: Never Finished** - was left unchecked when v0.2 closed.',
+      '- [x] **Phase 11: Done Thing** - completed.',
+      '- [x] **Phase 12: Other Done Thing** - completed.',
+      '',
+      '</details>', '',
+    ].join('\n'));
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '20-first-thing');
+    fs.writeFileSync(path.join(phaseDir, '20-01-PLAN.md'), [
+      '---', 'phase: 20-first-thing', 'plan: 01', '---', '',
+      '<objective>Do the first thing.</objective>', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phaseDir, '20-01-SUMMARY.md'), [
+      '---', 'phase: 20-first-thing', 'plan: 01', 'status: complete', '---', '',
+      'Done.', '',
+    ].join('\n'));
+  });
+
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('phase complete 20 advances to 21, not the archived range', () => {
+    const out = runPhaseComplete(tmpDir, { phase: '20', tolerateExit: true });
+    const payload = JSON.parse(out.slice(out.indexOf('{')));
+    assert.notStrictEqual(payload.next_phase, '10',
+      'an archived milestone\'s unchecked phase must never win the lowest-outstanding scan (#3982)');
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(!/current_phase:\s*10(\s|$)/m.test(state),
+      `STATE.md current_phase must not jump backwards into the archived range; got: ${state}`);
+  });
+});
