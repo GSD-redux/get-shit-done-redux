@@ -227,8 +227,11 @@ describe('#3300 build_prompt optional-section guards under nullglob', () => {
         null,
         'gsd-review-research.md must NOT be created when no *-RESEARCH.md exists',
       );
-      // The always-on parts of the block still did their job.
-      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-00.md')), 'plan\n');
+      // The always-on parts of the block still did their job (#3959: the copy
+      // is named after the source plan id, not the bare padded index).
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-01.md')), 'plan\n');
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-00.md')), null,
+        'the bare-index copy name is gone (#3959)');
     });
 
     test(`[${shell.name}] present optional sources: output matches the source exactly`, (t) => {
@@ -288,6 +291,43 @@ describe('#3300 build_prompt optional-section guards under nullglob', () => {
         + '(#2962) an unmatched glob leaves ls operand-less: it lists the cwd and exits 0, '
         + 'so the guard is always true and the following cat runs operand-less and reads '
         + 'stdin (#3300). Guard on the glob expansion itself instead.',
+    );
+  });
+});
+
+// ─── #3959: plan copies carry source provenance, prompt carries path anchors ──
+
+describe('#3959 plan-copy provenance and path anchors', () => {
+  for (const shell of SHELLS) {
+    test(`[${shell.name}] plan copies are named after their source plan id, not a bare index`, (t) => {
+      const fx = buildFixture({
+        '01-PLAN.md': 'plan one\n',
+        '02-PLAN.md': 'plan two\n',
+      });
+      t.after(() => cleanup(fx.root));
+      const res = runBlock(shell, extractBuildPromptBlock(), fx);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      // Source-named copies: reviewers and the budget tool's `### <file>`
+      // header (src/prompt-budget.cts) see a resolvable plan identity, and
+      // the prepare_trimmed_prompt_for_reviewer glob still matches.
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-01.md')), 'plan one\n');
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-02.md')), 'plan two\n');
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-00.md')), null,
+        'bare-index copy names must not survive (#3959)');
+    });
+  }
+
+  test('Plans to Review template carries per-plan repo-relative path headers', () => {
+    // source-text-is-the-product: the workflow markdown IS the assembled
+    // prompt's contract. #3959: plan bodies inlined with no path anchor leave
+    // a source-grounded lane nothing citable that SOURCE_CITATION_RE accepts.
+    const content = readWorkflowCombined(REVIEW_WORKFLOW);
+    const anchorIdx = content.indexOf('### Plans to Review');
+    assert.notEqual(anchorIdx, -1, '### Plans to Review section not found in review.md (+steps)');
+    const section = content.slice(anchorIdx, anchorIdx + 600);
+    assert.ok(
+      /####.*path/i.test(section) || section.includes('#### <repo-relative'),
+      `Plans to Review must instruct a #### path header per plan; got: ${section.slice(0, 200)}`,
     );
   });
 });
