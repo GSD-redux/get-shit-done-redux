@@ -7,6 +7,9 @@
  * Module: gsd-core/bin/lib/quick-batch.cjs (compiled from src/quick-batch.cts)
  *
  * Test matrix rows covered (`.gsd/phase/feat-3675-quick-batch-core-primitives/50-test-matrix.md`):
+ *   parser — parseTaskList round-trips any valid bulleted task list (CLAUDE.md
+ *            "Property-Based Testing: Parsers... must include at least one
+ *            fast-check property test")
  *   15 — collision-freedom under lock contention (allocation)
  *   26 — resume idempotency
  *   30 — exactly-once STATE completion
@@ -26,6 +29,7 @@ const path = require('path');
 const fc = require('./helpers/fast-check-setup.cjs');
 
 const {
+  parseTaskList,
   createBatch,
   computeWaves,
   resumeBatch,
@@ -68,6 +72,40 @@ const dagItemsArb = fc.integer({ min: 1, max: 8 }).chain((n) =>
     ),
   ),
 );
+
+// Trimmed, single-line, non-empty description — sidesteps the parser's own
+// whitespace-collapsing at the bullet/content boundary (a leading run of
+// whitespace right after the bullet marker is consumed by the required
+// separator, not preserved as content) so round-tripping is exact.
+const taskDescriptionArb = fc.string({ minLength: 1, maxLength: 40 })
+  .filter((s) => !/[\r\n]/.test(s) && s === s.trim() && s.length > 0);
+const bulletArb = fc.constantFrom('-', '*');
+
+describe('quick-batch: property — parseTaskList round-trips any valid task list (parser)', () => {
+  test('property: N (>=2) bulleted descriptions parse back in order, byte-identical', () => {
+    fc.assert(fc.property(
+      fc.array(taskDescriptionArb, { minLength: 2, maxLength: 20 }),
+      fc.array(bulletArb, { minLength: 20, maxLength: 20 }),
+      (descriptions, bullets) => {
+        const text = descriptions.map((d, i) => `${bullets[i]} ${d}`).join('\n');
+        const result = parseTaskList(text);
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.value.map((it) => it.description), descriptions);
+      },
+    ), { numRuns: 100 });
+  });
+
+  test('property: fewer than 2 parsed lines is always rejected', () => {
+    fc.assert(fc.property(
+      fc.option(taskDescriptionArb, { nil: undefined }),
+      (maybeOne) => {
+        const text = maybeOne === undefined ? 'just prose, no bullets\nmore prose' : `- ${maybeOne}`;
+        const result = parseTaskList(text);
+        assert.equal(result.ok, false);
+      },
+    ), { numRuns: 30 });
+  });
+});
 
 describe('quick-batch: property — collision-freedom under lock contention (row 15)', () => {
   test('property: any number of sequential createBatch calls sharing one frozen clock never collide', () => {

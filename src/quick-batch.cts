@@ -18,8 +18,8 @@
  *     `hasQuickTaskRow`) since the function itself carries no idempotency.
  *   - `withPlanningLock` (src/planning-workspace.cts) — reused as-is; every
  *     durable, cross-call collision-sensitive operation here
- *     (`createBatch`/`completeQuickItem`) runs inside exactly ONE (never
- *     nested) `withPlanningLock` transaction.
+ *     (`createBatch`/`completeQuickItem`/`resumeBatch`) runs inside exactly
+ *     ONE (never nested) `withPlanningLock` transaction.
  *   - `partitionByFileOverlap` (src/file-overlap-partitioner.cts, #3674) —
  *     reused as-is, called per dependency-DAG layer in `computeWaves`, over
  *     PRE-NORMALIZED `planned_files` (normalization happens at THIS module's
@@ -34,7 +34,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { requireSafePath } from './security.cjs';
+import { requireSafePath, safeJsonParse } from './security.cjs';
 import {
   appendQuickTaskRow,
   parseMarkdownTable,
@@ -91,6 +91,12 @@ interface QuickBatchItem {
   planned_files: string[];
   directory: string | null;
   worktree: string | null;
+  /** Dependency-DAG + file-overlap wave index, assigned once at `createBatch` time. */
+  wave: number;
+  /** Set by `completeQuickItem` alongside the STATE.md row it records. */
+  commit: string | null;
+  /** Free-text diagnostic for a `failed` item. Written by a future dispatcher (Phase 4); this phase only carries the field through validation/resume. */
+  failure_reason: string | null;
 }
 
 /** The full `BATCH.json` document. */
@@ -98,6 +104,10 @@ interface QuickBatchManifest {
   schema_version: 1;
   batch_id: string;
   created_at: string;
+  /** Opaque, caller-supplied batch-level options — round-tripped verbatim, never interpreted here (Phase 4's job). */
+  options: Record<string, unknown>;
+  /** The git revision this batch was created against, when the caller supplies one (see `createBatch`'s `baseRevision` option). Null when not tracked. */
+  base_revision: string | null;
   items: QuickBatchItem[];
 }
 
@@ -188,14 +198,9 @@ function collectExistingBatchQuickIds(cwd: string, used: Set<string>): void {
     } catch {
       continue;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== 'object') continue;
-    const obj = parsed as Record<string, unknown>;
+    const parsed = safeJsonParse(raw, { maxLength: 1048576, label: 'sibling BATCH.json' });
+    if (!parsed.ok || !parsed.value || typeof parsed.value !== 'object') continue;
+    const obj = parsed.value as Record<string, unknown>;
     if (typeof obj.batch_id === 'string') used.add(obj.batch_id);
     if (Array.isArray(obj.items)) {
       for (const it of obj.items) {
@@ -365,6 +370,11 @@ interface WaveInputItem {
   plannedFiles: string[];
 }
 
+/** Reshape persisted `QuickBatchItem`s into `computeWaves`' input shape. */
+function toWaveInput(items: QuickBatchItem[]): WaveInputItem[] {
+  return items.map((it) => ({ quickId: it.quick_id, dependsOn: it.depends_on, plannedFiles: it.planned_files }));
+}
+
 /**
  * Deterministic wave construction: an item's wave is strictly after every one
  * of its dependencies' waves (DAG readiness), and no two items in the same
@@ -447,7 +457,7 @@ function batchManifestPath(cwd: string, batchId: string): string {
 function createBatch(
   cwd: string,
   itemsInput: QuickBatchItemInput[],
-  options: { clock?: Clock } = {},
+  options: { clock?: Clock; batchOptions?: Record<string, unknown>; baseRevision?: string } = {},
 ): Result<{ batchId: string; manifestPath: string; manifest: QuickBatchManifest }> {
   if (!Array.isArray(itemsInput) || itemsInput.length === 0) {
     return { ok: false, reason: 'createBatch requires at least one item' };
@@ -479,19 +489,25 @@ function createBatch(
         planned_files: (input.plannedFiles ?? []).map(posixNormalize),
         directory: input.directory ?? null,
         worktree: input.worktree ?? null,
+        wave: -1,
+        commit: null,
+        failure_reason: null,
       }));
 
-      const wavesResult = computeWaves(items.map((it) => ({
-        quickId: it.quick_id,
-        dependsOn: it.depends_on,
-        plannedFiles: it.planned_files,
-      })));
+      const wavesResult = computeWaves(toWaveInput(items));
       if (!wavesResult.ok) return wavesResult;
+      const waveOf = new Map<string, number>();
+      wavesResult.value.forEach((wave, idx) => {
+        for (const quickId of wave) waveOf.set(quickId, idx);
+      });
+      for (const it of items) it.wave = waveOf.get(it.quick_id) as number;
 
       const manifest: QuickBatchManifest = {
         schema_version: 1,
         batch_id: batchId,
         created_at: clock.nowIso(),
+        options: options.batchOptions ?? {},
+        base_revision: options.baseRevision ?? null,
         items,
       };
 
@@ -524,6 +540,14 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
   if (typeof obj.created_at !== 'string') {
     return { ok: false, reason: `BATCH.json for batch ${batchId} is missing created_at` };
   }
+  if (obj.options !== undefined && (typeof obj.options !== 'object' || obj.options === null || Array.isArray(obj.options))) {
+    return { ok: false, reason: `BATCH.json for batch ${batchId} has an invalid options field` };
+  }
+  const optionsValue = (obj.options as Record<string, unknown> | undefined) ?? {};
+  if (obj.base_revision !== null && obj.base_revision !== undefined && typeof obj.base_revision !== 'string') {
+    return { ok: false, reason: `BATCH.json for batch ${batchId} has an invalid base_revision field` };
+  }
+  const baseRevisionValue = typeof obj.base_revision === 'string' ? obj.base_revision : null;
   if (!Array.isArray(obj.items) || obj.items.length === 0) {
     return { ok: false, reason: `BATCH.json for batch ${batchId} has no items` };
   }
@@ -563,6 +587,15 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
     if (typeof it.worktree === 'string' && it.worktree !== '' && !fs.existsSync(it.worktree)) {
       return { ok: false, reason: `item ${it.quick_id} references a worktree that does not exist on disk: ${it.worktree}` };
     }
+    if (it.wave !== undefined && (typeof it.wave !== 'number' || !Number.isInteger(it.wave) || it.wave < 0)) {
+      return { ok: false, reason: `item ${it.quick_id} has an invalid wave field` };
+    }
+    if (it.commit !== null && it.commit !== undefined && typeof it.commit !== 'string') {
+      return { ok: false, reason: `item ${it.quick_id} has an invalid commit field` };
+    }
+    if (it.failure_reason !== null && it.failure_reason !== undefined && typeof it.failure_reason !== 'string') {
+      return { ok: false, reason: `item ${it.quick_id} has an invalid failure_reason field` };
+    }
     items.push({
       quick_id: it.quick_id,
       client_id: typeof it.client_id === 'string' ? it.client_id : null,
@@ -572,6 +605,9 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
       planned_files: it.planned_files,
       directory: typeof it.directory === 'string' ? it.directory : null,
       worktree: typeof it.worktree === 'string' ? it.worktree : null,
+      wave: typeof it.wave === 'number' ? it.wave : -1,
+      commit: typeof it.commit === 'string' ? it.commit : null,
+      failure_reason: typeof it.failure_reason === 'string' ? it.failure_reason : null,
     });
   }
 
@@ -583,16 +619,19 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
     }
   }
 
-  const cycleCheck = computeWaves(items.map((it) => ({
-    quickId: it.quick_id,
-    dependsOn: it.depends_on,
-    plannedFiles: it.planned_files,
-  })));
+  const cycleCheck = computeWaves(toWaveInput(items));
   if (!cycleCheck.ok) return cycleCheck;
 
   return {
     ok: true,
-    value: { schema_version: 1, batch_id: batchId, created_at: obj.created_at, items },
+    value: {
+      schema_version: 1,
+      batch_id: batchId,
+      created_at: obj.created_at,
+      options: optionsValue,
+      base_revision: baseRevisionValue,
+      items,
+    },
   };
 }
 
@@ -619,13 +658,11 @@ function loadBatch(cwd: string, batchId: string): Result<QuickBatchManifest> {
         : `unable to read BATCH.json for batch ${batchId}: ${e.message}`,
     };
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return { ok: false, reason: `BATCH.json for batch ${batchId} is not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
+  const parsed = safeJsonParse(raw, { maxLength: 1048576, label: `BATCH.json for batch ${batchId}` });
+  if (!parsed.ok) {
+    return { ok: false, reason: parsed.error ?? `BATCH.json for batch ${batchId} is not valid JSON` };
   }
-  return validateBatchSchema(parsed, batchId);
+  return validateBatchSchema(parsed.value, batchId);
 }
 
 // ─── Exactly-once STATE.md completion ───────────────────────────────────────────
@@ -704,6 +741,7 @@ function completeQuickItem(
 
       if (item.status !== 'complete') {
         item.status = 'complete';
+        item.commit = fields.commit;
         platformWriteSync(batchManifestPath(cwd, batchId), JSON.stringify(manifest, null, 2) + '\n');
       }
 
@@ -730,70 +768,102 @@ interface QuickBatchTransition {
  * item and marks it complete WITHOUT re-appending (the "STATE row written,
  * BATCH.json not yet updated" crash window). Idempotent: two calls in a row
  * on an unchanged manifest produce zero transitions the second time.
+ *
+ * Runs inside `withPlanningLock` — the same durable read-modify-write
+ * `BATCH.json` uses — so a resume racing a concurrent `completeQuickItem` (or
+ * another resume) can never lose an update.
+ *
+ * When `options.currentBaseRevision` is supplied and the manifest carries a
+ * non-null `base_revision` that differs from it, resume refuses with a
+ * recoverable diagnostic rather than guessing past the divergence (ADR-1239
+ * "Quick-batch binding" § Base divergence). Reconciling the divergence — a
+ * rebase, a fresh batch — is a caller (Phase 4) decision; this primitive only
+ * detects and reports it. Omit the option to skip the check entirely.
  */
 function resumeBatch(
   cwd: string,
   batchId: string,
-  _options: { clock?: Clock } = {},
+  options: { clock?: Clock; currentBaseRevision?: string } = {},
 ): Result<{ eligible: string[]; transitions: QuickBatchTransition[]; manifest: QuickBatchManifest }> {
-  const loaded = loadBatch(cwd, batchId);
-  if (!loaded.ok) return loaded;
-  const manifest = loaded.value;
+  const clock = options.clock ?? realClock;
+  try {
+    return withPlanningLock(cwd, (): Result<{ eligible: string[]; transitions: QuickBatchTransition[]; manifest: QuickBatchManifest }> => {
+    const loaded = loadBatch(cwd, batchId);
+    if (!loaded.ok) return loaded;
+    const manifest = loaded.value;
 
-  const statePath = planningPaths(cwd).state;
-  const stateContent = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf-8') : '';
-
-  const transitions: QuickBatchTransition[] = [];
-  const byId = new Map(manifest.items.map((it) => [it.quick_id, it]));
-
-  // Crash-window detection: a non-complete item whose STATE row already
-  // exists is completed without re-appending.
-  for (const it of manifest.items) {
-    if (it.status !== 'complete' && hasQuickTaskRow(stateContent, it.quick_id)) {
-      transitions.push({ quickId: it.quick_id, from: it.status, to: 'complete' });
-      it.status = 'complete';
+    if (
+      options.currentBaseRevision !== undefined
+      && manifest.base_revision !== null
+      && manifest.base_revision !== options.currentBaseRevision
+    ) {
+      return {
+        ok: false,
+        reason: `batch ${batchId} base revision diverged: created against ${manifest.base_revision}, current is ${options.currentBaseRevision}`,
+      };
     }
-  }
 
-  // Propagate blocked/failed along the DAG to a fixed point (bounded by item
-  // count) so transitive blocking resolves in one resume call. A `blocked`
-  // item whose dependency outcome improved reverts to `pending` (eligible for
-  // re-evaluation); a `failed` item is never touched (no auto-retry).
-  let changed = true;
-  let iterations = 0;
-  while (changed && iterations <= manifest.items.length) {
-    changed = false;
-    iterations++;
+    const statePath = planningPaths(cwd).state;
+    const stateContent = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf-8') : '';
+
+    const transitions: QuickBatchTransition[] = [];
+    const byId = new Map(manifest.items.map((it) => [it.quick_id, it]));
+
+    // Crash-window detection: a non-complete item whose STATE row already
+    // exists is completed without re-appending.
     for (const it of manifest.items) {
-      if (it.status === 'complete' || it.status === 'failed') continue;
-      const anyDepBad = it.depends_on.some((d) => {
-        const dep = byId.get(d);
-        return dep !== undefined && (dep.status === 'failed' || dep.status === 'blocked');
-      });
-      const nextStatus: QuickBatchItemStatus = anyDepBad ? 'blocked' : (it.status === 'blocked' ? 'pending' : it.status);
-      if (nextStatus !== it.status) {
-        transitions.push({ quickId: it.quick_id, from: it.status, to: nextStatus });
-        it.status = nextStatus;
-        changed = true;
+      if (it.status !== 'complete' && hasQuickTaskRow(stateContent, it.quick_id)) {
+        transitions.push({ quickId: it.quick_id, from: it.status, to: 'complete' });
+        it.status = 'complete';
       }
     }
+
+    // Propagate blocked/failed along the DAG to a fixed point (bounded by
+    // item count) so transitive blocking resolves in one resume call. A
+    // `blocked` item whose dependency outcome improved reverts to `pending`
+    // (eligible for re-evaluation); a `failed` item is never touched (no
+    // auto-retry).
+    let changed = true;
+    let iterations = 0;
+    while (changed && iterations <= manifest.items.length) {
+      changed = false;
+      iterations++;
+      for (const it of manifest.items) {
+        if (it.status === 'complete' || it.status === 'failed') continue;
+        const anyDepBad = it.depends_on.some((d) => {
+          const dep = byId.get(d);
+          return dep !== undefined && (dep.status === 'failed' || dep.status === 'blocked');
+        });
+        const nextStatus: QuickBatchItemStatus = anyDepBad ? 'blocked' : (it.status === 'blocked' ? 'pending' : it.status);
+        if (nextStatus !== it.status) {
+          transitions.push({ quickId: it.quick_id, from: it.status, to: nextStatus });
+          it.status = nextStatus;
+          changed = true;
+        }
+      }
+    }
+
+    const eligible = manifest.items
+      .filter((it) => it.status === 'pending' && it.depends_on.every((d) => byId.get(d)?.status === 'complete'))
+      .map((it) => it.quick_id);
+
+    if (transitions.length > 0) {
+      platformWriteSync(batchManifestPath(cwd, batchId), JSON.stringify(manifest, null, 2) + '\n');
+    }
+
+    return { ok: true, value: { eligible, transitions, manifest } };
+    }, clock);
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }
-
-  const eligible = manifest.items
-    .filter((it) => it.status === 'pending' && it.depends_on.every((d) => byId.get(d)?.status === 'complete'))
-    .map((it) => it.quick_id);
-
-  if (transitions.length > 0) {
-    platformWriteSync(batchManifestPath(cwd, batchId), JSON.stringify(manifest, null, 2) + '\n');
-  }
-
-  return { ok: true, value: { eligible, transitions, manifest } };
 }
 
 export = {
   parseTaskList,
   parseTaskListFromFile,
   allocateQuickIds,
+  allocateIdsGivenUsed,
+  MAX_TIME_BLOCK,
   createBatch,
   loadBatch,
   computeWaves,
