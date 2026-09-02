@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('fast-check');
 const { runNode } = require('./helpers/process-seam.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, runGsdTools } = require('./helpers.cjs');
 const { installerEnv, RUNTIME_META } = require('./helpers/install-shared.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
@@ -53,12 +53,16 @@ function installClaude(t, { defaults, projectConfig } = {}) {
   };
 }
 
-function installRuntime(t, runtime, { defaults, repeat = false, scope = 'local' } = {}) {
+function installRuntime(t, runtime, { defaults, projectConfig, repeat = false, scope = 'local' } = {}) {
   const root = createTempDir(`gsd-4032-${runtime}-`);
   t.after(() => cleanup(root));
   if (defaults !== undefined) {
     fs.mkdirSync(path.join(root, '.gsd'), { recursive: true });
     fs.writeFileSync(path.join(root, '.gsd', 'defaults.json'), JSON.stringify(defaults), 'utf8');
+  }
+  if (projectConfig !== undefined) {
+    fs.mkdirSync(path.join(root, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify(projectConfig), 'utf8');
   }
   const configDir = scope === 'global'
     ? path.join(root, RUNTIME_META[runtime].globalSuffix)
@@ -141,6 +145,38 @@ test('an invalid project selector fails closed instead of restoring a global gra
   assert.ok(!parseTools(installed.agent('gsd-executor')).includes('mcp__global__executor'));
 });
 
+test('an invalid project agent_tools container suppresses global grants (#4032)', (t) => {
+  const installed = installClaude(t, {
+    defaults: { agent_tools: { '*': ['mcp__global__wildcard'] } },
+    projectConfig: { agent_tools: ['not-an-object'] },
+  });
+
+  assert.ok(!parseTools(installed.agent('gsd-executor')).includes('mcp__global__wildcard'));
+});
+
+test('config-set accepts named and wildcard agent_tools selectors (#4032)', (t) => {
+  const root = createTempDir('gsd-4032-config-');
+  t.after(() => cleanup(root));
+  fs.mkdirSync(path.join(root, '.planning'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'config.json'), '{}\n', 'utf8');
+  const env = { HOME: root, USERPROFILE: root };
+
+  for (const selector of ['gsd-executor', '*']) {
+    const result = runGsdTools(
+      ['config-set', `agent_tools.${selector}`, '["mcp__configured__grant"]'],
+      root,
+      env,
+    );
+    assert.ok(result.success, `config-set agent_tools.${selector} failed: ${result.error}`);
+  }
+
+  const config = JSON.parse(fs.readFileSync(path.join(root, '.planning', 'config.json'), 'utf8'));
+  assert.deepStrictEqual(config.agent_tools, {
+    'gsd-executor': ['mcp__configured__grant'],
+    '*': ['mcp__configured__grant'],
+  });
+});
+
 test('inline and block tools forms keep their form after installer augmentation (#4032)', (t) => {
   const installed = installClaude(t, {
     defaults: { agent_tools: { '*': ['mcp__form__grant'] } },
@@ -189,6 +225,29 @@ test('Kimi receives canonical grants before its existing mapper runs (#4032)', (
   const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
   assert.ok(artifacts.some((artifact) => artifact.includes('kimi_cli.tools.web:FetchURL')),
     'Kimi must map a configured canonical WebFetch tool through its existing converter');
+});
+
+test('Kimi project selectors override matching global selectors (#4032)', (t) => {
+  const install = installRuntime(t, 'kimi', {
+    defaults: { agent_tools: { 'gsd-executor': ['WebFetch'] } },
+    projectConfig: { agent_tools: { 'gsd-executor': ['WebSearch'] } },
+    scope: 'global',
+  });
+  const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
+  assert.ok(artifacts.some((artifact) => artifact.includes('kimi_cli.tools.web:SearchWeb')),
+    'Kimi must map the project grant through its existing converter');
+  assert.ok(artifacts.every((artifact) => !artifact.includes('kimi_cli.tools.web:FetchURL')),
+    'the matching global selector must not survive the project override');
+});
+
+test('Codex grants do not widen the generated TOML sandbox (#4032)', (t) => {
+  const install = installRuntime(t, 'codex', {
+    defaults: { agent_tools: { 'gsd-plan-checker': ['Write'] } },
+  });
+  const toml = fs.readFileSync(path.join(install.configDir, 'agents', 'gsd-plan-checker.toml'), 'utf8');
+  assert.match(toml, /^sandbox_mode = "read-only"$/m);
+  assert.doesNotMatch(toml, /Write/,
+    'Codex tool availability is inherited from the parent session, not encoded in agent TOML');
 });
 
 test('hostile values fail closed while inline Claude tools remain valid tokens (#4032)', (t) => {
@@ -246,6 +305,18 @@ test('quoted scalar identity is shared by append, Kimi, and Qwen (#4191)', () =>
     assert.match(qwen, /^ {2}- WebSearch$/m);
     assert.doesNotMatch(qwen, /unterminated/);
   }
+});
+
+test('appendAgentTools preserves inline YAML comments without swallowing grants (#4032)', () => {
+  const content = '---\nname: gsd-test\ntools: Read # keep this note\n---\n';
+  const augmented = appendAgentTools(content, ['WebFetch']);
+  assert.match(augmented, /^tools: Read, WebFetch # keep this note$/m);
+  assert.deepStrictEqual(parseTools(augmented), ['Read', 'WebFetch']);
+});
+
+test('appendAgentTools leaves agents without a tools key unchanged (#4032)', () => {
+  const content = '---\nname: gsd-test\ndescription: inherits the runtime tool surface\n---\n';
+  assert.strictEqual(appendAgentTools(content, ['WebFetch']), content);
 });
 
 test('fast-check: append preserves stable first-seen order and converges (#4032)', () => {
