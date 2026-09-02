@@ -84,9 +84,10 @@ describe('gsd-read-guard hook', () => {
     const output = JSON.parse(result.stdout);
     assert.ok(output.hookSpecificOutput, 'should have hookSpecificOutput');
     assert.ok(output.hookSpecificOutput.additionalContext, 'should have additionalContext');
-    assert.ok(
-      output.hookSpecificOutput.additionalContext.includes('Read'),
-      'guidance should mention Read tool'
+    assert.equal(
+      output.hookSpecificOutput.code,
+      'READ_BEFORE_EDIT',
+      'guidance should carry the READ_BEFORE_EDIT reason code'
     );
   });
 
@@ -103,7 +104,7 @@ describe('gsd-read-guard hook', () => {
     assert.ok(result.stdout.length > 0, 'should produce output');
 
     const output = JSON.parse(result.stdout);
-    assert.ok(output.hookSpecificOutput.additionalContext.includes('Read'));
+    assert.equal(output.hookSpecificOutput.code, 'READ_BEFORE_EDIT');
   });
 
   // ─── No-op cases: should NOT inject guidance ────────────────────────────
@@ -179,9 +180,10 @@ describe('gsd-read-guard hook', () => {
     });
 
     const output = JSON.parse(result.stdout);
-    assert.ok(
-      output.hookSpecificOutput.additionalContext.includes('myfile.ts'),
-      'guidance should include the filename being edited'
+    assert.equal(
+      output.hookSpecificOutput.fileName,
+      'myfile.ts',
+      'guidance should name the file being edited'
     );
   });
 
@@ -348,7 +350,7 @@ describe('bug #2344: read guard skips on CLAUDECODE env var', () => {
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.length > 0, 'advisory should fire on non-Claude-Code runtimes');
     const output = JSON.parse(result.stdout);
-    assert.ok(output.hookSpecificOutput?.additionalContext?.includes('Read'));
+    assert.equal(output.hookSpecificOutput?.code, 'READ_BEFORE_EDIT');
   });
 });
   });
@@ -487,7 +489,7 @@ describe('bug #2520: read guard detects Claude Code without relying on CLAUDECOD
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.length > 0, 'advisory should fire on non-Claude-Code hosts');
     const output = JSON.parse(result.stdout);
-    assert.ok(output.hookSpecificOutput?.additionalContext?.includes('Read'));
+    assert.equal(output.hookSpecificOutput?.code, 'READ_BEFORE_EDIT');
   });
 });
   });
@@ -529,7 +531,7 @@ describe('#2304: Kimi tool vocabulary is normalized by the read guard', () => {
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.length > 0, 'Kimi WriteFile should produce the advisory');
     const output = JSON.parse(result.stdout);
-    assert.ok(output.hookSpecificOutput?.additionalContext?.includes('Read'));
+    assert.equal(output.hookSpecificOutput?.code, 'READ_BEFORE_EDIT');
   });
 
   test('StrReplaceFile on an existing file injects guidance like Edit', () => {
@@ -544,7 +546,7 @@ describe('#2304: Kimi tool vocabulary is normalized by the read guard', () => {
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.length > 0, 'Kimi StrReplaceFile should produce the advisory');
     const output = JSON.parse(result.stdout);
-    assert.ok(output.hookSpecificOutput?.additionalContext?.includes('Read'));
+    assert.equal(output.hookSpecificOutput?.code, 'READ_BEFORE_EDIT');
   });
 
   test('module-qualified kimi_cli.tools.file:WriteFile is recognized', () => {

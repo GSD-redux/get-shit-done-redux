@@ -69,9 +69,8 @@ function advisoryFired(result) {
   if (!result.stdout) return false;
   try {
     const parsed = JSON.parse(result.stdout);
-    return String(parsed?.hookSpecificOutput?.additionalContext || '').includes(
-      'PROMPT INJECTION WARNING'
-    );
+    return Array.isArray(parsed?.hookSpecificOutput?.findings)
+      && parsed.hookSpecificOutput.findings.length > 0;
   } catch {
     return false;
   }
