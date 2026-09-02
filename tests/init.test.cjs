@@ -1954,7 +1954,7 @@ describe('cmdInitQuick', () => {
   test('init quick resolves the default researcher_model without overrides', () => {
     // #3936: the quick research step dispatches gsd-phase-researcher, so init
     // quick must resolve that agent's balanced-profile model without an override.
-    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir });
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
