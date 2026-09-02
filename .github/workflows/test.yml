@@ -685,8 +685,12 @@ jobs:
       # SAME merged V8 data — no extra suite execution. Audit 2026-06: scripts/
       # measured 65.95%; the 55% floor prevents a collapse to zero-coverage
       # tooling while leaving headroom for variance. Raise deliberately, never lower.
-      # Re-slices the same ~358MB merged dumps as the step above, so it carries
-      # the same larger heap for the same reason — see that step's comment.
+      # Re-slices the same ~358MB merged dumps as the step above and carries the
+      # same larger heap for the same reason, but `check-coverage` (unlike the
+      # `report` step above) was missing --merge-async, so it loaded every raw
+      # dump synchronously instead of incrementally — c8's own option
+      # description names this exact failure mode ("to avoid OOM issues").
+      # package.json's test:coverage:scripts-floor now carries the flag too.
       - name: Coverage floor — scripts/ tooling (≥55%)
         env:
           NODE_OPTIONS: --max-old-space-size=8192
