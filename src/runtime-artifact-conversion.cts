@@ -3177,6 +3177,21 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       content = processAttribution(content, attribution);
       break;
 
+    case 'zcode':
+      // #4002: ZCode is a Claude-Code-shaped host (dot-home `.zcode`, `@~`-ref
+      // expansion, `~/.zcode/...` documented paths) whose commands install with
+      // `converter: null` — this pass is their only chance to receive
+      // runtime-correct paths. Same shape as `claude`, including the tilde
+      // restore: the tilde form is what ZCode expands and what its docs use.
+      // `${_GSD_RUNTIME_ROOT}/.claude/…` matches none of these regexes and
+      // survives as the project-local fallback, exactly as on every sibling.
+      content = content.replace(/~\/\.claude\//g, pathPrefix);
+      content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
+      content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
+      content = restoreClaudeGlobalAtRefTilde(content, pathPrefix);
+      content = processAttribution(content, attribution);
+      break;
+
     default:
       // Unknown runtime — no rewrites (OpenCode/Kilo handled by their own install path).
       break;

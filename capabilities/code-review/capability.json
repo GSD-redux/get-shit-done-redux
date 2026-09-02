@@ -38,6 +38,15 @@
       ],
       "default": "standard",
       "description": "Default depth for code review when no --depth override is supplied."
+    },
+    "workflow.code_review_point": {
+      "type": "enum",
+      "values": [
+        "execute:post",
+        "execute:wave:post"
+      ],
+      "default": "execute:post",
+      "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff."
     }
   },
   "steps": [
@@ -53,6 +62,20 @@
         "SUMMARY.md"
       ],
       "when": "workflow.code_review",
+      "pointFrom": "workflow.code_review_point",
+      "onError": "skip"
+    },
+    {
+      "point": "execute:wave:post",
+      "ref": {
+        "skill": "code-review"
+      },
+      "produces": [
+        "REVIEW.md"
+      ],
+      "consumes": [],
+      "when": "workflow.code_review",
+      "pointFrom": "workflow.code_review_point",
       "onError": "skip"
     }
   ],
