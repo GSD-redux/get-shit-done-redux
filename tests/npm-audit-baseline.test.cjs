@@ -198,6 +198,23 @@ describe('resolveBaselineRef', () => {
     assert.strictEqual(resolveBaselineRef(dir), '');
   });
 
+  test('no origin/next, but a plain local branch named next exists -> returns "next"', (t) => {
+    const dir = createTempDir('gsd-audit-baseline-fixture-');
+    t.after(() => cleanup(dir));
+    git(['init', '-q'], dir);
+    git(['config', 'user.email', 'test@example.com'], dir);
+    git(['config', 'user.name', 'Test'], dir);
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'first');
+    git(['add', '-A'], dir);
+    git(['commit', '-q', '-m', 'first commit'], dir);
+    // rename the default branch to "next" so it's a plain LOCAL branch, not
+    // a remote-tracking origin/next ref -- mirrors gsd-test's sandbox shape.
+    git(['branch', '-M', 'next'], dir);
+
+    process.env.GITHUB_EVENT_NAME = 'push';
+    assert.strictEqual(resolveBaselineRef(dir), 'next');
+  });
+
   test('nothing resolves at all (no env vars, not a git repo) -> returns ""', (t) => {
     const dir = createTempDir('gsd-audit-baseline-nongit-');
     t.after(() => cleanup(dir));

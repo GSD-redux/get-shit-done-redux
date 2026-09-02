@@ -188,6 +188,15 @@ jobs:
       # "stale" and the run hard-failed on diffs that touched nothing related.
       # This must stay equal to CI_REBASE_BASE_SHA; a test asserts that parity.
       GSD_EMITTED_BASE: ${{ github.event.pull_request.base.sha }}
+      # #4196: pin the npm-audit baseline the SAME way GSD_EMITTED_BASE pins
+      # its own baseline (see the comment above) -- origin/next is live under
+      # fetch-depth: 0 and can advance mid-run; base.sha is fixed for the life
+      # of the run. For a push event, github.event.before is git's own record
+      # of the ref's state immediately before this push landed -- correct
+      # even when a rebase-merged PR lands as multiple discrete commits in
+      # one push (HEAD~1 would be wrong there: it could already contain an
+      # earlier commit's newly-introduced vulnerable package, masking it).
+      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -419,6 +428,15 @@ jobs:
       # list that can include the emitted gate, and the invariant is easier to keep
       # with no exceptions: if a job merges a pinned base, the gate uses that base.
       GSD_EMITTED_BASE: ${{ github.event.pull_request.base.sha }}
+      # #4196: pin the npm-audit baseline the SAME way GSD_EMITTED_BASE pins
+      # its own baseline (see the comment above) -- origin/next is live under
+      # fetch-depth: 0 and can advance mid-run; base.sha is fixed for the life
+      # of the run. For a push event, github.event.before is git's own record
+      # of the ref's state immediately before this push landed -- correct
+      # even when a rebase-merged PR lands as multiple discrete commits in
+      # one push (HEAD~1 would be wrong there: it could already contain an
+      # earlier commit's newly-introduced vulnerable package, masking it).
+      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || '' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -513,6 +531,15 @@ jobs:
       # "stale" and the run hard-failed on diffs that touched nothing related.
       # This must stay equal to CI_REBASE_BASE_SHA; a test asserts that parity.
       GSD_EMITTED_BASE: ${{ github.event.pull_request.base.sha }}
+      # #4196: pin the npm-audit baseline the SAME way GSD_EMITTED_BASE pins
+      # its own baseline (see the comment above) -- origin/next is live under
+      # fetch-depth: 0 and can advance mid-run; base.sha is fixed for the life
+      # of the run. For a push event, github.event.before is git's own record
+      # of the ref's state immediately before this push landed -- correct
+      # even when a rebase-merged PR lands as multiple discrete commits in
+      # one push (HEAD~1 would be wrong there: it could already contain an
+      # earlier commit's newly-introduced vulnerable package, masking it).
+      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || '' }}
     strategy:
       fail-fast: false
       matrix:

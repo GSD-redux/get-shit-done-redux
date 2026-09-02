@@ -161,16 +161,34 @@ const NULL_SHA = '0000000000000000000000000000000000000000';
 
 /**
  * Resolves the git ref to diff against, in priority order:
- *   1. AUDIT_BASELINE_REF env var (explicit override, any caller)
- *   2. GITHUB_BASE_REF (GitHub Actions sets this on pull_request events) --
- *      the PR's target branch, e.g. `origin/next`.
- *   3. On a `push` event, `HEAD~1` -- for an ordinary merge/push to a
- *      long-lived branch this IS the branch's own immediately-prior tip,
- *      so a push that doesn't touch dependencies is compared against
- *      itself one commit back rather than a separately-fetched ref that
- *      (on a push event) would already equal the new HEAD.
- *   4. `origin/next` if that ref exists locally (this repo's integration
- *      branch -- matches DEFAULT_BASE in scripts/changeset/lint.cjs).
+ *   1. AUDIT_BASELINE_REF env var -- the primary mechanism. CI sets this
+ *      explicitly (see .github/workflows/test.yml) to github.event.pull_
+ *      request.base.sha on a pull_request event, or github.event.before on
+ *      a push event -- both pinned, race-free values Git/GitHub track for
+ *      exactly this purpose. Prefer this over anything below whenever the
+ *      caller can provide it.
+ *   2. GITHUB_BASE_REF (GitHub Actions sets this on pull_request events)
+ *      resolved against the LIVE origin/<branch> tip. Only reached if
+ *      AUDIT_BASELINE_REF wasn't set -- e.g. a workflow that forgot to
+ *      wire it. origin/<branch> can advance mid-run (see the GSD_EMITTED_
+ *      BASE precedent in test.yml), so this is a degraded fallback, not
+ *      the intended path for pull_request events in this repo's own CI.
+ *   3. On a `push` event, `HEAD~1` -- correct ONLY when the push added
+ *      exactly one commit (true for a squash-merge or a single ordinary
+ *      commit). This repo also allows rebase-merge (allow_rebase_merge:
+ *      true), which can land a PR as several discrete commits in one
+ *      push -- HEAD~1 then lands on an EARLIER commit in the same push,
+ *      which may already contain a vulnerable package that commit itself
+ *      introduced, silently marking it "pre-existing". CI never reaches
+ *      this branch (AUDIT_BASELINE_REF is always set by test.yml for
+ *      push events); it exists only for out-of-band invocations (e.g.
+ *      gsd-test) that don't set any of the above.
+ *   4. `origin/next`, else a plain local branch named `next` (gsd-test's
+ *      sandbox fetches the base as a local branch, not a remote-tracking
+ *      ref -- see gsd-test-merges-into-LOCAL-base-branch in this repo's
+ *      own operational notes), if either exists locally (this repo's
+ *      integration branch -- matches DEFAULT_BASE in
+ *      scripts/changeset/lint.cjs).
  * Returns '' if none resolve -- callers fall back to strict zero-tolerance
  * rather than silently skipping the gate.
  */
@@ -195,6 +213,15 @@ function resolveBaselineRef(repoRoot) {
       stdio: 'ignore',
     });
     return 'origin/next';
+  } catch {
+    // fall through to a plain local branch
+  }
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'next'], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    });
+    return 'next';
   } catch {
     return '';
   }
