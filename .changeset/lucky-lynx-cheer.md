@@ -2,4 +2,4 @@
 type: Fixed
 pr: 4061
 ---
-Imperative-override injection patterns now tolerate filler words — a planted 'Forget all of your instructions' previously matched nothing (#4016)
+**Imperative-override injection patterns now tolerate filler words** — a planted phrasing with `all of your` between the verb and `instructions` previously matched nothing; the five narrow verb patterns are replaced by one superset pattern (`ignore|disregard|forget|discard|override`, with `override` and `discard` both covered) so a sentence counts once toward the severity threshold instead of twice. (#4016)
