@@ -73,7 +73,7 @@ echo "$GSD_DIR"
 Parse output:
 - Line 1 = installed version (`0.0.0` means unknown version)
 - Line 2 = install scope (`LOCAL`, `GLOBAL`, or `UNKNOWN`)
-- Line 3 = target runtime (`claude`, `opencode`, `kilo`, `codex`, `antigravity`)
+- Line 3 = target runtime (`claude`, `opencode`, `kilo`, `codex`, `antigravity`); empty when no installed target is resolved
 - Line 4 = resolved GSD config dir (e.g. `/Users/me/.claude`, `/Users/me/.gemini`); empty when no installed target is resolved. Capture this as `GSD_DIR` and pass it to subsequent steps so they don't re-derive the runtime path.
 
 `update-context` reproduces the previous detection cascade — preferred-config-dir fast path, local-over-global with same-path dedup (so `CWD=$HOME` does not misdetect as LOCAL), env-var overrides (`CLAUDE_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `KILO_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, …), and semver validation — but as a tested projection rather than ~280 lines of inline bash. Branch coverage lives in `tests/update-context.test.cjs`.
@@ -313,8 +313,8 @@ detected in `get_installed_version`:
 
 ```bash
 # RUNTIME_DIR is the resolved config directory (e.g. ~/.config/opencode, ~/.gemini).
-# get_installed_version emits it as GSD_DIR (LOCAL or GLOBAL install dir, or empty
-# when scope is UNKNOWN). Empty RUNTIME_DIR skips the backup below.
+# get_installed_version emits it as GSD_DIR for a resolved LOCAL or GLOBAL install.
+# The unresolved-target gate exits before this step; the empty guard remains defensive.
 RUNTIME_DIR="$GSD_DIR"
 ```
 
