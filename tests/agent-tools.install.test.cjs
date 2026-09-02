@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { cleanup } = require('./helpers.cjs');
-const { installerEnv } = require('./helpers/install-shared.cjs');
+const { installerEnv, RUNTIME_META } = require('./helpers/install-shared.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -65,6 +65,50 @@ function installClaude(t, { defaults, projectConfig } = {}) {
       return fs.readFileSync(path.join(root, '.claude', 'agents', `${name}.md`), 'utf8');
     },
   };
+}
+
+function installRuntime(t, runtime, { defaults, repeat = false, scope = 'local' } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-4032-${runtime}-`));
+  t.after(() => cleanup(root));
+  if (defaults !== undefined) {
+    fs.mkdirSync(path.join(root, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.gsd', 'defaults.json'), JSON.stringify(defaults), 'utf8');
+  }
+  const configDir = scope === 'global'
+    ? path.join(root, RUNTIME_META[runtime].globalSuffix)
+    : path.join(root, RUNTIME_META[runtime].localDir);
+  const args = ['--preserve-symlinks', '--preserve-symlinks-main', path.join(REPO_ROOT, 'bin', 'install.js'), `--${runtime}`];
+  if (scope === 'global') args.push('--global', '--config-dir', configDir);
+  else args.push('--local');
+  const run = () => runNode(args, {
+    cwd: root,
+    env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: INSTALL_TIMEOUT_MS,
+  });
+  const result = run();
+  assert.strictEqual(result.exitCode, 0, `${runtime} install failed:\n${result.stderr}`);
+  if (repeat) {
+    const rerun = run();
+    assert.strictEqual(rerun.exitCode, 0, `${runtime} reinstall failed:\n${rerun.stderr}`);
+  }
+  return { root, configDir };
+}
+
+function emittedAgentArtifacts(install, agentName) {
+  const artifacts = [];
+  const visit = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const candidate = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(candidate);
+      else if (entry.isFile() && new RegExp(`^${agentName.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}(?:\\.|$)`).test(entry.name)) {
+        artifacts.push(fs.readFileSync(candidate, 'utf8'));
+      }
+    }
+  };
+  visit(install.configDir);
+  assert.ok(artifacts.length > 0, `install must emit at least one ${agentName} artifact`);
+  return artifacts;
 }
 
 test('Claude installer appends wildcard then named grants exactly once (#4032)', (t) => {
@@ -123,4 +167,51 @@ test('missing or invalid agent_tools leave installed agent bytes unchanged (#403
   const baseline = baselineInstall.agent('gsd-executor').split(baselineInstall.root).join('<INSTALL_ROOT>');
   const invalid = invalidInstall.agent('gsd-executor').split(invalidInstall.root).join('<INSTALL_ROOT>');
   assert.strictEqual(invalid, baseline);
+});
+
+test('host converters receive canonical grants without changing their omissions (#4032)', (t) => {
+  const defaults = { agent_tools: { 'gsd-executor': ['mcp__configured__grant'] } };
+  for (const runtime of ['claude', 'codex', 'qwen']) {
+    const artifacts = emittedAgentArtifacts(installRuntime(t, runtime, { defaults }), 'gsd-executor');
+    assert.ok(artifacts.some((artifact) => artifact.includes('mcp__configured__grant')),
+      `${runtime} must expose the configured canonical grant in its existing host form`);
+  }
+  for (const runtime of ['zcode', 'opencode']) {
+    const artifacts = emittedAgentArtifacts(installRuntime(t, runtime, { defaults }), 'gsd-executor');
+    assert.ok(artifacts.every((artifact) => !artifact.includes('mcp__configured__grant')),
+      `${runtime} must preserve its existing tool omission policy`);
+  }
+});
+
+test('Kimi receives canonical grants before its existing mapper runs (#4032)', (t) => {
+  const install = installRuntime(t, 'kimi', {
+    defaults: { agent_tools: { 'gsd-executor': ['WebFetch'] } },
+    scope: 'global',
+  });
+  const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
+  assert.ok(artifacts.some((artifact) => artifact.includes('kimi_cli.tools.web:FetchURL')),
+    'Kimi must map a configured canonical WebFetch tool through its existing converter');
+});
+
+test('hostile values fail closed while quoted scalar data remains parseable (#4032)', (t) => {
+  const rejected = [null, 1, '', '  ', 'mcp__bad,comma', 'mcp__bad\nline', 'mcp__bad\u0085nel', 'mcp__bad\u2028line'];
+  const accepted = ['mcp__safe__:terminal', '#comment', '"quote"', '\\backslash'];
+  const installed = installClaude(t, { defaults: { agent_tools: { '*': [...rejected, ...accepted] } } });
+  const content = installed.agent('gsd-executor');
+  const frontmatter = content.slice(4, content.indexOf('\n---', 4));
+  const parsed = require('js-yaml').load(frontmatter);
+  assert.strictEqual(typeof parsed.tools, 'string', 'the emitted inline tools scalar must remain valid YAML');
+  assert.deepStrictEqual(parseTools(content).slice(-accepted.length), accepted);
+  assert.ok(rejected.every((value) => typeof value !== 'string' || !parseTools(content).includes(value)));
+});
+
+test('reinstall remains idempotent and preserves Claude read-only restrictions (#4032)', (t) => {
+  const install = installRuntime(t, 'claude', {
+    defaults: { agent_tools: { '*': ['mcp__idempotent__grant'] } },
+    repeat: true,
+  });
+  const artifacts = emittedAgentArtifacts(install, 'gsd-plan-checker');
+  assert.ok(artifacts.every((artifact) => parseTools(artifact).filter((tool) => tool === 'mcp__idempotent__grant').length === 1));
+  assert.ok(artifacts.some((artifact) => artifact.includes('disallowedTools:')),
+    'the existing Claude read-only deny-list must survive augmentation');
 });
