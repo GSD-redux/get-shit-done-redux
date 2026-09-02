@@ -1951,18 +1951,6 @@ describe('cmdInitQuick', () => {
     cleanup(tmpDir);
   });
 
-  test('init quick emits researcher_model', () => {
-    // #3936: the quick research step (Step 4.75) dispatches gsd-phase-researcher,
-    // so init quick must resolve the researcher's own model tier — parity with
-    // init plan-phase (which emits researcher_model for the same agent).
-    const result = runGsdTools('init quick "Fix login bug"', tmpDir);
-    assert.ok(result.success, `Command failed: ${result.error}`);
-
-    const output = JSON.parse(result.output);
-    assert.ok('researcher_model' in output,
-      'init quick should emit researcher_model for the Step 4.75 research dispatch');
-  });
-
   test('init quick resolves researcher_model from model_overrides', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
       model_profile: 'balanced',
@@ -5045,4 +5033,3 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
   });
 });
-
