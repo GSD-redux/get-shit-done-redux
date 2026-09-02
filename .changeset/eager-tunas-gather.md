@@ -1,6 +1,6 @@
 ---
 type: Changed
-pr: 11
+pr: 4206
 ---
 **Planner wave assignment now sequences automatic external review after internal fixes** — phases with internal review lanes defer PR creation until accepted fixes land and re-check open-time properties immediately before opening.
 
