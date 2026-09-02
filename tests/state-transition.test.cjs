@@ -1879,9 +1879,6 @@ describe('ADR-1769 Phase 4: milestoneSwitch transition — milestone reset', () 
 
   test('gsd_state_version is preserved across the reset', () => {
     const result = transitionCore(milestoneBody(), { kind: 'milestoneSwitch', version: 'v2.0', name: 'New Milestone' }, deps);
-    // #4053: the version value may be quoted on write ("1.0") now that
-    // non-integer numeric scalars are quoted; this test asserts preservation of
-    // the value, not its quoting, so accept an optional quote.
     assert.ok(/gsd_state_version:\s*"?1\.0"?/.test(result.content), 'gsd_state_version must be preserved');
   });
 

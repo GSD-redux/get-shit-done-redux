@@ -249,15 +249,6 @@ describe('reconstructFrontmatter', () => {
     assert.ok(hashResult.includes('"value # note"'), 'should quote value with hash');
   });
 
-  // #4053 — A decimal-shaped identifier (e.g. a phase id like `22.10`) was
-  // emitted BARE, because scalarNeedsDoubleQuoting only asks "can this OPEN a
-  // plain scalar", which `22.10` can. But a YAML-SPEC reader (js-yaml, the
-  // statusline, any external tooling) then reloads bare `22.10` as the float
-  // 22.1 — colliding with `22.1` and dropping the trailing zero. gsd's own
-  // tolerant line-scanner hides this; a spec reader does not. The fix quotes
-  // numeric-looking scalars that are not plain integers, so they reload as the
-  // exact string, while leaving integer counts/phase numbers bare (the
-  // state-rebuild idempotency baseline pins those unquoted).
   describe('#4053 — decimal-shaped numeric scalars survive a spec YAML reader', () => {
     const yaml = require('js-yaml');
     const lineFor = (obj, key) =>
@@ -365,10 +356,7 @@ describe('reconstructFrontmatter', () => {
       reconstructed.includes('# NOTE: current_phase is hand-maintained here'),
       `comment should survive reconstruct; got:\n${reconstructed}`,
     );
-    // data identity preserved alongside the comment. #4053: the version value
-    // `1.0` is numeric-looking and non-integer, so it is now quoted on write
-    // (matching the authoritative STATE.md template, which emits it quoted) so a
-    // spec YAML reader keeps it the string "1.0" rather than the float 1.
+    // data identity preserved alongside the comment.
     assert.ok(reconstructed.includes('gsd_state_version: "1.0"'));
     assert.ok(reconstructed.includes('current_phase: 3'));
     assert.ok(reconstructed.includes('status: executing'));
