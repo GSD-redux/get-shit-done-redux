@@ -299,7 +299,7 @@ function convertClaudeToKiloPermissionTool(claudeTool) {
 }
 
 function buildKiloAgentPermissionBlock(claudeTools) {
-  const allowedPermissions = new Set();
+  const allowedPermissions = new Set<string>();
 
   for (const tool of claudeTools) {
     const mapped = convertClaudeToKiloPermissionTool(tool);
@@ -685,15 +685,15 @@ function convertClaudeCommandToKimiCodeSkill(content, skillName, _runtime = null
 
 const KIMI_CANONICAL_GSD_AGENT_RE = /^gsd-[a-z0-9-]+$/;
 
-/** Normalize one complete frontmatter tool scalar without parsing YAML. */
+/** Normalize one complete frontmatter tool scalar through the shared YAML parser. */
 function decodeToolScalar(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const value = raw.trim();
   if (!value) return null;
   if (value.startsWith('"')) {
-    if (!value.endsWith('"')) return null;
+    if (!value.endsWith('"') || /[\r\n]/.test(value)) return null;
     try {
-      const decoded = JSON.parse(value);
+      const decoded = frontmatterModule.parseFrontmatter('---\ntool: ' + value + '\n---\n').tool;
       return typeof decoded === 'string' && decoded.trim() ? decoded.trim() : null;
     } catch {
       return null;
@@ -2623,10 +2623,10 @@ function convertClaudeAgentToQwenAgent(content) {
  * for an agent with no frontmatter at all.
  */
 function convertClaudeAgentToZcodeAgent(content) {
-  // Fast path: no MCP grant token anywhere means nothing to strip. (A body
-  // mention alone is not a grant — the line scan below finds no tools-line
-  // change and returns `content` unchanged anyway; this just skips the scan.)
-  if (!content.includes('mcp__')) return content;
+  // A double-quoted YAML scalar may encode the leading "m" in mcp__ as an
+  // escape, so only skip the shared scalar-decoder scan when neither form is
+  // present. The unchanged scan below still preserves byte-identical content.
+  if (!content.includes('mcp__') && !content.includes('\\')) return content;
 
   const lines = content.split('\n');
   if (lines[0] !== '---') return content;

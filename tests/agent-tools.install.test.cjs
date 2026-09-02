@@ -14,7 +14,7 @@ const { installerEnv, RUNTIME_META } = require('./helpers/install-shared.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
-const { appendAgentTools, buildKimiAgentArtifacts, convertClaudeAgentToQwenAgent } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+const { appendAgentTools, buildKimiAgentArtifacts, convertClaudeAgentToQwenAgent, _decodeToolScalar } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 function parseTools(content) {
   const lines = content.split(/\r?\n/);
@@ -225,6 +225,15 @@ test('reinstall remains idempotent and preserves Claude read-only restrictions (
 });
 
 test('quoted scalar identity is shared by append, Kimi, and Qwen (#4191)', () => {
+  for (const [raw, expected] of [
+    ['"\\x6dcp__server__tool"', 'mcp__server__tool'],
+    ['"\\u006dcp__server__tool"', 'mcp__server__tool'],
+    ['"\\U0000006dcp__server__tool"', 'mcp__server__tool'],
+    ['"\\x6gcp__server__tool"', null],
+  ]) {
+    assert.strictEqual(_decodeToolScalar(raw), expected);
+  }
+
   const inline = '---\nname: gsd-test\ndescription: test\ntools: "WebFetch", \'WebSearch\', "unterminated\n---\n';
   const block = '---\nname: gsd-test\ndescription: test\ntools:\n  - "WebFetch"\n  - \'WebSearch\'\n  - "unterminated\n---\n';
 

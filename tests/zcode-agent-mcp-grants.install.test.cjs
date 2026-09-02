@@ -163,8 +163,14 @@ function zcodeBlockFixture(items) {
 test('zcode treats quoted MCP scalars as equivalent to plain scalars (#4189)', (t) => {
   const cases = [
     { name: 'mixed inline', source: zcodeFixture('Read, mcp__server__plain, \'mcp__server__single\', "mcp__server__double"'), expected: 'tools: Read' },
+    { name: 'escaped inline', source: zcodeFixture('Read, "\\x6dcp__server__tool"'), expected: 'tools: Read' },
+    { name: 'escaped inline unicode-16', source: zcodeFixture('Read, "\\u006dcp__server__tool"'), expected: 'tools: Read' },
+    { name: 'escaped inline unicode-32', source: zcodeFixture('Read, "\\U0000006dcp__server__tool"'), expected: 'tools: Read' },
     { name: 'all inline', source: zcodeFixture('\'mcp__server__single\', "mcp__server__double"'), expected: null },
     { name: 'mixed block', source: zcodeBlockFixture(['Read', 'mcp__server__plain', "'mcp__server__single'", '"mcp__server__double"']), expected: 'tools:\n  - Read' },
+    { name: 'escaped block', source: zcodeBlockFixture(['Read', '"\\x6dcp__server__tool"']), expected: 'tools:\n  - Read' },
+    { name: 'escaped block unicode-16', source: zcodeBlockFixture(['Read', '"\\u006dcp__server__tool"']), expected: 'tools:\n  - Read' },
+    { name: 'escaped block unicode-32', source: zcodeBlockFixture(['Read', '"\\U0000006dcp__server__tool"']), expected: 'tools:\n  - Read' },
     { name: 'all block', source: zcodeBlockFixture(["'mcp__server__single'", '"mcp__server__double"']), expected: null },
   ];
 
@@ -176,6 +182,7 @@ test('zcode treats quoted MCP scalars as equivalent to plain scalars (#4189)', (
     assert.strictEqual(result.exitCode, 0, `${row.name}: zcode install must succeed\n${result.stderr}`);
     const emitted = fs.readFileSync(path.join(root, 'agents', 'gsd-phase-researcher.md'), 'utf8');
     assert.ok(!emitted.includes('mcp__server__'), `${row.name}: all semantic MCP entries must be removed`);
+    assert.ok(!emitted.includes('\\x6dcp__server__'), `${row.name}: YAML-escaped semantic MCP entries must be removed`);
     assert.ok(emitted.includes('fixture body survives'), `${row.name}: unrelated body bytes must survive`);
     if (row.expected === null) assert.ok(!/^tools:/m.test(emitted), `${row.name}: all-MCP lists must drop tools`);
     else assert.ok(emitted.includes(row.expected), `${row.name}: non-MCP tool formatting must survive`);
