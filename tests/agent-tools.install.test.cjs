@@ -244,6 +244,19 @@ test('Kimi project selectors override matching global selectors (#4032)', (t) =>
     'the matching global selector must not survive the project override');
 });
 
+test('Kilo global install resolves project agent_tools from the working directory (#4032)', (t) => {
+  const install = installRuntime(t, 'kilo', {
+    defaults: { agent_tools: { 'gsd-executor': ['mcp__global__loser'] } },
+    projectConfig: { agent_tools: { 'gsd-executor': ['mcp__project__winner'] } },
+    scope: 'global',
+  });
+  const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
+  assert.ok(artifacts.some((artifact) => artifact.includes('  project_winner: allow')),
+    'the combined-family path must discover project config from cwd during a global install');
+  assert.ok(artifacts.every((artifact) => !artifact.includes('global_loser')),
+    'the matching global selector must not survive the project override');
+});
+
 test('Codex grants do not widen the generated TOML sandbox (#4032)', (t) => {
   const install = installRuntime(t, 'codex', {
     defaults: { agent_tools: { 'gsd-plan-checker': ['Write'] } },

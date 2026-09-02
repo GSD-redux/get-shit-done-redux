@@ -166,11 +166,13 @@ test('zcode treats quoted MCP scalars as equivalent to plain scalars (#4189)', (
     { name: 'escaped inline', source: zcodeFixture('Read, "\\x6dcp__server__tool"'), expected: 'tools: Read' },
     { name: 'escaped inline unicode-16', source: zcodeFixture('Read, "\\u006dcp__server__tool"'), expected: 'tools: Read' },
     { name: 'escaped inline unicode-32', source: zcodeFixture('Read, "\\U0000006dcp__server__tool"'), expected: 'tools: Read' },
+    { name: 'commented inline', source: zcodeFixture('Read, "mcp__server__double" # note'), expected: 'tools: Read' },
     { name: 'all inline', source: zcodeFixture('\'mcp__server__single\', "mcp__server__double"'), expected: null },
     { name: 'mixed block', source: zcodeBlockFixture(['Read', 'mcp__server__plain', "'mcp__server__single'", '"mcp__server__double"']), expected: 'tools:\n  - Read' },
     { name: 'escaped block', source: zcodeBlockFixture(['Read', '"\\x6dcp__server__tool"']), expected: 'tools:\n  - Read' },
     { name: 'escaped block unicode-16', source: zcodeBlockFixture(['Read', '"\\u006dcp__server__tool"']), expected: 'tools:\n  - Read' },
     { name: 'escaped block unicode-32', source: zcodeBlockFixture(['Read', '"\\U0000006dcp__server__tool"']), expected: 'tools:\n  - Read' },
+    { name: 'commented block', source: zcodeBlockFixture(['Read', '"mcp__server__double" # note']), expected: 'tools:\n  - Read' },
     { name: 'all block', source: zcodeBlockFixture(["'mcp__server__single'", '"mcp__server__double"']), expected: null },
   ];
 
