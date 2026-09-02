@@ -53,6 +53,15 @@ describe('conditional canonical TDD executor context', () => {
     }
   });
 
+  test('orchestrator resolves selected-plan eligibility before embedding conditional files', () => {
+    const steps = compositionScope(composerSource(WORKTREE), '# ORCHESTRATOR BUILD-TIME EMBEDS', 'EXECUTOR_PROMPT=');
+    const eligibility = steps.indexOf('Set `PLAN_TDD_CONTEXT=true`');
+    const inline = steps.indexOf('Inline each file');
+
+    assert.ok(eligibility !== -1 && inline !== -1 && eligibility < inline,
+      'selected-plan eligibility must be known before the conditional file list is embedded');
+  });
+
   test('orchestrator-worktree rejects an unresolved TDD marker before it can spawn an executor', () => {
     const source = composerSource(WORKTREE);
     const composition = compositionScope(source, 'EXECUTOR_PROMPT=', 'Then create the worktree');
@@ -86,6 +95,10 @@ describe('conditional canonical TDD executor context', () => {
     for (const [name, file] of [['executor role', EXECUTOR], ['execute-plan workflow', EXECUTE_PLAN]]) {
       const source = composerSource(file);
       assert.match(source, /tdd\.md/, `${name} must point to the canonical reference`);
+      assert.match(source, /embedded in (?:the |your )?execution context/i,
+        `${name} must use the canonical procedure already embedded by the orchestrator`);
+      assert.doesNotMatch(source, /(?:read|Read)[^\n]*tdd\.md/,
+        `${name} must not ask the executor to reread a host-only TDD path`);
       assert.doesNotMatch(source, /\*\*2\. RED:\*\*[\s\S]{0,500}\*\*3\. GREEN:\*\*[\s\S]{0,500}\*\*4\. REFACTOR/,
         `${name} must not duplicate the complete canonical procedure`);
     }
