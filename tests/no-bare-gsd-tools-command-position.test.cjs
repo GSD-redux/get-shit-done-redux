@@ -61,26 +61,26 @@ const SCAN_DIRS = [
 ];
 
 // Derive the verb set the bare-call guard matches against. Most top-level
-// verbs live in the host-command router table as `'verb': routeHandler` entries
-// (~70); this reads those dynamically so new router verbs are covered the moment
-// they land. A handful of verbs are dispatched as FAMILIES (their own
-// `command === 'verb'` arm, not a route-table entry): `query` (line ~2876),
-// `intel`, `verify`, and `graphify`. These are stable, documented families, so
-// they are supplemented explicitly here rather than parsed from the help string
-// (whose prose mixes real verbs with English words like "for"/"output"/"working",
-// producing noise). If a family verb is ever promoted into the route table the
-// union dedupes harmlessly; if a NEW family verb is added it must be added here.
+// verbs live in the host-command router table (`HOST_COMMAND_ROUTERS`, ~70
+// entries, exported by gsd-tools.cjs for exactly this kind of test); this
+// reads that real exported object directly so new router verbs are covered
+// the moment they land. A handful of verbs are dispatched as FAMILIES (their
+// own `command === 'verb'` arm, not a route-table entry): `query` (line
+// ~2876), `intel`, `verify`, and `graphify`. These are stable, documented
+// families, so they are supplemented explicitly here rather than parsed from
+// the help string (whose prose mixes real verbs with English words like
+// "for"/"output"/"working", producing noise). If a family verb is ever
+// promoted into the route table the union dedupes harmlessly; if a NEW
+// family verb is added it must be added here.
 //
 // Sorted longest-first so a hyphenated verb (`verify-summary`) is preferred over
 // its prefix (`verify`) — the exact ordering bug that let `verify-summary` slip
 // past a fixed 6-verb list during the first #2751 pass.
 const FAMILY_DISPATCHED_VERBS = ['query', 'intel', 'verify', 'graphify'];
 function readRouterVerbs() {
-  const src = fs.readFileSync(ROUTER_PATH, 'utf8');
-  const re = /(?:'([a-z][a-z-]*)'|([a-z][a-z-]*))\s*:\s*route[A-Z]\w*/g;
+  const { HOST_COMMAND_ROUTERS } = require(ROUTER_PATH);
   const verbs = new Set(FAMILY_DISPATCHED_VERBS);
-  let m;
-  while ((m = re.exec(src)) !== null) verbs.add(m[1] || m[2]);
+  for (const verb of Object.keys(HOST_COMMAND_ROUTERS)) verbs.add(verb);
   return [...verbs].sort((a, b) => b.length - a.length);
 }
 

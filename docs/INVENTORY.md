@@ -381,7 +381,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `executor-examples.md` | Worked examples for the gsd-executor agent. |
 | `plan-checker-examples.md` | Worked example for the gsd-plan-checker agent (Scope Exceeded), moved out of the inline `<examples>` block to keep worked examples structurally separate from the agent contract, matching the other agents' reference layout. `@`-inlined at load (eager), so this costs ~0.6 KB of runtime context versus keeping it inline — a readability trade, not a size-cap remedy (#3724). |
 | `doc-conflict-engine.md` | Shared conflict-detection contract for ingest/import workflows. |
-| `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under MVP+TDD — pre-task failing-test verification, end-of-phase blocking review. |
+| `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under TDD mode — pre-task failing-test verification, end-of-phase blocking review. |
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
 | `verify-mvp-mode.md` | UAT framing rules for MVP-mode phases — user-flow-first ordering, deferred technical checks, user-story-format guard. |
 
@@ -529,6 +529,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `external-job.cjs` | Produces scheduler manifests for asynchronous external jobs; SLURM is the first backend (#1164) |
 | `fallow-runner.cjs` | Fallow audit adapter for `/gsd-code-review`: binary resolution (`node_modules/.bin` then `PATH`), actionable missing-binary errors, and structural findings normalization |
 | `federated-config.cjs` | Defensive merge of capability-declared config slices into the loadConfig return value — ADR-857 phase 3b; exports `mergeFederatedConfig({ configSchema, isCentralKey, userConfig })` → `{ values, validKeys, warnings }`; live for migrated Capability keys that are atomically removed from the central config schema |
+| `file-overlap-partitioner.cjs` | Generic greedy first-fit file-overlap partitioner (#3674) — `partitionByFileOverlap(items: {id, files}[]) → string[][]`, extracted from `claude-orchestration.cjs`'s `partitionStages` behavior-preserving; no `Plan`/`Wave` dependency, no path normalization, no dependency-graph ordering. Compiled from `src/file-overlap-partitioner.cts` |
 | `frontmatter.cjs` | YAML frontmatter CRUD operations |
 | `gap-checker.cjs` | Post-planning gap analysis (#2493): unified REQUIREMENTS.md + CONTEXT.md decisions vs PLAN.md coverage report (`gsd-tools gap-analysis`) |
 | `gate-predicate-evaluator.cjs` | Evaluates capability gate predicates — `command-exit-zero` and `artifact-frontmatter` (#2008) |

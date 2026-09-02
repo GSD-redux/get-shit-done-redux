@@ -182,6 +182,9 @@ test('no `isAugment` occurrence gates a call to an Augment converter function (t
   const converterCallPattern = new RegExp(`(${converterNames.join('|')})\\s*\\(`);
 
   const file = path.join(__dirname, '..', 'bin', 'install.js');
+  // allow-test-rule: structural-regression-guard (#3545) — absence of an
+  // isAugment-gated converter call is a source-text property (see file
+  // header, #2097).
   const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
   const offenders = [];
   for (let i = 0; i < lines.length; i++) {
@@ -200,6 +203,9 @@ test('no `isAugment` occurrence gates a call to an Augment converter function (t
 
 test('legitimate isAugment destructure/enumeration sites survive (not eliminated, unlike isAntigravity)', () => {
   const file = path.join(__dirname, '..', 'bin', 'install.js');
+  // allow-test-rule: structural-regression-guard (#3545) — presence of the
+  // isAugment identifier itself is a source-text property (see file header,
+  // #2097).
   const src = fs.readFileSync(file, 'utf8');
   assert.ok(/isAugment/.test(src), 'isAugment must still be destructured from runtimeFlags() for non-conversion uses');
 });
@@ -234,6 +240,9 @@ test('augment capability.json declares a real, converter-bearing agents kind for
 
 test('_DESCRIPTOR_AGENTS_RUNTIMES no longer exists as a live declaration — the descriptor is authoritative for every runtime, not an allow-listed subset', () => {
   const file = path.join(__dirname, '..', 'bin', 'install.js');
+  // allow-test-rule: structural-regression-guard (#3545) — absence of a live
+  // _DESCRIPTOR_AGENTS_RUNTIMES declaration is a source-text property (see
+  // file header, #2097).
   const src = fs.readFileSync(file, 'utf8');
   // A residual mention in a historical // comment (documenting the #2875
   // deletion itself) is fine; a live `const _DESCRIPTOR_AGENTS_RUNTIMES =`

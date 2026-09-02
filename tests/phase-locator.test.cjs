@@ -1776,7 +1776,6 @@ describe('migrated exemptions behave identically (#3882 rows E1/E2)', () => {
       [path.join('src', 'milestone.cts'), 'archivePhaseDirectories'],
       [path.join('src', 'milestone.cts'), 'cmdPhasesClear'],
       [path.join('src', 'verify.cts'), 'cmdValidateHealth'],
-      [path.join('src', 'verify.cts'), 'cmdVerifySchemaDrift'],
       [path.join('src', 'init.cts'), 'detectHasPriorPhases'],
       [path.join('src', 'init.cts'), 'detectUiPhaseActive'],
     ];
@@ -1793,6 +1792,16 @@ describe('migrated exemptions behave identically (#3882 rows E1/E2)', () => {
     const initExempt = driftGuard.FUNCTION_SCOPED_EXEMPTIONS.get(path.join('src', 'init.cts'));
     assert.ok(!initExempt || !initExempt.has('cmdInitMilestoneOp'),
       'cmdInitMilestoneOp must no longer carry an exemption — its diskPhaseDirs lookup no longer hand-rolls a readdirSync');
+    // #3348: cmdVerifySchemaDrift's own inline phasesDir readdirSync/matchPhaseDirs
+    // block was lifted into the shared resolvePhaseDirByToken helper (also used by
+    // the new cmdVerifyContextDrift) — same "call site no longer hand-rolls a
+    // readdirSync" shape as the roadmap/init migrations above, so the exemption
+    // moved with the call site rather than living at both names.
+    const verifyExempt = driftGuard.FUNCTION_SCOPED_EXEMPTIONS.get(path.join('src', 'verify.cts'));
+    assert.ok(!verifyExempt || !verifyExempt.has('cmdVerifySchemaDrift'),
+      'cmdVerifySchemaDrift must no longer carry an exemption — its phasesDir readdirSync now lives in resolvePhaseDirByToken');
+    assert.ok(verifyExempt && verifyExempt.has('resolvePhaseDirByToken'),
+      'resolvePhaseDirByToken must carry the function-scoped exemption — it is the new owner of the extracted readdirSync');
   });
 });
 

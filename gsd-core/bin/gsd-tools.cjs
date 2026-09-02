@@ -1886,6 +1886,112 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
   }
 
+  /**
+   * #3673 (ADR-1239 Phase 1) — typed, PURE-READ query exposing the negotiated
+   * `dispatch.maxConcurrency` numeric sub-field. Sibling of `dispatch-isolation`
+   * above, but — per the #3673 design doc's explicit rejection of a write path
+   * for this query — writes NOTHING: no sentinel file, no side effect at all.
+   * A read-only capacity lookup for a later (Phase 4) scheduler to consult.
+   *
+   * Precedence:
+   *   1. GSD_DISPATCH_MAX_CONCURRENCY, if it parses as a positive safe
+   *      integer → source: "live". A malformed value (non-numeric, zero,
+   *      negative, fractional) is treated exactly as if the variable were
+   *      unset — it falls through to tier 2, never errors.
+   *   2. registry.runtimes[id].runtime.hostIntegration.dispatch.maxConcurrency,
+   *      if it is a positive safe integer → source: "descriptor". The
+   *      "undocumented" sentinel and any other malformed shape fall through
+   *      to tier 3.
+   *   3. 1 (the fail-closed floor) → source: "fallback".
+   *
+   * `isPositiveSafeInteger`, required below from `./lib/host-integration.cjs`,
+   * is the SAME exported predicate src/host-integration.cts's
+   * negotiateHostCapabilities applies to the descriptor value — applied
+   * identically to both the env value and the descriptor value here so the
+   * two tiers can never silently disagree on what counts as valid.
+   *
+   * `reason` names why the WINNING tier (or the fallback) was chosen: "ok" on
+   * the happy path (live or descriptor honored), else "missing" (descriptor
+   * omitted the field), "undocumented" (descriptor sentinel), "non_integer"
+   * (fractional or NaN), "unsafe_integer" (integer but outside
+   * Number.isSafeInteger's range), "non_positive" (zero or negative),
+   * "non_numeric" (string/object/array/null/boolean), or "unknown_runtime"
+   * (no registry entry for the resolved runtime id — resolution itself never
+   * throws; failure fails closed to the same fallback tier).
+   *
+   * Output:
+   *   --raw   → prints exactly one positive integer, nothing else
+   *   --json  → prints { runtime, capacity, declared, source, reason }
+   *   default → same as --raw
+   */
+  function routeDispatchCapacity({ args, cwd, raw }) {
+    const { UNDOCUMENTED, isPositiveSafeInteger } = require('./lib/host-integration.cjs');
+
+    let runtimeId = null;
+    let runtimeEntry = null;
+    try {
+      const { resolveRuntime } = require('./lib/runtime-slash.cjs');
+      runtimeId = resolveRuntime(cwd);
+      const registry = require('./lib/capability-registry.cjs');
+      runtimeEntry = registry.runtimes != null ? registry.runtimes[runtimeId] : null;
+    } catch {
+      runtimeEntry = null;
+    }
+    const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.maxConcurrency ?? null;
+
+    let liveValue = null;
+    const rawEnv = process.env.GSD_DISPATCH_MAX_CONCURRENCY;
+    if (typeof rawEnv === 'string' && rawEnv.trim().length > 0) {
+      const parsed = Number(rawEnv.trim());
+      if (isPositiveSafeInteger(parsed)) {
+        liveValue = parsed;
+      }
+    }
+
+    let capacity;
+    let source;
+    let reason;
+    if (liveValue !== null) {
+      capacity = liveValue;
+      source = 'live';
+      reason = 'ok';
+    } else if (runtimeEntry == null) {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'unknown_runtime';
+    } else if (declared === UNDOCUMENTED) {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'undocumented';
+    } else if (isPositiveSafeInteger(declared)) {
+      capacity = declared;
+      source = 'descriptor';
+      reason = 'ok';
+    } else if (declared === null || declared === undefined) {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'missing';
+    } else if (typeof declared !== 'number') {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'non_numeric';
+    } else if (!Number.isSafeInteger(declared)) {
+      capacity = 1;
+      source = 'fallback';
+      reason = Number.isInteger(declared) ? 'unsafe_integer' : 'non_integer';
+    } else {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'non_positive';
+    }
+
+    if (args.indexOf('--json') !== -1) {
+      output({ runtime: runtimeId, capacity, declared, source, reason }, raw);
+    } else {
+      process.stdout.write(String(capacity));
+    }
+  }
+
   // #3714 follow-up — the dispatch seam gated only on PRESENCE of an explicit
   // pin, never on its VALUE, so an Anthropic-flavored global default
   // (~/.gsd/defaults.json model_overrides["gsd-executor"] = "sonnet"/"opus"/
@@ -4079,6 +4185,7 @@ const HOST_COMMAND_ROUTERS = {
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
+    'dispatch-capacity': routeDispatchCapacity,
     'inspect-dispatch-isolation': routeInspectDispatchIsolation,
     'record-dispatch-isolation': routeRecordDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
@@ -4339,7 +4446,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, planning, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
-  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
+  'config-set-model-profile, dispatch-capacity, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +

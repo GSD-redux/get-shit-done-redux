@@ -183,7 +183,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -437,7 +438,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -581,7 +583,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": 20
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -828,7 +831,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -887,6 +891,15 @@ const capabilities = {
         ],
         "default": "standard",
         "description": "Default depth for code review when no --depth override is supplied."
+      },
+      "workflow.code_review_point": {
+        "type": "enum",
+        "values": [
+          "execute:post",
+          "execute:wave:post"
+        ],
+        "default": "execute:post",
+        "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff."
       }
     },
     "steps": [
@@ -902,6 +915,20 @@ const capabilities = {
           "SUMMARY.md"
         ],
         "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
+        "onError": "skip"
+      },
+      {
+        "point": "execute:wave:post",
+        "ref": {
+          "skill": "code-review"
+        },
+        "produces": [
+          "REVIEW.md"
+        ],
+        "consumes": [],
+        "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
         "onError": "skip"
       }
     ],
@@ -1011,7 +1038,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1162,7 +1190,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1325,7 +1354,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1424,7 +1454,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1472,6 +1503,7 @@ const capabilities = {
         "binary": "cursor-agent",
         "args": [
           "-p",
+          "{{model}}",
           "--mode",
           "ask",
           "--trust",
@@ -1481,7 +1513,7 @@ const capabilities = {
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
-        "modelArg": null,
+        "modelArg": "--model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
@@ -1491,10 +1523,15 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-      "modelConfigKey": null,
+      "modelConfigKey": "review.models.cursor",
       "handler": null
     },
     "config": {
+      "review.models.cursor": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Cursor reviewer lane."
+      },
       "review.max_prompt_tokens_per_reviewer.cursor": {
         "type": "number",
         "default": -1,
@@ -1546,6 +1583,20 @@ const capabilities = {
         "type": "boolean",
         "default": true,
         "description": "Enable the non-blocking codebase drift pre-check at plan:pre, before /gsd:plan-phase spawns the planner. When enabled, a stale STRUCTURE.md (structural additions exceeding drift_threshold) is surfaced up front as a warn-only advisory pointing to /gsd:map-codebase; it never blocks planning and never spawns the mapper agent. Separate from schema_drift_gate so autonomous/CI runs can silence the plan-time advisory while keeping the execute:wave:post gates enabled."
+      },
+      "workflow.context_drift_precheck": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable the non-blocking context-drift pre-check at plan:pre, before /gsd:plan-phase reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own — an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see workflow.context_drift_action); never blocks planning on its own."
+      },
+      "workflow.context_drift_action": {
+        "type": "enum",
+        "values": [
+          "warn",
+          "block"
+        ],
+        "default": "warn",
+        "description": "Action taken by the context-drift gate when a stale upstream artifact is found: warn (advisory message naming the stale artifacts and how to regenerate them) or block (halt plan-phase until the artifacts are regenerated or the check is disabled)."
       }
     },
     "steps": [],
@@ -1575,6 +1626,15 @@ const capabilities = {
           "query": "verify.codebase-drift"
         },
         "when": "workflow.plan_drift_precheck",
+        "blocking": false,
+        "onError": "skip"
+      },
+      {
+        "point": "plan:pre",
+        "check": {
+          "query": "verify.context-drift"
+        },
+        "when": "workflow.context_drift_precheck",
         "blocking": false,
         "onError": "skip"
       }
@@ -1906,7 +1966,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -2074,7 +2135,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -2173,7 +2235,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -2288,7 +2351,8 @@ const capabilities = {
             "explore",
             "plan"
           ],
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -2933,7 +2997,8 @@ const capabilities = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -3123,7 +3188,8 @@ const capabilities = {
           "background": false,
           "backgroundDispatch": false,
           "subagentToolkit": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -3307,7 +3373,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -3765,7 +3832,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "engine",
@@ -3922,7 +3990,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "engine",
@@ -4007,7 +4076,8 @@ const capabilities = {
           "background": "undocumented",
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -4121,7 +4191,8 @@ const capabilities = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -4396,6 +4467,16 @@ const byLoopPoint = {
         "onError": "skip"
       },
       {
+        "capId": "drift",
+        "point": "plan:pre",
+        "check": {
+          "query": "verify.context-drift"
+        },
+        "when": "workflow.context_drift_precheck",
+        "blocking": false,
+        "onError": "skip"
+      },
+      {
         "capId": "ui",
         "point": "plan:pre",
         "check": {
@@ -4494,6 +4575,20 @@ const byLoopPoint = {
   },
   "execute:wave:post": {
     "steps": [
+      {
+        "capId": "code-review",
+        "point": "execute:wave:post",
+        "ref": {
+          "skill": "code-review"
+        },
+        "produces": [
+          "REVIEW.md"
+        ],
+        "consumes": [],
+        "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
+        "onError": "skip"
+      },
       {
         "capId": "live-dom-uat",
         "point": "execute:wave:post",
@@ -4594,6 +4689,7 @@ const byLoopPoint = {
           "SUMMARY.md"
         ],
         "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
         "onError": "skip"
       },
       {
@@ -4777,15 +4873,19 @@ const configKeys = {
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "workflow.code_review_point": "code-review",
   "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
   "review.timeouts.codex": "codex",
+  "review.models.cursor": "cursor",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
   "workflow.plan_drift_precheck": "drift",
+  "workflow.context_drift_precheck": "drift",
+  "workflow.context_drift_action": "drift",
   "external_job.enabled": "external-job",
   "external_job.backend": "external-job",
   "external_job.artifact_dir": "external-job",
@@ -4946,6 +5046,16 @@ const configSchema = {
       "deep"
     ]
   },
+  "workflow.code_review_point": {
+    "owner": "code-review",
+    "type": "enum",
+    "default": "execute:post",
+    "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff.",
+    "values": [
+      "execute:post",
+      "execute:wave:post"
+    ]
+  },
   "review.max_prompt_tokens_per_reviewer.coderabbit": {
     "owner": "coderabbit",
     "type": "number",
@@ -4969,6 +5079,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.models.cursor": {
+    "owner": "cursor",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Cursor reviewer lane."
   },
   "review.max_prompt_tokens_per_reviewer.cursor": {
     "owner": "cursor",
@@ -5003,6 +5119,22 @@ const configSchema = {
     "type": "boolean",
     "default": true,
     "description": "Enable the non-blocking codebase drift pre-check at plan:pre, before /gsd:plan-phase spawns the planner. When enabled, a stale STRUCTURE.md (structural additions exceeding drift_threshold) is surfaced up front as a warn-only advisory pointing to /gsd:map-codebase; it never blocks planning and never spawns the mapper agent. Separate from schema_drift_gate so autonomous/CI runs can silence the plan-time advisory while keeping the execute:wave:post gates enabled."
+  },
+  "workflow.context_drift_precheck": {
+    "owner": "drift",
+    "type": "boolean",
+    "default": true,
+    "description": "Enable the non-blocking context-drift pre-check at plan:pre, before /gsd:plan-phase reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own — an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see workflow.context_drift_action); never blocks planning on its own."
+  },
+  "workflow.context_drift_action": {
+    "owner": "drift",
+    "type": "enum",
+    "default": "warn",
+    "description": "Action taken by the context-drift gate when a stale upstream artifact is found: warn (advisory message naming the stale artifacts and how to regenerate them) or block (halt plan-phase until the artifacts are regenerated or the check is disabled).",
+    "values": [
+      "warn",
+      "block"
+    ]
   },
   "external_job.enabled": {
     "owner": "external-job",
@@ -5455,7 +5587,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5626,7 +5759,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5724,7 +5858,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": 20
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5883,7 +6018,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6005,7 +6141,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6106,7 +6243,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6269,7 +6407,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6368,7 +6507,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6416,6 +6556,7 @@ const runtimes = {
         "binary": "cursor-agent",
         "args": [
           "-p",
+          "{{model}}",
           "--mode",
           "ask",
           "--trust",
@@ -6425,7 +6566,7 @@ const runtimes = {
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
-        "modelArg": null,
+        "modelArg": "--model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
@@ -6435,10 +6576,15 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-      "modelConfigKey": null,
+      "modelConfigKey": "review.models.cursor",
       "handler": null
     },
     "config": {
+      "review.models.cursor": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Cursor reviewer lane."
+      },
       "review.max_prompt_tokens_per_reviewer.cursor": {
         "type": "number",
         "default": -1,
@@ -6546,7 +6692,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6662,7 +6809,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6761,7 +6909,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6876,7 +7025,8 @@ const runtimes = {
             "explore",
             "plan"
           ],
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7052,7 +7202,8 @@ const runtimes = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -7188,7 +7339,8 @@ const runtimes = {
           "background": false,
           "backgroundDispatch": false,
           "subagentToolkit": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -7295,7 +7447,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7436,7 +7589,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "engine",
@@ -7498,7 +7652,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "engine",
@@ -7583,7 +7738,8 @@ const runtimes = {
           "background": "undocumented",
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7697,7 +7853,8 @@ const runtimes = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",

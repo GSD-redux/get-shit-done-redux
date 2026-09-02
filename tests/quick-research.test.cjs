@@ -129,6 +129,68 @@ describe('quick workflow: research step', () => {
     );
   });
 
+  test('research step injects the researcher persona, not the planner persona', () => {
+    // #3936: the dispatch targets gsd-phase-researcher, so the persona riding the
+    // prompt and the model tier must be the researcher's own — not the planner's.
+    content = expandWorkflowSections(workflowPath);
+    const researchSection = content.substring(
+      content.indexOf('Step 4.75'),
+      content.indexOf('Step 5:')
+    );
+    assert.ok(
+      researchSection.includes('${AGENT_SKILLS_RESEARCHER}'),
+      'research step should inject the gsd-phase-researcher persona'
+    );
+    assert.ok(
+      !researchSection.includes('${AGENT_SKILLS_PLANNER}'),
+      'research step must not inject the planner persona into a researcher dispatch'
+    );
+    assert.ok(
+      researchSection.includes('model="{researcher_model}"'),
+      'research step should pin the researcher model tier, not planner_model'
+    );
+  });
+
+  test('quick workflow resolves the researcher persona', () => {
+    // #3936: AGENT_SKILLS_RESEARCHER must be resolved in quick.md's Step 2 block,
+    // the way plan-phase.md does, or the Step 4.75 interpolation expands empty.
+    const quickMd = fs.readFileSync(path.join(WORKFLOWS_DIR, 'quick.md'), 'utf8');
+    assert.ok(
+      quickMd.includes('AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)'),
+      'quick.md should resolve AGENT_SKILLS_RESEARCHER from agent-skills'
+    );
+  });
+
+  test('quick workflow parses researcher_model from init quick', () => {
+    const quickMd = fs.readFileSync(path.join(WORKFLOWS_DIR, 'quick.md'), 'utf8');
+    const parseList = quickMd.substring(
+      quickMd.indexOf('Parse JSON for:'),
+      quickMd.indexOf('```', quickMd.indexOf('Parse JSON for:'))
+    );
+    assert.ok(
+      parseList.includes('researcher_model'),
+      'quick.md parse list should include researcher_model'
+    );
+  });
+
+  test('planner and executor dispatches keep their own personas', () => {
+    // Negative space: #3936 touches only the research dispatch — the planner and
+    // executor spawns must keep their own personas and model tiers.
+    content = expandWorkflowSections(workflowPath);
+    const plannerSection = content.substring(
+      content.indexOf('Step 5: Spawn planner'),
+      content.indexOf('Step 5.5')
+    );
+    assert.ok(
+      plannerSection.includes('${AGENT_SKILLS_PLANNER}'),
+      'planner dispatch should still inject the planner persona'
+    );
+    assert.ok(
+      content.includes('${AGENT_SKILLS_EXECUTOR}'),
+      'executor dispatch should still inject the executor persona'
+    );
+  });
+
   test('research step writes RESEARCH.md', () => {
     content = expandWorkflowSections(workflowPath);
     const researchSection = content.substring(

@@ -299,6 +299,112 @@ describe('activation filter', () => {
   });
 });
 
+// ─── 2b. pointFrom gate (#3661, 50-test-matrix.md Section B) ────────────────
+
+describe('activation filter: pointFrom gate (#3661, matrix Section B)', () => {
+  test('B1: isActiveUnchangedForWhenOnlyStepTruthy — when-only step, when truthy → active (unchanged)', () => {
+    const registry = makeRegistry({
+      steps: [{ capId: 'test-cap', point: 'plan:pre', ref: { skill: 'my-skill' }, when: 'mytool.on' }],
+    });
+    const config = { mytool: { on: true } };
+    const result = resolveLoopHooks({ point: 'plan:pre', registry, config });
+    assert.strictEqual(result.activeHooks.length, 1);
+  });
+
+  test('B2: isActiveUnchangedForWhenOnlyStepFalsy — when-only step, when falsy → inactive (unchanged)', () => {
+    const registry = makeRegistry({
+      steps: [{ capId: 'test-cap', point: 'plan:pre', ref: { skill: 'my-skill' }, when: 'mytool.on' }],
+    });
+    const config = { mytool: { on: false } };
+    const result = resolveLoopHooks({ point: 'plan:pre', registry, config });
+    assert.strictEqual(result.activeHooks.length, 0);
+  });
+
+  test('B3: isActiveTrueWhenBothGatesPass — when truthy AND pointFrom matching point → active', () => {
+    const registry = makeRegistry({
+      steps: [{ capId: 'test-cap', point: 'plan:pre', ref: { skill: 'my-skill' }, when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    });
+    const config = { mytool: { on: true } };
+    const result = resolveLoopHooks({ point: 'plan:pre', registry, config });
+    assert.strictEqual(result.activeHooks.length, 1);
+  });
+
+  test('B4: isActiveFalseWhenPointFromMismatchesDespiteWhenTrue — AND semantics: pointFrom mismatch wins', () => {
+    const registry = makeRegistry({
+      steps: [{ capId: 'test-cap', point: 'plan:pre', ref: { skill: 'my-skill' }, when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:post', description: 'x' } },
+    });
+    const config = { mytool: { on: true } };
+    const result = resolveLoopHooks({ point: 'plan:pre', registry, config });
+    assert.strictEqual(result.activeHooks.length, 0);
+  });
+
+  test('B5: isActiveFalseWhenWhenFalseDespitePointFromMatch — AND semantics: when short-circuits', () => {
+    const registry = makeRegistry({
+      steps: [{ capId: 'test-cap', point: 'plan:pre', ref: { skill: 'my-skill' }, when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    });
+    const config = { mytool: { on: false } };
+    const result = resolveLoopHooks({ point: 'plan:pre', registry, config });
+    assert.strictEqual(result.activeHooks.length, 0);
+  });
+
+  test('B6: resolveLoopHooksSelectsExactlyOneOfTwoPointRegistrations — no cross-point leakage', () => {
+    const byLoopPoint = {};
+    for (const p of CANONICAL_POINTS_FALLBACK) byLoopPoint[p] = { steps: [], contributions: [], gates: [] };
+    byLoopPoint['plan:pre'].steps = [
+      { capId: 'test-cap', point: 'plan:pre', ref: { skill: 'a' }, when: 'mytool.on', pointFrom: 'mytool.point' },
+    ];
+    byLoopPoint['plan:post'].steps = [
+      { capId: 'test-cap', point: 'plan:post', ref: { skill: 'a' }, when: 'mytool.on', pointFrom: 'mytool.point' },
+    ];
+    const registry = {
+      byLoopPoint,
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    };
+    const config = { mytool: { on: true } };
+    const resultPre = resolveLoopHooks({ point: 'plan:pre', registry, config });
+    const resultPost = resolveLoopHooks({ point: 'plan:post', registry, config });
+    assert.strictEqual(resultPre.activeHooks.length, 1, 'point A must have exactly one active hook');
+    assert.strictEqual(resultPost.activeHooks.length, 0, 'point B must have no active hooks — no leakage');
+  });
+
+  test('B7: resolveLoopHooksBothPointsInactiveOnOutOfEnumValue — fail-closed on a typo', () => {
+    const byLoopPoint = {};
+    for (const p of CANONICAL_POINTS_FALLBACK) byLoopPoint[p] = { steps: [], contributions: [], gates: [] };
+    byLoopPoint['plan:pre'].steps = [
+      { capId: 'test-cap', point: 'plan:pre', ref: { skill: 'a' }, when: 'mytool.on', pointFrom: 'mytool.point' },
+    ];
+    byLoopPoint['plan:post'].steps = [
+      { capId: 'test-cap', point: 'plan:post', ref: { skill: 'a' }, when: 'mytool.on', pointFrom: 'mytool.point' },
+    ];
+    const registry = {
+      byLoopPoint,
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    };
+    const badConfig = { mytool: { on: true, point: 'bogus' } };
+    const resultPre = resolveLoopHooks({ point: 'plan:pre', registry, config: badConfig });
+    const resultPost = resolveLoopHooks({ point: 'plan:post', registry, config: badConfig });
+    assert.strictEqual(resultPre.activeHooks.length, 0, 'an out-of-enum value must not revive the step at either point');
+    assert.strictEqual(resultPost.activeHooks.length, 0, 'an out-of-enum value must not revive the step at either point');
+  });
+
+  test('B8: isActiveFalseWhenCapabilityInactiveDespitePointFromMatch — capability gate still cascades', () => {
+    const registry = makeRegistry({
+      steps: [{ capId: 'test-cap', point: 'plan:pre', ref: { skill: 'my-skill' }, when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    });
+    const config = { mytool: { on: true } };
+    const capabilityStatesById = new Map([['test-cap', { enabled: true, active: false }]]);
+    const result = resolveLoopHooks({ point: 'plan:pre', registry, config, capabilityStatesById });
+    assert.strictEqual(
+      result.activeHooks.length, 0,
+      'capability-level active=false must suppress the hook regardless of pointFrom match',
+    );
+  });
+});
+
 // ─── 3. UI pilot integration tests ───────────────────────────────────────────
 
 describe('UI pilot integration', () => {
@@ -356,6 +462,42 @@ describe('UI pilot integration', () => {
     assert.ok(uiGate, 'Expected ui gate active by default (configSchema.default=true)');
     assert.strictEqual(uiGate.blocking, true);
   });
+});
+
+// ─── 3b. #3661 — code-review capability.json + generated registry structural
+//         assertions (50-test-matrix.md Section F, rows F2-F3) ────────────────
+//
+// Loads the REAL generated registry (built by `npm run build:lib` +
+// `node scripts/gen-capability-registry.cjs --write`) — no source-grep, this
+// is the same `realRegistry` object the "UI pilot integration" tests above
+// already use for behavioral (not text) assertions.
+
+describe('#3661: code-review capability.json + generated registry (matrix Section F, F2-F3)', () => {
+  test('F2: registryConfigSchemaHasCodeReviewPointEnum', () => {
+    const slice = realRegistry.configSchema['workflow.code_review_point'];
+    assert.ok(slice, 'registry.configSchema must contain workflow.code_review_point');
+    assert.strictEqual(slice.type, 'enum');
+    assert.deepStrictEqual(slice.values, ['execute:post', 'execute:wave:post']);
+    assert.strictEqual(slice.default, 'execute:post');
+    assert.strictEqual(slice.owner, 'code-review');
+  });
+
+  test('F3: registryRegistersCodeReviewStepAtBothPoints', () => {
+    const postSteps = realRegistry.byLoopPoint['execute:post'].steps;
+    const wavePostSteps = realRegistry.byLoopPoint['execute:wave:post'].steps;
+    assert.ok(Array.isArray(postSteps), 'execute:post.steps must be an array');
+    assert.ok(Array.isArray(wavePostSteps), 'execute:wave:post.steps must be an array');
+
+    const postStep = postSteps.find((s) => s.capId === 'code-review' && s.ref && s.ref.skill === 'code-review');
+    const wavePostStep = wavePostSteps.find((s) => s.capId === 'code-review' && s.ref && s.ref.skill === 'code-review');
+    assert.ok(postStep, 'execute:post.steps must contain a code-review step. Got: ' + JSON.stringify(postSteps));
+    assert.ok(wavePostStep, 'execute:wave:post.steps must contain a code-review step. Got: ' + JSON.stringify(wavePostSteps));
+  });
+
+  // F4-F7 (CLI-behavioral: gsd_run loop render-hooks / config-set through the real
+  // subprocess, against a temp git project) live in tests/code-review.test.cjs's
+  // 'CR-CONFIG: config key registration' describe block, alongside the sibling
+  // workflow.code_review / workflow.code_review_depth CLI round-trip tests.
 });
 
 // ─── 4. Ordering tests ────────────────────────────────────────────────────────

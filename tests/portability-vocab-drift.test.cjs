@@ -367,6 +367,9 @@ describe('portability-vocab drift guard', () => {
     const srcPath = path.join(__dirname, '..', 'bin', 'install.js');
     const raw = fs.readFileSync(srcPath, 'utf8');
     // bin/install.js starts with a shebang espree cannot parse — rewrite #! -> //.
+    // allow-test-rule: source-text-is-the-product (#3545) — this is shebang-stripping
+    // to make the source parseable by espree; the test then walks the real AST
+    // structurally (below), it is not a text-grep proxy for behavior
     const src = raw.startsWith('#!') ? '//' + raw.slice(2) : raw;
     const ast = espree.parse(src, { ecmaVersion: 2022, loc: true, range: true, tolerant: true });
 
@@ -432,6 +435,9 @@ describe('portability-vocab drift guard', () => {
   test('bin/install.js: the curated INSTALL_JS_PATH_HELPERS still exist (no stale vocab entries after a rename)', () => {
     const srcPath = path.join(__dirname, '..', 'bin', 'install.js');
     const raw = fs.readFileSync(srcPath, 'utf8');
+    // allow-test-rule: source-text-is-the-product (#3545) — shebang-stripping to
+    // make the source parseable by espree; the test walks the real AST
+    // structurally (below), not a text-grep proxy for behavior
     const src = raw.startsWith('#!') ? '//' + raw.slice(2) : raw;
     const ast = espree.parse(src, { ecmaVersion: 2022, loc: true, range: true, tolerant: true });
 
