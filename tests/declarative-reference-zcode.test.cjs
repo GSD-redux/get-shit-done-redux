@@ -139,6 +139,69 @@ test('a partial/empty zcode descriptor degrades to the safe floor, not the decla
   assert.ok(result.warnings.length > 0);
 });
 
+test('#4002: zcode command bodies rewrite <execution_context> @-refs to the zcode runtime home', () => {
+  const { configDir, root } = runMinimalInstall({ runtime: 'zcode', scope: 'global' });
+  try {
+    const commandsDir = path.join(configDir, 'commands');
+    const files = fs.readdirSync(commandsDir).filter((f) => f.startsWith('gsd-') && f.endsWith('.md'));
+    assert.ok(files.length > 0, 'zcode install must emit command files');
+
+    // The reporter's evidence: 59 of 71 emitted command files still carried the
+    // Claude home literal, so every lazy load resolved inside ~/.claude/gsd-core
+    // and the ZCode-adapted copy was never read. None may remain.
+    const offenders = files.filter((f) =>
+      fs.readFileSync(path.join(commandsDir, f), 'utf8').includes('~/.claude/gsd-core'));
+    assert.deepEqual(offenders, [],
+      `command files still carrying the Claude home literal: ${offenders.join(', ')}`);
+
+    // The @-ref must land on the zcode home, in the tilde form ZCode documents
+    // (docs/reference/host-integration-capability-matrix.md: `~/.zcode/...`).
+    const planPhase = fs.readFileSync(path.join(commandsDir, 'gsd-plan-phase.md'), 'utf8');
+    assert.match(planPhase, /@~\/\.zcode\/gsd-core\/workflows\/plan-phase\.md/,
+      'execution_context must reference the zcode runtime home');
+    assert.doesNotMatch(planPhase, /@~\/\.claude\//, 'no @-ref may stay on the Claude home');
+
+    // The same rewrite pass owns skill bodies — the emitted skills must not
+    // carry the Claude literal either.
+    const skillsDir = path.join(configDir, 'skills');
+    if (fs.existsSync(skillsDir)) {
+      const stack = [skillsDir];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const ent of fs.readdirSync(cur, { withFileTypes: true })) {
+          const p = path.join(cur, ent.name);
+          if (ent.isDirectory()) stack.push(p);
+          else if (ent.name === 'SKILL.md') {
+            assert.ok(!fs.readFileSync(p, 'utf8').includes('~/.claude/gsd-core'),
+              `skill body still carrying the Claude home literal: ${path.relative(configDir, p)}`);
+          }
+        }
+      }
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('#4002 negative space: the project-local shim fallback survives the zcode rewrite', () => {
+  const { configDir, root } = runMinimalInstall({ runtime: 'zcode', scope: 'global' });
+  try {
+    // `${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/` is the legitimate
+    // project-local fallback (the reporter's OpenCode control keeps exactly
+    // this literal) — the rewrite must not touch it. Only 3 source commands
+    // carry the full shim chain; discuss-phase is one.
+    const discuss = fs.readFileSync(path.join(configDir, 'commands', 'gsd-discuss-phase.md'), 'utf8');
+    assert.match(discuss, /\$\{_GSD_RUNTIME_ROOT\}\/\.claude\/gsd-core\/bin\//,
+      'the project-local shim fallback literal must survive');
+    // ... while the bare $HOME/.claude fallback slot in the same chain is
+    // rewritten to the runtime home, exactly as every sibling runtime does.
+    assert.doesNotMatch(discuss, /\$HOME\/\.claude\/gsd-core\/bin\//,
+      'the $HOME fallback slot must resolve to the zcode home like every sibling runtime');
+  } finally {
+    cleanup(root);
+  }
+});
+
 // AC-style proof: the 2 still-`undocumented` dispatch sub-axes (nested/
 // maxDepth) must degrade to the most-restrictive KNOWN value, never their
 // optimistic value. Unlike augment (3 undocumented sub-axes) or antigravity

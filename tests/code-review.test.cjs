@@ -38,8 +38,12 @@ function extractBashBlocks(content) {
   return blocks;
 }
 const os = require('os');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
+
+const REPO_ROOT = path.join(__dirname, '..');
+const GSD_TOOLS_BIN = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 
 // --- Test Environment Setup ---
 
@@ -449,6 +453,103 @@ describe('CR-WORKFLOW: code review workflow structure', () => {
     assert.ok(content.includes('while IFS= read -r'),
       'code-review-fix.md should use portable while-read loop instead of mapfile');
   });
+
+  // #3661: configurable code-review hook point (see .gsd/phase/feat-3661-code-review-hook-point/
+  // 40-design.md and 50-test-matrix.md Section G) — manual invocation reads
+  // workflow.code_review directly (independent of the automatic loop-point
+  // selector workflow.code_review_point) instead of gating on registry
+  // presence at the hardcoded execute:post point; and Tier 2/3 file scoping
+  // narrows to what changed since the phase's last review.
+  describe('#3661: configurable code-review hook point (test matrix Section G)', () => {
+    function extractStepBody(content, stepName) {
+      const re = new RegExp(`<step name="${stepName}">([\\s\\S]*?)<\\/step>`);
+      const m = content.match(re);
+      return m ? m[1] : null;
+    }
+
+    test('G1: checkConfigGateReadsCodeReviewConfigDirectly', () => {
+      const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+      const stepContent = extractStepBody(content, 'check_config_gate');
+      assert.ok(stepContent, 'code-review.md missing check_config_gate step');
+
+      assert.ok(/gsd_run query config-get workflow\.code_review\b/.test(stepContent),
+        'check_config_gate must read workflow.code_review via gsd_run query config-get');
+    });
+
+    test('G2: checkConfigGateNoLongerProbesExecutePostHooks', () => {
+      const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+      const stepContent = extractStepBody(content, 'check_config_gate');
+      assert.ok(stepContent, 'code-review.md missing check_config_gate step');
+
+      assert.ok(!stepContent.includes('render-hooks execute:post'),
+        'check_config_gate must no longer gate on render-hooks execute:post — manual invocation must work regardless of workflow.code_review_point');
+    });
+
+    test('G3: computeFileScopeDerivesLastReviewCommit', () => {
+      const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+      const stepContent = extractStepBody(content, 'compute_file_scope');
+      assert.ok(stepContent, 'code-review.md missing compute_file_scope step');
+
+      assert.ok(
+        /LAST_REVIEW_COMMIT=\$\(git log --format=%H -1 -- "\$\{PHASE_DIR\}\/\$\{PADDED_PHASE\}-REVIEW\.md"/.test(stepContent),
+        'compute_file_scope must derive LAST_REVIEW_COMMIT from the phase REVIEW.md git history',
+      );
+    });
+
+    test('G4: tier2SkipsUnchangedSummariesSinceLastReview', () => {
+      const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+      const codeBlocks = extractBashBlocks(content);
+      const tier2Block = codeBlocks.find(block =>
+        block.includes('for summary in $(printf') && block.includes('LAST_REVIEW_COMMIT'));
+      assert.ok(tier2Block, 'code-review.md Tier 2 SUMMARY loop must reference LAST_REVIEW_COMMIT');
+
+      assert.ok(
+        /git diff --quiet "\$\{LAST_REVIEW_COMMIT\}" HEAD -- "\$summary"/.test(tier2Block),
+        'Tier 2 must contain a `git diff --quiet "${LAST_REVIEW_COMMIT}" HEAD -- "$summary"` skip-conditional',
+      );
+      assert.ok(/\bcontinue\b/.test(tier2Block),
+        'Tier 2 unchanged-since-last-review guard must `continue` (skip) the summary, not just log');
+    });
+
+    test('G5: tier3PrefersLastReviewCommitOverPhaseStartDerivation', () => {
+      const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+      const codeBlocks = extractBashBlocks(content);
+      // #3995 replaced the old commit-message-grep PHASE_COMMITS derivation with
+      // PHASE_START (git log --diff-filter=A -- "${PHASE_DIR}") — a phase number is
+      // only unique within a milestone, not the whole repo, so #3661's fallback
+      // chain rides on whichever derivation is current rather than pinning the old name.
+      const tier3Block = codeBlocks.find(block =>
+        block.includes('DIFF_BASE=""') && block.includes('PHASE_START'));
+      assert.ok(tier3Block, 'code-review.md Tier 3 DIFF_BASE derivation block not found');
+
+      const lastReviewIdx = tier3Block.indexOf('if [ -n "$LAST_REVIEW_COMMIT" ]; then');
+      const phaseStartElifIdx = tier3Block.indexOf('elif [ -n "$PHASE_START" ]; then');
+      assert.ok(lastReviewIdx !== -1, 'Tier 3 DIFF_BASE must check LAST_REVIEW_COMMIT');
+      assert.ok(phaseStartElifIdx !== -1, 'Tier 3 DIFF_BASE must fall back to PHASE_START via elif (#3995 derivation unchanged)');
+      assert.ok(lastReviewIdx < phaseStartElifIdx,
+        'LAST_REVIEW_COMMIT must be checked BEFORE the PHASE_START fallback, so a prior review narrows the diff base');
+      assert.ok(/DIFF_BASE="\$LAST_REVIEW_COMMIT"/.test(tier3Block),
+        'Tier 3 must set DIFF_BASE directly from LAST_REVIEW_COMMIT when present (no ^ parent offset)');
+    });
+
+    test('G6: tier2GuardIsNoOpWhenLastReviewCommitEmpty', () => {
+      const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+      const codeBlocks = extractBashBlocks(content);
+      const tier2Block = codeBlocks.find(block =>
+        block.includes('for summary in $(printf') && block.includes('LAST_REVIEW_COMMIT'));
+      assert.ok(tier2Block, 'code-review.md Tier 2 SUMMARY loop must reference LAST_REVIEW_COMMIT');
+
+      // The skip-conditional's guard must require LAST_REVIEW_COMMIT to be
+      // non-empty (`[ -n "$LAST_REVIEW_COMMIT" ]`) as the FIRST operand of an
+      // `&&` chain, so on a phase's first review (LAST_REVIEW_COMMIT="") the
+      // conditional is structurally a no-op — bash short-circuits `&&` before
+      // ever reaching `git diff --quiet`, so nothing can be skipped.
+      assert.ok(
+        /if \[ -n "\$LAST_REVIEW_COMMIT" \] && git diff --quiet/.test(tier2Block),
+        'Tier 2 skip-conditional must guard on `[ -n "$LAST_REVIEW_COMMIT" ]` as the first `&&` operand, so it is a structural no-op when LAST_REVIEW_COMMIT is empty (first review)',
+      );
+    });
+  });
 });
 
 // --- CR-CONFIG: config key registration ---
@@ -499,6 +600,71 @@ describe('CR-CONFIG: config key registration', () => {
     assert.strictEqual(getResult.output, '"standard"',
       `workflow.code_review_depth should return '"standard"', got ${getResult.output}`);
   });
+
+  // ── #3661: workflow.code_review_point — CLI-behavioral (50-test-matrix.md
+  //    Section F, rows F4-F7). Uses createTempGitProject + runGsdTools + the real
+  //    gsd-tools subprocess (via runNode), not source-grep, per the matrix's
+  //    coverage-strategy note.
+
+  function renderHooksEnvelope(tmpDir, point) {
+    const result = runNode(
+      [GSD_TOOLS_BIN, 'loop', 'render-hooks', point, '--cwd', tmpDir],
+      { cwd: REPO_ROOT, timeoutMs: 15000 },
+    );
+    assert.strictEqual(result.exitCode, 0, `Expected exit 0 for render-hooks ${point}. stderr: ` + (result.stderr || ''));
+    return JSON.parse(result.stdout.trim());
+  }
+
+  test('F4: renderHooksExecutePostActiveByDefault', (t) => {
+    const tmpDir = createTempGitProject();
+    t.after(() => cleanup(tmpDir));
+
+    const envelope = renderHooksEnvelope(tmpDir, 'execute:post');
+    const step = envelope.activeHooks.find((h) => h.capId === 'code-review' && h.kind === 'step');
+    assert.ok(step, 'Expected an active code-review step at execute:post by default. Got: ' + JSON.stringify(envelope.activeHooks));
+  });
+
+  test('F5: renderHooksExecuteWavePostInactiveByDefault', (t) => {
+    const tmpDir = createTempGitProject();
+    t.after(() => cleanup(tmpDir));
+
+    const envelope = renderHooksEnvelope(tmpDir, 'execute:wave:post');
+    const step = envelope.activeHooks.find((h) => h.capId === 'code-review' && h.kind === 'step');
+    assert.strictEqual(step, undefined, 'code-review step must be inactive at execute:wave:post by default (point not selected). Got: ' + JSON.stringify(envelope.activeHooks));
+  });
+
+  test('F6: renderHooksFlipsWithConfigSetCodeReviewPoint', (t) => {
+    const tmpDir = createTempGitProject();
+    t.after(() => cleanup(tmpDir));
+
+    const setResult = runGsdTools(['config-set', 'workflow.code_review_point', 'execute:wave:post'], tmpDir);
+    assert.ok(setResult.success, `config-set workflow.code_review_point failed: ${setResult.error}`);
+
+    const postEnvelope = renderHooksEnvelope(tmpDir, 'execute:post');
+    const wavePostEnvelope = renderHooksEnvelope(tmpDir, 'execute:wave:post');
+    const postStep = postEnvelope.activeHooks.find((h) => h.capId === 'code-review' && h.kind === 'step');
+    const wavePostStep = wavePostEnvelope.activeHooks.find((h) => h.capId === 'code-review' && h.kind === 'step');
+    assert.strictEqual(postStep, undefined, 'execute:post code-review step must be inactive once flipped to execute:wave:post');
+    assert.ok(wavePostStep, 'execute:wave:post code-review step must become active once the point is flipped');
+  });
+
+  test('F7: configSetRejectsOutOfEnumCodeReviewPoint', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const result = runGsdTools(['config-set', 'workflow.code_review_point', 'bogus'], tmpDir);
+    assert.strictEqual(result.success, false, 'config-set must reject an out-of-enum workflow.code_review_point value');
+    assert.match(
+      result.error || '',
+      /Invalid workflow\.code_review_point/,
+      `Expected an enum-rejection error, got: ${result.error}`,
+    );
+
+    // The rejected value must not have been persisted.
+    const getResult = runGsdTools(['config-get', 'workflow.code_review_point'], tmpDir);
+    assert.ok(getResult.success, `config-get workflow.code_review_point failed: ${getResult.error}`);
+    assert.notStrictEqual(getResult.output, '"bogus"', 'out-of-enum value must not be silently accepted/persisted');
+  });
 });
 
 // --- CR-INTEGRATION: workflow integration points ---
@@ -524,6 +690,25 @@ describe('CR-INTEGRATION: workflow integration points', () => {
       'execute-phase.md code_review_gate must identify the code-review capability hook');
     assert.ok(!gateContent.match(/config-get\s+workflow\.code_review/),
       'execute-phase.md code_review_gate must not read workflow.code_review directly');
+  });
+
+  // #3661: the generic execute:wave:post step-dispatch contract
+  // (loop-hook-dispatch.md § step) invokes `Skill(skill="gsd-<ref.skill>")` with no
+  // phase argument, but code-review.md's `initialize` step requires one positionally
+  // (`PHASE_ARG="${1}"`) — without it the review reports "Phase not found" and exits.
+  // Caught by the orthogonal spec review; fixed with a precedented carve-out in step
+  // 5.75 mirroring code_review_gate's own `args="${PHASE_NUMBER}"` invocation.
+  test('execute-phase.md wave-post dispatch passes PHASE_NUMBER to the code-review skill', () => {
+    const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'execute-phase.md'), 'utf-8');
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow markdown, bounded author-controlled prose
+    const stepMatch = content.match(/5\.75\.[\s\S]*?(?=\r?\n5\.8\.)/);
+    assert.ok(stepMatch, 'execute-phase.md missing step 5.75 (execute:wave:post capability dispatch)');
+    const stepContent = stepMatch[0];
+
+    assert.ok(stepContent.includes('ref.skill == "code-review"'),
+      'step 5.75 must carve out ref.skill == "code-review" from the generic step-dispatch contract');
+    assert.ok(/Skill\(skill="gsd-code-review",\s*args="\$\{PHASE_NUMBER\}"\)/.test(stepContent),
+      'step 5.75 must dispatch code-review with an explicit args="${PHASE_NUMBER}", matching code_review_gate\'s invocation — the bare generic Skill(skill="gsd-<ref.skill>") form has no phase argument and code-review.md requires one');
   });
 
   test('execute-phase.md does NOT contain ls.*REVIEW.md.*head pattern', { skip: !PLUGIN_AVAILABLE ? 'Plugin dir not installed' : false }, () => {

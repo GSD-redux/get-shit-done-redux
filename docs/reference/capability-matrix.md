@@ -57,7 +57,7 @@ points.
 | `audit` | feature | full | `>=1.6.0` | — | — | first-party |
 | `broken-windows` | feature | full | `>=1.7.0` | `ship:pre` | gate | first-party |
 | `claude-orchestration` | feature | full | `>=1.7.0` | `plan:post`, `execute:wave:pre` | contribution | first-party |
-| `code-review` | feature | full | `>=1.6.0` | `execute:post` | step | first-party |
+| `code-review` | feature | full | `>=1.6.0` | `execute:wave:post`, `execute:post` | step | first-party |
 | `drift` | feature | full | `>=1.6.0` | `plan:pre`, `execute:wave:post` | gate | first-party |
 | `external-job` | feature | full | `>=1.7.0` | `plan:post`, `execute:wave:post` | contribution | first-party |
 | `gap-analysis` | feature | standard | `>=1.6.0` | `plan:post` | gate | first-party |

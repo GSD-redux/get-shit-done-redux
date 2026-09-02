@@ -603,6 +603,63 @@ describe('resolveCapabilityState — hook activation details', () => {
   });
 });
 
+// ─── resolveCapabilityState — pointFrom gate (#3661, 50-test-matrix.md Section C) ──
+
+describe('resolveCapabilityState — pointFrom gate (#3661, matrix Section C)', () => {
+  test('C1: capabilityStateConfiguredTrueWhenBothGatesPass — same fixture as B3', () => {
+    const registry = makeRegistry({
+      steps: [{ point: 'plan:pre', when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    });
+    const result = resolveCapabilityState({
+      registry,
+      installedSkills: '*',
+      surfacedSkills: new Set(),
+      config: { mytool: { on: true } },
+    });
+    const hook = result.capabilities[0].hooks.find((h) => h.kind === 'step');
+    assert.ok(hook, 'step hook should be present');
+    assert.strictEqual(hook.configured, true, 'configured=true when both when and pointFrom pass');
+    assert.strictEqual(hook.active, true, 'active reflects capability-level active AND configured');
+  });
+
+  test('C2: capabilityStateConfiguredFalseOnPointFromMismatch — same fixture as B4', () => {
+    const registry = makeRegistry({
+      steps: [{ point: 'plan:pre', when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:post', description: 'x' } },
+    });
+    const result = resolveCapabilityState({
+      registry,
+      installedSkills: '*',
+      surfacedSkills: new Set(),
+      config: { mytool: { on: true } },
+    });
+    const hook = result.capabilities[0].hooks.find((h) => h.kind === 'step');
+    assert.ok(hook, 'step hook should be present');
+    assert.strictEqual(hook.configured, false, 'pointFrom mismatch must set configured=false even though when is truthy');
+    assert.strictEqual(hook.active, false);
+  });
+
+  test('C3: capabilityStateCarriesRawWhenThrough — hook.when unchanged even with pointFrom also present', () => {
+    const registry = makeRegistry({
+      steps: [{ point: 'plan:pre', when: 'mytool.on', pointFrom: 'mytool.point' }],
+      configSchema: { 'mytool.point': { type: 'enum', values: ['plan:pre', 'plan:post'], default: 'plan:pre', description: 'x' } },
+    });
+    const result = resolveCapabilityState({
+      registry,
+      installedSkills: '*',
+      surfacedSkills: new Set(),
+      config: { mytool: { on: true } },
+    });
+    const hook = result.capabilities[0].hooks.find((h) => h.kind === 'step');
+    assert.ok(hook, 'step hook should be present');
+    assert.strictEqual(
+      hook.when, 'mytool.on',
+      'raw when value must still be carried through unchanged for diagnostic visibility (pre-existing contract)',
+    );
+  });
+});
+
 // ─── resolveCapabilityState — determinism ─────────────────────────────────────
 
 describe('resolveCapabilityState — determinism', () => {

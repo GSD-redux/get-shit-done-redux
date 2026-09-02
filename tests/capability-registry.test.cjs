@@ -363,6 +363,167 @@ describe('validateAgainstContract adversarial cases', () => {
   });
 });
 
+// ─── validateStep / validateAgainstContract: step.pointFrom (#3661, matrix Section E) ──
+
+describe('capability-validator: step.pointFrom (#3661, matrix Section E)', () => {
+  /**
+   * Minimal synthetic capability, independent of UI_CAP, carrying one enum
+   * config key (usable as a pointFrom target) and one boolean key (usable as
+   * a non-enum negative fixture).
+   */
+  function makePointFromCap(overrides = {}) {
+    return {
+      id: 'test-point-from-cap',
+      role: 'feature',
+      version: '1.0.0',
+      title: 'Test PointFrom Cap',
+      description: 'Synthetic fixture for pointFrom (#3661) validator tests.',
+      tier: 'standard',
+      requires: [],
+      runtimeCompat: { supported: ['*'], unsupported: [] },
+      skills: ['test-skill'],
+      agents: [],
+      hooks: [],
+      config: {
+        'workflow.test_point': {
+          type: 'enum',
+          values: ['execute:post', 'execute:wave:post'],
+          default: 'execute:post',
+          description: 'Test enum key for pointFrom.',
+        },
+        'workflow.test_bool': {
+          type: 'boolean',
+          default: true,
+          description: 'Test non-enum key.',
+        },
+      },
+      steps: [],
+      contributions: [],
+      gates: [],
+      ...overrides,
+    };
+  }
+
+  test('E1: validateStepRejectsNonStringPointFrom', () => {
+    const cap = makePointFromCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [],
+        pointFrom: 42, onError: 'skip',
+      }],
+    });
+    const errors = validateCapability(cap, 'test-point-from-cap');
+    assert.ok(
+      errors.some((e) => e.includes('.pointFrom must be a string if present')),
+      'Expected a pointFrom type error, got: ' + JSON.stringify(errors),
+    );
+  });
+
+  test('E2: validateStepAcceptsMissingPointFrom — fully optional', () => {
+    const cap = makePointFromCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [],
+        onError: 'skip',
+      }],
+    });
+    const capErrors = validateCapability(cap, 'test-point-from-cap');
+    assert.deepEqual(capErrors, [], 'Expected no validateCapability errors: ' + JSON.stringify(capErrors));
+    const contractErrors = validateAgainstContract(cap, 'test-point-from-cap');
+    assert.deepEqual(contractErrors, [], 'Expected no validateAgainstContract errors: ' + JSON.stringify(contractErrors));
+  });
+
+  test('E3: validateAgainstContractRejectsUndefinedPointFromKey', () => {
+    const cap = makePointFromCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [],
+        pointFrom: 'workflow.nonexistent_key', onError: 'skip',
+      }],
+    });
+    const errors = validateAgainstContract(cap, 'test-point-from-cap');
+    assert.ok(
+      errors.some((e) => e.includes('pointFrom "workflow.nonexistent_key" is not defined in capability config keys')),
+      'Expected an undefined-key pointFrom error, got: ' + JSON.stringify(errors),
+    );
+  });
+
+  test('E4: validateAgainstContractRejectsNonEnumPointFromKey', () => {
+    const cap = makePointFromCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [],
+        pointFrom: 'workflow.test_bool', onError: 'skip',
+      }],
+    });
+    const errors = validateAgainstContract(cap, 'test-point-from-cap');
+    assert.ok(
+      errors.some((e) => e.includes('must reference an enum config key')),
+      'Expected a non-enum pointFrom error, got: ' + JSON.stringify(errors),
+    );
+  });
+
+  test('E5: validateAgainstContractRejectsPointFromEnumMissingOwnPoint', () => {
+    const cap = makePointFromCap({
+      steps: [{
+        point: 'verify:post', ref: { skill: 'test-skill' }, produces: [], consumes: [],
+        pointFrom: 'workflow.test_point', onError: 'skip',
+      }],
+    });
+    const errors = validateAgainstContract(cap, 'test-point-from-cap');
+    assert.ok(
+      errors.some((e) => e.includes('enum values do not include this step') && e.includes('verify:post')),
+      'Expected an enum-missing-own-point error, got: ' + JSON.stringify(errors),
+    );
+  });
+
+  test('E6: validateAgainstContractAcceptsWellFormedTwoPointDeclaration — mirrors real code-review shape', () => {
+    const cap = makePointFromCap({
+      steps: [
+        {
+          point: 'execute:post', ref: { skill: 'test-skill' }, produces: ['REVIEW.md'], consumes: [],
+          when: 'workflow.test_bool', pointFrom: 'workflow.test_point', onError: 'skip',
+        },
+        {
+          point: 'execute:wave:post', ref: { skill: 'test-skill' }, produces: ['REVIEW.md'], consumes: [],
+          when: 'workflow.test_bool', pointFrom: 'workflow.test_point', onError: 'skip',
+        },
+      ],
+    });
+    const capErrors = validateCapability(cap, 'test-point-from-cap');
+    assert.deepEqual(capErrors, [], 'Expected no validateCapability errors: ' + JSON.stringify(capErrors));
+    const contractErrors = validateAgainstContract(cap, 'test-point-from-cap');
+    assert.deepEqual(contractErrors, [], 'Expected no validateAgainstContract errors: ' + JSON.stringify(contractErrors));
+  });
+
+  test('E7: validateAgainstContractSkipsAlreadyReportedMalformedPointFrom — non-string pointFrom does not double-report or crash', () => {
+    // Uses a non-string pointFrom (not an empty string): validateStep's own type
+    // check is `typeof step.pointFrom !== 'string'`, which an empty string PASSES
+    // (typeof '' === 'string') — so an empty string is not actually "already
+    // reported" by validateStep. A non-string value (here: an array) is the
+    // fixture that genuinely exercises the `continue` / "already reported above"
+    // skip-pattern inside validateAgainstContract's own pointFrom loop, mirroring
+    // the identical pattern already used for `when`.
+    const cap = makePointFromCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [],
+        pointFrom: ['workflow.test_point'], onError: 'skip',
+      }],
+    });
+    const capErrors = validateCapability(cap, 'test-point-from-cap');
+    assert.ok(
+      capErrors.some((e) => e.includes('.pointFrom must be a string if present')),
+      'validateStep must flag the non-string pointFrom, got: ' + JSON.stringify(capErrors),
+    );
+
+    // validateAgainstContract must not crash and must not ALSO emit a
+    // "not defined in capability config keys" / "must reference an enum" /
+    // "enum values do not include" error for the same malformed field — it
+    // silently skips (continue) because the type error was already reported.
+    const contractErrors = validateAgainstContract(cap, 'test-point-from-cap');
+    assert.ok(
+      !contractErrors.some((e) => e.includes('pointFrom')),
+      'validateAgainstContract must not double-report an already-malformed pointFrom, got: ' + JSON.stringify(contractErrors),
+    );
+  });
+});
+
 describe('validateCrossCapability adversarial cases', () => {
   test('duplicate skill ownership across two capabilities rejected', () => {
     const cap1 = { ...UI_CAP };
