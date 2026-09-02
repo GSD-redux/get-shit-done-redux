@@ -471,6 +471,115 @@ describe('edge-probe: analyzeCoverage — duplicate rejection (RR-09)', () => {
   });
 });
 
+describe('edge-probe: text_en language-aware classification (#3717)', () => {
+  // The prose the #2773 stopgap test file already uses as its canonical Portuguese/English
+  // pair, kept identical here so the two test files agree on the same fixture (no drift).
+  const pt = 'O sistema mescla intervalos sobrepostos em uma lista ordenada';
+  const en = 'The system merges overlapping intervals in a sorted list';
+
+  test('proposeEdges: text_en absent falls back to text (back-compat)', () => {
+    const withoutTextEn = ep.proposeEdges({ id: 'R1', text: 'Round a number to N decimal places' });
+    assert.deepEqual(withoutTextEn.map((e) => e.category).sort(), ['boundary', 'precision']);
+  });
+
+  test('proposeEdges: text_en present is used for classification instead of text', () => {
+    // text alone (non-English) classifies to zero shapes -> the unclassified sentinel.
+    const nonEnglishOnly = ep.proposeEdges({ id: 'R1', text: pt });
+    assert.deepEqual(nonEnglishOnly.map((e) => e.category), ['unclassified']);
+
+    // text_en present -> classification runs against the English translation.
+    const withTextEn = ep.proposeEdges({ id: 'R1', text: pt, text_en: en });
+    assert.deepEqual(withTextEn.map((e) => e.category).sort(), ['adjacency', 'empty', 'ordering']);
+  });
+
+  test('#3717: a non-English requirement with text_en classifies identically to its English equivalent', () => {
+    const englishOnly = ep.proposeEdges({ id: 'R1', text: en });
+    const nonEnglishWithTranslation = ep.proposeEdges({ id: 'R1', text: pt, text_en: en });
+    assert.deepEqual(
+      nonEnglishWithTranslation.map((e) => e.category).sort(),
+      englishOnly.map((e) => e.category).sort(),
+      'a translated non-English requirement must raise the same categories as the English original',
+    );
+  });
+
+  test('validateRequirement: text_en: null is treated as absent (no throw)', () => {
+    assert.doesNotThrow(() => ep.validateRequirement({ id: 'R1', text: 'Round a number', text_en: null }));
+  });
+
+  test('proposeEdges: text_en: null falls back to text', () => {
+    const edges = ep.proposeEdges({ id: 'R1', text: 'Round a number to N decimal places', text_en: null });
+    assert.deepEqual(edges.map((e) => e.category).sort(), ['boundary', 'precision']);
+  });
+
+  test('validateRequirement: rejects empty-string text_en (?? does not catch \'\')', () => {
+    // Nullish coalescing only falls back on null/undefined — an empty string would
+    // otherwise win `text_en ?? text` and silently classify against '', degrading to
+    // zero shapes with no signal (the exact fail-open #1110/#2773 exist to eliminate).
+    assert.throws(
+      () => ep.validateRequirement({ id: 'R1', text: 'Round a number', text_en: '' }),
+      /text_en must be a non-empty string when present/i,
+    );
+  });
+
+  test('validateRequirement: rejects whitespace-only text_en', () => {
+    assert.throws(
+      () => ep.validateRequirement({ id: 'R1', text: 'Round a number', text_en: '   ' }),
+      /text_en must be a non-empty string when present/i,
+    );
+  });
+
+  test('validateRequirement: rejects non-string text_en (number/array/object)', () => {
+    assert.throws(
+      () => ep.validateRequirement({ id: 'R1', text: 'Round a number', text_en: 42 }),
+      /text_en must be a non-empty string when present/i,
+    );
+    assert.throws(
+      () => ep.validateRequirement({ id: 'R1', text: 'Round a number', text_en: ['x'] }),
+      /text_en must be a non-empty string when present/i,
+    );
+    assert.throws(
+      () => ep.validateRequirement({ id: 'R1', text: 'Round a number', text_en: {} }),
+      /text_en must be a non-empty string when present/i,
+    );
+  });
+
+  test('proposeEdges: authored shapes override still wins when text_en is also present', () => {
+    const edges = ep.proposeEdges({ id: 'R9', text: pt, text_en: en, shapes: ['numeric-range'] });
+    assert.deepEqual(edges.map((e) => e.category).sort(), ['boundary', 'precision']);
+  });
+
+  test('validateRequirement: rejects empty text_en even when shapes override makes it unused', () => {
+    // Validation is unconditional — it does not skip the text_en check just because the
+    // classify branch would never run. Bad data fails closed regardless of whether it
+    // happens to be dead for this particular call.
+    assert.throws(
+      () => ep.validateRequirement({ id: 'R1', text: 'x', text_en: '', shapes: ['collection'] }),
+      /text_en must be a non-empty string when present/i,
+    );
+  });
+});
+
+describe('edge-probe: SHAPE_CUES/VALID_SHAPES/Shape vocabulary stay single-sourced (DEFECT.GENERATIVE-FIX)', () => {
+  // RULESET.GENERATIVE-FIX (CONTEXT.md): parallel implementations diverge silently when no
+  // parity test enforces equality at the test layer. VALID_SHAPES is derived from
+  // Object.keys(SHAPE_CUES) in source, but that construction alone is not a regression
+  // guard — this test fails if a future edit ever hardcodes one of them independently or
+  // adds/removes a shape from only one side.
+  const LOCKED_SHAPES = ['numeric-range', 'collection', 'text', 'stateful', 'io'];
+
+  test('SHAPE_CUES keys match the locked 5-shape vocabulary exactly', () => {
+    assert.deepEqual(Object.keys(ep.SHAPE_CUES).sort(), [...LOCKED_SHAPES].sort());
+  });
+
+  test('VALID_SHAPES matches SHAPE_CUES keys exactly (single source of truth)', () => {
+    assert.deepEqual([...ep.VALID_SHAPES].sort(), Object.keys(ep.SHAPE_CUES).sort());
+  });
+
+  test('VALID_SHAPES matches the locked 5-shape vocabulary exactly', () => {
+    assert.deepEqual([...ep.VALID_SHAPES].sort(), [...LOCKED_SHAPES].sort());
+  });
+});
+
 describe('edge-probe: golden fixtures', () => {
   const root = path.join(__dirname, '..', 'gsd-core', 'references', 'edge-probe-fixtures');
   const fixtures = fs.readdirSync(root).filter((d) =>

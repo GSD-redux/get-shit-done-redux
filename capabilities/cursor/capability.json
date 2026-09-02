@@ -129,6 +129,7 @@
       "binary": "cursor-agent",
       "args": [
         "-p",
+        "{{model}}",
         "--mode",
         "ask",
         "--trust",
@@ -138,7 +139,7 @@
       ],
       "promptChannel": "argv-file-ref",
       "outputChannel": "stdout",
-      "modelArg": null,
+      "modelArg": "--model",
       "effortChannel": "none"
     },
     "timeoutFloorMs": 900000,
@@ -148,10 +149,15 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-    "modelConfigKey": null,
+    "modelConfigKey": "review.models.cursor",
     "handler": null
   },
   "config": {
+    "review.models.cursor": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Cursor reviewer lane."
+    },
     "review.max_prompt_tokens_per_reviewer.cursor": {
       "type": "number",
       "default": -1,
