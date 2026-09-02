@@ -315,6 +315,7 @@ Each row is a consequence of the predicate, and each names the field that decide
 | Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and every conjunct holds | authorize |
 | Unrelated fixture crash at the declared fixture phase | `location.observed` differs from `location.declared` — a fixture crash elsewhere in the target's dependency chain reports a different file or line than the one declared | block |
 | Unexpected pass | `exit_status` is 0 | halt |
+
 </red_contract_spec>
 
 <test_quality>
