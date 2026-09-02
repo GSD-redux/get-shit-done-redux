@@ -5205,6 +5205,16 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
         wavePre !== -1 && stepDispatch > wavePre && executorSpawn > stepDispatch,
         'wave-pre step dispatch must occur after hook rendering and before executor spawning',
       );
+
+      const stepContract = workflow.slice(stepDispatch, executorSpawn);
+      assert.match(stepContract, /kind == "step"/, 'wave-pre must select step hooks');
+      assert.match(stepContract, /loop-hook-dispatch/, 'wave-pre must use the shared dispatch contract');
+      assert.match(stepContract, /Validate `ref\.command`/, 'wave-pre must validate third-party commands');
+      assert.match(
+        stepContract,
+        /never blocks or redirects executor spawning/,
+        'wave-pre step failures must remain advisory',
+      );
     });
 
     // ─── #3866: the verify lane must be open to every hook kind ────────────────
