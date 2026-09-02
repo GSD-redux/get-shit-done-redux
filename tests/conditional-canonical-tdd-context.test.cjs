@@ -1,4 +1,4 @@
-// allow-test-rule: source-text-is-the-product
+// allow-test-rule: source-text-is-the-product (#3990)
 // Executor prompts are assembled from these shipped workflow templates.
 'use strict';
 
@@ -17,12 +17,25 @@ const TDD_REFERENCE = path.join(ROOT, 'gsd-core', 'references', 'tdd.md');
 const fixtures = {
   nonTdd: `---\nphase: 1\ntype: execute\n---\n\nExamples may say type: tdd and tdd="true".\n`,
   dedicatedTdd: `---\nphase: 1\ntype: tdd\n---\n\n<objective>Dedicated cycle</objective>\n`,
-  mixedTdd: `---\nphase: 1\ntype: execute\n---\n\n<task type="auto" tdd="true">\n  <name>Cycle</name>\n</task>\n`,
+  crlfQuotedTdd: `---\r\nphase: 1\r\ntype: "tdd"\r\n---\r\n\r\n<objective>Dedicated cycle</objective>\r\n`,
+  mixedTdd: `---\nphase: 1\ntype: execute\n---\n\n<task type="auto" tdd = 'true'>\n  <name>Cycle</name>\n</task>\n`,
+  fencedTaskExample: `---\nphase: 1\ntype: execute\n---\n\n\`\`\`xml\n<task type="auto" tdd="true">\n</task>\n\`\`\`\n`,
+  proseTaskExample: `---\nphase: 1\ntype: execute\n---\n\nA literal <task type="auto" tdd="true"> example is not a task.\n`,
 };
 
 function planNeedsTddContext(plan) {
   const frontmatter = plan.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? '';
-  return /^type:\s*tdd\s*$/m.test(frontmatter) || /<task\b[^>]*\btdd="true"[^>]*>/i.test(plan);
+  if (/^type:\s*(?:tdd|"tdd"|'tdd')\s*$/m.test(frontmatter)) return true;
+
+  let fenced = false;
+  for (const line of plan.split(/\r?\n/)) {
+    if (/^\s*```/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (!fenced && /^\s*<task\b[^>]*\btdd\s*=\s*["']true["'][^>]*>/i.test(line)) return true;
+  }
+  return false;
 }
 
 function composerSource(file) {
@@ -36,27 +49,27 @@ function compositionScope(source, startMarker, endMarker) {
   return source.slice(start, end);
 }
 
-function composePrompt(scope, plan) {
-  const marker = /\$\{PLAN_TDD_CONTEXT(?:\s*\?[^}]*|:\+[^}]*)\}/;
-  assert.match(scope, marker, 'prompt must contain one conditional canonical-reference entry');
-  return scope.replace(marker, planNeedsTddContext(plan) ? fs.readFileSync(TDD_REFERENCE, 'utf8') : '');
-}
-
 function assertConditionalComposer(source, name, startMarker, endMarker) {
   source = compositionScope(source, startMarker, endMarker);
   assert.match(source, /selected PLAN\.md|selected plan/i, `${name} must inspect the selected plan at compose time`);
   assert.match(source, /frontmatter[^\n]*type:\s*tdd|type:\\s\*tdd/i, `${name} must include dedicated TDD plans`);
   assert.match(source, /<task\\b[^\n]*tdd=\\"true\\"|task opening tag[^\n]*tdd="true"/i, `${name} must include mixed TDD plans`);
+  assert.match(source, /quoted scalar/i, `${name} must accept YAML-quoted type: tdd`);
+  assert.match(source, /whitespace[^\n]*=/i, `${name} must accept whitespace around task attributes`);
+  assert.match(source, /fenced[^\n]*prose|prose[^\n]*fenced/i, `${name} must reject literal task examples`);
   assert.match(source, /conditional[^\n]*tdd\.md|tdd\.md[^\n]*conditional/i, `${name} must conditionally embed the canonical reference`);
   assert.doesNotMatch(source, /TDD_MODE[^\n]{0,160}(?:tdd\.md|canonical)|(?:tdd\.md|canonical)[^\n]{0,160}TDD_MODE/i,
     `${name} must not use phase-wide TDD_MODE as selected-plan eligibility`);
 }
 
 describe('conditional canonical TDD executor context', () => {
-  test('selected-plan fixtures distinguish dedicated, mixed, and prose-only TDD tokens', () => {
+  test('selected-plan fixtures accept supported syntax and reject literal examples', () => {
     assert.equal(planNeedsTddContext(fixtures.nonTdd), false);
     assert.equal(planNeedsTddContext(fixtures.dedicatedTdd), true);
+    assert.equal(planNeedsTddContext(fixtures.crlfQuotedTdd), true);
     assert.equal(planNeedsTddContext(fixtures.mixedTdd), true);
+    assert.equal(planNeedsTddContext(fixtures.fencedTaskExample), false);
+    assert.equal(planNeedsTddContext(fixtures.proseTaskExample), false);
   });
 
   test('both dispatch backends conditionally compose the canonical reference from the selected plan', () => {
@@ -66,12 +79,19 @@ describe('conditional canonical TDD executor context', () => {
     ];
     for (const [name, source, start, end] of backends) {
       assertConditionalComposer(source, name, start, end);
-      const scope = compositionScope(source, start, end);
-      for (const [fixtureName, plan] of Object.entries(fixtures)) {
-        const cycleCount = (composePrompt(scope, plan).match(/\*\*RED - Write failing test:\*\*/g) ?? []).length;
-        assert.equal(cycleCount, fixtureName === 'nonTdd' ? 0 : 1, `${name} ${fixtureName} cycle count`);
-      }
     }
+  });
+
+  test('orchestrator-worktree rejects an unresolved TDD marker before it can spawn an executor', () => {
+    const source = composerSource(WORKTREE);
+    const composition = compositionScope(source, 'EXECUTOR_PROMPT=', 'Then create the worktree');
+
+    assert.match(composition, /\$\{PLAN_TDD_CONTEXT:\+- tdd\.md\}/,
+      'the prompt must retain the conditional marker until the orchestrator embeds it');
+    assert.match(composition, /printf '%s' "\$EXECUTOR_PROMPT" \| grep -q '\\\$\{PLAN_TDD_CONTEXT'/,
+      'the real pre-spawn checks must detect an unresolved PLAN_TDD_CONTEXT marker');
+    assert.match(composition, /FATAL: executor prompt[^\n]*PLAN_TDD_CONTEXT[^\n]*Halting/i,
+      'an unresolved marker must halt instead of reaching a spawned executor');
   });
 
   test('tdd.md is the only shipped owner of the complete RED/GREEN/REFACTOR procedure', () => {
