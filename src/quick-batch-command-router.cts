@@ -291,8 +291,23 @@ function routeQuickBatchCommand({ args, cwd, raw, error, _quickBatch, _quickBatc
           planContent,
         }), raw);
       },
-      // `quick-batch parse-args -- <raw /gsd:quick-batch args>`
+      // `quick-batch parse-args --text "<raw $ARGUMENTS string>"` (preferred —
+      // callers pass the ENTIRE, still-quoted $ARGUMENTS as ONE argv element;
+      // this handler does the whitespace split itself, in Node, so shell
+      // pathname expansion (globbing) on attacker-influenced task text never
+      // happens before this parser sees it — quoting `"$ARGUMENTS"` at the
+      // call site is what closes that off; splitting it here is what keeps
+      // the caller from having to word-split it unsafely beforehand).
+      // `quick-batch parse-args -- <already-tokenized args>` (legacy/direct
+      // form — still supported for a caller that already has a real argv
+      // array with no shell splitting involved, e.g. a test harness).
       'parse-args': () => {
+        const textArg = argValue(args, '--text');
+        if (textArg !== undefined) {
+          const rawArgs = textArg.trim().length === 0 ? [] : textArg.trim().split(/\s+/);
+          emit(dispatch.parseQuickBatchArgs(rawArgs));
+          return;
+        }
         const sepIdx = args.indexOf('--');
         const rawArgs = sepIdx === -1 ? [] : args.slice(sepIdx + 1);
         emit(dispatch.parseQuickBatchArgs(rawArgs));

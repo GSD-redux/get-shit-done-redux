@@ -327,6 +327,60 @@ describe('quick-batch-command-router: argument shaping (mocked modules)', () => 
     assert.deepEqual(calls[0], ['--jobs', '4', '--validate']);
   });
 
+  // #3676 security fix: `--text` accepts the ENTIRE raw $ARGUMENTS string as
+  // ONE argv element (the caller quotes it, e.g. `--text "$ARGUMENTS"`), so
+  // shell word-splitting/pathname-expansion on attacker-influenced task text
+  // never happens before this parser sees it. The split into tokens happens
+  // HERE, in Node, which never glob-expands.
+  test('parse-args --text splits the whole string into tokens itself (no shell involvement)', () => {
+    const calls = [];
+    routeQuickBatchCommand({
+      args: ['quick-batch', 'parse-args', '--text', '--jobs 4 --validate'],
+      cwd: '/tmp/proj',
+      raw: true,
+      error: (msg) => { throw new Error(`unexpected error: ${msg}`); },
+      _quickBatch: {},
+      _quickBatchDispatch: {
+        parseQuickBatchArgs: (rawArgs) => { calls.push(rawArgs); return { ok: true, value: {} }; },
+      },
+    });
+    assert.deepEqual(calls[0], ['--jobs', '4', '--validate']);
+  });
+
+  test('parse-args --text with an embedded glob-shaped token passes it through literally, unexpanded', () => {
+    const calls = [];
+    routeQuickBatchCommand({
+      args: ['quick-batch', 'parse-args', '--text', '- fix files matching *.txt\n- second task'],
+      cwd: '/tmp/proj',
+      raw: true,
+      error: (msg) => { throw new Error(`unexpected error: ${msg}`); },
+      _quickBatch: {},
+      _quickBatchDispatch: {
+        parseQuickBatchArgs: (rawArgs) => { calls.push(rawArgs); return { ok: true, value: {} }; },
+      },
+    });
+    // The glob-shaped token survives as literal text tokens — never
+    // expanded to matching filenames, because it never passed through a
+    // shell glob context (the caller quoted it; this handler's own
+    // whitespace split is not glob-aware).
+    assert.ok(calls[0].includes('*.txt'));
+  });
+
+  test('parse-args --text with only whitespace produces an empty token array', () => {
+    const calls = [];
+    routeQuickBatchCommand({
+      args: ['quick-batch', 'parse-args', '--text', '   '],
+      cwd: '/tmp/proj',
+      raw: true,
+      error: (msg) => { throw new Error(`unexpected error: ${msg}`); },
+      _quickBatch: {},
+      _quickBatchDispatch: {
+        parseQuickBatchArgs: (rawArgs) => { calls.push(rawArgs); return { ok: true, value: {} }; },
+      },
+    });
+    assert.deepEqual(calls[0], []);
+  });
+
   test('a domain Result failure (ok:false) is routed through error(), not treated as success', () => {
     let message = null;
     routeQuickBatchCommand({
@@ -381,6 +435,52 @@ describe('quick-batch-command-router: end-to-end via gsd-tools (rows 46-47)', ()
       const result = runGsdTools(['quick-batch', 'effective-concurrency', '--jobs', 'auto', '--task-count', '5', '--capacity', '3', '--isolation', 'harness-worktree', '--raw'], dir);
       assert.equal(result.success, true, `command failed: ${result.error}`);
       assert.deepEqual(JSON.parse(result.output), { concurrency: 3 });
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // Security/Spec review fix (#3676 review pass 3): row 9 previously asserted
+  // rejection only at the pure parseQuickBatchArgs level, which has no I/O to
+  // begin with — it never proves the WORKFLOW-LEVEL invariant "a rejected
+  // --jobs value never reaches quick-batch create, so no partial BATCH.json
+  // exists." Assert that end-to-end: reject via the real CLI parse-args verb,
+  // then confirm .planning/quick-batches/ was never created at all.
+  describe('row 9: a rejected --jobs value leaves no partial BATCH.json (hostile)', () => {
+    for (const badJobs of ['0', '-1', 'abc']) {
+      test(`--jobs ${badJobs} is rejected and .planning/quick-batches/ stays absent`, () => {
+        const dir = mkTmpProject();
+        try {
+          const result = runGsdTools(['quick-batch', 'parse-args', '--raw', '--text', `--jobs ${badJobs}`], dir);
+          assert.equal(result.success, false, `expected rejection for --jobs ${badJobs}`);
+          assert.equal(
+            fs.existsSync(path.join(dir, '.planning', 'quick-batches')),
+            false,
+            'parse-args must never create .planning/quick-batches/ — createBatch is never reached after a rejected --jobs value',
+          );
+        } finally {
+          cleanup(dir);
+        }
+      });
+    }
+  });
+
+  // Spec review fix: row 18 previously only exercised loadBatch against a
+  // hand-corrupted BATCH.json — never a genuinely nonexistent batch
+  // directory (the actual row-18 shape: "--resume <unknown-batch-id>").
+  test('row 18: --resume <unknown-batch-id> fails closed with no batch directory ever created', () => {
+    const dir = mkTmpProject();
+    try {
+      // No .planning/quick-batches/<id>/ directory exists at all for this id —
+      // never created, never touched by any prior call in this test.
+      const result = runGsdTools(['quick-batch', 'resume', '--batch', '999999-zzz', '--raw'], dir);
+      assert.equal(result.success, false);
+      assert.match(result.error, /no BATCH\.json found for batch 999999-zzz/);
+      assert.equal(
+        fs.existsSync(path.join(dir, '.planning', 'quick-batches', '999999-zzz')),
+        false,
+        'resume must never create a batch directory for an unknown id',
+      );
     } finally {
       cleanup(dir);
     }

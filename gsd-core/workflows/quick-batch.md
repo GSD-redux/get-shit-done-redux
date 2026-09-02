@@ -36,10 +36,10 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --raw --default "
 
 **If `response_language` is set:** all user-facing questions/prompts/explanations MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English.
 
-Validate `$ARGUMENTS` through the CLI's own grammar — never re-derive it inline (single source of truth: `parseQuickBatchArgs`, `src/quick-batch-dispatch.cts`):
+Validate `$ARGUMENTS` through the CLI's own grammar — never re-derive it inline (single source of truth: `parseQuickBatchArgs`, `src/quick-batch-dispatch.cts`). `$ARGUMENTS` is raw, attacker-influenced task text — pass it as ONE quoted argument via `--text` so the shell never word-splits or glob-expands it; `quick-batch parse-args` does the whitespace split itself, in Node, after the shell is done:
 
 ```bash
-QB_PARSE_JSON=$(gsd_run quick-batch parse-args --raw -- $ARGUMENTS)
+QB_PARSE_JSON=$(gsd_run quick-batch parse-args --raw --text "$ARGUMENTS")
 QB_PARSE_RC=$?
 if [ $QB_PARSE_RC -ne 0 ]; then
   echo "$QB_PARSE_JSON" >&2

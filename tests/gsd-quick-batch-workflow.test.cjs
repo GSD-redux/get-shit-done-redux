@@ -88,6 +88,26 @@ describe('quick-batch command: frontmatter and objective', () => {
     assert.ok(processBody, 'should have <process> section');
     assert.match(processBody, /quick-batch parse-args/);
   });
+
+  // #3676 review pass 3 (Security finding 1): commands/gsd/quick.md carries a
+  // <security_notes> block naming the DATA_START/DATA_END boundary
+  // convention for content reaching agent prompts (line 176) — quick-batch.md
+  // had no equivalent section at all.
+  test('security_notes documents the $ARGUMENTS quoting fix and the DATA_START/DATA_END prompt boundary', () => {
+    const content = fs.readFileSync(COMMAND_PATH, 'utf-8');
+    const securityBody = extractTagBody(content, '<security_notes>', '</security_notes>');
+    assert.ok(securityBody, 'should have <security_notes> section');
+    assert.match(securityBody, /--text/);
+    assert.match(securityBody, /DATA_START/);
+    assert.match(securityBody, /DATA_END/);
+  });
+
+  test('$ARGUMENTS is passed to quick-batch parse-args via quoted --text, never unquoted word-splitting', () => {
+    const content = fs.readFileSync(COMMAND_PATH, 'utf-8');
+    const processBody = extractTagBody(content, '<process>', '</process>');
+    assert.ok(processBody, 'should have <process> section');
+    assert.match(processBody, /--text "\$ARGUMENTS"/);
+  });
 });
 
 // ─── Workflow byte-size boundary (row 49, ADR 1610 NEW_FILE_CAP) ────────────
@@ -108,6 +128,39 @@ describe('quick-batch workflow: byte-size boundary (row 49)', () => {
   test('quick-batch has at least 5 lazy-loaded step fragments (design doc requirement)', () => {
     const files = fs.readdirSync(STEPS_DIR).filter((f) => f.endsWith('.md'));
     assert.ok(files.length >= 5, `expected >= 5 step fragments, found ${files.length}: ${files.join(', ')}`);
+  });
+
+  // #3676 review pass 3 (Security finding 2): the workflow's own runtime
+  // invocation must use quoted --text "$ARGUMENTS", not unquoted -- $ARGUMENTS
+  // (shell word-splitting/pathname expansion before the parser sees raw,
+  // attacker-influenced task text).
+  test('main workflow passes $ARGUMENTS to quick-batch parse-args via quoted --text', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.match(content, /quick-batch parse-args --raw --text "\$ARGUMENTS"/);
+    assert.doesNotMatch(content, /quick-batch parse-args --raw -- \$ARGUMENTS(?!")/, 'must never pass raw, unquoted $ARGUMENTS to the parser');
+  });
+});
+
+// ─── Prompt-injection boundaries on raw task text (Security finding 1) ──────
+
+describe('quick-batch leaf prompts: DATA_START/DATA_END boundary on every raw task description (Security finding 1)', () => {
+  for (const [file, label] of [
+    ['research-phase.md', 'researcher'],
+    ['planner-wave.md', 'planner'],
+    ['plan-checker-loop.md', 'plan-checker'],
+    ['verification-wave.md', 'verifier'],
+  ]) {
+    test(`${file} (${label}) wraps \${description} in a DATA_START/DATA_END security_context boundary`, () => {
+      const content = readStep(file);
+      assert.match(content, /<security_context>/, `${file} must declare a <security_context> block`);
+      assert.match(content, /SECURITY:.*DATA_START.*DATA_END/s, `${file}'s security_context must name the DATA_START/DATA_END boundary`);
+      assert.match(content, /DATA_START\s*\n\s*\$\{description\}\s*\n\s*DATA_END/, `${file} must wrap \${description} itself between DATA_START/DATA_END, not just mention the convention`);
+    });
+  }
+
+  test('planner-wave.md ALSO wraps the shared ${TASK_CATALOG_TABLE} (every item\'s raw description) in its own DATA_START/DATA_END boundary', () => {
+    const content = readStep('planner-wave.md');
+    assert.match(content, /DATA_START\s*\n\s*\$\{TASK_CATALOG_TABLE\}\s*\n\s*DATA_END/);
   });
 });
 
