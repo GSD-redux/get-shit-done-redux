@@ -60,4 +60,16 @@ const INJECTION_PATTERNS = Object.freeze([
   /<<\s*SYS\s*>>/i,
 ]);
 
-module.exports = { INJECTION_PATTERNS };
+// Short single-line label for a matched pattern, used for both the rendered
+// advisory prose and the typed `findings[].match` field in BOTH consumer
+// hooks. The raw regex source is not user-facing: the #4016 superset pattern
+// is ~280 characters, and gsd-prompt-guard.js echoed it verbatim into its
+// advisory (PR #4061 review nit). Byte-identical to the transform
+// gsd-read-injection-scanner.js carried inline since #3523, hoisted here so
+// one finding renders the same way in both hooks. Both hooks already require
+// this module, so this adds no new staging dependency.
+function describePattern(pattern) {
+  return pattern.source.replace(/\\s\+/g, '-').replace(/[()\\]/g, '').substring(0, 50);
+}
+
+module.exports = { INJECTION_PATTERNS, describePattern };
