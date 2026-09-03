@@ -23,24 +23,28 @@ describe('#3968 — measured commit claims', () => {
   test('executor measures commits, never narrates them', () => {
     const executor = read('agents/gsd-executor.md');
     // The ledger: HEAD captured at the plan's first commit, once per plan.
-    assert.ok(executor.includes('PLAN_HEAD_BEFORE'),
-      'the commit protocol must capture the pre-plan HEAD (PLAN_HEAD_BEFORE)');
+    assert.ok(executor.includes('gsd-plan-head-before'),
+      'the ledger must persist on disk (each Bash call is a fresh shell — a variable measures zero)');
     assert.ok(executor.includes('git rev-list --count'),
       'the SUMMARY commit count must come from git rev-list --count, not narration');
+    assert.ok(executor.includes('plan_head_before: ${PLAN_HEAD_BEFORE}'),
+      'the base is recorded in the frontmatter so the verifier reconciles with the same instrument');
     // A measured zero WITH code changes is a HALT, never a narrated success.
     assert.ok(/HALT — do not\s+write the SUMMARY/i.test(executor),
       'a measured zero with uncommitted code changes must halt the SUMMARY write');
-    // actuals.commits sources the same measured number (ADR-2629 shape kept).
-    assert.ok(executor.includes('actuals'),
-      'the actuals block is still present (calibration shape preserved)');
+    // actuals.commits sources the measured count; the ADR-2629 calibration shape is kept.
+    assert.ok(/commits: 7 .*MEASURED/.test(executor),
+      'the actuals block sources its count from the measurement');
   });
 
   test('verify-work flags SUMMARY-vs-git mismatch as BLOCKER', () => {
     const verify = read('gsd-core/workflows/verify-work.md');
     assert.ok(verify.includes('Commit-claim reconciliation'),
       'verify-work must run a commit-claim reconciliation over each SUMMARY');
-    assert.ok(/git (?:rev-list --count|log)/.test(verify.slice(verify.indexOf('Commit-claim reconciliation'), verify.indexOf('Commit-claim reconciliation') + 1800)),
-      'the reconciliation compares the claimed count against git');
+    assert.ok(verify.includes('ACTUAL=$(git rev-list --count ${BASE}..HEAD)'),
+      'the reconciliation uses the SAME instrument as the executor (rev-list over the recorded base)');
+    assert.ok(/ACTUAL == CLAIMED \+ 1/.test(verify),
+      'the post-measurement SUMMARY commit is an expected +1, not a false BLOCKER');
     assert.ok(/BLOCKER/.test(verify.slice(verify.indexOf('Commit-claim reconciliation'), verify.indexOf('Commit-claim reconciliation') + 1800)),
       'a mismatch must be flagged BLOCKER — the phase must not read as done');
   });
