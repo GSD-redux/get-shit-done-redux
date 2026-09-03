@@ -3242,6 +3242,23 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     ].join('\n'));
     const OUT_AMBIGUOUS = advanceOut();
 
+    // Seventh shape, and it arrived the same way the sixth did: #3791 landed on next
+    // while this branch was in review and gave advancePlanCore ANOTHER new refusal
+    // (`ambiguous_plan_position`, for a STATE.md carrying the legacy `Current Plan: N`
+    // and the compound `Plan: X of Y` at DIFFERENT numbers). Pinned for the reason the
+    // sixth is: the allow-list's whole claim is that a reason the callers were never
+    // taught fails closed, and that claim is worth exactly as much as the number of
+    // untaught reasons actually driven against it.
+    fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), [
+      '# Project State', '', '## Current Position', '',
+      'Phase: 01 (Demo Phase) — EXECUTING',
+      'Current Plan: 3',
+      'Total Plans in Phase: 12',
+      'Plan: 5 of 12',
+      'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
+    ].join('\n'));
+    const OUT_AMBIGUOUS_PLAN = advanceOut();
+
     const OUT_EMPTY = '';
 
     // Sanity: the fixtures really did produce the shapes this test is about. Without
@@ -3253,6 +3270,8 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     assert.match(OUT_ERROR, /"error"/, 'fixture did not produce an exit-0 error object');
     assert.match(OUT_AMBIGUOUS, /"reason":\s*"ambiguous_position_phase"/,
       'fixture did not produce #4028\'s ambiguous-position refusal');
+    assert.match(OUT_AMBIGUOUS_PLAN, /"reason":\s*"ambiguous_plan_position"/,
+      'fixture did not produce #3791\'s ambiguous-plan refusal');
 
     // Lift the caller's own `case` block and replace each arm BODY with an echo of
     // its index, leaving every PATTERN byte-identical to what ships.
@@ -3275,6 +3294,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       ['a divergence refusal',  OUT_DIVERGED, 1],
       ['an exit-0 error object', OUT_ERROR,   'last'],
       ['#4028 ambiguous position', OUT_AMBIGUOUS, 'last'],
+      ['#3791 ambiguous plan position', OUT_AMBIGUOUS_PLAN, 'last'],
       ['a non-answer (crash)',  OUT_EMPTY,    'last'],
     ];
 

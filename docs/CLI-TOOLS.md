@@ -140,7 +140,7 @@ still checked; and a bare number matching several directories is undecidable for
 both, where this verb spends it as an abstention and `phase-plan-index` spends it
 as a refusal to answer.
 
-Five answers a caller must tell apart, all at **exit 0**:
+Six answers a caller must tell apart, all at **exit 0**:
 
 | stdout | meaning | what a caller should do |
 |---|---|---|
@@ -148,6 +148,7 @@ Five answers a caller must tell apart, all at **exit 0**:
 | `{"advanced": false, "reason": "last_plan", ...}` | already on the phase's last plan | proceed; this is the ordinary end of a phase |
 | `{"advanced": false, "reason": "position_diverged", "prose": {...}, "disk": {...}}` | prose position disagrees with the plans on disk | **stop** — do not record progress or metrics against a position that did not move |
 | `{"error": ..., "reason": "ambiguous_position_phase", "phase_candidates": [...]}` | the `## Current Position` section carries more than one `Phase:` entry, so which entry is current is undecidable (#3807) | **stop** — resolve the section to a single entry and re-run |
+| `{"error": ..., "reason": "ambiguous_plan_position", "plan_candidates": [...]}` | the section carries the legacy `Current Plan: N` and the compound `Plan: X of Y` at different numbers, so which one is current is undecidable (#3791) | **stop** — resolve them to a single current plan and re-run |
 | `{"error": ...}` with no `reason` | STATE.md is missing, or `Current Plan` / `Total Plans` could not be parsed | **stop** — nothing was read, so nothing downstream is trustworthy |
 
 A divergence also prints a `[gsd-tools] WARNING:` line to **stderr** naming both
