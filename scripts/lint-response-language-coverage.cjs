@@ -84,6 +84,7 @@ const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
   'help/modes/full.md',
   'help/modes/topic.md',
   'plan-phase/steps/prd-express-path.md',
+  'quick-batch/steps/plan-checker-loop.md',
   'settings-advanced.md',
 ]);
 // This lint once carried a third coverage form, for `verify-phase.md`: a
@@ -107,15 +108,16 @@ const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
 // directive — already loaded.
 //
 // The stub is USUALLY in the top-level parent, which is the only case
-// `inheritsParentCoverage` can prove, and it deliberately proves no more. Three
+// `inheritsParentCoverage` can prove, and it deliberately proves no more. Four
 // fragments arrive by a different route today, and none of them relies on this
-// function: `execute-phase/steps/regression-gate-run.md` and
-// `plan-phase/steps/prd-express-path.md` are dispatched by a SIBLING fragment
-// (`regression-gate.md`, `prd-express-gate.md`), and `help/modes/topic.md` is
-// routed from a table in `help.md` that names the path without a dispatch verb
-// at all. All three carry the pinned inline directive and are listed in
-// `EXACT_INLINE_DIRECTIVE_WORKFLOWS`, so `findViolations` settles them before
-// inheritance is ever consulted.
+// function: `execute-phase/steps/regression-gate-run.md`,
+// `plan-phase/steps/prd-express-path.md` and
+// `quick-batch/steps/plan-checker-loop.md` are dispatched by a SIBLING fragment
+// (`regression-gate.md`, `prd-express-gate.md`, `planner-wave.md`), and
+// `help/modes/topic.md` is routed from a table in `help.md` that names the path
+// without a dispatch verb at all. All four carry the pinned inline directive and
+// are listed in `EXACT_INLINE_DIRECTIVE_WORKFLOWS`, so `findViolations` settles
+// them before inheritance is ever consulted.
 //
 // Left as one hop on purpose. Walking the sibling chain would let a fragment
 // inherit through a file this lint has not proven reachable, trading a loud
