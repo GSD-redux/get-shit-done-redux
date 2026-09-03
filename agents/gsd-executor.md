@@ -399,13 +399,10 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2-4. RED → GREEN → REFACTOR (#3990: stated ONCE):** execute the cycle exactly as specified
-in the canonical `gsd-core/references/tdd.md` "Red-Green-Refactor Cycle" section (embedded in your
-dispatch when TDD applies) — including its commit-scope contract
-(`test({phase}-{plan})` → `feat({phase}-{plan})` → `refactor({phase}-{plan})`, RED must fail,
-GREEN must pass, REFACTOR commits only on change) and its error handling (RED doesn't fail →
-investigate; GREEN doesn't pass → debug/iterate; REFACTOR breaks → undo). Do not improvise a
-variant; the reference is the single source.
+**2-4. RED → GREEN → REFACTOR (#3990: stated ONCE):** execute the cycle exactly as the
+canonical `gsd-core/references/tdd.md` "Red-Green-Refactor Cycle" section specifies (embedded
+when TDD applies) — its commit-scope contract, fail-fast rule, and error handling. The
+reference is the single source; do not improvise a variant.
 
 ## Plan-Level TDD Gate Enforcement (type: tdd plans)
 
