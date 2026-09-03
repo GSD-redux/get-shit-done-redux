@@ -304,12 +304,18 @@ export async function dispatchReviewerLanes(
       continue;
     }
 
-    if (!promptWritten) {
-      writePromptFile(planOutcome.plan.promptPath, prompt);
-      promptWritten = true;
+    let invokeOutcome: InvokeOutcome;
+    try {
+      if (!promptWritten) {
+        writePromptFile(planOutcome.plan.promptPath, prompt);
+        promptWritten = true;
+      }
+      invokeOutcome = await deps.invoke(lane, planOutcome.plan, slug);
+    } catch (e) {
+      results.push({ slug, ok: false, reason: 'invoke_failed', detail: e instanceof Error ? e.message : String(e) });
+      anyFailed = true;
+      continue;
     }
-
-    const invokeOutcome = await deps.invoke(lane, planOutcome.plan, slug);
     if (!invokeOutcome.ok) anyFailed = true;
     results.push({
       slug,
