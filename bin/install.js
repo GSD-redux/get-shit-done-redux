@@ -13109,6 +13109,17 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 /**
  * Apply statusline config, then print completion message
  */
+function assertConfiguredEntrypoints(entries) {
+  const validation = hooksSurface.validateConfiguredEntrypoints(entries || []);
+  if (validation.ok) return;
+
+  const error = new Error(
+    `Configured entrypoint validation failed: ${validation.invalid.map(({ role, path: invalidPath, reason }) => `${role} ${invalidPath} (${reason})`).join(', ')}`,
+  );
+  error.configuredEntrypointValidation = validation;
+  throw error;
+}
+
 function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallStatusline, runtime = DEFAULT_RUNTIME, isGlobal = true, configDir = null, bannerOpts = {}) {
   // #2093: isKilo dropped — the Kilo permissions-writer call below is gated
   // on plan.finishPermissionWriter === 'kilo' (descriptor-driven), not this flag.
@@ -13222,6 +13233,8 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
   // function so it can run at the right point in the flow (before agent TOML
   // generation reads it). This call is idempotent (preserves existing values).
   writeNonClaudeDefaults(runtime);
+
+  assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
 
   // program + command are now single-source lookups (ADR-1239 Phase B / #1679):
   // program is the runtime display label; command is the per-host /gsd-new-project
@@ -14050,6 +14063,10 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
 
   const finalize = (shouldInstallStatusline, shouldInstallBanner) => {
     try {
+      assertConfiguredEntrypoints(
+        results.flatMap(result => result && !result.skipped ? (result.configuredEntrypoints || []) : []),
+      );
+
       const printSummaries = () => {
         for (const result of results) {
           if (result && result.skipped) continue;
@@ -14063,7 +14080,11 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
             result.runtime,
             isGlobal,
             result.configDir,
-            { shouldInstallBanner: !!shouldInstallBanner, bannerCommand: result.updateBannerCommand }
+            {
+              shouldInstallBanner: !!shouldInstallBanner,
+              bannerCommand: result.updateBannerCommand,
+              configuredEntrypoints: result.configuredEntrypoints,
+            }
           );
         }
       };
