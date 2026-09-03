@@ -229,7 +229,7 @@ test -f src/i18n/en.json && test -f src/i18n/de.json || { echo "missing input fi
 
 **When `|| echo "default"` is acceptable:** only when absence is semantically the default AND the result is NOT used in a comparison that should detect absence.
 
-## External Review Before PR Open
+## External Review Before PR Open (#4107)
 
 Apply this ordering only when opening the PR is known to trigger automatic external review and the plan also has internal review lanes.
 

@@ -80,15 +80,23 @@ describe('prompt thinning — sub-200K context window support (#1978)', () => {
       assert.match(assignWaves, /accepted internal-review fixes[^.]*before[^.]*open/i);
       assert.match(assignWaves, /if an open-time property exists[^.]*re-check it immediately before opening[^.]*nothing intervening/i);
       assert.match(assignWaves, /post-open CI[^.]*review[^.]*tracking may follow/i);
-      assert.doesNotMatch(assignWaves, /open the PR as the final action/i);
-      assert.match(assignWaves, /planner-antipatterns\.md \("External Review Before PR Open"\)/);
+      // Directionality fixture (#4107): an inverted-order sentence — PR opens
+      // first, fixes land after — must fail the ordering-sensitive assertion
+      // above. Proves the regex tests sequence, not mere keyword co-occurrence.
+      const invertedOrdering = 'Open the PR immediately, then schedule the accepted internal-review fixes afterward.';
+      assert.doesNotMatch(invertedOrdering, /accepted internal-review fixes[^.]*before[^.]*open/i);
+      assert.match(assignWaves, /planner-antipatterns\.md \("External Review Before PR Open \(#4107\)"\)/);
 
       const reference = fs.readFileSync(PLANNER_ANTIPATTERNS_REF, 'utf-8');
-      const example = collectSection(reference, (heading) => heading.text === 'External Review Before PR Open')?.body || '';
+      const example = collectSection(reference, (heading) => heading.text === 'External Review Before PR Open (#4107)')?.body || '';
       assert.match(example, /Bad[\s\S]*open[^\n]*PR[\s\S]*internal review/i);
       assert.match(example, /Good[\s\S]*internal review[\s\S]*accepted fixes[\s\S]*if applicable[^\n]*re-check[^\n]*then immediately open PR/i);
       assert.match(example, /nothing may intervene[^.]*re-check[^.]*open/i);
       assert.match(example, /post-open work may follow/i);
+      // Directionality fixture: a Good section that opens the PR before
+      // internal review must fail the "Good" assertion above.
+      const invertedExample = 'Good:\nWave 1: Open PR immediately\nWave 2: Run internal review\nWave 3: Apply accepted fixes\n';
+      assert.doesNotMatch(invertedExample, /Good[\s\S]*internal review[\s\S]*accepted fixes[\s\S]*if applicable[^\n]*re-check[^\n]*then immediately open PR/i);
     });
   });
 
