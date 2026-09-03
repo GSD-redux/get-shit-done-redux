@@ -38,7 +38,7 @@ const { output: coreOutput, error: coreError } = ioMod;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import activationMod = require('./capability-activation.cjs');
-const { _resolveActivationValue } = activationMod;
+const { _resolveActivationValue, _resolvePointGate } = activationMod;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
@@ -278,6 +278,12 @@ function resolveCapabilityState(input: ResolveCapabilityStateInput): ResolveCapa
           // Present-but-empty-string or non-string `when` → malformed, inactive
           // (mirrors loop-resolver.isActive: `typeof when !== 'string' || when.length === 0` → false)
           configured = false;
+        }
+        // #3661: optional point-selection gate, ANDed in — mirrors loop-resolver.isActive
+        // EXACTLY (see capability-activation.cts's _resolvePointGate doc comment; this
+        // parity is load-bearing, see tests/capability-precedence-parity.test.cjs).
+        if (configured) {
+          configured = _resolvePointGate(h['pointFrom'], point, config, cwd, registry);
         }
         // Hook active = capability-level active AND hook's own config gate.
         // The capability's `active` constant (= enabled && configActivation) is

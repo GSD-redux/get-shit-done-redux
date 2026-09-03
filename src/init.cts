@@ -31,6 +31,10 @@ import phaseId = require('./phase-id.cjs');
 import worktreeSafety = require('./worktree-safety.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 import { maskIfSecret } from './secrets.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import scanPhasePlans = require('./plan-scan.cjs');
@@ -1131,6 +1135,11 @@ function cmdInitPlanPhase(
 
     has_research: phaseInfo?.['has_research'] || false,
     has_context: phaseInfo?.['has_context'] || false,
+    // #4014 (epic #3473 B4-unreadable): additive scope signal adjacent to
+    // has_context — SCOPE.COMPLETE by default (no phase directory to read is
+    // a genuine, not-unreadable answer), overwritten below to whatever
+    // findContextMdIn(phaseDirFull) reports once a directory is known.
+    context_scope: SCOPE.COMPLETE,
     has_reviews: phaseInfo?.['has_reviews'] || false,
     has_plans: ((phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0) > 0,
     plan_count: (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0,
@@ -1149,6 +1158,13 @@ function cmdInitPlanPhase(
 
   if (phaseInfo?.['directory']) {
     const phaseDirFull = path.join(cwd, phaseInfo['directory'] as string);
+    // #4014 (epic #3473 B4-unreadable): findContextMdIn's directory-string
+    // form never throws, so this can record the real scope BEFORE the
+    // pre-existing `fs.readdirSync(phaseDirFull)` immediately below
+    // (unchanged) throws on the same unreadable directory and is caught
+    // exactly as before — additive only, the failure control-flow for
+    // context_path/research_path/etc. is untouched.
+    result['context_scope'] = findContextMdIn(phaseDirFull).scope;
     try {
       const files = fs.readdirSync(phaseDirFull);
       const phaseDirName = path.basename(phaseDirFull);
@@ -1511,6 +1527,56 @@ function cmdInitQuick(
 
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
   result['section_manifest'] = buildSectionManifestField(cwd, null, sectionManifestOptions, 'quick');
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `init.quick-batch` (#3676, Phase 4 of epic #3344, ADR-1239 "Quick-batch
+ * binding"). Unlike `cmdInitQuick`, this init bundle does NOT allocate a
+ * quick id / slug / task directory itself — batch-level id allocation and
+ * `BATCH.json` creation is the job of the `quick-batch create` CLI verb
+ * (`src/quick-batch-command-router.cts`, wrapping `createBatch` in
+ * `src/quick-batch.cts`). This bundle supplies the per-role model profiles,
+ * `commit_docs`, the roadmap/planning existence checks `quick-batch.md`'s
+ * ROADMAP.md gate needs (same check `cmdInitQuick` runs), the `.planning/quick`
+ * directory path, and the `section_manifest` field gating the optional
+ * `--research`/`--validate` step fragments — the same `flag:--research`/
+ * `flag:--validate` atoms `quick`'s own section manifest already uses
+ * (`WHEN_VOCABULARY` is workflow-agnostic; no new atom is needed). `--discuss`/
+ * `--full` are rejected by `quick-batch-dispatch.cts`'s `parseQuickBatchArgs`
+ * before this init bundle is ever reached, so no `discuss`/`full` flag key is
+ * accepted here (unlike `cmdInitQuick`, which still supports both).
+ */
+function cmdInitQuickBatch(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+
+  const result: Record<string, unknown> = {
+    planner_model: resolveModelInternal(cwd, 'gsd-planner'),
+    executor_model: resolveModelInternal(cwd, 'gsd-executor'),
+    checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
+    verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
+    researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
+    reviewer_model: resolveModelInternal(cwd, 'gsd-code-reviewer'),
+
+    commit_docs: config.commit_docs,
+
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase; a
+    // per-item task_dir is re-derived by the workflow itself (quick_id +
+    // generate-slug over that item's description), never allocated here.
+    quick_dir: toPosixPath(path.join(planningDir(cwd), 'quick')),
+    quick_batches_dir: toPosixPath(path.join(planningDir(cwd), 'quick-batches')),
+
+    roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
+    planning_exists: fs.existsSync(planningRoot(cwd)),
+  };
+
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'quick-batch');
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -2038,6 +2104,9 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
 
     has_research: phaseInfo?.['has_research'] || false,
     has_context: phaseInfo?.['has_context'] || false,
+    // #4014 (epic #3473 B4-unreadable): see the parallel field in
+    // cmdInitPlanPhase — additive scope signal adjacent to has_context.
+    context_scope: SCOPE.COMPLETE,
     has_plans: ((phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0) > 0,
     has_verification: phaseInfo?.['has_verification'] || false,
     has_reviews: phaseInfo?.['has_reviews'] || false,
@@ -2055,6 +2124,9 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
 
   if (phaseInfo?.['directory']) {
     const phaseDirFull = path.join(cwd, phaseInfo['directory'] as string);
+    // #4014 (epic #3473 B4-unreadable): see the parallel site in
+    // cmdInitPlanPhase — additive only, failure control-flow below unchanged.
+    result['context_scope'] = findContextMdIn(phaseDirFull).scope;
     try {
       const files = fs.readdirSync(phaseDirFull);
       const phaseDirName = path.basename(phaseDirFull);
@@ -2414,6 +2486,9 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     let hasResearch = false;
     let lastActivity: string | null = null;
     let isActive = false;
+    // #4014 (epic #3473 B4-unreadable): default COMPLETE — no directory at
+    // all (dirMatch not found) is a genuine, not-unreadable answer.
+    let contextScope: Scope = SCOPE.COMPLETE;
     let completion = buildPhaseCompletionProjection(
       cwd,
       phaseNum,
@@ -2433,6 +2508,17 @@ function cmdInitManager(cwd: string, raw: boolean): void {
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);
         const phaseDirRel = toPosixPath(path.relative(cwd, fullDir));
+        // #4014 (epic #3473 B4-unreadable): this whole block used to swallow
+        // ANY readdirSync failure below into the bare `catch { /* empty */ }`
+        // at the bottom — an unreadable phase directory reported the exact
+        // same `has_context: false` / `disk_status: 'no_directory'` as a
+        // directory that never existed. findContextMdIn's directory-string
+        // form never throws, so it can record the real scope (COMPLETE vs
+        // UNREADABLE) here, BEFORE the pre-existing `fs.readdirSync(fullDir)`
+        // immediately below (unchanged) throws on the exact same unreadable
+        // directory and is caught exactly as before — this line is additive
+        // only, the failure control-flow is untouched.
+        contextScope = findContextMdIn(fullDir).scope;
         const phaseFiles = fs.readdirSync(fullDir);
         planCount = listPhasePlanFiles(fullDir).length;
         summaryCount = listPhaseSummaryFiles(fullDir).length;
@@ -2510,6 +2596,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
       ...completion,
       last_activity: lastActivity,
       is_active: isActive,
+      context_scope: contextScope,
     });
   }
 
@@ -4035,6 +4122,7 @@ export = {
   cmdInitNewProject,
   cmdInitNewMilestone,
   cmdInitQuick,
+  cmdInitQuickBatch,
   cmdInitIngestDocs,
   cmdInitOnboard,
   cmdInitResume,

@@ -71,10 +71,15 @@ const HOOKS_TO_COPY = [
   'gsd-session-state.sh',
   'gsd-validate-commit.sh',
   'gsd-phase-boundary.sh',
-  // Portable node resolver (#3662). Not a registered hook itself: managed JS
-  // hook commands under --portable-hooks route through it (bash <resolver>
-  // <baked-node> <script>) so node resolves at hook-fire time in every
-  // environment sharing the config root. Staged verbatim — no templating.
+  // Portable node resolver (#3662). Managed JS hook commands under
+  // --portable-hooks route through it (bash <resolver> <baked-node>
+  // <script>) so node resolves at hook-fire time in every environment
+  // sharing the config root. It IS registered in MANAGED_HOOKS
+  // (managed-hooks-registry.cjs) for staleness tracking like every other
+  // shipped .sh hook, and install.js stamps its {{GSD_VERSION}} header the
+  // same way (#4076 — the prior comment here claimed the opposite on both
+  // counts, which is why the header was missing and staleness detection was
+  // permanently broken for this file).
   'gsd-node-runner.sh',
   // Graphify auto-update hook (#3347 / PR #3557 / #3579). Opt-in via
   // .planning/config.json graphify.auto_update; off by default.

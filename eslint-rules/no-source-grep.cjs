@@ -6,7 +6,8 @@
  * Flags variables bound to readFileSync() of a .cjs/.cts/.js/.mjs/.mts/.ts
  * source path that later have a text-search method called on them, whether
  * directly, via a bounded chain of derived bindings (`const b = f(a)`,
- * `b = a`, ...), or via `regex.test(tracked)` / `/lit/.test(tracked)`.
+ * `b = a`, ...), or via `regex.test(tracked)` / `/lit/.test(tracked)` /
+ * `regex.exec(tracked)` / `/lit/.exec(tracked)` (#3464 phase 8).
  *
  * Variable identity is resolved through real lexical scope (ESLint
  * `Variable` objects via `sourceCode.scopeManager`/`getScope`), not by name
@@ -235,7 +236,7 @@ const rule = {
     ],
     messages: {
       noSourceGrep:
-        'Source-grep test: do not read source .cjs/.cts/.js/.mjs/.mts/.ts files with readFileSync and call .includes/.match/.matchAll/.startsWith/.indexOf/.split/.replace/.search (or regex.test()) on the result. Use require() to run the module instead. Add // allow-test-rule: <reason> (#NNN) directly above (or trailing) the flagged line to suppress just that site.',
+        'Source-grep test: do not read source .cjs/.cts/.js/.mjs/.mts/.ts files with readFileSync and call .includes/.match/.matchAll/.startsWith/.indexOf/.split/.replace/.search (or regex.test() / regex.exec()) on the result. Use require() to run the module instead. Add // allow-test-rule: <reason> (#NNN) directly above (or trailing) the flagged line to suppress just that site.',
       // Diagnostic-only companion to `noSourceGrep`, emitted ONLY when the
       // `neutralizeSuppression` schema option is set (see its doc comment
       // and `reportUnlessSuppressed` above) -- never fires with the real
@@ -600,6 +601,8 @@ const rule = {
           pendingCalls.push({ node, kind: 'textMethod' });
         } else if (propName === 'test') {
           pendingCalls.push({ node, kind: 'regexTest' });
+        } else if (propName === 'exec') {
+          pendingCalls.push({ node, kind: 'execCall' });
         }
       },
       'Program:exit'() {
@@ -711,8 +714,13 @@ const rule = {
             continue;
           }
 
-          // kind === 'regexTest': re.test(tracked) or /lit/.test(tracked).
-          // The tracked variable is the ARGUMENT here, not the callee object.
+          // kind === 'regexTest' / 'execCall': re.test(tracked) or
+          // /lit/.test(tracked), and identically re.exec(tracked) or
+          // /lit/.exec(tracked) (#3464 phase 8) -- both return a
+          // regex-shaped result, but what matters here is only that the
+          // ARGUMENT (not the callee object) may carry the tracked source
+          // text, so the receiver/argument classification is shared
+          // byte-for-byte between the two kinds.
           const looksLikeRegexReceiver =
             obj.type === 'Identifier' || (obj.type === 'Literal' && !!obj.regex);
           if (!looksLikeRegexReceiver) continue;

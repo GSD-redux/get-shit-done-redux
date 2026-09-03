@@ -247,7 +247,7 @@ describe('ADR-857 phase 6 — capabilities must not bake install paths into the 
 
   test('generated capability-registry.cjs contains no ~/.claude install path', () => {
     const reg = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'), 'utf8');
-    // allow-test-rule: source-text-is-the-product
+    // allow-test-rule: source-text-is-the-product (#3464)
     const leakLines = reg.split(/\r?\n/).map((l, i) => [i + 1, l]).filter(([, l]) => LEAK.test(l)).map(([n]) => n);
     assert.deepEqual(leakLines, [],
       `capability-registry.cjs leaks ~/.claude install paths at line(s) ${leakLines.join(', ')} — the registry is copied verbatim to non-Claude runtimes (only workflow .md files are path-converted at install). Make the source capability fragment path-free.`);

@@ -1,8 +1,3 @@
-// allow-test-rule: source-text-is-the-product
-// Workflow .md / agent .md / command .md / reference .md files — their text
-// IS what the runtime loads. Testing text content tests the deployed contract.
-// Per CONTRIBUTING.md exception matrix.
-
 /**
  * GSD Tools Tests - codex-config.cjs
  *
@@ -3355,11 +3350,6 @@ test('writeNonClaudeDefaults function exists and is a no-op for Claude (#2834)',
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-2639-codex-toml-neutralization (consolidation epic #1969 H3 W4 #3336)", () => {
-// allow-test-rule: source-text-is-the-product
-// Workflow .md / agent .md / command .md / reference .md files — their text
-// IS what the runtime loads. Testing text content tests the deployed contract.
-// Per CONTRIBUTING.md exception matrix.
-
 /**
  * Regression: issue #2639 — Codex install generated agent TOMLs with stale
  * Claude-specific references (CLAUDE.md, .claude/skills/, .claudeignore).

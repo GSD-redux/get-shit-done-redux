@@ -891,6 +891,15 @@ const capabilities = {
         ],
         "default": "standard",
         "description": "Default depth for code review when no --depth override is supplied."
+      },
+      "workflow.code_review_point": {
+        "type": "enum",
+        "values": [
+          "execute:post",
+          "execute:wave:post"
+        ],
+        "default": "execute:post",
+        "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff."
       }
     },
     "steps": [
@@ -906,6 +915,20 @@ const capabilities = {
           "SUMMARY.md"
         ],
         "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
+        "onError": "skip"
+      },
+      {
+        "point": "execute:wave:post",
+        "ref": {
+          "skill": "code-review"
+        },
+        "produces": [
+          "REVIEW.md"
+        ],
+        "consumes": [],
+        "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
         "onError": "skip"
       }
     ],
@@ -4553,6 +4576,20 @@ const byLoopPoint = {
   "execute:wave:post": {
     "steps": [
       {
+        "capId": "code-review",
+        "point": "execute:wave:post",
+        "ref": {
+          "skill": "code-review"
+        },
+        "produces": [
+          "REVIEW.md"
+        ],
+        "consumes": [],
+        "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
+        "onError": "skip"
+      },
+      {
         "capId": "live-dom-uat",
         "point": "execute:wave:post",
         "ref": {
@@ -4652,6 +4689,7 @@ const byLoopPoint = {
           "SUMMARY.md"
         ],
         "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
         "onError": "skip"
       },
       {
@@ -4835,6 +4873,7 @@ const configKeys = {
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "workflow.code_review_point": "code-review",
   "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
@@ -5005,6 +5044,16 @@ const configSchema = {
       "quick",
       "standard",
       "deep"
+    ]
+  },
+  "workflow.code_review_point": {
+    "owner": "code-review",
+    "type": "enum",
+    "default": "execute:post",
+    "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff.",
+    "values": [
+      "execute:post",
+      "execute:wave:post"
     ]
   },
   "review.max_prompt_tokens_per_reviewer.coderabbit": {

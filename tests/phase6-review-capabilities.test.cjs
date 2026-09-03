@@ -129,13 +129,13 @@ describe('ADR-857 phase 6 verification and review capability migration', () => {
     assert.ok(!section.includes('config-get workflow.code_review'));
   });
 
-  test('code-review command self-gates through execute:post hooks', () => {
+  test('code-review command self-gates via workflow.code_review config directly, not execute:post hooks (#3661: manual invocation must work regardless of which automatic point — execute:post or execute:wave:post — is configured)', () => {
     const content = workflow('code-review.md');
     const section = sectionBetween(content, '<step name="check_config_gate">', '<step name="resolve_depth">');
 
-    assert.ok(section.includes('loop render-hooks execute:post'));
-    assert.ok(section.includes('ref.skill == "code-review"'));
-    assert.ok(!section.includes('config-get workflow.code_review'));
+    assert.ok(section.includes('gsd_run query config-get workflow.code_review --raw'));
+    assert.ok(!section.includes('loop render-hooks execute:post'));
+    assert.ok(!section.includes('ref.skill == "code-review"'));
   });
 
   test('code-review-fix command self-gates through execute:post hooks', () => {

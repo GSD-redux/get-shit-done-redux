@@ -410,7 +410,9 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   test('retries on EAGAIN and emits the full payload without throwing', (t) => {
     const written = [];
     let calls = 0;
+    const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11); // pipe momentarily full
       const chunk = bug1008ChunkOf(data, offset, length);
@@ -427,7 +429,9 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   test('retries on EINTR (signal-interrupted write) too', (t) => {
     const written = [];
     let calls = 0;
+    const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EINTR', -4);
       const chunk = bug1008ChunkOf(data, offset, length);
@@ -442,7 +446,9 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   test('handles short (partial) writes without truncating', (t) => {
     const written = [];
     const CAP = 3; // each writeSync accepts at most 3 bytes, like a draining pipe
+    const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
       const chunk = bug1008ChunkOf(data, offset, length);
       const part = chunk.slice(0, CAP);
       written.push(part);
@@ -455,12 +461,34 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   });
 
   test('does NOT swallow a genuine, non-transient write error (EPIPE)', (t) => {
-    t.mock.method(fs, 'writeSync', () => { throw bug1008WriteError('EPIPE', -32); });
+    const orig = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
+      throw bug1008WriteError('EPIPE', -32);
+    });
     assert.throws(
       () => io.output({ ok: true }, false),
       (err) => err.code === 'EPIPE',
       'real (non-transient) errors must still surface',
     );
+  });
+
+  test('regression: the fault-injection mock does not intercept writes to an unrelated fd (would corrupt node:test\'s own IPC otherwise)', (t) => {
+    const orig = fs.writeSync.bind(fs);
+    let sawOtherFd = false;
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) {
+        sawOtherFd = true;
+        return orig(fd, data, offset, length);
+      }
+      throw bug1008WriteError('EAGAIN', -11);
+    });
+    // A real write to fd 2 (stderr) while the fd-1 mock is active must reach
+    // the real fs.writeSync untouched, not the injected fault.
+    const marker = 'fd-scope-regression-marker\n';
+    const n = fs.writeSync(2, marker);
+    assert.equal(n, Buffer.byteLength(marker), 'write to an unrelated fd must succeed via passthrough, not be intercepted');
+    assert.ok(sawOtherFd, 'the mock must observe the unrelated-fd call and delegate it');
   });
 });
 
@@ -477,9 +505,9 @@ describe('bug #1008: io.error() tolerates a full non-blocking stderr pipe', () =
     let calls = 0;
     const restore = fs.writeSync;
     fs.writeSync = (fd, data, offset, length) => {
+      if (fd !== 2) return restore(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11);
-      assert.equal(fd, 2, 'error() must write to stderr');
       const chunk = bug1008ChunkOf(data, offset, length);
       written.push(chunk);
       return Buffer.byteLength(chunk, 'utf8');

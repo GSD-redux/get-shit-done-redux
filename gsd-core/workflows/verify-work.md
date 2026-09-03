@@ -172,6 +172,27 @@ ls "$phase_dir"/*-SUMMARY.md 2>/dev/null || true
 ```
 
 Read each SUMMARY.md to extract testable deliverables.
+
+**Commit-claim reconciliation (#3968).** A SUMMARY's `commits:` frontmatter is a MEASURED
+number (the executor derives it from its on-disk plan commit ledger and records the base as
+`plan_head_before:`), and this is where that claim is checked against reality with the SAME
+instrument — the executor's own narration is never the last word. For each `*-SUMMARY.md`:
+```bash
+BASE=$(grep -oE '^plan_head_before: [0-9a-f]{7,40}' "$SUMMARY_FILE" | awk '{print $2}')
+CLAIMED=$(grep -oE '^commits: [0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' || echo absent)
+ACTUAL=$(git rev-list --count "${BASE}"..HEAD)
+```
+- A `commits: absent` or `plan_head_before: absent` SUMMARY (pre-#3968 legacy) is reported as
+  a WARNING with the measured git state, not a mismatch.
+- `ACTUAL == CLAIMED` is consistent. `ACTUAL == CLAIMED + 1` is ALSO consistent: the
+  SUMMARY/metadata commit itself lands after the executor measured, so exactly one
+  post-measurement commit is expected.
+- Anything else is a **BLOCKER** — the phase must not read as done: real project evidence
+  (#3968) showed 14 plans declaring `commits: 1` with zero git activity, their code sitting
+  uncommitted and one `git reset --hard` from loss. Record it as `commit_claim_mismatch`
+  with both numbers and the SUMMARY path; a mismatch means either the executor narrated
+  instead of measuring or commits were lost after the fact — both require reconciliation
+  before the phase can pass.
 </step>
 
 <step name="extract_tests">

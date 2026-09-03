@@ -182,9 +182,14 @@ TDD_MODE=$(gsd_run loop render-hooks execute:post --active-cap tdd)
 Before trusting `STATE.md` or dispatching any executor, derive `CURRENT_PLAN_ID`
 from the active incomplete plan in `INIT`, then search recent history:
 ```bash
-CURRENT_PLAN_ID="{phase_number}-{plan_padded}"
 SUMMARY_PATH="{phase_dir}/{plan_padded}-SUMMARY.md"
-PLAN_COMMITS=$(git log --oneline --grep="${CURRENT_PLAN_ID}" -30)
+# #4003: no padding rule in the commit protocol, so zero-strip both components and
+# match ANCHORED at the commit scope; bound to the latest reachable tag (milestone marker).
+PHASE_N=$((10#{phase_number}))
+PLAN_N=$((10#{plan_padded}))
+PLAN_SCOPE_RE="^[a-z]+\((0*${PHASE_N})-(0*${PLAN_N})\):"
+MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+PLAN_COMMITS=$(git log --oneline -E ${MILESTONE_BASE:+"$MILESTONE_BASE..HEAD"} --grep="${PLAN_SCOPE_RE}" -30)
 ```
 If production commits exist and `SUMMARY.md is missing` (no `.planning/async-jobs/*.json` manifest matches it: a match is a legal `external_job_waiting` deferral - reconcile per `docs/reference/planning-artifacts.md`, never re-dispatch), stop before spawning a
 new executor; continuing risks duplicate work and stale `STATE.md`/ROADMAP progress.
@@ -199,7 +204,13 @@ Offer these recovery options:
 if [ "$TDD_MODE" = "true" ]; then
   IS_BEHAVIOR_ADDING=$(gsd_run query task.is-behavior-adding "$TASK_FILE" --pick is_behavior_adding)
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
-    RED_COMMIT=$(git log --oneline --grep="^test(${PHASE_NUMBER}-${PLAN_ID}):" -- "**/*.test.*" "**/*.spec.*" "tests/" | head -1)
+    # #4003: same anchored scope and milestone bound as safe_resume_gate — a padded
+    # literal grep hard-halts on a correct unpadded RED commit.
+    PHASE_N=$((10#${PHASE_NUMBER}))
+    PLAN_N=$((10#${PLAN_ID}))
+    PLAN_SCOPE_RE="^[a-z]+\((0*${PHASE_N})-(0*${PLAN_N})\):"
+    TDD_MILESTONE_BASE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    RED_COMMIT=$(git log --oneline -E ${TDD_MILESTONE_BASE:+"$TDD_MILESTONE_BASE..HEAD"} --grep="${PLAN_SCOPE_RE}" -- "**/*.test.*" "**/*.spec.*" "tests/" | head -1)
     if [ -z "$RED_COMMIT" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
       echo "TDD GATE TRIPPED: missing RED commit for ${PLAN_ID}/${TASK_ID}"
@@ -841,7 +852,10 @@ increases monotonically across waves. `{status}` is `complete` (success),
    ```bash
    # For each plan in this wave, check if the executor finished:
    SUMMARY_EXISTS=$(test -f "{phase_dir}/{plan_number}-{plan_padded}-SUMMARY.md" && echo "true" || echo "false")
-   COMMITS_FOUND=$(git log --oneline --all --grep="{phase_number}-{plan_padded}" --since="1 hour ago" | head -1)
+   # #4003: anchored, zero-pad-tolerant scope (see safe_resume_gate); --since stays.
+   SPOT_PHASE_N=$((10#{phase_number}))
+   SPOT_PLAN_N=$((10#{plan_padded}))
+   COMMITS_FOUND=$(git log --oneline --all -E --grep="^[a-z]+\((0*${SPOT_PHASE_N})-(0*${SPOT_PLAN_N})\):" --since="1 hour ago" | head -1)
    COMMITS_SINCE_DISPATCH=$(git log "${EXPECTED_BRANCH}" --since="${DISPATCH_TS}" --oneline | head -1)
    ```
 
@@ -1025,7 +1039,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none), before the gates below.
 
-   **Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape of one. A step here is advisory: it never blocks wave completion. ⚠ **Validate `ref.command` in-context before any shell use** (third-party manifest input) — loop-hook-dispatch.md § `step`.
+   **Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape of one. A step here is advisory: it never blocks wave completion. ⚠ **Validate `ref.command` in-context before any shell use** (third-party manifest input) — loop-hook-dispatch.md § `step`. **`ref.skill == "code-review"` (#3661):** the generic contract's bare skill dispatch carries no phase argument, but `code-review.md`'s `initialize` step requires one (`PHASE_ARG="${1}"`) or it reports "Phase not found" and exits — pass it explicitly, mirroring step `code_review_gate` below: `Skill(skill="gsd-code-review", args="${PHASE_NUMBER}")`.
 
    **For each active entry where `kind == "gate"`** (process in array order): read and execute `gsd-core/workflows/execute-phase/steps/wave-post-gate-hooks.md` for the full evaluation contract (check validation, `onError`, blocking semantics, mapper spawn). When all active gates are processed without a blocking halt, continue to step 5.8.
 

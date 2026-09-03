@@ -25,6 +25,7 @@
   - [Freeform Routing](#12-freeform-routing)
   - [Note Capture](#13-note-capture)
   - [Auto-Advance (Next)](#14-auto-advance-next)
+  - [Quick Batch Mode](#4015-quick-batch-mode)
 - [Quality Assurance Features](#quality-assurance-features)
   - [Nyquist Validation](#15-nyquist-validation)
   - [Plan Checking](#16-plan-checking)
@@ -206,6 +207,7 @@
   - [gsd-tools Declares Outcomes, Pinned at v1](#3912-gsd-tools-declares-outcomes-pinned-at-v1)
   - [Reachable Lint Rules and a Non-Destructive Quick-Task Append](#3951-reachable-lint-rules-and-a-non-destructive-quick-task-append)
   - [Per-Task External-Tracker Content-Resolution Seam](#3970-per-task-external-tracker-content-resolution-seam)
+  - [Unreadable-Directory Scope Signal](#4014-unreadable-directory-scope-signal)
 
 ---
 
@@ -601,6 +603,28 @@
 | Phase has plans but no SUMMARY.md | Run `/gsd-execute-phase` |
 | Phase executed but no VERIFICATION.md | Run `/gsd-verify-work` |
 | All phases complete | Suggest `/gsd-complete-milestone` |
+
+---
+
+### 4015. Quick Batch Mode
+
+**Command:** `/gsd-quick-batch [--file <path>] [--jobs auto|N] [--validate] [--research] [--resume <batch-id>]`
+
+**Purpose:** Batch several `/gsd-quick`-shaped tasks together — one coordinator plans, dispatches, and merges them as a single run, with per-item leaves and deterministic merge ordering (ADR-1239 "Quick-batch binding").
+
+**Requirements:**
+- REQ-QB-01: System MUST accept an inline task list (≥2 items) or `--file <path>`
+- REQ-QB-02: System MUST reject `--discuss` and `--full` with a usage error before any dispatch
+- REQ-QB-03: System MUST reject a malformed `--jobs` value before any dispatch
+- REQ-QB-04: System MUST resolve effective concurrency as `min(task count, jobsN, capacity)` for `--jobs N`, or `capacity` alone for `--jobs auto`
+- REQ-QB-05: System MUST force a mutating (worktree/executor) wave's concurrency to 1 when isolation is `none`, without capping a non-mutating (research/planning-only) wave
+- REQ-QB-06: System MUST dispatch a planner per eligible item per DAG layer, providing the full batch task catalog and always requiring `depends_on`/`files_modified` frontmatter
+- REQ-QB-07: System MUST recompute execution waves after each planning layer from the planners' declared dependencies/files
+- REQ-QB-08: System MUST serialize worktree create/merge/cleanup while allowing already-created worktrees to run concurrently
+- REQ-QB-09: System MUST merge items strictly in the deterministic wave order, never completion order
+- REQ-QB-10: System MUST NOT call the STATE.md completion primitive for an item routed to `human_needed`
+- REQ-QB-11: System MUST fail an item routed to `gaps_found`/`merge_failed`/`scope_violation` without rollback, without an automatic retry, and with its worktree preserved
+- REQ-QB-12: System MUST support `--resume <batch-id>` to re-derive eligibility and dispatch only still-runnable items, refusing closed on an unknown batch id or a diverged base revision
 
 
 ---
@@ -2248,13 +2272,30 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 - REQ-REVIEW-05: Each fix MUST be committed atomically with a descriptive message
 - REQ-REVIEW-06: `--auto` flag MUST enable fix + re-review iteration loop, capped at 3 iterations
 - REQ-REVIEW-07: Feature MUST be gated by `workflow.code_review` config flag
+- REQ-REVIEW-08: `workflow.code_review_point` MUST select which loop point the automatic review step registers at (`execute:post` default, or `execute:wave:post`), independent of the `workflow.code_review` on/off gate and of manual `/gsd-code-review` invocation (#3661)
 
 **Config:**
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `workflow.code_review` | boolean | `true` | Enable code review commands |
+| `workflow.code_review_point` | string | `execute:post` | Loop point for the automatic review: `execute:post` (once per phase, default) or `execute:wave:post` (once per completed wave, scoped to what changed since the phase's prior review). See below. |
 | `workflow.code_review_depth` | string | `standard` | Default review depth: `quick`, `standard`, or `deep` |
 | `workflow.code_review_depth_overrides` | array | `[]` | Ordered `{ paths, depth }` rules that escalate depth for directories matched by path prefix against the changed-file set (#2554). See below. |
+
+**Reviewing per wave instead of per phase (#3661)**
+
+Setting `workflow.code_review_point` to `execute:wave:post` moves the automatic review from
+"once, after the whole phase's waves have all landed" to "once per completed wave." Each
+wave's review scopes to what changed since the phase's *previous* review — the whole phase's
+diff on the first wave, then just that wave's diff on every wave after — so review batches
+stay small instead of growing with the phase. A finding introduced early is caught after the
+wave that introduced it, not after the last wave of the phase.
+
+This only affects the *automatic* dispatch inside a wave-based phase execution. Manual
+`/gsd-code-review <phase>` runs are gated by `workflow.code_review` alone and are unaffected
+by this key. `/gsd-autonomous` and `/gsd-quick` have no wave granularity of their own, so
+setting this to `execute:wave:post` means automatic review does not run inside those two
+flows — the same way every other wave-scoped capability step already behaves for them.
 
 **Path-scoped code review depth overrides**
 
@@ -4195,6 +4236,52 @@ for the authoring walkthrough, [Capability manifest → `taskContentResolver`](.
 for the field reference, and
 [`loop-hook-dispatch.md`](../../gsd-core/references/loop-hook-dispatch.md#the-executetask-point-a-different-shape)
 for how `execute:task` differs from the twelve prose-dispatched points.
+
+---
+
+### 4014. Unreadable-Directory Scope Signal
+
+**Purpose:** ADR-3473 §8.4 ("failure is a value") applies to filesystem
+listings, not only command argv. `#3885` (B5) gave `roadmap analyze`,
+`gap-checker`, and `init`'s JSON bundles a `context_read_error` /
+`phase_dir_read_error` string naming an unreadable phase directory — but the
+underlying `has_context` / `hasContext` boolean stayed `false` either way,
+so a consumer branching on that boolean alone still cannot tell "genuinely
+no context file" from "could not read the directory at all." This closes
+that gap with a typed signal, reusing ADR-3180's existing frozen `SCOPE`
+enum rather than a new vocabulary.
+
+**`findContextMdIn` (`src/planning-workspace.cts`) now reports its own
+scope.** Called with a directory path, it returns `{ file, files, scope }`
+instead of a bare filename-or-null, and never throws — an unreadable
+directory reports `scope: 'unreadable'` (previously it threw, forcing every
+caller to hand-roll its own `try`/`catch`); a genuinely absent directory
+(`ENOENT`) reports `scope: 'complete'`, the same "real empty" answer as
+today. The array-input call form (an already-read listing) is unchanged.
+
+**Five downstream call sites gain an additive `scope` field, none renamed
+or removed:** `roadmap analyze`'s `AnalyzePhase.context_scope`,
+`gap-checker`'s `phase_dir_scope`, and `init`'s `context_scope` on all three
+JSON bundles (`init plan-phase`, `init phase-op`, `init manager`) —
+including `cmdInitManager`, whose own read failure previously vanished into
+a bare empty `catch {}` with no signal of any kind. `getPhaseFileStats`
+(`src/core-utils.cts`) — the shared listing owner behind `roadmap analyze`
+and `init`'s `has_context` — no longer lets its own failed read get masked
+by an unrelated, already-successful `scanPhasePlans` scope on the same
+phase directory.
+
+**Known limits:**
+- `context_read_error` / `phase_dir_read_error`'s message text is now a
+  fixed "Could not read phase directory `<path>`" rather than embedding the
+  underlying OS errno text — `findContextMdIn`'s directory-string form
+  reports only the `SCOPE` discriminator, not the raw caught error. The
+  field's presence and type are unchanged; only its message detail is
+  coarser than before #4014.
+- `init.cts`'s three call sites call `findContextMdIn` for the scope signal
+  and then still run their own, pre-existing `fs.readdirSync` on the same
+  path for the rest of their output — an intentional, additive-only choice
+  to avoid altering already-complex failure control-flow at those sites,
+  not a performance optimization.
 
 ---
 

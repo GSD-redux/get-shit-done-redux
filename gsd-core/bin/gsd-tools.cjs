@@ -30,6 +30,9 @@
  *   list-todos [area]                  Count and enumerate pending todos
  *   list-seeds [status]                List captured seeds (optional status filter)
  *   verify-path-exists <path>          Check file/directory existence
+ *   quick-tasks-migrate                Migrate STATE.md's "Quick Tasks Completed"
+ *                                      table onto the canonical schema (#3730).
+ *                                      No-op when absent or already canonical.
  *   quick-tasks-append --task <text>   Append a row to STATE.md's "Quick Tasks
  *                                      Completed" table (schema-backed via
  *                                      markdown-table.cjs; #2133/ADR-2143).
@@ -334,6 +337,11 @@ const { routePhaseCommand } = require('./lib/phase-command-router.cjs');
 const { routePhasesCommand } = require('./lib/phases-command-router.cjs');
 const { routeValidateCommand } = require('./lib/validate-command-router.cjs');
 const { routeRoadmapCommand } = require('./lib/roadmap-command-router.cjs');
+// #3676 (Phase 4, epic #3344): quick-batch is a first-party, always-on
+// command family (like `/gsd:quick`) — wired directly into
+// HOST_COMMAND_ROUTERS, not the opt-in capability-registry/`activationKey`
+// path graphify uses.
+const { routeQuickBatchCommand } = require('./lib/quick-batch-command-router.cjs');
 const { routeCapabilityCommand } = require('./lib/capability-command-router.cjs');
 const { routeAgentCommand, AGENT_FAILURE_CLASSES } = require('./lib/agent-command-router.cjs');
 const smartEntryMod = require('./lib/smart-entry.cjs');
@@ -1175,6 +1183,34 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
   function routeVerifyPathExists({ args, cwd, raw, error }) {
     commands.cmdVerifyPathExists(cwd, args[1], raw);
+  }
+
+  function routeQuickTasksMigrate({ cwd, raw }) {
+    // #3730 (option b, maintainer decision 2026-09-02): the supported repair
+    // path for a legacy Quick Tasks table GSD's own pre-registry prose created.
+    // Silent no-op when the section is absent or the table is already canonical
+    // — the quick/fast workflows call this before their first append, so the
+    // migration runs exactly once, on the first quick run, unprompted otherwise.
+    const statePath = path.join(cwd, '.planning', 'STATE.md');
+    if (!fs.existsSync(statePath)) {
+      output({ ok: true, migrated: false, reason: `STATE.md not found at ${statePath}` }, raw);
+      return;
+    }
+    const { migrateQuickTasksTable } = require('./lib/markdown-table.cjs');
+    let report;
+    state.readModifyWriteStateMd(statePath, (content) => {
+      const result = migrateQuickTasksTable(content);
+      if (!result.ok) {
+        throw new ExitError(1, `⚠ quick-tasks-migrate: ${result.reason}`);
+      }
+      report = result.value;
+      return result.value.content;
+    }, cwd, { resync: false });
+    output({
+      ok: true,
+      migrated: report.migrated,
+      ...(report.migrated ? { from: report.from, rows: report.rows } : {}),
+    }, raw);
   }
 
   function routeQuickTasksAppend({ args, cwd, raw, error }) {
@@ -4182,6 +4218,9 @@ const HOST_COMMAND_ROUTERS = {
     'list-seeds': routeListSeeds,
     'verify-path-exists': routeVerifyPathExists,
     'quick-tasks-append': routeQuickTasksAppend,
+    'quick-tasks-migrate': routeQuickTasksMigrate,
+    // #3676 (Phase 4, epic #3344): quick-batch coordination verbs.
+    'quick-batch': routeQuickBatchCommand,
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
@@ -4445,7 +4484,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, planning, profile-questionnaire, ' +
-  'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
+  'profile-sample, progress, project-instruction-file, prompt-budget, quick-batch, quick-tasks-append, quick-tasks-migrate, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-capacity, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
