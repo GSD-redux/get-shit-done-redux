@@ -451,4 +451,49 @@ describe('dispatchReviewerLanes — fail-closed: budget overflow', () => {
     assert.equal(invoke.calls.length, 1);
     assert.equal(result.ok, true);
   });
+
+  test('WR-01: dispatched is false when the only selected slug never resolves to a lane', async () => {
+    const plan = spy(() => okPlan('ghost'));
+    const invoke = spy(() => ({ ok: true }));
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['ghost'] } }),
+      {
+        resolveSelection: () => ({ selected: ['ghost'], errors: [] }),
+        getLane: () => undefined,
+        plan,
+        invoke,
+        writePromptFile: noopWrite,
+      },
+    );
+
+    assert.equal(plan.calls.length, 0, 'plan() must never be called for an unresolved lane');
+    assert.equal(invoke.calls.length, 0, 'invoke() must never be called for an unresolved lane');
+    assert.equal(result.dispatched, false, 'dispatched must reflect that zero lanes were actually planned');
+    assert.equal(result.results[0].reason, 'malformed_lane');
+  });
+
+  test('WR-02: a throwing plan() for one lane does not discard results already collected for a sibling lane', async () => {
+    const lanes = new Map([
+      ['claude', fakeLane('claude')],
+      ['codex', fakeLane('codex')],
+    ]);
+    const plan = spy((lane) => {
+      if (lane.slug === 'codex') throw new Error('boom: malformed manifest');
+      return okPlan(lane.slug);
+    });
+    const invoke = spy(() => ({ ok: true }));
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile: noopWrite },
+    );
+
+    const bySlug = Object.fromEntries(result.results.map((r) => [r.slug, r]));
+    assert.equal(bySlug.claude.ok, true, 'the sibling lane that planned fine must still be invoked and reported');
+    assert.equal(invoke.calls.length, 1, 'invoke must have run for the sibling lane despite the throw');
+    assert.equal(bySlug.codex.ok, false);
+    assert.match(bySlug.codex.detail, /boom: malformed manifest/);
+    assert.equal(result.ok, false);
+  });
 });
