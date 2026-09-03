@@ -975,9 +975,9 @@ function computeSweepProtectSet(selectedFiles, runTempRoot, dirnameImpl = requir
   for (const f of selectedFiles) {
     let cur = f;
     while (cur && cur !== runTempRoot) {
-      protectSet.add(cur);
       const parent = dirnameImpl(cur);
-      if (parent === cur) break; // reached the filesystem root without finding runTempRoot
+      if (parent === cur) break; // cur IS the filesystem root — never protect it, just stop
+      protectSet.add(cur);
       cur = parent;
     }
     if (cur === runTempRoot) protectSet.add(f); // exact-file case
