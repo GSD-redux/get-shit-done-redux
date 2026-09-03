@@ -30,7 +30,7 @@ describe('#3968 — measured commit claims', () => {
     assert.ok(executor.includes('plan_head_before: ${PLAN_HEAD_BEFORE}'),
       'the base is recorded in the frontmatter so the verifier reconciles with the same instrument');
     // A measured zero WITH code changes is a HALT, never a narrated success.
-    assert.ok(/HALT — do not\s+write the SUMMARY/i.test(executor),
+    assert.ok(/HALT — do not write the\s+SUMMARY/i.test(executor),
       'a measured zero with uncommitted code changes must halt the SUMMARY write');
     // actuals.commits sources the measured count; the ADR-2629 calibration shape is kept.
     assert.ok(/commits: 7 .*MEASURED/.test(executor),
