@@ -54,3 +54,48 @@ test('configured entrypoint validation aggregates file and interpreter failures 
     ['interpreter', 'unresolved-interpreter'],
   ]);
 });
+
+
+test('runtime config writers expose the exact configured entrypoints they emit', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-writers-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourceRoot = path.join(__dirname, '..');
+
+  const cursorRoot = path.join(root, 'cursor');
+  const cursor = hooksSurface.writeCursorHooksJson(cursorRoot, sourceRoot, {
+    managedHookEvents: ['sessionStart'],
+  });
+  assert.deepEqual(
+    cursor.configuredEntrypoints.map(entry => path.basename(entry.scriptPath)),
+    ['gsd-cursor-session-start.js'],
+  );
+  assert.ok(cursor.configuredEntrypoints.every(entry => entry.configPath === cursor.hooksJsonPath));
+
+  const windsurfRoot = path.join(root, 'windsurf');
+  const windsurf = hooksSurface.writeWindsurfHooksJson(windsurfRoot, sourceRoot);
+  assert.deepEqual(
+    windsurf.configuredEntrypoints.map(entry => path.basename(entry.scriptPath)).sort(),
+    ['gsd-windsurf-pre-command.js', 'gsd-windsurf-pre-write.js'],
+  );
+
+  const kimiRoot = path.join(root, 'kimi');
+  fs.cpSync(path.join(sourceRoot, 'hooks'), path.join(kimiRoot, 'hooks'), { recursive: true });
+  const kimiConfig = path.join(root, 'kimi-config.toml');
+  const kimi = hooksSurface.writeKimiHooksToml(kimiConfig, kimiRoot, {
+    hookOpts: { runtime: 'kimi' },
+  });
+  assert.equal(kimi.configuredEntrypoints.length, kimi.entryCount);
+  assert.ok(kimi.configuredEntrypoints.every(entry => entry.configPath === kimiConfig));
+
+  const portable = [];
+  assert.ok(hooksSurface.buildHookCommand(root, 'gsd-context-monitor.js', {
+    runtime: 'claude',
+    portableHooks: true,
+    configPath: path.join(root, 'settings.json'),
+    configuredEntrypoints: portable,
+  }));
+  assert.deepEqual(
+    portable.map(entry => path.basename(entry.scriptPath)),
+    ['gsd-node-runner.sh', 'gsd-context-monitor.js'],
+  );
+});
