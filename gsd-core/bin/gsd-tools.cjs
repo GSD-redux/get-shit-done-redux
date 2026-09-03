@@ -1574,8 +1574,12 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       const explicitFlags = (flag('--explicit') || '').split(',').map((s) => s.trim()).filter(Boolean);
       const depth = flag('--depth') || '';
       const baseSha = flag('--base-sha') || '';
+      // No piped stdin (interactive TTY): fail closed to empty paths instead of blocking
+      // indefinitely on a TTY EOF the caller never sends.
       let stdinPaths = '';
-      try { stdinPaths = fsx.readFileSync(0, 'utf8'); } catch { stdinPaths = ''; }
+      if (!process.stdin.isTTY) {
+        try { stdinPaths = fsx.readFileSync(0, 'utf8'); } catch { stdinPaths = ''; }
+      }
       const paths = stdinPaths.split('\n').map((s) => s.trim()).filter(Boolean);
 
       // Reuse the exact effort-aware, per-lane plan `plan` builds above (DISP-03: "planned

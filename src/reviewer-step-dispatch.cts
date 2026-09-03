@@ -175,7 +175,11 @@ function validatePaths(
   return { ok: true };
 }
 
-/** Resolved per-lane budget: `null` means unbounded. Mirrors `gsd-tools.cjs`'s `budgetFor`. */
+/**
+ * Resolved per-lane budget: `null` means unbounded, and so does a resolved `0` — a legitimate
+ * configured value meaning "do not restrict this lane" (mirrors `gsd-tools.cjs`'s `budgetFor`,
+ * #2797). The caller's overflow check must test both `!== null` and `!== 0`.
+ */
 function resolveBudget(lane: ReviewerLane, configGet: (key: string) => unknown): number | null {
   if (!lane.promptBudgetKey) return null;
   const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -258,6 +262,9 @@ export async function dispatchReviewerLanes(
   // already surfaced in `selection.errors` — reflect that in the aggregate `ok` even though
   // lanes that DID resolve still run below and keep their own results.
   let anyFailed = selection.errors.length > 0;
+  // Tracks whether any lane actually reached plan() — `dispatched` must stay false when every
+  // selected slug turned out to be unresolvable, even though a `results` entry was still pushed.
+  let planned = false;
 
   for (const slug of selection.selected) {
     const lane = getLane(slug);
@@ -267,7 +274,18 @@ export async function dispatchReviewerLanes(
       continue;
     }
 
-    const planOutcome = plan(lane, { configGet, runDir: input.runDir, repoRoot: input.repoRoot });
+    // A single throwing plan()/writePromptFile()/invoke() must not take down every sibling lane
+    // already collected in `results` — same rationale as gsd-tools.cjs's resolveLanePlan guard
+    // (#2494/#2605/#1698/#1936/#2073/#2176/#2589/#2794): belt and braces on purpose.
+    let planOutcome: ResolveResult;
+    try {
+      planOutcome = plan(lane, { configGet, runDir: input.runDir, repoRoot: input.repoRoot });
+    } catch (e) {
+      results.push({ slug, ok: false, reason: 'malformed_lane', detail: e instanceof Error ? e.message : String(e) });
+      anyFailed = true;
+      continue;
+    }
+    planned = true;
     if (!planOutcome.ok) {
       results.push({ slug, ok: false, reason: planOutcome.reason, detail: planOutcome.detail });
       anyFailed = true;
@@ -304,7 +322,7 @@ export async function dispatchReviewerLanes(
   }
 
   return {
-    dispatched: results.length > 0,
+    dispatched: planned,
     ok: !anyFailed,
     selection,
     results,
