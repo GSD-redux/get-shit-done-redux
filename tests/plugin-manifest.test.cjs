@@ -533,6 +533,43 @@ describe('C: plugin.json schema validation', () => {
     }
   );
 
+  // ── #3751: agents/ coverage (maintainer decision 2026-09-02: options 1+3) ────
+  //
+  // `claude plugin validate` auto-validates agents/ by CLI CONVENTION (the
+  // manifest does not declare it), measured live on CLI 2.1.239 in the issue.
+  // Decision: CI provisions the claude CLI (a dedicated test.yml job), so C2 is
+  // a real gate, and the fixture + C3 cover the tree everywhere else.
+
+  test('C3+#3751: the validation fixture covers agents/, the tree the CLI validates by convention', () => {
+    const pluginRoot = buildValidationPluginRoot();
+    try {
+      const agentsDir = path.join(pluginRoot, 'agents');
+      const stat = fs.lstatSync(agentsDir);
+      assert.ok(stat.isDirectory(), 'agents/ must be a real directory in the C2 validation fixture');
+      assert.equal(stat.isSymbolicLink(), false, 'agents/ must be copied, not symlinked');
+      const entries = fs.readdirSync(agentsDir);
+      assert.ok(entries.length > 0, 'agents/ is EMPTY in the C2 validation fixture');
+      assert.ok(
+        entries.some((e) => /^gsd-.*\.md$/.test(e)),
+        'agents/ must carry the shipped gsd-*.md files, not a stub'
+      );
+    } finally {
+      cleanup(pluginRoot);
+    }
+  });
+
+  test('#3751: CI provisions the claude CLI so C2 is a real gate, not a local-only tier', () => {
+    const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'test.yml'), 'utf8');
+    assert.ok(
+      /@anthropic-ai\/claude-code/.test(workflow),
+      'test.yml must install the claude CLI (npm i -g @anthropic-ai/claude-code) in a job'
+    );
+    assert.ok(
+      /plugin-manifest\.test\.cjs/.test(workflow),
+      'the provisioning job must run tests/plugin-manifest.test.cjs (the C2 gate)'
+    );
+  });
+
   // ── C3: Unconditional fixture-construction guard ─────────────────────────────
   //
   // #3613 regression. C2 above is the test that actually shells out to the CLI,
