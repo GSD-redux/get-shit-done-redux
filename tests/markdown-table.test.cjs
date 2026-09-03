@@ -1611,3 +1611,44 @@ describe('migrateQuickTasksTable (#3730 option b)', () => {
     assert.ok(appended.value.row.includes('probe'));
   });
 });
+
+describe('quick-tasks-migrate CLI and workflow wiring (#3730)', () => {
+  const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  test('quick-tasks-migrate CLI round-trip', (t) => {
+    const tmpDir = createTempProject('gsd-3730-cli-');
+    t.after(() => cleanup(tmpDir));
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, [
+      '# State', '', '## Quick Tasks Completed', '',
+      '| Date | Slug | Scope | Artifacts |',
+      '|------|------|-------|-----------|',
+      '| 2026-04-17 | 260417-abc | bootstrap | roles/x |',
+    ].join('\n'));
+
+    const first = runGsdTools('quick-tasks-migrate', tmpDir);
+    assert.equal(first.success, true, `migrate failed: ${first.error}`);
+    const firstOut = JSON.parse(first.output);
+    assert.equal(firstOut.migrated, true);
+    assert.deepEqual(firstOut.from, ['Date', 'Slug', 'Scope', 'Artifacts']);
+    assert.ok(fs.readFileSync(statePath, 'utf8').includes('| # | Description | Date | Commit | Status | Directory |'),
+      'STATE.md rewritten to canonical');
+
+    const second = runGsdTools('quick-tasks-migrate', tmpDir);
+    assert.equal(second.success, true, `second migrate failed: ${second.error}`);
+    assert.equal(JSON.parse(second.output).migrated, false, 'a canonical table is a no-op');
+  });
+
+  test('quick and fast run the migration check first', () => {
+    const fast = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', 'fast.md'), 'utf8');
+    const quick = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md'), 'utf8');
+    const fastMigrate = fast.indexOf('quick-tasks-migrate');
+    const fastAppend = fast.indexOf('quick-tasks-append');
+    assert.ok(fastMigrate !== -1, 'fast.md invokes quick-tasks-migrate');
+    assert.ok(fastAppend !== -1 && fastMigrate < fastAppend, 'the migration runs BEFORE the append');
+    assert.ok(quick.includes('quick-tasks-migrate'),
+      'quick.md documents and invokes the migration path (#3730)');
+  });
+});
