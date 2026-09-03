@@ -481,7 +481,7 @@ Exit — convergence achieved.
 
 ### 5c. Stall Detection + Escalation Check
 
-Display: `◆ Cycle {cycle}/{MAX_CYCLES} — {HIGH_COUNT} HIGH, {ACTIONABLE_COUNT} actionable non-HIGH review concerns found`
+Display: `◆ Cycle {cycle}/{MAX_CYCLES} — {HIGH_COUNT} HIGH, {ACTIONABLE_COUNT} actionable non-HIGH review concerns, {OPEN_CONFLICTS} open plan-revision conflicts found`
 
 **Stall detection:** If `UNRESOLVED_COUNT >= prev_unresolved_count`:
 ```text
@@ -490,6 +490,29 @@ Display: `◆ Cycle {cycle}/{MAX_CYCLES} — {HIGH_COUNT} HIGH, {ACTIONABLE_COUN
 ```
 
 **Max cycles check:** If `cycle >= MAX_CYCLES`:
+
+**If `OPEN_CONFLICTS` > 0 (#3771): "Proceed anyway" is never offered.** An open plan-revision
+conflict is a blocker — this loop's whole purpose is to surface it rather than let a success
+banner paper over it, so escalation cannot end in the same silent acceptance a HIGH/actionable
+concern can. Only "Manual review" is available:
+
+If `TEXT_MODE` is true, present as plain text:
+```text
+Plan convergence did not complete after {MAX_CYCLES} cycles.
+{OPEN_CONFLICTS} open plan-revision conflict(s) remain — these are blockers and cannot be accepted:
+
+{HIGH_LINES}
+
+{ACTIONABLE_LINES}
+
+Review the concerns in: {REVIEWS_FILE}
+
+To replan manually:  /gsd:plan-phase {PHASE} --reviews
+To restart loop:     /gsd:plan-review-convergence {PHASE} {REVIEWER_FLAGS}
+```
+Exit workflow.
+
+**Otherwise (`OPEN_CONFLICTS` == 0):**
 
 If `TEXT_MODE` is true, present as plain-text numbered list:
 ```text
