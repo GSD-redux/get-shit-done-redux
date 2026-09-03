@@ -65,7 +65,16 @@ const LANE_COSTS = [
     // figure — rounded up from the higher, cancelled-run observation, since a
     // cancelled run's own timestamp is still real elapsed time even though the
     // job never finished.
-    measuredMinutes: 14,
+    // #4070's method applied again: the 14-minute figure went stale after
+    // #4207's run-tests temp-root regression suite landed — its rows spawn
+    // real runner instances on the windows scoped lane (each booting the full
+    // build), and windows shards 1-2 were CANCELLED at 99% of the 21-minute
+    // cap on three consecutive runs (33722188315 and two reruns; ubuntu and
+    // macos lanes green throughout, other PRs' windows lanes green — the
+    // long pole is this lane's windows matrix alone). A cancelled run's own
+    // timestamp is still real elapsed time: >=21 minutes, so 21 is the
+    // honest floor and the budget moves 21 -> 32 (1.5x headroom).
+    measuredMinutes: 21,
     // Sharded three ways as of #2952, so this is ONE shard's cost, not the
     // whole unit suite. Shard 1 is the long pole because the unsharded aux
     // suites (integration/security/install/slow) ride on it — #4070 fixed the
@@ -242,7 +251,7 @@ test('mutation.yml mutate job timeout budgets (#4036)', async (t) => {
 
 test('near-cap check CI_JOB_TIMEOUT_MINUTES literals match each job\'s own timeout-minutes (#4036)', async (t) => {
   const staticLanes = [
-    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '21' },
+    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '32' },
     { workflowFile: 'test.yml', jobKey: 'test-full', envLiteral: '45' },
     { workflowFile: 'install-smoke.yml', jobKey: 'smoke', envLiteral: '12' },
   ];
