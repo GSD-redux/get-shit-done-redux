@@ -421,12 +421,13 @@ describe('C: plugin.json schema validation', () => {
   // symlinked. An earlier revision also copied agents/, on the (correct)
   // observation that the CLI auto-validates it and a frontmatter-less
   // agents/*.md exits 1. Dropped in review: it is a NEW gate the issue does not
-  // ask for, on the largest of the trees, and because C2 never runs in CI it
-  // would be red only on contributor machines with `claude` installed — the
-  // same worst-of-both-states #3613 exists to remove. agents/ coverage is worth
-  // having and is tracked as #3751, where "should CI provision the CLI" — the
-  // decision it actually turns on — can be answered for it.
-  const COMPONENT_DIRS = ['commands', 'hooks', 'skills'];
+  // ask for, on the largest of the trees. RESOLVED by #3751 (2026-09-02,
+  // options 1+3): CI provisions the claude CLI, agents/ is in the fixture, and
+  // the asymmetry #3613 existed to remove is gone — C2 runs in CI.
+  // #3751 (decision 1+3, 2026-09-02): agents/ is included — the CLI validates
+  // it by convention (measured on 2.1.239), and CI now provisions the claude
+  // CLI in a dedicated test.yml job, so C2 is a real gate over this tree.
+  const COMPONENT_DIRS = ['commands', 'hooks', 'skills', 'agents'];
 
   /**
    * One entry that must survive the copy into each component tree, so C3 catches
@@ -439,6 +440,9 @@ describe('C: plugin.json schema validation', () => {
     commands: 'gsd',
     hooks: 'hooks.json',
     skills: 'gsd-add-tests',
+    // #3751: agents/ is undeclared in plugin.json (CLI-convention pickup), so
+    // the expected entry is a shipped agent file, not a manifest-declared path.
+    agents: 'gsd-executor.md',
   };
 
   /**

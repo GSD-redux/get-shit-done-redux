@@ -127,6 +127,29 @@ jobs:
       - name: Lint — all (ESLint, skill deps, test-file count, command contract, PR checks, legacy name, regression-test names, resolution-provenance)
         run: npm run lint:ci
 
+  # #3751 (decision 1): provision the claude CLI so plugin-manifest's C2 tier
+  # (`claude plugin validate --strict`) is a real CI gate instead of a
+  # local-only check. Dedicated job — the matrix lanes stay CLI-free.
+  plugin-validate:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          token: ${{ github.token }}
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: 24
+      - name: Install dev dependencies
+        run: npm ci --ignore-scripts
+      - name: Install claude CLI (C2 gate dependency, #3751)
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Run plugin-manifest suite (C1+C2+C3)
+        run: node scripts/run-tests.cjs --files plugin-manifest.test.cjs
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, preflight]
