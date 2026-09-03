@@ -1527,6 +1527,19 @@ describe('#4155: computeCoveredDigest — direct unit coverage', () => {
     t.after(() => cleanup(root));
     assert.equal(computeCoveredDigest(root, []), null);
   });
+
+  test('an in-root symlink whose TARGET escapes the project root → null (fail closed, not the target\'s content)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-symlink-'));
+    t.after(() => cleanup(root));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-symlink-outside-'));
+    t.after(() => cleanup(outside));
+    const outsideFile = path.join(outside, 'secret.txt');
+    fs.writeFileSync(outsideFile, 'not covered by this project');
+    const linkPath = path.join(root, 'impl.txt');
+    fs.symlinkSync(outsideFile, linkPath);
+
+    assert.equal(computeCoveredDigest(root, ['impl.txt']), null);
+  });
 });
 
 describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime staleness', () => {
@@ -1598,6 +1611,50 @@ describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime 
     fs.writeFileSync(
       path.join(dir, '01-VERIFICATION.md'),
       '---\nstatus: passed\ncovered_files:\n  - "../outside.txt"\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
+    );
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+  });
+
+  test('covered_files present but covered_digest missing → stale (fail closed, not a silent legacy downgrade)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-partial-digest-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
+    // covered_files declared, covered_digest absent — an incomplete pair.
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      '---\nstatus: passed\ncovered_files:\n  - impl.txt\n---\n',
+    );
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+  });
+
+  test('covered_digest present but covered_files missing → stale (fail closed, not a silent legacy downgrade)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-partial-files-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      '---\nstatus: passed\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
+    );
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+  });
+
+  test('an empty covered_files array with covered_digest present → stale (fail closed)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-empty-array-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      '---\nstatus: passed\ncovered_files: []\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
     );
 
     const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });

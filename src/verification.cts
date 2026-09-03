@@ -210,6 +210,15 @@ function computeCoveredDigest(projectRoot: string, coveredFiles: readonly string
   const uniqueSorted = Array.from(new Set(coveredFiles.map(toPosix))).sort();
   if (uniqueSorted.length === 0) return null;
 
+  // Canonicalize the root ONCE — every candidate's realpath is checked against
+  // this, not the possibly-symlinked `projectRoot` argument itself.
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(projectRoot);
+  } catch {
+    return null;
+  }
+
   const parts: string[] = [];
   for (const rel of uniqueSorted) {
     if (rel === '' || rel === '..' || rel.startsWith('../') || path.isAbsolute(rel)) return null;
@@ -222,9 +231,18 @@ function computeCoveredDigest(projectRoot: string, coveredFiles: readonly string
     }
     let bytes: Buffer;
     try {
-      const st = fs.statSync(resolved);
+      // A regular file INSIDE projectRoot can still be a symlink whose TARGET
+      // escapes it — statSync/readFileSync follow symlinks, so the lexical
+      // confinement check above is not enough. realpathSync resolves the
+      // actual target; re-confining against realRoot closes that gap.
+      const real = fs.realpathSync(resolved);
+      const realRel = path.relative(realRoot, real);
+      if (realRel === '' || realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+        return null;
+      }
+      const st = fs.statSync(real);
       if (!st.isFile()) return null;
-      bytes = fs.readFileSync(resolved);
+      bytes = fs.readFileSync(real);
     } catch {
       return null;
     }
@@ -762,16 +780,24 @@ function readVerificationStatus(
   // mtime-based behavior, unchanged.
   const coveredFilesVal = fm['covered_files'];
   const coveredDigestVal = fm['covered_digest'];
-  const hasFingerprint =
+  // A report OPTS IN to the fingerprint check by declaring EITHER field —
+  // once opted in, an incomplete or malformed pair (one field present but
+  // not the other, an empty array, a non-array, a blank digest) fails closed
+  // to `stale` rather than silently downgrading to the weaker legacy
+  // mtime-only check, which would only ever notice a newer SUMMARY.
+  const declaresFingerprint = coveredFilesVal !== undefined || coveredDigestVal !== undefined;
+  const hasWellFormedFingerprint =
     Array.isArray(coveredFilesVal) &&
     coveredFilesVal.length > 0 &&
+    coveredFilesVal.every((f) => typeof f === 'string') &&
     typeof coveredDigestVal === 'string' &&
     coveredDigestVal.trim().length > 0;
 
   let staleCheckIndeterminate = false;
-  if (hasFingerprint) {
-    const projectRoot = findProjectRoot(phaseDir);
-    const recomputed = computeCoveredDigest(projectRoot, coveredFilesVal);
+  if (declaresFingerprint) {
+    const recomputed = hasWellFormedFingerprint
+      ? computeCoveredDigest(findProjectRoot(phaseDir), coveredFilesVal)
+      : null;
     if (recomputed === null || recomputed !== coveredDigestVal) {
       const entry = VERIFICATION_ROUTING_TABLE['stale'];
       return {
