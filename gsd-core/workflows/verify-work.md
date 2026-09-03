@@ -180,7 +180,7 @@ instrument — the executor's own narration is never the last word. For each `*-
 ```bash
 BASE=$(grep -oE '^plan_head_before: [0-9a-f]{7,40}' "$SUMMARY_FILE" | awk '{print $2}')
 CLAIMED=$(grep -oE '^commits: [0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' || echo absent)
-ACTUAL=$(git rev-list --count ${BASE}..HEAD)
+ACTUAL=$(git rev-list --count "${BASE}"..HEAD)
 ```
 - A `commits: absent` or `plan_head_before: absent` SUMMARY (pre-#3968 legacy) is reported as
   a WARNING with the measured git state, not a mismatch.

@@ -41,7 +41,7 @@ describe('#3968 — measured commit claims', () => {
     const verify = read('gsd-core/workflows/verify-work.md');
     assert.ok(verify.includes('Commit-claim reconciliation'),
       'verify-work must run a commit-claim reconciliation over each SUMMARY');
-    assert.ok(verify.includes('ACTUAL=$(git rev-list --count ${BASE}..HEAD)'),
+    assert.ok(verify.includes('ACTUAL=$(git rev-list --count "${BASE}"..HEAD)'),
       'the reconciliation uses the SAME instrument as the executor (rev-list over the recorded base)');
     assert.ok(/ACTUAL == CLAIMED \+ 1/.test(verify),
       'the post-measurement SUMMARY commit is an expected +1, not a false BLOCKER');
