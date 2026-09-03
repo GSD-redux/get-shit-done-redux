@@ -86,7 +86,7 @@ import { findProjectRoot } from './project-root.cjs';
 // it introduces no cycle on this path.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import milestoneLockMod = require('./milestone-lock.cjs');
-const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
+const { transitionCore, applyStatePreservation, sliceCurrentPositionSection, stateReplaceProgressPercent, formatProgressMachineSegment } = stateTransitionMod;
 // #3699: the frontmatter-key <-> body-field routing behind `state update`'s
 // failure explanation, and the classification table it falls back to.
 const { getFieldClassification, getFrontmatterBodySource, frontmatterKeyForBodyField } = stateTransitionMod;
@@ -107,6 +107,7 @@ import {
   shouldPreserveExistingProgress,
   stateExtractField,
   stateFieldValue,
+  toFiniteNumber,
   // #3696: the `last_activity` invariant that `state validate` (S008/S009) now
   // asserts. Both live in the field-semantics owner, not here, so `smart-entry`
   // and `state validate` cannot drift apart about the same field.
@@ -1310,41 +1311,15 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     return;
   }
   const { percent, completedPlans: fmCompletedPlans, totalPlans: fmTotalPlans } = preview;
-  const barWidth = 10;
-  const filled = Math.round(percent / 100 * barWidth);
-  const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-  const progressStr = `[${bar}] ${percent}%`;
+  const progressStr = formatProgressMachineSegment(percent);
 
   let updated = false;
 
   readModifyWriteStateMd(statePath, (content) => {
-    // #2177: match against the BODY only. With /i the patterns below would
-    // otherwise hit the YAML frontmatter `progress:` key first (and `\s*` would
-    // eat its newline, mangling the nested block), while the body Progress: line
-    // — which frontmatter `percent` is re-derived from on every write — stays
-    // stale and silently reverts the update.
-    const body = stripFrontmatter(content);
-    const fmPrefix = content.slice(0, content.length - body.length);
-
-    // Swap only the machine segment ("[bar] NN%" or bare "NN%"), preserving any
-    // descriptive suffix an agent authored, e.g. "(2/4 plans done; blocked on…)".
-    const machineSegment = /(?:\[[^\]\r\n]*\][ \t]*)?\d{1,3}%/;
-    const replaceValue = (value: string) => machineSegment.test(value)
-      ? value.replace(machineSegment, progressStr)
-      : progressStr;
-
-    // Try **Progress:** bold format first, then plain Progress: format.
-    const boldProgressPattern = /(\*\*Progress:\*\*[ \t]*)([^\r\n]*)/i;
-    const plainProgressPattern = /^(Progress:[ \t]*)([^\r\n]*)/im;
-    const pattern = boldProgressPattern.test(body)
-      ? boldProgressPattern
-      : plainProgressPattern.test(body)
-        ? plainProgressPattern
-        : null;
-    if (!pattern) return content;
-
+    const result = stateReplaceProgressPercent(content, percent);
+    if (result === null) return content;
     updated = true;
-    return fmPrefix + body.replace(pattern, (_match, prefix: string, value: string) => `${prefix}${replaceValue(value)}`);
+    return result;
   }, cwd);
 
   if (updated) {
@@ -3955,6 +3930,8 @@ function applyPostSyncPreservation(
     }
   }
 
+  let finalContent = syncedContent;
+
   if (preservation.mutated || authoritativeReasserted) {
     // #3742: preservation RESTORES frontmatter keys the body-derived rebuild
     // could not produce (e.g. `current_phase` on a layout with no body
@@ -3975,9 +3952,16 @@ function applyPostSyncPreservation(
     }
     const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
     const body = stripFrontmatter(syncedContent);
-    return `---\n${yamlStr}\n---\n\n${body}`;
+    finalContent = `---\n${yamlStr}\n---\n\n${body}`;
   }
-  return syncedContent;
+  const persistedPercent = toFiniteNumber(
+    preservation.postFm['progress'] && (preservation.postFm['progress'] as Record<string, unknown>)['percent'],
+  );
+  if (persistedPercent !== null) {
+    const reconciled = stateReplaceProgressPercent(finalContent, persistedPercent);
+    if (reconciled !== null) finalContent = reconciled;
+  }
+  return finalContent;
 }
 
 /**

@@ -29,6 +29,23 @@ type StateFieldSchema = stateMdSchemaMod.StateFieldSchema;
 
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, FRONTMATTER_UNPARSEABLE } = frontmatter;
 
+export function formatProgressMachineSegment(percent: number): string {
+  const filled = Math.round(percent / 10);
+  return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${percent}%`;
+}
+
+export function stateReplaceProgressPercent(content: string, percent: number): string | null {
+  const body = stripFrontmatter(content);
+  const pattern = /(\*\*Progress:\*\*[ \t]*|^Progress:[ \t]*)([^\r\n]*)/im;
+  if (!pattern.test(body)) return null;
+  const machineSegment = /(?:\[[^\]\r\n]*\][ \t]*)?\d{1,3}%/;
+  const progress = formatProgressMachineSegment(percent);
+  const updatedBody = body.replace(pattern, (_match: string, prefix: string, value: string) => (
+    `${prefix}${machineSegment.test(value) ? value.replace(machineSegment, progress) : progress}`
+  ));
+  return content.slice(0, content.length - body.length) + updatedBody;
+}
+
 /**
  * ADR-3473 §8.1 (#3881, consequence 2 wiring): does `existingFm` carry the
  * `FRONTMATTER_UNPARSEABLE` marker `extractFrontmatter` sets when a
@@ -2771,13 +2788,12 @@ function syncCore(
     if (currentProgress) {
       const currentPercent = parseInt(currentProgress.replace(/[^\d]/g, ''), 10);
       if (currentPercent !== intent.percent) {
-        const barWidth = 10;
-        const filled = Math.round((intent.percent / 100) * barWidth);
-        const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-        const progressStr = `[${bar}] ${intent.percent}%`;
-        changes.push(`Progress: ${currentProgress} -> ${progressStr}`);
-        const result = stateReplaceField(modified, 'Progress', progressStr);
-        if (result) { modified = result; updated.push('Progress'); }
+        const result = stateReplaceProgressPercent(modified, intent.percent);
+        if (result) {
+          const progressStr = formatProgressMachineSegment(intent.percent);
+          changes.push(`Progress: ${currentProgress} -> ${progressStr}`);
+          modified = result; updated.push('Progress');
+        }
       }
     }
   }
