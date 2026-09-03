@@ -271,6 +271,33 @@ describe('quick-batch workflow: submodule fail-loud commit-time guard (rows 36,4
   });
 });
 
+// ─── Crash-window duplicate-dispatch guard (#3677, epic #3344 Phase 5) ──────
+
+describe('quick-batch workflow: worktree-dispatch.md never re-dispatches an item that already finished executing (crash-window guard)', () => {
+  test('Step 6 drops any quick_id whose SUMMARY.md already exists before computing spawn-plan, mirroring planner-wave.md\'s PLAN.md-existence check', () => {
+    const content = readStep('worktree-dispatch.md');
+    assert.match(content, /Crash-window guard/i, 'worktree-dispatch.md must document the crash-window duplicate-dispatch guard');
+    assert.match(content, /NEVER re-dispatch it into a second worktree/, 'the guard must explicitly forbid re-dispatch');
+    assert.match(content, /\$\{item_dir\}\/\$\{quick_id\}-SUMMARY\.md/, 'the guard must check the same on-disk SUMMARY.md path merge-wave.md already uses');
+  });
+
+  test('the guard is positioned before spawn-plan is computed, not after (a post-hoc check cannot prevent the duplicate dispatch)', () => {
+    const content = readStep('worktree-dispatch.md');
+    const lines = splitLines(content);
+    const guardIdx = lines.findIndex((l) => /Crash-window guard/i.test(l));
+    const spawnPlanIdx = lines.findIndex((l) => l.includes('quick-batch spawn-plan'));
+    assert.ok(guardIdx !== -1, 'crash-window guard section must exist');
+    assert.ok(spawnPlanIdx !== -1, 'spawn-plan call must exist');
+    assert.ok(guardIdx < spawnPlanIdx, 'the crash-window guard must appear BEFORE the spawn-plan call, or it cannot prevent this round\'s duplicate dispatch');
+  });
+
+  test('the guard explains the item is not lost — merge-wave.md\'s own SUMMARY.md-on-disk criterion still picks it up', () => {
+    const content = readStep('worktree-dispatch.md');
+    assert.match(content, /merge-wave\.md/, 'the guard must point at merge-wave.md as the item\'s recovery path');
+    assert.match(content, /not remove it from the batch/i);
+  });
+});
+
 // ─── planner-quick-batch mode (rows 13-15) ──────────────────────────────────
 
 describe('quick-batch planner mode: agents/gsd-planner.md extension (rows 13-15)', () => {
