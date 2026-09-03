@@ -1531,6 +1531,56 @@ function cmdInitQuick(
   output(withProjectRoot(cwd, result), raw);
 }
 
+/**
+ * `init.quick-batch` (#3676, Phase 4 of epic #3344, ADR-1239 "Quick-batch
+ * binding"). Unlike `cmdInitQuick`, this init bundle does NOT allocate a
+ * quick id / slug / task directory itself — batch-level id allocation and
+ * `BATCH.json` creation is the job of the `quick-batch create` CLI verb
+ * (`src/quick-batch-command-router.cts`, wrapping `createBatch` in
+ * `src/quick-batch.cts`). This bundle supplies the per-role model profiles,
+ * `commit_docs`, the roadmap/planning existence checks `quick-batch.md`'s
+ * ROADMAP.md gate needs (same check `cmdInitQuick` runs), the `.planning/quick`
+ * directory path, and the `section_manifest` field gating the optional
+ * `--research`/`--validate` step fragments — the same `flag:--research`/
+ * `flag:--validate` atoms `quick`'s own section manifest already uses
+ * (`WHEN_VOCABULARY` is workflow-agnostic; no new atom is needed). `--discuss`/
+ * `--full` are rejected by `quick-batch-dispatch.cts`'s `parseQuickBatchArgs`
+ * before this init bundle is ever reached, so no `discuss`/`full` flag key is
+ * accepted here (unlike `cmdInitQuick`, which still supports both).
+ */
+function cmdInitQuickBatch(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+
+  const result: Record<string, unknown> = {
+    planner_model: resolveModelInternal(cwd, 'gsd-planner'),
+    executor_model: resolveModelInternal(cwd, 'gsd-executor'),
+    checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
+    verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
+    researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
+    reviewer_model: resolveModelInternal(cwd, 'gsd-code-reviewer'),
+
+    commit_docs: config.commit_docs,
+
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase; a
+    // per-item task_dir is re-derived by the workflow itself (quick_id +
+    // generate-slug over that item's description), never allocated here.
+    quick_dir: toPosixPath(path.join(planningDir(cwd), 'quick')),
+    quick_batches_dir: toPosixPath(path.join(planningDir(cwd), 'quick-batches')),
+
+    roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
+    planning_exists: fs.existsSync(planningRoot(cwd)),
+  };
+
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'quick-batch');
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
 function cmdInitIngestDocs(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   const result: Record<string, unknown> = {
@@ -4072,6 +4122,7 @@ export = {
   cmdInitNewProject,
   cmdInitNewMilestone,
   cmdInitQuick,
+  cmdInitQuickBatch,
   cmdInitIngestDocs,
   cmdInitOnboard,
   cmdInitResume,
