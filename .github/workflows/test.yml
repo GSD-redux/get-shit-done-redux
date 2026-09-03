@@ -11,6 +11,15 @@ on:
     branches:
       - next
       - main
+  # #4241: GitHub's merge queue fires `merge_group`, not `pull_request` or
+  # `push`, for the temporary merge-group commit it creates. Without this
+  # trigger, `required-tests` (the registered "Required tests" branch-
+  # protection check) never schedules for a queued PR and the queue stalls
+  # waiting on a check that never runs. See:
+  # https://docs.github.com/en/actions/how-tos/using-features-for-actions/using-merge-queues
+  # This is prerequisite wiring only — the merge queue itself is enabled via
+  # a separate, manual "Require merge queue" branch-protection toggle.
+  merge_group:
   workflow_dispatch:
 
 concurrency:

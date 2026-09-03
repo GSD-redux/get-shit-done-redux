@@ -599,6 +599,21 @@ describe('test-full shard matrix parity (#1212)', () => {
       'required-tests must `needs: test-full` so all shard legs aggregate into the gate',
     );
   });
+
+  test('workflow triggers on merge_group (#4241)', () => {
+    // GitHub's merge queue fires `merge_group`, not `pull_request` or `push`,
+    // for the temporary merge-group commit it creates. Without this trigger
+    // the whole workflow — and therefore `required-tests` — never schedules
+    // for a queued PR, silently stalling the merge queue on a check that
+    // never runs. `on.merge_group` has no required config, so its presence
+    // as a key (even with a `null`/empty value) is what matters here.
+    const text = fs.readFileSync(path.join(WORKFLOWS_DIR, 'test.yml'), 'utf8');
+    const doc = yaml.load(text);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(doc.on, 'merge_group'),
+      'test.yml must trigger `on: merge_group` so required-tests schedules for merge-queue commits',
+    );
+  });
 });
 
 describe('emitted-provenance selection (#1691 drift guard, retargeted by #2724)', () => {
