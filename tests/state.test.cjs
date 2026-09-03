@@ -2813,7 +2813,7 @@ describe('#3830: state advance-plan checks its prose position against the plans 
   // twelve plans on disk, so the total test passes and only the range check stands
   // between the input and a write.
   test('a current_plan outside the plan set is a divergence, even when the TOTAL agrees', () => {
-    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12', 'Plan: 0 of 12', 'Plan: -1 of 12']) {
+    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12', 'Plan: 0 of 12']) {
       seedPhase('01-demo', 12);
       writeState(planLine);
       const before = stateText();
@@ -2830,6 +2830,37 @@ describe('#3830: state advance-plan checks its prose position against the plans 
       assert.strictEqual(stateText(), before,
         `${planLine} must leave STATE.md byte-identical`);
     }
+  });
+
+  // `Plan: -1 of 12` used to sit in the loop above, refused by the range check as
+  // `position_diverged`. It no longer reaches that check: #3791 (on `next`) tightened
+  // the position parse, so a negative current is now rejected as an unreadable shape
+  // BEFORE the cross-check runs. Round 2 of this PR's review flagged that same input as
+  // hitting "a pre-existing advancePlanCore bug ... Present at base; flagged for the
+  // record, not attributed to you" — this is that bug being fixed upstream, and the
+  // case moves here rather than being dropped.
+  //
+  // What is asserted is the PROPERTY, which is unchanged and is what #3830 is about:
+  // exit 0, no advance, and STATE.md byte-identical. The mechanism is asserted
+  // separately and deliberately loosely — the accepted-shapes message belongs to
+  // #3791, not to this PR, so this pins that a refusal happened and that it is NOT a
+  // silent advance, without pinning another PR's wording.
+  test('a negative current_plan is refused by the position parse, not by the range check', () => {
+    seedPhase('01-demo', 12);
+    writeState('Plan: -1 of 12');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.ok(output.error, `a negative position must be refused, not advanced; got ${result.output}`);
+    assert.strictEqual(output.advanced, undefined,
+      'the parse refusal precedes the cross-check, so it carries no `advanced` key at all');
+    assert.strictEqual(output.status, undefined,
+      'a negative position must not be allowed to claim ready_for_verification');
+    assert.strictEqual(stateText(), before,
+      'a negative position must leave STATE.md byte-identical');
   });
 
   // #3862 RV6.5 review. The disk bound alone was not enough, and this is the case it

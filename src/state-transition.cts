@@ -1886,8 +1886,15 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     // where the position sits INSIDE it. `Plan: 20 of 12` against twelve plans on
     // disk passes the total test, then satisfies `currentPlan >= totalPlans` below
     // and declares the phase ready_for_verification from a position that provably
-    // exceeds the plan set; `Plan: 0 of 12` and `Plan: -1 of 12` sail through the
-    // same way. This is pure arithmetic over two integers the provider already
+    // exceeds the plan set; `Plan: 0 of 12` sails through the same way.
+    //
+    // `Plan: -1 of 12` was named here too, and no longer belongs: #3791 made the
+    // position grammar unsigned and anchored, so a negative current is refused as
+    // an unreadable shape well above this point and never reaches the range check.
+    // Pinned by "a negative current_plan is refused by the position parse, not by
+    // the range check" in tests/state.test.cjs.
+    //
+    // This is pure arithmetic over two integers the provider already
     // returns — it derives no completion predicate and re-reads no `scan.completed`,
     // so scripts/lint-completion-predicate-drift.cjs does not bite and no
     // FUNCTION_SCOPED_EXEMPTIONS entry is needed.
