@@ -227,6 +227,48 @@ describe('quick-batch-command-router: argument shaping (mocked modules)', () => 
     assert.deepEqual(calls[0], { eligibleIds: ['a', 'b', 'c'], capacity: 2, currentInFlight: 0, refused: ['b'] });
   });
 
+  // #3677: crash-window duplicate-dispatch guard CLI verb.
+  test('filter-executed forwards eligible/executed to filterAlreadyExecuted', () => {
+    const calls = [];
+    routeQuickBatchCommand({
+      args: ['quick-batch', 'filter-executed', '--eligible', '["a","b","c"]', '--executed', '["b"]'],
+      cwd: '/tmp/proj',
+      raw: true,
+      error: (msg) => { throw new Error(`unexpected error: ${msg}`); },
+      _quickBatch: {},
+      _quickBatchDispatch: {
+        filterAlreadyExecuted: (eligibleIds, executedIds) => { calls.push({ eligibleIds, executedIds }); return { spawnEligible: [], alreadyExecuted: [] }; },
+      },
+    });
+    assert.deepEqual(calls[0], { eligibleIds: ['a', 'b', 'c'], executedIds: ['b'] });
+  });
+
+  test('filter-executed rejects a missing --eligible', () => {
+    let message = null;
+    routeQuickBatchCommand({
+      args: ['quick-batch', 'filter-executed', '--executed', '["b"]'],
+      cwd: '/tmp/proj',
+      raw: true,
+      error: (msg) => { message = msg; },
+      _quickBatch: {},
+      _quickBatchDispatch: {},
+    });
+    assert.match(message, /--eligible/);
+  });
+
+  test('filter-executed rejects a missing --executed', () => {
+    let message = null;
+    routeQuickBatchCommand({
+      args: ['quick-batch', 'filter-executed', '--eligible', '["a"]'],
+      cwd: '/tmp/proj',
+      raw: true,
+      error: (msg) => { message = msg; },
+      _quickBatch: {},
+      _quickBatchDispatch: {},
+    });
+    assert.match(message, /--executed/);
+  });
+
   test('verification-routing rejects an invalid --status', () => {
     let message = null;
     routeQuickBatchCommand({

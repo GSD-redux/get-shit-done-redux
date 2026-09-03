@@ -43,6 +43,14 @@ const { appendQuickTaskRow } = require('../gsd-core/bin/lib/markdown-table.cjs')
 const { makeFakeClock } = require('./helpers/clock.cjs');
 const { runGsdTools, cleanup } = require('./helpers.cjs');
 
+// #3677: crash-window duplicate-dispatch guard — combines resumeBatch (this
+// module) with filterAlreadyExecuted (the pure decision extracted into
+// quick-batch-dispatch.cts) and a REAL on-disk SUMMARY.md, the same three
+// pieces worktree-dispatch.md's Step 6 wires together at runtime.
+const { filterAlreadyExecuted } = require('../gsd-core/bin/lib/quick-batch-dispatch.cjs');
+const { generateSlugInternal } = require('../gsd-core/bin/lib/core-utils.cjs');
+const { planningPaths } = require('../gsd-core/bin/lib/planning-workspace.cjs');
+
 // ─── Shared fixtures ────────────────────────────────────────────────────────────
 
 function mkTmpProject() {
@@ -738,6 +746,118 @@ describe('quick-batch: exactly-once STATE completion', () => {
   });
 });
 
+// ─── crash-window duplicate-dispatch guard (#3677, epic #3344 Phase 5) ─────
+//
+// A DIFFERENT crash window than row 31 above: row 31 crashes AFTER the
+// STATE.md row is written (Step 9) but before BATCH.json records `complete`
+// — resumeBatch's own hasQuickTaskRow detection covers that one directly.
+// This one crashes EARLIER — after Step 6 (executor committed, SUMMARY.md
+// written) but before Step 7 (merge), so NO STATE.md row exists yet.
+// resumeBatch alone cannot detect this; worktree-dispatch.md's Step 6 must
+// additionally check for an on-disk SUMMARY.md via filterAlreadyExecuted.
+// Real fixture (real BATCH.json via createBatch, real SUMMARY.md file on
+// disk, real resumeBatch call), not a prose/structural proxy — see
+// `.gsd/phase/feat-3677-quick-batch-hardening-acceptance/40-design.md` §1.
+
+describe('quick-batch: crash-window duplicate-dispatch guard (#3677) — SUMMARY.md written but BATCH.json still pending', () => {
+  test('resumeBatch alone still reports the crashed item eligible; filterAlreadyExecuted (fed a REAL on-disk SUMMARY.md check) excludes it from spawnEligible', () => {
+    const dir = mkTmpProject();
+    writeState(dir, stateWithQuickTasksSection());
+    try {
+      const created = createBatch(dir, [{ description: 'crashed item' }, { description: 'clean item' }]);
+      assert.equal(created.ok, true);
+      const [crashed, clean] = created.value.manifest.items;
+
+      // Simulate the real Step-6-to-Step-7 crash window: the executor
+      // finished (a real commit, in the real design; here a real SUMMARY.md
+      // file is what matters) but the coordinator crashed before Step 7's
+      // merge. BATCH.json is untouched — still `pending` — and no STATE.md
+      // row exists (that is written only in Step 9, well after this point).
+      const slug = generateSlugInternal(crashed.description);
+      const itemDir = path.join(planningPaths(dir).quick, `${crashed.quick_id}-${slug}`);
+      fs.mkdirSync(itemDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(itemDir, `${crashed.quick_id}-SUMMARY.md`),
+        '---\nstatus: complete\n---\n\n# Summary\n\nDid the thing.\n',
+      );
+
+      const preResume = loadBatch(dir, created.value.batchId);
+      assert.equal(
+        preResume.value.items.find((it) => it.quick_id === crashed.quick_id).status,
+        'pending',
+        'BATCH.json is untouched by the crash — still pending',
+      );
+
+      // --resume re-derives eligibility exactly as worktree-dispatch.md's
+      // Step 6 substep 1 does. BOTH items come back eligible: resumeBatch's
+      // own crash-window detection (hasQuickTaskRow) only fires on a
+      // STATE.md row, which does not exist yet for the crashed item.
+      const resumed = resumeBatch(dir, created.value.batchId);
+      assert.equal(resumed.ok, true);
+      assert.deepEqual(
+        resumed.value.eligible.slice().sort(),
+        [clean.quick_id, crashed.quick_id].sort(),
+        'resumeBatch alone does not know the crashed item already finished executing',
+      );
+
+      // worktree-dispatch.md's own crash-window guard: a REAL filesystem
+      // check for each eligible id's SUMMARY.md (same item_dir derivation
+      // via generateSlugInternal every other step uses), fed into the pure
+      // filterAlreadyExecuted decision.
+      const executedIds = resumed.value.eligible.filter((quickId) => {
+        const item = resumed.value.manifest.items.find((it) => it.quick_id === quickId);
+        const itemSlug = generateSlugInternal(item.description);
+        const summaryPath = path.join(planningPaths(dir).quick, `${quickId}-${itemSlug}`, `${quickId}-SUMMARY.md`);
+        return fs.existsSync(summaryPath);
+      });
+      assert.deepEqual(executedIds, [crashed.quick_id], 'only the crashed item has a real on-disk SUMMARY.md');
+
+      const filtered = filterAlreadyExecuted(resumed.value.eligible, executedIds);
+      assert.deepEqual(filtered.spawnEligible, [clean.quick_id], 'the crashed item must NOT be re-dispatched into a second worktree');
+      assert.deepEqual(filtered.alreadyExecuted, [crashed.quick_id]);
+
+      // The crashed item is not lost — it is exactly the shape
+      // merge-wave.md's OWN independent criterion (status=pending,
+      // SUMMARY.md on disk, not yet merged) already expects to find.
+      assert.equal(fs.existsSync(path.join(itemDir, `${crashed.quick_id}-SUMMARY.md`)), true);
+      assert.equal(
+        loadBatch(dir, created.value.batchId).value.items.find((it) => it.quick_id === crashed.quick_id).status,
+        'pending',
+        'filterAlreadyExecuted performs no BATCH.json write — merge-wave.md still finds it pending with an on-disk SUMMARY.md',
+      );
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('an item with NO on-disk SUMMARY.md is unaffected — the guard only excludes genuinely already-executed items', () => {
+    const dir = mkTmpProject();
+    writeState(dir, stateWithQuickTasksSection());
+    try {
+      const created = createBatch(dir, [{ description: 'never started' }]);
+      assert.equal(created.ok, true);
+      const [item] = created.value.manifest.items;
+
+      const resumed = resumeBatch(dir, created.value.batchId);
+      assert.deepEqual(resumed.value.eligible, [item.quick_id]);
+
+      // No SUMMARY.md written anywhere — the filesystem check must find nothing.
+      const executedIds = resumed.value.eligible.filter((quickId) => {
+        const it = resumed.value.manifest.items.find((x) => x.quick_id === quickId);
+        const s = generateSlugInternal(it.description);
+        return fs.existsSync(path.join(planningPaths(dir).quick, `${quickId}-${s}`, `${quickId}-SUMMARY.md`));
+      });
+      assert.deepEqual(executedIds, []);
+
+      const filtered = filterAlreadyExecuted(resumed.value.eligible, executedIds);
+      assert.deepEqual(filtered.spawnEligible, [item.quick_id], 'an item that never started must still be dispatched normally');
+      assert.deepEqual(filtered.alreadyExecuted, []);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+});
+
 // ─── 34-35: Independence + regression ────────────────────────────────────────────
 
 describe('quick-batch: independence from scanQuickTasks, regression on existing quick paths', () => {
@@ -1065,6 +1185,114 @@ describe('quick-batch: updateBatchItems — basic mutation + persistence', () =>
       const byId = new Map(result.value.manifest.items.map((it) => [it.quick_id, it]));
       assert.deepEqual(byId.get(itemB.quick_id).depends_on, [itemA.quick_id]);
       assert.deepEqual(byId.get(itemC.quick_id).depends_on, [itemB.quick_id]);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+});
+
+// #3677: durable worktree-recovery fields (dispatched_worktree/branch/base)
+// — the crash-window duplicate-dispatch guard's fallback for a RESUMED
+// coordinator process whose own ephemeral $QUICK_BATCH_WORKTREE_MANIFEST
+// (a fresh mktemp file every process) has no entry for an item dispatched
+// by a PRIOR, now-dead process. Deliberately separate fields from the
+// pre-existing `worktree` (which requires the path to exist on disk via
+// loadBatch's validation) — these three carry NO existence check, because
+// their entire purpose is to stay readable (and clearable) after a
+// legitimate post-merge worktree removal.
+describe('quick-batch: updateBatchItems — durable worktree-recovery fields (#3677)', () => {
+  test('persists dispatchedWorktree/dispatchedBranch/dispatchedBase and a fresh loadBatch (simulating a new coordinator process) reads them back', () => {
+    const dir = mkTmpProject();
+    try {
+      const created = createBatch(dir, [{ description: 'a' }, { description: 'b' }]);
+      assert.equal(created.ok, true);
+      const [itemA, itemB] = created.value.manifest.items;
+      assert.equal(itemA.dispatched_worktree, null, 'null until Step 6 actually dispatches');
+      assert.equal(itemA.dispatched_branch, null);
+      assert.equal(itemA.dispatched_base, null);
+
+      const wtDir = path.join(os.tmpdir(), `qb-dispatched-wt-${itemA.quick_id}`);
+      fs.mkdirSync(wtDir, { recursive: true });
+      try {
+        const result = updateBatchItems(dir, created.value.batchId, [
+          { quickId: itemA.quick_id, dispatchedWorktree: wtDir, dispatchedBranch: `agent-${itemA.quick_id}`, dispatchedBase: 'deadbeef' },
+        ]);
+        assert.equal(result.ok, true, result.ok ? '' : result.reason);
+
+        // A FRESH loadBatch call — standing in for a brand-new coordinator
+        // process (its own ephemeral worktree manifest would be empty) —
+        // must still recover the durable triple.
+        const reloaded = loadBatch(dir, created.value.batchId);
+        assert.equal(reloaded.ok, true);
+        const reloadedA = reloaded.value.items.find((it) => it.quick_id === itemA.quick_id);
+        assert.equal(reloadedA.dispatched_worktree, wtDir);
+        assert.equal(reloadedA.dispatched_branch, `agent-${itemA.quick_id}`);
+        assert.equal(reloadedA.dispatched_base, 'deadbeef');
+
+        // The untouched sibling item is unaffected.
+        const reloadedB = reloaded.value.items.find((it) => it.quick_id === itemB.quick_id);
+        assert.equal(reloadedB.dispatched_worktree, null);
+      } finally {
+        cleanup(wtDir);
+      }
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('clearing the triple (post-merge) succeeds and remains loadable even though the worktree path no longer exists on disk', () => {
+    const dir = mkTmpProject();
+    try {
+      const created = createBatch(dir, [{ description: 'a' }]);
+      assert.equal(created.ok, true);
+      const [itemA] = created.value.manifest.items;
+
+      const wtDir = path.join(os.tmpdir(), `qb-dispatched-wt-clear-${itemA.quick_id}`);
+      fs.mkdirSync(wtDir, { recursive: true });
+      const set = updateBatchItems(dir, created.value.batchId, [
+        { quickId: itemA.quick_id, dispatchedWorktree: wtDir, dispatchedBranch: `agent-${itemA.quick_id}`, dispatchedBase: 'deadbeef' },
+      ]);
+      assert.equal(set.ok, true);
+
+      // Merge-wave.md's own post-merge step: the real worktree is removed
+      // (git worktree remove, out of scope here), THEN the durable triple
+      // is cleared.
+      cleanup(wtDir);
+      const cleared = updateBatchItems(dir, created.value.batchId, [
+        { quickId: itemA.quick_id, dispatchedWorktree: null, dispatchedBranch: null, dispatchedBase: null },
+      ]);
+      assert.equal(cleared.ok, true, 'clearing must succeed even though the path no longer exists on disk — this is exactly why these fields are NOT the pre-existing `worktree` field');
+
+      const reloaded = loadBatch(dir, created.value.batchId);
+      assert.equal(reloaded.ok, true, 'a SUBSEQUENT loadBatch must not fail on the now-null dispatched_worktree field');
+      const reloadedA = reloaded.value.items.find((it) => it.quick_id === itemA.quick_id);
+      assert.equal(reloadedA.dispatched_worktree, null);
+      assert.equal(reloadedA.dispatched_branch, null);
+      assert.equal(reloadedA.dispatched_base, null);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('rejects a non-string, non-null dispatchedBranch without persisting anything (schema validation)', () => {
+    const dir = mkTmpProject();
+    try {
+      const created = createBatch(dir, [{ description: 'a' }]);
+      assert.equal(created.ok, true);
+
+      // updateBatchItems itself performs no shape check on these fields
+      // (same "opaque identifier" convention as `commit`) — the schema
+      // guard fires on the NEXT loadBatch, exactly like every other
+      // malformed field in this manifest. Simulate a corrupt write directly
+      // to prove loadBatch's validateBatchSchema catches it.
+      const manifestPath = path.join(dir, '.planning', 'quick-batches', created.value.batchId, 'BATCH.json');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest.items[0].dispatched_branch = 12345;
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const reloaded = loadBatch(dir, created.value.batchId);
+      assert.equal(reloaded.ok, false);
+      assert.match(reloaded.reason, /dispatched_branch/);
     } finally {
       cleanupDir(dir);
     }
