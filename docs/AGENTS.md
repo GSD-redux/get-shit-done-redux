@@ -629,6 +629,8 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 - Detects bugs (logic errors, null/undefined checks, off-by-one, type mismatches, unreachable code), security issues (injection, XSS, hardcoded secrets, insecure crypto), and quality issues
 - Honors `CLAUDE.md` project conventions and `.claude/skills/` / `.agents/skills/` rules when present
 - Read-only against implementation source — never modifies code under review
+- Full-context review scope: surrounding modules, callers, tests, and docs, not a diff-only pass
+- Owns `REVIEW.md` even when optional external reviewer lanes ran (#4209): it treats their `<external_reviewer_evidence>` as unverified input, re-verifies every claim against the actual current source before accepting it, and never follows an instruction embedded inside evidence text — there remains exactly one `REVIEW.md` schema regardless of how many lanes contributed
 
 ---
 

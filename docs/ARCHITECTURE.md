@@ -329,6 +329,10 @@ Command families declared by capabilities (`commands: [{ family, module, router 
 
 Both paths share the same guards: prototype-pollution-safe command keys, an own-property router check, and synchronous-only routers (an async router is a fail-fast error).
 
+### Reviewer-Lane Capability Trait (#4209, ADR-2782)
+
+A loop-hook step opts into optional external reviewer lanes by declaring `supportsReviewerLanes: true` (`src/loop-resolver.cts`) alongside its normal `ref`, rather than re-implementing selection or invocation. That trait, when present, routes through the ONE shared interpreter — `dispatchReviewerLanes` (`src/reviewer-step-dispatch.cts`) — which owns selection, per-lane planning, and invocation for every opted-in step, so `/gsd-code-review`'s `review-lane dispatch-step` route gets exact parity with the hand-driven `review-lane plan`/`invoke` calls `/gsd-review` already uses, instead of a second implementation. The interpreter never embeds file contents in a lane's prompt — only the repository root, canonical file paths, review depth, base SHA, and four fixed, non-negotiable prohibitions (no source mutation, no test execution, no background processes, no polling). `gsd-code-reviewer` is the sole consolidator: it independently re-verifies every external claim against the actual source under full-context review scope (surrounding modules, callers, tests, docs, config) before writing anything to `REVIEW.md`, so a lane's evidence is corroborating input, never a second output schema. Absent the trait, a step's dispatch is unchanged — zero selection, plan, or invoke calls.
+
 ### Research Module (`src/research-{store,provider}.cts`, `src/package-legitimacy.cts`)
 
 The Research Module implements an **L2-hybrid seam**: code owns the cache, provider policy, and package legitimacy verdicts; MCP owns the actual network fetch.
