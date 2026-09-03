@@ -537,20 +537,17 @@ git add src/types/user.ts
 ```bash
 gsd_run query commit-to-subrepo "{type}({phase}-{plan}): {concise task description}" --files file1 file2 ...
 ```
-**0c. Plan commit ledger (#3968, single-repo — BEFORE the first commit of the plan):**
-Each Bash call is a FRESH shell, so the ledger must persist on disk exactly like the #3097
-sentinel above — a shell variable would be unset at SUMMARY time and `git rev-list --count
-..HEAD` would silently measure zero. Per-plan filename so sequential plans cannot contaminate
-each other:
+**0c. Plan commit ledger (#3968, single-repo — before the first commit):**
+Each Bash call is a FRESH shell, so the ledger persists on disk like the #3097 sentinel above
+(a variable would be unset at SUMMARY time and `rev-list ..HEAD` would measure zero).
+Per-plan filename, so sequential plans cannot contaminate each other:
 ```bash
 _GSD_LEDGER="$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}"
 [ -f "$_GSD_LEDGER" ] || git rev-parse HEAD > "$_GSD_LEDGER"
-PLAN_HEAD_BEFORE=$(cat "$_GSD_LEDGER")
 ```
-The SUMMARY's `commits:` number is MEASURED from this ledger at SUMMARY-write time (see the
-write contract) and the base is recorded in the frontmatter as `plan_head_before:` so
-`/gsd:verify-work` can reconcile with the SAME instrument. Multi-repo (`sub_repos`) keeps
-recording the commit-to-subrepo JSON hashes instead; the ledger is the single-repo path.
+The SUMMARY's `commits:` is MEASURED from this ledger, the base recorded as
+`plan_head_before:` for `/gsd:verify-work`'s same-instrument check. Multi-repo keeps commit-to-subrepo
+JSON hashes instead.
 
 Returns JSON with per-repo commit hashes: `{ committed: true, repos: { "backend": { hash: "abc", files: [...] }, ... } }`. Record all hashes for SUMMARY.
 
@@ -668,18 +665,17 @@ actuals:
 ```
 These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
 
-**`commits:` is measured, never narrated (#3968).** At SUMMARY-write time, read the
-persisted plan commit ledger (see `<task_commit_protocol>` 0c — each Bash call is a fresh
-shell, so the base comes from disk, never memory):
+**`commits:` is measured, never narrated (#3968).** At SUMMARY write, read the persisted
+ledger (protocol 0c — a fresh shell per Bash call; the base comes from disk):
 ```bash
 PLAN_HEAD_BEFORE=$(cat "$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}")
 COMMITS_ACTUAL=$(git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD)
 ```
-Write BOTH into the frontmatter — `commits: ${COMMITS_ACTUAL}` and
+Write BOTH into the frontmatter — `commits: ${COMMITS_ACTUAL}`,
 `plan_head_before: ${PLAN_HEAD_BEFORE}` — including when the count is `0`.
-A measured `0` with NO code changes (docs-only/no-op plan) is legitimate — write it and move
-on. `/gsd:verify-work` cross-checks this number against git and flags a mismatch as a
-BLOCKER, so a narrated count will fail the phase later — measure it now.
+A `0` with code changes means the changes sit UNCOMMITTED: **HALT — do not write the
+SUMMARY with a narrated count**; surface `git status --short` in your return. A `0` with no
+code changes (docs-only) is legitimate. `/gsd:verify-work` flags mismatches as BLOCKER.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 
