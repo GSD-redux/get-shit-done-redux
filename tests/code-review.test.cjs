@@ -667,6 +667,111 @@ describe('CR-CONFIG: config key registration', () => {
   });
 });
 
+// --- CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209) ---
+
+describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)', () => {
+  const workflowContent = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
+
+  test('code-review.md workflow has <step name="dispatch_reviewer_lanes">', () => {
+    assert.ok(workflowContent.includes('<step name="dispatch_reviewer_lanes">'),
+      'code-review.md workflow missing dispatch_reviewer_lanes step');
+  });
+
+  test('dispatch_reviewer_lanes step derives explicit flags from the roster, not a hand-maintained list', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow markdown, bounded author-controlled prose
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    assert.ok(stepMatch, 'dispatch_reviewer_lanes step not found');
+    const stepContent = stepMatch[1];
+
+    assert.ok(stepContent.includes('review-lane-descriptor.cjs'),
+      'dispatch_reviewer_lanes must derive flags from the canonical review-lane-descriptor roster');
+    assert.ok(!/\[\s*['"]--(codex|agy|gemini|claude)['"]/.test(stepContent),
+      'dispatch_reviewer_lanes must not hand-maintain a static reviewer-flag array (DOCS-03 / anti-pattern)');
+  });
+
+  test('dispatch_reviewer_lanes calls review-lane dispatch-step exactly once', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    const calls = stepContent.match(/gsd_run review-lane dispatch-step/g) || [];
+    assert.strictEqual(calls.length, 1,
+      `dispatch_reviewer_lanes must call review-lane dispatch-step exactly once, found ${calls.length}`);
+  });
+
+  test('dispatch_reviewer_lanes passes already-resolved repo root, depth, and base SHA (SAFE-01)', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    assert.ok(stepContent.includes('--repo-root "$REPO_ROOT"'), 'must pass already-resolved REPO_ROOT');
+    assert.ok(stepContent.includes('--depth "$REVIEW_DEPTH"'), 'must pass already-resolved REVIEW_DEPTH');
+    assert.ok(stepContent.includes('--base-sha "$DIFF_BASE"'), 'must pass already-resolved DIFF_BASE');
+  });
+
+  test('dispatch_reviewer_lanes is a no-op when no explicit reviewer-lane flag is present (COMP-01)', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    assert.ok(/if\s*\[\s*\$\{#EXPLICIT_REVIEWER_SLUGS\[@\]\}\s*-gt\s*0\s*\]/.test(stepContent),
+      'dispatch_reviewer_lanes must gate the dispatch-step call behind a non-empty explicit selection');
+  });
+
+  test('spawn_reviewer prompt interpolates ${EXTERNAL_EVIDENCE_BLOCK}', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="spawn_reviewer">([\s\S]*?)<\/step>/);
+    assert.ok(stepMatch, 'spawn_reviewer step not found');
+    assert.ok(stepMatch[1].includes('${EXTERNAL_EVIDENCE_BLOCK}'),
+      'spawn_reviewer must interpolate EXTERNAL_EVIDENCE_BLOCK into the agent prompt');
+  });
+
+  test('external evidence block marks findings as unverified and requires re-opening source (CONS-02)', () => {
+    assert.ok(/UNVERIFIED/.test(workflowContent) && /re-open|reopen/i.test(workflowContent),
+      'external evidence block must mark external findings as unverified and require the internal reviewer to re-open cited source');
+  });
+
+  // --- Real subprocess behavior: `review-lane dispatch-step` (fail-closed, no raw fallback) ---
+
+  test('review-lane dispatch-step is a no-op with no --explicit selection', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const result = runNode(
+        [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
+          '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--raw'],
+        { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
+      );
+      assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.strictEqual(parsed.dispatched, false, 'no explicit selection must dispatch zero lanes');
+      assert.strictEqual(parsed.reason, 'no_lanes_selected');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('review-lane dispatch-step fails closed on an explicitly requested unknown lane (SAFE-07)', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const result = runNode(
+        [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
+          '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'not-a-real-reviewer-xyz', '--raw'],
+        { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
+      );
+      assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.strictEqual(parsed.dispatched, false, 'an unresolvable explicit lane must plan/invoke nothing');
+      assert.strictEqual(parsed.ok, false, 'an explicitly requested unavailable lane must be a failure, not a silent success');
+      assert.deepStrictEqual(parsed.results, [], 'no lane fallback result may appear');
+      assert.ok(
+        (parsed.selection.errors || []).some((e) => e.includes('not-a-real-reviewer-xyz')),
+        'the unresolved slug must be named in the selection errors',
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
+
 // --- CR-INTEGRATION: workflow integration points ---
 
 describe('CR-INTEGRATION: workflow integration points', () => {
