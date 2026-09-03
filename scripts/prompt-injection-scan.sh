@@ -171,6 +171,14 @@ ALLOWLIST=(
   # allowlist cannot reach it either, because the literal `child_process` is
   # not adjacent to `.exec`. See the note at the pattern itself.
   'tests/continuation-grammar-parity.test.cjs'
+  # #3676 row 11b — quick-batch's task-list parser must treat a
+  # prompt-injection-shaped task description as inert data, never
+  # interpreted. The fixture has to be a real "ignore all previous
+  # instructions…" phrase or the test asserts nothing: it is the payload the
+  # parser is required to carry byte-for-byte through createBatch and STATE
+  # rendering, never a command. Same DEFECT.PROMPT-INJECTION-SCAN-COLLISION
+  # class as the input-validator fixtures above.
+  'tests/quick-batch.test.cjs'
 )
 
 is_allowlisted() {

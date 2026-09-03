@@ -1,0 +1,52 @@
+name: Dependabot Auto-Merge
+
+# #4196: Dependabot already opens a correct fix PR within minutes of a new
+# advisory landing (e.g. #4193 for GHSA-jqff-g426-hqxp), but nothing merged
+# it — it just sat until a human noticed `next` had gone red on the
+# `npm audit --omit=dev` gate and someone else's unrelated PR tripped over
+# it. This closes that gap: patch/minor Dependabot PRs are approved and
+# handed to GitHub's native auto-merge the moment they're opened, so they
+# land the instant required checks (including the audit gate) go green —
+# without waiting on a human to notice. Major-version bumps always need a
+# human; they're excluded below.
+
+on:
+  pull_request:
+    branches:
+      - next
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    # Defense-in-depth: check both the triggering actor and the PR author.
+    # github.actor alone can't be forged to a different login, but pairing it
+    # with pull_request.user.login is GitHub's documented hardening pattern.
+    if: |
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Approve and enable auto-merge (patch/minor only)
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          gh pr review --approve "$PR_URL" \
+            --body "Auto-approved: Dependabot $UPDATE_TYPE bump. Merges automatically once required checks pass."
+          gh pr merge --auto --squash "$PR_URL"

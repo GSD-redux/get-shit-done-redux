@@ -30,6 +30,7 @@ const { runMain } = require('./lib/cli-exit.cjs');
 const ISSUE_LINK_REASON = Object.freeze({
   OK_CLOSING_KEYWORD: 'ok_closing_keyword',
   OK_BACKMERGE_EXEMPT: 'ok_backmerge_exempt',
+  OK_DEPENDABOT_EXEMPT: 'ok_dependabot_exempt',
   OK_FOLLOWUP_REFERENCE: 'ok_followup_reference',
   FAIL_NO_ISSUE_REFERENCE: 'fail_no_issue_reference',
   FAIL_REFERENCE_NEEDS_CLOSING: 'fail_reference_needs_closing',
@@ -40,6 +41,14 @@ const ISSUE_LINK_REASON = Object.freeze({
 // fork, so they are exempt from the issue-link requirement outright — but
 // ONLY when combined with `sameRepo === true` below (see header comment).
 const BACKMERGE_BRANCH_PREFIX = 'chore/backmerge-main-to-next-';
+
+// #4196: Dependabot has no mechanism to link a PR it opens to a repo issue —
+// its alerts live in the Security tab, not as issues, so there is nothing
+// for it to reference. `pr.user.login` is authenticated by GitHub (not
+// forgeable by a crafted title/branch), so this is safe without a sameRepo
+// conjunct: no external actor can make GitHub report this login for a PR
+// they opened.
+const DEPENDABOT_LOGIN = 'dependabot[bot]';
 
 // A follow-up-only PR (references an issue without closing it) is only
 // allowed to skip the closing keyword when every changed file is a test or
@@ -122,7 +131,11 @@ function allPathsAreTestsOrDocs(changedFiles) {
   });
 }
 
-function evaluateIssueLink({ prBody, headRef, sameRepo, changedFiles, changedFilesTotal }) {
+function evaluateIssueLink({ prBody, headRef, sameRepo, authorLogin, changedFiles, changedFilesTotal }) {
+  if (authorLogin === DEPENDABOT_LOGIN) {
+    return { ok: true, reason: ISSUE_LINK_REASON.OK_DEPENDABOT_EXEMPT };
+  }
+
   if (hasClosingKeyword(prBody)) {
     return { ok: true, reason: ISSUE_LINK_REASON.OK_CLOSING_KEYWORD };
   }
@@ -159,6 +172,7 @@ function main() {
     prBody: process.env.PR_BODY || '',
     headRef: process.env.HEAD_REF || '',
     sameRepo: process.env.SAME_REPO === 'true',
+    authorLogin: process.env.PR_AUTHOR_LOGIN || '',
     changedFiles,
     changedFilesTotal,
   });
@@ -179,6 +193,7 @@ if (require.main === module) runMain(main);
 module.exports = {
   ISSUE_LINK_REASON,
   BACKMERGE_BRANCH_PREFIX,
+  DEPENDABOT_LOGIN,
   EXEMPT_PATH_PREFIXES,
   EXCLUDED_ROOT_DOCS,
   CLOSING_KEYWORD_REGEX,
