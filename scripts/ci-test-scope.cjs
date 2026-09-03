@@ -97,6 +97,10 @@ const RULES = [
     tests: [
       'tests/run-tests-harness.test.cjs',
       'tests/workflow-shell-pinning.test.cjs',
+      // #4220: the run-scoped temp root + computeSweepProtectSet ancestor-walk
+      // termination coverage — was previously not re-selected by an edit to
+      // scripts/run-tests.cjs, the exact file that shipped the #4020 hang.
+      'tests/run-tests-temp-root.test.cjs',
     ],
   },
   {
@@ -302,6 +306,9 @@ const RULES = [
       'tests/require-userprofile-with-home.rule.test.cjs',
       'tests/normalize-path-in-content.rule.test.cjs',
       'tests/require-fs-op-fallback.rule.test.cjs',
+      // #4244 (origin #4020/#4220 Windows CI hang) — see ADR-1703 amendment.
+      'tests/require-full-tmpdir-triad.rule.test.cjs',
+      'tests/no-unbounded-dirname-walk.rule.test.cjs',
     ],
   },
   {
