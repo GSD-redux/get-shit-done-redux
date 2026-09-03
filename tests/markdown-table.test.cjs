@@ -23,7 +23,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
 
-const { parseMarkdownTable, matchTableSchema, TABLE_SCHEMAS, appendQuickTaskRow, findTableBySchema, findTableWithColumns, updateTableCell, deleteTableRow, resetQuickTaskRows, QUICK_TASKS_SECTION_ABSENT } = require('../gsd-core/bin/lib/markdown-table.cjs');
+const {
+  migrateQuickTasksTable, parseMarkdownTable, matchTableSchema, TABLE_SCHEMAS, appendQuickTaskRow, findTableBySchema, findTableWithColumns, updateTableCell, deleteTableRow, resetQuickTaskRows, QUICK_TASKS_SECTION_ABSENT } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { buildHeader, normalize } = require('../scripts/lint-table-schema-drift.cjs');
 
 const ROOT = path.join(__dirname, '..');
@@ -1529,5 +1530,84 @@ describe('resetQuickTaskRows (#2142)', () => {
       }),
       { seed: 20260817, numRuns: 50 },
     );
+  });
+});
+
+describe('migrateQuickTasksTable (#3730 option b)', () => {
+  const legacyState = (eol = '\n') => [
+    '# State',
+    '',
+    '## Quick Tasks Completed',
+    '',
+    '| Date | Slug | Scope | Artifacts |',
+    '|------|------|-------|-----------|',
+    '| 2026-04-17 | 260417-abc | bootstrap | roles/x |',
+    '| 2026-05-02 | 260502-def | cli | quick/y |',
+  ].join(eol) + eol;
+
+  test('migrates the legacy pre-registry schema', () => {
+    const r = migrateQuickTasksTable(legacyState());
+    assert.equal(r.ok, true, `migrate failed: ${r.reason}`);
+    assert.equal(r.value.migrated, true);
+    assert.ok(r.value.content.includes('| # | Description | Date | Commit | Status | Directory |'),
+      'canonical with-status header is written');
+    assert.ok(r.value.content.includes('| 1 | 260417-abc · bootstrap | 2026-04-17 | — | — | roles/x |'),
+      'Slug+Scope bucket into Description; Artifacts maps to Directory; # renumbered');
+    assert.ok(r.value.content.includes('| 2 | 260502-def · cli | 2026-05-02 | — | — | quick/y |'),
+      'every data row migrates');
+    assert.ok(!r.value.content.includes('| Date | Slug |'), 'the legacy header is gone');
+  });
+
+  test('keeps unknown-named columns losslessly in the Description bucket', () => {
+    const state = [
+      '# State', '', '## Quick Tasks Completed', '',
+      '| Date | Owner |', '|------|-------|', '| 2026-04-17 | sim |',
+    ].join('\n');
+    const r = migrateQuickTasksTable(state);
+    assert.equal(r.ok, true);
+    assert.ok(r.value.content.includes('Owner: sim'), 'unknown column keeps its name: value');
+  });
+
+  test('no-ops a canonical table (byte-identical)', () => {
+    const canonical = [
+      '# State', '', '## Quick Tasks Completed', '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 1 | existing | 2026-04-17 | deadbee | ./quick/a/ |',
+    ].join('\n');
+    const r = migrateQuickTasksTable(canonical);
+    assert.equal(r.ok, true);
+    assert.equal(r.value.migrated, false);
+    assert.equal(r.value.content, canonical);
+  });
+
+  test('no-ops an absent section (absence is normal, #2142)', () => {
+    const r = migrateQuickTasksTable('# State\n\n## Other\n');
+    assert.equal(r.ok, true);
+    assert.equal(r.value.migrated, false);
+  });
+
+  test('fails loud on an unparseable table', () => {
+    const state = '# State\n\n## Quick Tasks Completed\n\nnot a table\n';
+    const r = migrateQuickTasksTable(state);
+    assert.equal(r.ok, false);
+    assert.ok(r.reason.length > 0, 'carries the parse failure reason');
+  });
+
+  test('preserves CRLF section endings', () => {
+    const r = migrateQuickTasksTable(legacyState('\r\n'));
+    assert.equal(r.ok, true);
+    assert.ok(r.value.content.includes('\r\n'), 'CRLF preserved');
+    assert.ok(!/[^\r]\n/.test(r.value.content.split('## Quick Tasks Completed')[1] || ''),
+      'no mixed EOL introduced into the section');
+  });
+
+  test('a migrated table is appendable (round-trip)', () => {
+    const migrated = migrateQuickTasksTable(legacyState());
+    const appended = appendQuickTaskRow(migrated.value.content, {
+      description: 'probe', date: '2026-08-20', commit: 'deadbee', directory: './quick/probe/',
+    });
+    assert.equal(appended.ok, true, `append after migrate failed: ${appended.reason}`);
+    assert.ok(appended.value.row.includes('probe'));
   });
 });
