@@ -36,7 +36,11 @@
 'use strict';
 
 const { readdirSync, readFileSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } = require('fs');
-const { join, basename } = require('path');
+// Captured whole (not just the two destructured helpers) so
+// collectSweepProtectPaths can default to it while still accepting an
+// injected `path.win32` from tests — see #4220.
+const nodePath = require('path');
+const { join, basename } = nodePath;
 const { tmpdir } = require('os');
 const { pathToFileURL } = require('url');
 const { execFileSync } = require('child_process');
@@ -402,6 +406,55 @@ function setupRunTempRoot() {
   const root = inherited || mkdtempSync(join(tmpdir(), RUN_TEMP_ROOT_PREFIX));
   for (const key of ['TMPDIR', 'TEMP', 'TMP']) process.env[key] = root;
   return root;
+}
+
+/**
+ * Build the sweep's protect set: every ancestor path of every SELECTED test
+ * file, plus the files themselves. `sweepRunTempRoot` consumes it as a set of
+ * ABSOLUTE paths and only ever asks it about DIRECT children of the run root
+ * (`protect.has(join(root, name))`), so ancestors that live outside the root
+ * are harmless surplus — the walk does not need to know where the root is
+ * beyond stopping early when it reaches it.
+ *
+ * Extracted from runTests (#4220) so the ancestor walk is reachable from a
+ * unit test with an injected `pathMod`. It is pure.
+ *
+ * TERMINATION (#4220 — the bug this extraction exists to pin down): stop at
+ * the filesystem root via dirname's FIXED POINT (`dirname(x) === x`), never
+ * via a string-length sentinel. #4207 shipped `cur.length > 1`, which is a
+ * POSIX-only root test: `path.posix.dirname('/')` is `'/'` (length 1, so the
+ * loop exits) but `path.win32.dirname('C:\\')` is `'C:\\'` (length 3, so the
+ * loop never exits). One selected file OUTSIDE the run root — i.e. every
+ * normal `tests/*.test.cjs` — was therefore enough to spin here forever on
+ * Windows. It was silent and allocation-free (re-adding a present value to a
+ * Set is a no-op), so the job produced no output at all and simply sat until
+ * the CI cap killed it: every Windows shard on `next` timed out, scoped and
+ * full alike, from #4207 until this fix.
+ *
+ * Exported for in-process tests (tests/run-tests-temp-root.test.cjs).
+ *
+ * @param {string[]} selected absolute paths of the run's selected test files
+ * @param {string} runTempRoot the run-scoped temp root (walk stops there)
+ * @param {{dirname: (p: string) => string}} [pathMod] injectable for tests
+ * @returns {Set<string>} absolute paths the sweep must not remove
+ */
+function collectSweepProtectPaths(selected, runTempRoot, pathMod = nodePath) {
+  const { dirname } = pathMod;
+  const protect = new Set();
+  for (const f of selected) {
+    let cur = f;
+    while (cur && cur !== runTempRoot) {
+      const parent = dirname(cur);
+      // The filesystem root: '/' and 'C:\' alike. Break BEFORE adding it —
+      // protecting the root itself is meaningless (it is never a direct child
+      // of runTempRoot) and #4207 did not add it on POSIX either.
+      if (parent === cur) break;
+      protect.add(cur);
+      cur = parent;
+    }
+    if (cur === runTempRoot) protect.add(f); // exact-file case
+  }
+  return protect;
 }
 
 /**
@@ -1135,18 +1188,8 @@ function main() {
   // chunk still runs — a harness may stage synthetic test files under the run
   // root (tests/run-tests-harness.test.cjs's 30-file chunking fixture). Protect
   // every ancestor of every selected file that lies INSIDE the run root.
-  const sweepProtectSet = new Set();
-  {
-    const { dirname } = require('path');
-    for (const f of selected) {
-      let cur = f;
-      while (cur && cur !== runTempRoot && cur.length > 1) {
-        sweepProtectSet.add(cur);
-        cur = dirname(cur);
-      }
-      if (cur === runTempRoot) sweepProtectSet.add(f); // exact-file case
-    }
-  }
+  // #4220 — the walk lives in collectSweepProtectPaths; see its TERMINATION note.
+  const sweepProtectSet = collectSweepProtectPaths(selected, runTempRoot);
 
   // Sandbox the overlay home so the loader's global scan ($GSD_HOME/.gsd/capabilities)
   // cannot read a developer's real installed capabilities during tests (ADR-1244 D2).
@@ -1641,6 +1684,9 @@ module.exports = {
   walkTestFiles,
   // #4020: run-scoped temp root — see the block above their definitions.
   setupRunTempRoot,
+  // #4220: exported so the walk's termination is assertable under injected
+  // win32 path semantics — see its JSDoc.
+  collectSweepProtectPaths,
   sweepRunTempRoot,
   assertTempRootBounded,
 };

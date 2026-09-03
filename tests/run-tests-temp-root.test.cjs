@@ -12,6 +12,10 @@
  *
  * Unit rows exercise the runner's exported helpers in-process (the harness
  * convention); the spawn row drives the real CLI.
+ *
+ * #4220 extends this file to the protect-set walk that feeds the sweep; the
+ * rows drive it with an injected path module because the defect is unreachable
+ * from POSIX-only assertions. See collectSweepProtectPaths for the why.
  */
 
 const { test, describe } = require('node:test');
@@ -100,6 +104,133 @@ describe('#4020 — run-tests temp root', () => {
     assert.equal(protectedSwept, 1, 'only the unprotected entry is removed');
     assert.ok(fs.existsSync(path.join(root, 'gsd-leak-x')), 'the protected entry survives');
     assert.ok(!fs.existsSync(path.join(root, 'gsd-leak-y')), 'the unprotected entry is removed');
+  });
+
+  // #4220 — the ancestor walk that feeds sweepRunTempRoot's protect set.
+  // collectSweepProtectPaths's JSDoc carries the account of the defect; what
+  // matters here is that these rows inject the path module, because a
+  // pure-POSIX assertion cannot observe the class at all.
+  //
+  // BOUNDED BY CONSTRUCTION: the injected dirname throws once its call budget
+  // is spent, so a regression fails this test loudly instead of re-hanging CI
+  // the way the bug hangs the runner.
+  const budgetedPath = (impl, budget) => {
+    const state = { calls: 0 };
+    return {
+      state,
+      pathMod: {
+        dirname(p) {
+          if (++state.calls > budget) {
+            throw new Error(`ancestor walk exceeded ${budget} dirname() calls — it does not terminate`);
+          }
+          return impl.dirname(p);
+        },
+      },
+    };
+  };
+
+  test('the sweep protect walk terminates at a win32 drive root', () => {
+    const runner = require('../scripts/run-tests.cjs');
+    assert.equal(typeof runner.collectSweepProtectPaths, 'function',
+      'the runner must export collectSweepProtectPaths for in-process verification');
+
+    // The shape that hung CI: a selected file on C:\ while the run temp root is
+    // on a DIFFERENT branch of the tree, so the walk can never meet it and must
+    // stop at the drive root on its own.
+    const root = 'C:\\Users\\runner\\AppData\\Local\\Temp\\gsd-test-run-abc123';
+    const selected = ['C:\\a\\gsd-core\\tests\\run-tests-temp-root.test.cjs'];
+    const { state, pathMod } = budgetedPath(path.win32, 64);
+
+    let protectSet;
+    assert.doesNotThrow(
+      () => { protectSet = runner.collectSweepProtectPaths(selected, root, pathMod); },
+      'the walk terminates at the win32 drive root instead of spinning on it');
+    assert.ok(state.calls <= 8,
+      `the walk visits one ancestor per level (observed ${state.calls} dirname calls)`);
+    // #4207 semantics preserved: every ancestor between the file and the drive
+    // root is protected, and the drive root itself is not (it is never a direct
+    // child of the run root, so protecting it would be meaningless).
+    assert.ok(protectSet.has('C:\\a\\gsd-core\\tests\\run-tests-temp-root.test.cjs'), 'the file itself is protected');
+    assert.ok(protectSet.has('C:\\a\\gsd-core\\tests'), 'its parent directory is protected');
+    assert.ok(protectSet.has('C:\\a'), 'the topmost non-root ancestor is protected');
+    assert.ok(!protectSet.has('C:\\'), 'the drive root itself is not added');
+  });
+
+  test('the sweep protect walk terminates at a UNC and a long-path win32 root', () => {
+    // Adversarial review (#4220): rows using only `C:\\` pin the ONE sentinel
+    // that shipped, not the class. A "Windows-aware" length check
+    // (`cur.length > 3`) or a drive-letter regex (`/^[A-Za-z]:\\$/`) both pass
+    // those rows and both still spin here — a UNC share root and a `\\\\?\\`
+    // long-path root are neither short nor drive-letter-shaped. Only a dirname
+    // FIXED POINT terminates on all four.
+    const runner = require('../scripts/run-tests.cjs');
+    const root = 'C:\\Temp\\gsd-test-run-abc';
+    const selected = [
+      '\\\\srv\\share\\gsd-core\\tests\\a.test.cjs',
+      '\\\\?\\C:\\a\\gsd-core\\tests\\a.test.cjs',
+    ];
+    const { state, pathMod } = budgetedPath(path.win32, 64);
+
+    let protectSet;
+    assert.doesNotThrow(
+      () => { protectSet = runner.collectSweepProtectPaths(selected, root, pathMod); },
+      'the walk terminates at a UNC share root and at a long-path root');
+    assert.ok(state.calls <= 16, `bounded ancestor walk (observed ${state.calls} dirname calls)`);
+    // The fixed points themselves — path.win32.dirname returns these unchanged —
+    // must not be protected, exactly as the drive root is not.
+    assert.ok(protectSet.has('\\\\srv\\share\\gsd-core'), 'the topmost non-root UNC ancestor is protected');
+    assert.ok(!protectSet.has('\\\\srv\\share\\'), 'the UNC share root itself is not added');
+    assert.ok(protectSet.has('\\\\?\\C:\\a'), 'the topmost non-root long-path ancestor is protected');
+    assert.ok(!protectSet.has('\\\\?\\C:\\'), 'the long-path root itself is not added');
+  });
+
+  test('the sweep protect walk terminates at a posix filesystem root', () => {
+    const runner = require('../scripts/run-tests.cjs');
+    const root = '/tmp/gsd-test-run-abc123';
+    const selected = ['/home/runner/gsd-core/tests/run-tests-temp-root.test.cjs'];
+    const { state, pathMod } = budgetedPath(path.posix, 64);
+
+    let protectSet;
+    assert.doesNotThrow(
+      () => { protectSet = runner.collectSweepProtectPaths(selected, root, pathMod); },
+      'the walk terminates at the posix filesystem root');
+    assert.ok(state.calls <= 8, `bounded ancestor walk (observed ${state.calls} dirname calls)`);
+    assert.ok(protectSet.has('/home/runner/gsd-core/tests'), 'the parent directory is protected');
+    assert.ok(!protectSet.has('/'), 'the filesystem root itself is not added');
+  });
+
+  test('the sweep protect walk protects ancestors inside the run temp root', () => {
+    // #4020's actual purpose, asserted under BOTH path flavours: a harness
+    // stages synthetic test files under the run root, and the walk must protect
+    // the directory chain up to (but not including) the root so the
+    // between-chunk sweep leaves them standing for later chunks.
+    const runner = require('../scripts/run-tests.cjs');
+
+    for (const [label, impl, root, file, ancestor] of [
+      ['win32', path.win32, 'C:\\Temp\\gsd-test-run-abc', 'C:\\Temp\\gsd-test-run-abc\\staged\\a.test.cjs', 'C:\\Temp\\gsd-test-run-abc\\staged'],
+      ['posix', path.posix, '/tmp/gsd-test-run-abc', '/tmp/gsd-test-run-abc/staged/a.test.cjs', '/tmp/gsd-test-run-abc/staged'],
+    ]) {
+      const { pathMod } = budgetedPath(impl, 64);
+      const protectSet = runner.collectSweepProtectPaths([file], root, pathMod);
+      assert.ok(protectSet.has(file), `${label}: the staged file is protected`);
+      assert.ok(protectSet.has(ancestor),
+        `${label}: the staged file's directory — a DIRECT child of the run root, i.e. exactly what sweepRunTempRoot tests — is protected`);
+      assert.ok(!protectSet.has(root), `${label}: the run root itself is not in the protect set`);
+    }
+  });
+
+  test('the sweep protect walk keeps the exact-file case', () => {
+    // A selected path that IS the run root: the loop body never runs, and the
+    // `if (cur === runTempRoot)` branch below it is what puts the entry in the
+    // set. #4207 shipped that branch unreachable on Windows (the loop above it
+    // never exited); assert it under win32 so it stays reachable.
+    const runner = require('../scripts/run-tests.cjs');
+    const root = 'C:\\Temp\\gsd-test-run-abc';
+    const { state, pathMod } = budgetedPath(path.win32, 64);
+    const protectSet = runner.collectSweepProtectPaths([root], root, pathMod);
+    assert.deepEqual([...protectSet], [root],
+      'the exact-file case adds the path itself and nothing else');
+    assert.equal(state.calls, 0, 'no ancestor walk is needed when the file IS the root');
   });
 
   test('the leak guard fails fast naming the leaked roots', (t) => {
