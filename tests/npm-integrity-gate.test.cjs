@@ -245,8 +245,8 @@ function auditProductionVulns(cwd) {
     } catch (e) {
       // `npm audit` exits non-zero when advisories are present; the JSON is
       // still on stdout in that case. Recover and let the assertion classify —
-      // but only when stdout actually CARRIES the JSON. A transient registry
-      // failure exits non-zero with EMPTY stdout (npm writes plain-text errors
+      // but only when stdout actually CARRIES the JSON. A killed or aborted
+      // audit exits non-zero with EMPTY stdout (npm writes plain-text errors
       // to stderr); accepting the empty string here used to surface as
       // `SyntaxError: Unexpected end of JSON input` at the parse below, hiding
       // the real cause. Keep the candidate loop going and let the explicit
@@ -267,7 +267,7 @@ function auditProductionVulns(cwd) {
       ? [lastErr.stdout, lastErr.stderr, String(lastErr.message)].filter(Boolean).join('\n').slice(0, 500)
       : '(no error captured)';
     throw new Error(
-      `npm audit --json produced no output (transient registry failure or npm abort). ` +
+      `npm audit --json produced no output. ` +
         `Detail from the failed invocation:\n${detail}`
     );
   }
