@@ -1644,8 +1644,10 @@ describe('quick-tasks-migrate CLI and workflow wiring (#3730)', () => {
   test('quick and fast run the migration check first', () => {
     const fast = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', 'fast.md'), 'utf8');
     const quick = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md'), 'utf8');
-    const fastMigrate = fast.indexOf('quick-tasks-migrate');
-    const fastAppend = fast.indexOf('quick-tasks-append');
+    // Compare the INVOCATIONS, not first prose mentions — fast.md's prose
+    // names the append helper (~line 77) before the bash block that runs both.
+    const fastMigrate = fast.indexOf('gsd_run quick-tasks-migrate');
+    const fastAppend = fast.indexOf('gsd_run quick-tasks-append');
     assert.ok(fastMigrate !== -1, 'fast.md invokes quick-tasks-migrate');
     assert.ok(fastAppend !== -1 && fastMigrate < fastAppend, 'the migration runs BEFORE the append');
     assert.ok(quick.includes('quick-tasks-migrate'),

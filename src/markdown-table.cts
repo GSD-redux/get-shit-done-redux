@@ -957,7 +957,15 @@ export function migrateQuickTasksTable(
       if (target === 'Description') {
         if (raw) descriptionParts.push(raw);
       } else if (target) {
-        if (raw) bucket[target] = raw;
+        // Collision-safe (#3730 review): two legacy columns aliasing the same
+        // canonical target must not silently overwrite — the displaced value
+        // joins the Description bucket under its own name, same convention as
+        // an unknown column, so no historical datum is dropped.
+        if (raw && bucket[target]) {
+          descriptionParts.push(`${col.trim()}: ${raw}`);
+        } else if (raw) {
+          bucket[target] = raw;
+        }
       } else if (raw) {
         descriptionParts.push(`${col.trim()}: ${raw}`);
       }
@@ -973,19 +981,21 @@ export function migrateQuickTasksTable(
 
   const eol = /\r\n/.test(section.body) ? '\r\n' : '\n';
   const lines = section.body.split(/\r?\n/);
-  let firstTableLineIdx = -1;
-  let lastTableLineIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().startsWith('|')) {
-      if (firstTableLineIdx === -1) firstTableLineIdx = i;
-      lastTableLineIdx = i;
-    }
+  // CONTIGUOUS-run bound (#3730 review), mirroring resetQuickTaskRows: the
+  // section body may carry a SECOND table (a `#### Notes` subsection or a
+  // trailing table after a blank line) that parseMarkdownTable never read —
+  // scanning for the last pipe line anywhere in the body would splice the
+  // rewrite across it and silently destroy it. Only the first CONTIGUOUS run
+  // of pipe lines — the table that was parsed — is replaced.
+  const firstTableLineIdx = lines.findIndex((l) => l.trim().startsWith('|'));
+  let lastTableLineIdx = firstTableLineIdx;
+  while (lastTableLineIdx + 1 < lines.length && lines[lastTableLineIdx + 1].trim().startsWith('|')) {
+    lastTableLineIdx++;
   }
-  // REPLACE the whole table span (header..last row line), preserving any prose
-  // the section carries before or after it — appending after lastTableLineIdx
-  // alone would leave the legacy header in place above the canonical one.
   const header = `| ${canonical.join(' | ')} |`;
-  const delimiter = `| ${canonical.map((c) => '-'.repeat(Math.max(3, c.length))).join(' | ')} |`;
+  // Widths match workflows/quick.md's canonical template byte-for-byte
+  // (#3730 review): its delimiter is max(3, len+2) per column.
+  const delimiter = `| ${canonical.map((c) => '-'.repeat(Math.max(3, c.length + 2))).join(' | ')} |`;
   const newBody = [
     ...lines.slice(0, firstTableLineIdx),
     header,
