@@ -1241,6 +1241,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
 
     return {
       warnPath,
+      watermarkPath,
       // Drive one hook invocation at a given remaining%, WITHOUT touching the
       // sentinel — that is the state under test. `metrics` selects how the
       // statusline bridge is presented:
@@ -1709,6 +1710,41 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       + 'must be untouched');
     assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
       'the planted symlink must survive — its absence means the injection never engaged');
+  });
+
+  test('round 10: the watermark write refuses to follow a planted symlink', (t) => {
+    // Review of #3808, round 10. The PreCompact watermark write was the block
+    // writeSentinel was lifted from in round 7 and it kept its own inline copy
+    // until round 10 routed it through the helper. Nothing pinned that site:
+    // no other watermark row supplies a pre-existing object at the path before
+    // PreCompact writes — the sequence rows let PreCompact create it, the
+    // hardened-read rows below plant one afterwards and test the READ — so the
+    // write regressing to a bare writeFileSync, which follows a link and writes
+    // through to its target, shipped green (Codex, round 10, by mutation). This
+    // row plants the object BEFORE the write: the target must be untouched,
+    // and the path must end up a fresh regular file, which only
+    // unlink-then-O_EXCL produces.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows. A directory at the path does not tell '
+        + 'the two writes apart (both give up inside the branch-level catch with an identical '
+        + 'exit 0 — checked by mutation); a hard link would, but is unverified on Windows here '
+        + 'and not taken');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(), `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(victim, 'precious victim bytes');
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+    fs.symlinkSync(victim, s.watermarkPath);
+
+    const r = s.call('PreCompact', 20);
+    assert.strictEqual(r.exitCode, 0, 'a planted watermark path must never fail the hook');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
+      'the symlink TARGET must be untouched — a write that follows links lands the watermark JSON in it');
+    assert.ok(fs.lstatSync(s.watermarkPath).isFile() && !fs.lstatSync(s.watermarkPath).isSymbolicLink(),
+      'the path must now hold a plain regular file this process made — the unlink half removed the link');
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'and it must be a real watermark, not the link left in place');
   });
 
   test('round 3, Major 1: a statusline rewrite DURING the compaction cannot re-fire off the old reading', (t) => {

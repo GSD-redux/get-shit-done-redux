@@ -43,7 +43,8 @@ const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 // one (it would exit above-threshold anyway). A genuine exhaustion reading
 // inside the window is SKIPPED, not queued — its warning and its #1974
 // breadcrumb both fire on the next reading after the window, so they are
-// delayed by at most this window when a later reading comes, and lost when
+// delayed by at most this window plus the accepted skew below when a later
+// reading comes, and lost when
 // none does, i.e. when the session ends inside the window (review of #3808,
 // round 9). That loss is accepted over the alternative, which is trusting a
 // reading that may be the pre-compaction value under a fresh timestamp.
@@ -84,13 +85,14 @@ function readEventName(data) {
   return (name === undefined || name === null) ? '' : null;
 }
 
-// SENTINEL WRITE HARDENING (review of #3808, round 7). `warnPath` lives in the
-// shared, sticky os.tmpdir() — not guaranteed per-user, and the file persists
-// across invocations — so an object already sitting there may be a planted
-// symlink. The three routine debounce-accounting writes were bare
+// SENTINEL WRITE HARDENING (review of #3808, round 7). `warnPath` lives in
+// os.tmpdir(), which may resolve to a shared sticky directory — not guaranteed
+// per-user, and the file persists across invocations — so an object already
+// sitting there may be a planted symlink. The three routine debounce-accounting writes were bare
 // writeFileSync, which follows one and writes through to its target, while the
 // PreCompact clear and the compaction watermark in this same file already
-// refuse to. Unlink-then-O_EXCL is the watermark's own shape: the unlink
+// refuse to. Unlink-then-O_EXCL is the watermark's own shape (the watermark
+// write itself now calls this helper — review round 10): the unlink
 // removes any existing object (regular file or link) and O_EXCL then refuses
 // to create through one, so the write can only ever land on a fresh regular
 // file this process made. Best effort by design — a lost sentinel write costs
@@ -231,22 +233,12 @@ process.stdin.on('end', () => {
       // it would sail past STALE_SECONDS as freshly valid. The watermark makes
       // the pre-compaction reading identifiable rather than merely absent: the
       // metrics read drops any reading not strictly newer than it. Written
+      // through writeSentinel (review of #3808, round 10 — this block was the
+      // shape writeSentinel was lifted from in round 7 and kept its own copy):
       // unlink-then-O_EXCL so an existing file — or a planted symlink — is
       // never followed or overwritten in place; failure to write degrades to
       // the old narrowing, never throws.
-      try {
-        try {
-          fs.unlinkSync(watermarkPath);
-        } catch (e) {
-          if (!e || e.code !== 'ENOENT') throw e;
-        }
-        const wfd = fs.openSync(
-          watermarkPath,
-          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
-        );
-        fs.writeSync(wfd, JSON.stringify({ at: Math.floor(Date.now() / 1000) }));
-        fs.closeSync(wfd);
-      } catch (e) { /* best effort — see above */ }
+      writeSentinel(watermarkPath, JSON.stringify({ at: Math.floor(Date.now() / 1000) }));
       // allow(), not raw process.exit: #3911/ADR-3889 moved this hook onto the
       // declared-policy exit vocabulary while this PR was in review, and the
       // PreCompact branch is new here, so it needs the same conversion.
