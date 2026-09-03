@@ -1934,6 +1934,60 @@ function wrapBoldLeadIn(line, seed) {
   return `${line.slice(0, at)}\n  ${line.slice(at + 1)}`;
 }
 
+/**
+ * Like `wrapBoldLeadIn`, but breaks the lead-in at two or more DISTINCT
+ * positions chosen by `seeds`, and at ANY position — not only at a space.
+ *
+ * Both generalizations are load-bearing for the #3953 review Blocker, and
+ * neither is reachable through `wrapBoldLeadIn`:
+ *
+ *   - Two-plus breaks let the id-adjacent `[tags]` bracket open on a segment
+ *     that is NOT the declaration line, which is the state whose splice guard
+ *     was never armed. A single break always left the bracket either wholly on
+ *     line 1 or wholly on line 2.
+ *   - Breaking mid-token is what makes that state OBSERVABLE. A break at a
+ *     space round-trips exactly (the join re-inserts the space it replaced), so
+ *     a disarmed guard is indistinguishable from an armed one; a hard break
+ *     inside a tag token is the case where the inserted space changes the token
+ *     — `[inform` / `ational]` folding to the tag `inform ational` — and so
+ *     changes `trackable`.
+ *
+ * A break AT a space replaces it (a markdown soft break renders as one space);
+ * a break anywhere else inserts the newline, which is the hard-wrapped shape a
+ * fixed-column writer produces.
+ *
+ * Breaks start AFTER the decision id, which every form renders flush against
+ * the opening `**`. Breaking inside the id is excluded because it lands in
+ * behavior this property is not about, in two different ways: a break inside
+ * `**`, or between `D` and `-01`, leaves the block with no `D-` token at all,
+ * so `extractDecisions` reports `none-present` — correctly, since nothing there
+ * is decision-shaped; and a break inside the id's own characters (`D-0` / `1`)
+ * yields a bullet that parses under a TRUNCATED id, which is pre-existing
+ * behavior identical before and after this fix. Both are generator artifacts.
+ * Everything the Blocker needs is downstream of the id: the space before `[`,
+ * the bracket interior, and the title. Returns null when fewer than two
+ * distinct positions were drawn.
+ */
+function wrapBoldLeadInMulti(line, id, seeds) {
+  const open = line.indexOf('**');
+  const close = line.indexOf('**', open + 2);
+  const start = open + 2 + id.length;
+  const span = close - start;
+  if (span < 2) return null;
+
+  const cuts = [...new Set(seeds.map((seed) => start + (seed % span)))]
+    .sort((a, b) => b - a);
+  if (cuts.length < 2) return null;
+
+  // Highest index first, so each break leaves the earlier indices valid.
+  let out = line;
+  for (const at of cuts) {
+    const drop = out[at] === ' ' ? 1 : 0;
+    out = `${out.slice(0, at)}\n  ${out.slice(at + drop)}`;
+  }
+  return out;
+}
+
 const inBlock = (body) => ['<decisions>', body, '</decisions>'].join('\n');
 
 describe('#3939 properties: a wrapped bold lead-in parses like the one-line bullet', () => {
@@ -2054,6 +2108,57 @@ describe('#3939 properties: a wrapped bold lead-in parses like the one-line bull
           }
           assert.deepStrictEqual(wrapped, oneLine,
             `A wrap that DOES parse must parse exactly like the one-line bullet — tags and trackable included.\nONE-LINE: ${JSON.stringify(line)} → ${JSON.stringify(oneLine)}\nWRAPPED:  ${JSON.stringify(wrappedLine)} → ${JSON.stringify(wrapped)}`);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('property: the same holds when the lead-in wraps at two or more points', (t) => {
+    // #3953 review (Blocker): the splice guard was armed only from the bullet's
+    // FIRST physical line, so a `[` that opened on a later absorbed segment left
+    // it a no-op — `- **D-01` / `[inform` / `ational]: …**` yielded
+    // tags `['inform ational']`, trackable `true`, where the one-line form gives
+    // `['informational']`, trackable `false`. A silently wrong coverage-gate
+    // answer, with no thrown error and no parse-miss to signal it.
+    //
+    // Every generator above wraps at exactly one point (`wrapBoldLeadIn` inserts
+    // a single `\n`), which is why three review rounds and the property suite all
+    // missed it. This one wraps at two or more, so the bracket-opens-later state
+    // is reachable, and asserts the SAME disjunction: parse identically to the
+    // one-line bullet, or fail loud with nothing extracted.
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    t.after(() => { console.warn = originalWarn; });
+
+    const tagTokenArb = fc.constantFrom(
+      'informational', 'deferred', 'folded', 'carried', 'deferred to phase 3',
+    );
+
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...Object.keys(BULLET_FORMS)),
+        decisionIdArb,
+        fc.array(tagTokenArb, { minLength: 1, maxLength: 3 }),
+        proseArb(2, 6),
+        proseArb(1, 4),
+        fc.array(fc.nat(), { minLength: 2, maxLength: 4 }),
+        (form, id, tagTokens, title, body, seeds) => {
+          const tags = ` [${tagTokens.join(', ')}]`;
+          const line = renderBullet(form, id, tags, title, body);
+          const wrappedLine = wrapBoldLeadInMulti(line, id, seeds);
+          if (wrappedLine === null) return true;
+
+          const oneLine = extractDecisions(inBlock(line));
+          const wrapped = extractDecisions(inBlock(wrappedLine));
+
+          if (wrapped.decisions.length === 0) {
+            assert.strictEqual(wrapped.outcome, 'could-not-parse',
+              `Extracting nothing must be the fail-loud outcome, never a silent pass. line=${JSON.stringify(wrappedLine)} → ${JSON.stringify(wrapped)}`);
+            return true;
+          }
+          assert.deepStrictEqual(wrapped, oneLine,
+            `A multi-wrap that DOES parse must parse exactly like the one-line bullet — tags and trackable included.\nONE-LINE: ${JSON.stringify(line)} → ${JSON.stringify(oneLine)}\nWRAPPED:  ${JSON.stringify(wrappedLine)} → ${JSON.stringify(wrapped)}`);
           return true;
         },
       ),

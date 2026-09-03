@@ -158,15 +158,27 @@ const decisionBulletStartRe = /^\s*-\s+\*\*D-/;
 const blockConstructRe = /^(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|>\s|\|)/;
 
 /**
- * The declaration line ends while the OPTIONAL `[tags]` bracket that sits
- * immediately after the decision id is still open. Capture group 1 is the
- * bracket content seen so far.
+ * The id-adjacent `[tags]` REGION of a logical bullet, as far as it has been
+ * assembled. Matching means the region is still unsettled, in one of two ways:
+ * capture group 1 is present when the bracket is open (group 1 is the content
+ * seen so far), and absent when the id has been read but no `[` has followed
+ * yet — so a bracket may still open on the next absorbed line.
+ *
+ * A NON-match means the region is settled for good: the bracket closed, or
+ * something other than `[` followed the id. Either way the join no longer has
+ * to watch for a splice.
+ *
+ * The id character class is deliberately looser than the grammars' (it admits
+ * an empty id, so a bare `- **D-` still counts as unsettled). This regex only
+ * answers "may an id-adjacent bracket still open here?", where recognising MORE
+ * shapes is the conservative direction: an over-broad match can only make a
+ * malformed bullet fail loud, while a missed one silently re-classifies.
  *
  * Only the ID-ADJACENT bracket matters: that is the one the three grammars turn
  * into `tags` (and therefore into `trackable`). A `[` further along the title is
  * ordinary text and does not restrict the join.
  */
-const tagBracketOpenAtEolRe = /^\s*-\s+\*\*D-[A-Za-z0-9][A-Za-z0-9_-]*\s*\[([^\]]*)$/;
+const tagRegionRe = /^\s*-\s+\*\*D-[A-Za-z0-9_-]*\s*(?:\[([^\]]*))?$/;
 
 /**
  * #3939 (review): would folding `next` onto a lead-in whose `[tags]` bracket is
@@ -253,9 +265,21 @@ function joinWrappedBoldLeadIns(lines: string[]): string[] {
     // long unterminated run linear on the plan gate's hot path.
     const segments = [line];
     // Bracket content accumulated while the id-adjacent `[tags]` bracket is
-    // still open; null once it has closed (or never opened). O(1) per segment.
-    const tagOpen = tagBracketOpenAtEolRe.exec(line);
-    let tagTail: string | null = tagOpen === null ? null : tagOpen[1];
+    // still open; null when it is not open. O(1) per segment.
+    let tagTail: string | null = null;
+    // The logical text assembled so far, kept ONLY while the id-adjacent
+    // bracket has yet to open, so a bracket that opens on ANY absorbed line
+    // arms the splice guard — not just one that opens on the declaration line.
+    // Null once the region settles (the bracket opened and `tagTail` took over,
+    // or the id was followed by something else), so this never re-walks a long
+    // absorption: a non-empty segment that is not a bracket-open settles the
+    // region immediately, which bounds the string to a single extra join.
+    let tagRegion: string | null = null;
+    const declRegion = tagRegionRe.exec(line);
+    if (declRegion !== null) {
+      if (declRegion[1] === undefined) tagRegion = line;
+      else tagTail = declRegion[1];
+    }
     let scan = i + 1;
     let closed = false;
     while (scan < lines.length) {
@@ -266,6 +290,14 @@ function joinWrappedBoldLeadIns(lines: string[]): string[] {
       scan += 1;
       if (tagTail !== null) {
         tagTail = trimmed.indexOf(']') === -1 ? trimmed : null;
+      } else if (tagRegion !== null) {
+        tagRegion = `${tagRegion} ${trimmed}`;
+        const opened = tagRegionRe.exec(tagRegion);
+        if (opened === null) tagRegion = null;
+        else if (opened[1] !== undefined) {
+          tagTail = opened[1];
+          tagRegion = null;
+        }
       }
       if (trimmed.indexOf('**') !== -1) {
         closed = true;
