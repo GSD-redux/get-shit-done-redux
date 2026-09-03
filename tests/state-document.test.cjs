@@ -132,6 +132,95 @@ describe('stateReplaceField — CRLF (#2880)', () => {
   });
 });
 
+// #4010: when a STATE.md body field is empty, the label-to-value gap `\s*` in
+// stateReplaceField's bold/plain patterns crossed the newline and `(.*)` ate the
+// following line, which the rebuild then discarded — silent data-loss. The fix
+// confines the gap to same-line whitespace (`[ \t]*`, mirroring the already-
+// correct read side at stateExtractField) and pins the separator to a single
+// space when the label line had none (no glued `**Status:**value`). These assert
+// the EXACT output so the glued shape cannot pass (ADR-3180 §7.7 same-line owner).
+describe('stateReplaceField — empty field preserves the following line (#4010)', () => {
+  test('bold empty field: value lands on the label line, next line survives, no glue', () => {
+    const input = '**Status:**\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('plain empty field: value lands on the label line, next line survives, no glue', () => {
+    const input = 'Status:\nCurrent Plan: 2 of 5';
+    const expected = 'Status: Executing Phase 5\nCurrent Plan: 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('bold empty field on a CRLF document preserves the following line', () => {
+    const input = '**Status:**\r\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\r\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('plain empty field on a CRLF document preserves the following line', () => {
+    const input = 'Status:\r\nCurrent Plan: 2 of 5';
+    const expected = 'Status: Executing Phase 5\r\nCurrent Plan: 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('non-empty bold field stays byte-identical to prior behaviour', () => {
+    const input = '**Status:** Planning\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  // Boundary: a NON-EMPTY field written with no label-to-value separator at all
+  // (a hand-edited `**Status:**Planning`). The narrowed `[ \t]*` gap captures
+  // nothing, so joinFieldReplacement synthesizes a single space — an intentional
+  // normalization, NOT byte-identical to the pre-fix glued output. Pins that the
+  // following line still survives and exactly one space is inserted, matching the
+  // scoped byte-identity claim in joinFieldReplacement's JSDoc. (#4010)
+  test('non-empty bold field with no separator gains one inserted space, next line survives', () => {
+    const input = '**Status:**Planning\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('E2E: transitionCore update of an empty field preserves the next line (ADR-3180 Decision 4(c))', () => {
+    const { transitionCore } = require('../gsd-core/bin/lib/state-transition.cjs');
+    const content = '## Current Position\n\n**Status:**\n**Current Plan:** 2 of 5';
+    const result = transitionCore(content, { kind: 'update', field: 'Status', value: 'Executing Phase 5' });
+    assert.equal(result.content, '## Current Position\n\n**Status:** Executing Phase 5\n**Current Plan:** 2 of 5');
+    assert.deepEqual(result.updated, ['Status']);
+  });
+
+  // Boundary: an empty field that is the LAST line (no following line at all).
+  // `.*` matches the empty tail with no newline to cross, so the value simply
+  // lands on the label line — nothing beyond it to preserve or corrupt.
+  test('bold empty field at end-of-document (no following line) gets the value on its line', () => {
+    assert.equal(stateReplaceField('**Status:**', 'Status', 'Executing Phase 5'), '**Status:** Executing Phase 5');
+  });
+
+  test('plain empty field at end-of-document (no following line) gets the value on its line', () => {
+    assert.equal(stateReplaceField('Status:', 'Status', 'Executing Phase 5'), 'Status: Executing Phase 5');
+  });
+
+  // Boundary: two consecutive empty fields. Only the targeted label line takes
+  // the value; the adjacent empty field's line must survive untouched (the read
+  // side matches the FIRST label, so the second empty field cannot be swallowed).
+  test('two consecutive empty fields: only the target is filled, the other empty field survives', () => {
+    const input = '**Status:**\n**Current Plan:**\n**Progress:** 3 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:**\n**Progress:** 3 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  // Boundary: an EMPTY new value on an empty field. joinFieldReplacement's
+  // needsSeparator branch must NOT synthesize a trailing space (value.length is
+  // 0), so the label line is left as the bare `**Status:**` and the following
+  // line is still preserved — no dangling separator, no line eaten.
+  test('empty new value on an empty field leaves a bare label and preserves the following line', () => {
+    const input = '**Status:**\n**Current Plan:** 2 of 5';
+    const expected = '**Status:**\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', ''), expected);
+  });
+});
+
 describe('stateExtractField (#2880)', () => {
   test('extracts from a two-cell row', () => {
     const input = '| Current Phase | 3 |';
@@ -222,6 +311,66 @@ describe('property: bounded mutation (#2880, ADR-2143 §4)', () => {
         },
       ),
       { seed: 20880, numRuns: 200 },
+    );
+  });
+});
+
+// The #4010 regression was, at heart, a line-boundary violation: replacing a
+// field crossed a newline and destroyed an adjacent line. This property pins the
+// invariant that guards it directly on the bold/plain branches (and the new
+// joinFieldReplacement helper) this fix touches: for any field name, any values
+// (including empty fields), and any new value, replacing one field changes ONLY
+// that field's line and never alters the total line count. (#4010)
+describe('property: bold/plain field replacement stays within its own line (#4010)', () => {
+  test('replacing a bold or plain field changes only the target line and never the line count', () => {
+    const safeValue = fc
+      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789 '.split('')), {
+        minLength: 0,
+        maxLength: 8,
+      })
+      .map((chars) => chars.join('').replace(/^ +| +$/g, '')); // trim; may be ''
+
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 6 }).chain((n) =>
+          fc.record({
+            n: fc.constant(n),
+            bold: fc.boolean(),
+            values: fc.array(safeValue, { minLength: n, maxLength: n }),
+            targetIndex: fc.integer({ min: 0, max: n - 1 }),
+            newValue: safeValue,
+          }),
+        ),
+        ({ n, bold, values, targetIndex, newValue }) => {
+          // Distinct single-digit names (Field0..Field5) so no field label is a
+          // prefix of another, and values (alphanumeric+space) can never contain
+          // a `:`/`*`, so the only line matching the target pattern is its own.
+          const fieldNames = Array.from({ length: n }, (_, i) => `Field${i}`);
+          const lines = fieldNames.map((name, i) => {
+            const label = bold ? `**${name}:**` : `${name}:`;
+            return values[i] === '' ? label : `${label} ${values[i]}`;
+          });
+          const doc = lines.join('\n');
+
+          const result = stateReplaceField(doc, fieldNames[targetIndex], newValue);
+          assert.notEqual(result, null);
+
+          const resultLines = result.split('\n');
+          // Core #4010 guarantee: no line eaten, none added — neighbours survive.
+          assert.equal(resultLines.length, lines.length);
+          for (let i = 0; i < lines.length; i++) {
+            if (i === targetIndex) continue;
+            assert.equal(resultLines[i], lines[i]);
+          }
+          // The target line still opens with its label and gained no newline.
+          const label = bold ? `**${fieldNames[targetIndex]}:**` : `${fieldNames[targetIndex]}:`;
+          assert.ok(
+            resultLines[targetIndex].startsWith(label),
+            `target line lost its label: ${JSON.stringify(resultLines[targetIndex])}`,
+          );
+        },
+      ),
+      { seed: 40100, numRuns: 300 },
     );
   });
 });

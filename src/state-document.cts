@@ -524,17 +524,43 @@ export function stateCurrentPositionSlice(body: string): string | null {
   return section ? section.body : null;
 }
 
+/**
+ * Join a matched `**Field:**`/`Field:` label prefix to its new value, inserting a
+ * single space when the prefix does not already end in same-line whitespace.
+ *
+ * On an empty field the same-line `[ \t]*` gap (below) captures nothing, so the
+ * bare `prefix + value` would glue the value to the label (`**Status:**value`);
+ * this inserts the missing separator. A non-empty field whose label-to-value
+ * separator is ordinary space/tab keeps that separator in the prefix, so `[ \t]$`
+ * is true and the output stays byte-identical to prior behaviour. The one
+ * exception is a non-empty field written with NO separator at all (a hand-edited
+ * `**Status:**value`): the narrowed gap captures nothing, `[ \t]$` is false, and a
+ * single space is inserted — an intentional normalization, not byte-identical, and
+ * with no GSD-template trigger. An empty new value inserts no separator, avoiding a
+ * dangling trailing space. See #4010.
+ */
+function joinFieldReplacement(prefix: string, newValue: string): string {
+  const value = `${newValue}`;
+  const needsSeparator = value.length > 0 && !/[ \t]$/.test(prefix);
+  return `${prefix}${needsSeparator ? ' ' : ''}${value}`;
+}
+
 export function stateReplaceField(content: string, fieldName: string, newValue: string): string | null {
   const escaped = escapeRegex(fieldName);
   // Bold inline format: **FieldName:** value
-  const boldPattern = new RegExp(`(\\*\\*${escaped}:\\*\\*\\s*)(.*)`, 'i');
+  // The label-to-value gap is same-line whitespace only (`[ \t]*`, mirroring the
+  // read side at stateExtractField). `\s*` here matched `\n`, so on an empty field
+  // `(.*)` captured the following line and the rebuild discarded it — the #4010
+  // data-loss. ADR-3180 §7.7 makes stateExtractField the same-line-confined owner;
+  // this aligns the writer to it.
+  const boldPattern = new RegExp(`(\\*\\*${escaped}:\\*\\*[ \\t]*)(.*)`, 'i');
   if (boldPattern.test(content)) {
-    return content.replace(boldPattern, (_match, prefix: string) => `${prefix}${newValue}`);
+    return content.replace(boldPattern, (_match, prefix: string) => joinFieldReplacement(prefix, newValue));
   }
-  // Plain line-start format: FieldName: value
-  const plainPattern = new RegExp(`(^${escaped}:\\s*)(.*)`, 'im');
+  // Plain line-start format: FieldName: value (same same-line confinement as above)
+  const plainPattern = new RegExp(`(^${escaped}:[ \\t]*)(.*)`, 'im');
   if (plainPattern.test(content)) {
-    return content.replace(plainPattern, (_match, prefix: string) => `${prefix}${newValue}`);
+    return content.replace(plainPattern, (_match, prefix: string) => joinFieldReplacement(prefix, newValue));
   }
   // Pipe-table format: | FieldName | value |
   // Preserve the surrounding pipe/whitespace structure; only swap the value cell.
