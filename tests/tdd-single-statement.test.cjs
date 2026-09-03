@@ -27,7 +27,7 @@ describe('#3990 — one statement of the cycle', () => {
     const tdd = read('gsd-core/references/tdd.md');
     assert.ok(/## Red-Green-Refactor Cycle/.test(tdd),
       'tdd.md carries the canonical Red-Green-Refactor Cycle section');
-    assert.ok(/commit: `test\(\{phase\}-\{plan\}\)/.test(tdd) && /commit: `feat\(\{phase\}-\{plan\}\)/.test(tdd),
+    assert.ok(/Commit: `test\(\{phase\}-\{plan\}\)/.test(tdd) && /Commit: `feat\(\{phase\}-\{plan\}\)/.test(tdd),
       'the canonical section carries the commit-scope contract');
   });
 
@@ -51,10 +51,12 @@ describe('#3990 — one statement of the cycle', () => {
     const main = read('gsd-core/workflows/execute-phase.md');
     const wt = read('gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md');
     for (const [name, text] of [['execute-phase.md', main], ['executor-isolation-dispatch.md', wt]]) {
-      const line = text.split('\n').find((l) => /references\/tdd\.md|^- tdd\.md/.test(l));
-      assert.ok(line, `${name} still lists tdd.md`);
-      assert.ok(/\?/.test(line) && /TDD/.test(line),
-        `${name}'s tdd.md entry must be conditional on the dispatch being TDD (#3990), got: ${line.trim()}`);
+      // The LIST entry line — not any prose line that mentions tdd.md (the TDD
+      // gate's own prose cites it too).
+      const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE/.test(l));
+      assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
+      assert.ok(/TDD_APPLICABLE \?/.test(line),
+        `${name}'s tdd.md entry must be conditional on TDD_APPLICABLE (#3990), got: ${line.trim()}`);
     }
   });
 });
