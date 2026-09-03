@@ -247,3 +247,208 @@ describe('dispatchReviewerLanes — capability-neutral (no capability id in the 
     assert.equal(invoke.calls.length, 2);
   });
 });
+
+// ─── fail-closed: explicit unavailability never narrows the requested set ──
+
+describe('dispatchReviewerLanes — fail-closed: explicit lane unavailable', () => {
+  test('one unavailable explicit lane still runs the OTHER resolved lane, but the aggregate is failed', async () => {
+    const lanes = new Map([['claude', fakeLane('claude')]]);
+    const plan = spy((lane) => okPlan(lane.slug));
+    const invoke = spy(() => ({ ok: true }));
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'ghost'], detected: ['claude'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile: noopWrite },
+    );
+
+    // The unavailable lane never reaches plan/invoke — only the resolved one does.
+    assert.equal(plan.calls.length, 1);
+    assert.equal(invoke.calls.length, 1);
+    assert.equal(plan.calls[0][0].slug, 'claude');
+
+    // "Never claim a complete external set": the successful lane's result is kept...
+    assert.equal(result.dispatched, true);
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].slug, 'claude');
+    assert.equal(result.results[0].ok, true);
+    // ...but the aggregate must not read as a clean success.
+    assert.equal(result.ok, false);
+    assert.ok(result.selection.errors.some((e) => e.includes('ghost')));
+  });
+
+  test('every explicit lane unavailable dispatches nothing, distinct from the plain no-flags case', async () => {
+    const plan = spy(() => { throw new Error('must not be called'); });
+    const invoke = spy(() => { throw new Error('must not be called'); });
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['ghost'], detected: [] } }),
+      { plan, invoke },
+    );
+
+    assert.equal(plan.calls.length, 0);
+    assert.equal(invoke.calls.length, 0);
+    assert.equal(result.dispatched, false);
+    assert.equal(result.ok, false); // NOT the same "ok: true" no-flags-passed inert case
+    assert.equal(result.reason, DISPATCH_REASON.SELECTION_FAILED);
+  });
+});
+
+// ─── fail-closed: per-lane plan/invoke failures never cancel siblings ──────
+
+describe('dispatchReviewerLanes — fail-closed: per-lane plan/invoke failure', () => {
+  test('one lane failing to plan does not stop the sibling from being planned and invoked', async () => {
+    const lanes = new Map([
+      ['claude', fakeLane('claude')],
+      ['codex', fakeLane('codex')],
+    ]);
+    const plan = spy((lane) => (
+      lane.slug === 'codex'
+        ? { ok: false, reason: 'missing_binary', detail: 'codex not on PATH', warnings: [] }
+        : okPlan(lane.slug)
+    ));
+    const invoke = spy(() => ({ ok: true }));
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile: noopWrite },
+    );
+
+    assert.equal(plan.calls.length, 2);
+    assert.equal(invoke.calls.length, 1); // never invoked for the lane whose plan failed
+    assert.equal(invoke.calls[0][0].slug, 'claude');
+
+    assert.equal(result.ok, false);
+    const bySlug = Object.fromEntries(result.results.map((r) => [r.slug, r]));
+    assert.equal(bySlug.claude.ok, true);
+    assert.equal(bySlug.codex.ok, false);
+    assert.equal(bySlug.codex.reason, 'missing_binary');
+  });
+
+  test('one lane failing to invoke does not cancel or discard the sibling that succeeded', async () => {
+    const lanes = new Map([
+      ['claude', fakeLane('claude')],
+      ['codex', fakeLane('codex')],
+    ]);
+    const plan = spy((lane) => okPlan(lane.slug));
+    const invoke = spy((lane) => (
+      lane.slug === 'codex'
+        ? { ok: false, reason: 'probe_failed', detail: 'codex exited 1' }
+        : { ok: true, reviewPath: `${RUN_DIR}/gsd-review-claude.md` }
+    ));
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile: noopWrite },
+    );
+
+    assert.equal(plan.calls.length, 2);
+    assert.equal(invoke.calls.length, 2);
+    assert.equal(result.ok, false);
+    const bySlug = Object.fromEntries(result.results.map((r) => [r.slug, r]));
+    assert.equal(bySlug.claude.ok, true);
+    assert.equal(bySlug.claude.reviewPath, `${RUN_DIR}/gsd-review-claude.md`);
+    assert.equal(bySlug.codex.ok, false);
+    assert.equal(bySlug.codex.reason, 'probe_failed');
+  });
+});
+
+// ─── fail-closed: request-level validation halts BEFORE any lane runs ──────
+
+describe('dispatchReviewerLanes — fail-closed: unsafe/incomplete request halts before invocation', () => {
+  const cases = [
+    {
+      name: 'path traversal (..) escaping repoRoot',
+      overrides: { paths: ['../../etc/passwd'] },
+      reason: DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT,
+    },
+    {
+      name: 'absolute path outside repoRoot',
+      overrides: { paths: ['/etc/passwd'] },
+      reason: DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT,
+    },
+    {
+      name: 'empty paths array',
+      overrides: { paths: [] },
+      reason: DISPATCH_REASON.INVALID_PATHS,
+    },
+    {
+      name: 'non-string path element',
+      overrides: { paths: [42] },
+      reason: DISPATCH_REASON.INVALID_PATHS,
+    },
+    {
+      name: 'missing depth',
+      overrides: { depth: '' },
+      reason: DISPATCH_REASON.MISSING_PROVENANCE,
+    },
+    {
+      name: 'missing base SHA',
+      overrides: { baseSha: '' },
+      reason: DISPATCH_REASON.MISSING_PROVENANCE,
+    },
+  ];
+
+  for (const { name, overrides, reason } of cases) {
+    test(`${name} halts the whole dispatch before any plan/invoke call`, async () => {
+      const plan = spy(() => { throw new Error('must not be called'); });
+      const invoke = spy(() => { throw new Error('must not be called'); });
+
+      const result = await dispatchReviewerLanes(
+        baseInput(overrides),
+        { plan, invoke },
+      );
+
+      assert.equal(plan.calls.length, 0);
+      assert.equal(invoke.calls.length, 0);
+      assert.equal(result.dispatched, false);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, reason);
+    });
+  }
+});
+
+// ─── fail-closed: per-lane budget overflow stops that lane before invoke ───
+
+describe('dispatchReviewerLanes — fail-closed: budget overflow', () => {
+  test('a lane whose resolved budget the prompt exceeds hard-fails before invoke; the sibling still runs', async () => {
+    const lanes = new Map([
+      ['claude', fakeLane('claude', { promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.claude' })],
+      ['codex', fakeLane('codex', { promptBudgetKey: null })], // unbounded
+    ]);
+    const plan = spy((lane) => okPlan(lane.slug));
+    const invoke = spy(() => ({ ok: true }));
+    const configGet = (key) => (
+      key === 'review.max_prompt_tokens_per_reviewer.claude' ? 5 : undefined
+    );
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, configGet, writePromptFile: noopWrite },
+    );
+
+    assert.equal(plan.calls.length, 2); // both were planned
+    assert.equal(invoke.calls.length, 1); // only the unbounded lane was invoked
+    assert.equal(invoke.calls[0][0].slug, 'codex');
+
+    assert.equal(result.ok, false);
+    const bySlug = Object.fromEntries(result.results.map((r) => [r.slug, r]));
+    assert.equal(bySlug.claude.ok, false);
+    assert.equal(bySlug.claude.reason, 'budget_exceeded');
+    assert.equal(bySlug.codex.ok, true);
+  });
+
+  test('budget 0 means unbounded (no hard-fail), mirroring the existing review-lane budgetFor convention', async () => {
+    const lanes = new Map([['claude', fakeLane('claude', { promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.claude' })]]);
+    const plan = spy((lane) => okPlan(lane.slug));
+    const invoke = spy(() => ({ ok: true }));
+    const configGet = (key) => (key === 'review.max_prompt_tokens_per_reviewer.claude' ? 0 : undefined);
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude'], detected: ['claude'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, configGet, writePromptFile: noopWrite },
+    );
+
+    assert.equal(invoke.calls.length, 1);
+    assert.equal(result.ok, true);
+  });
+});
