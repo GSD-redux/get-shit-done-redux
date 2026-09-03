@@ -668,13 +668,7 @@ If `valid != true`, refuse to verify. Surface the discrepancy and ask the user t
 
 **ALWAYS use the Write tool to create files** — never use `Bash(cat << 'EOF')` or heredoc commands for file creation.
 
-**Compute the covered-input fingerprint first (#4155).** List every input this report's verdict actually covers — the phase's PLAN/SUMMARY files, mapped requirements, and every implementation file in the verified change set — as paths relative to the project root. Then run:
-
-```bash
-gsd_run query verification.fingerprint {phaseDir} {covered-file-1} {covered-file-2} ...
-```
-
-This is a deterministic digest computation, not something to estimate — never hand-write `covered_digest`. Copy the command's `covered_files` and `covered_digest` output values verbatim into the frontmatter below. A report with these two fields omitted falls back to the pre-#4155 SUMMARY-mtime staleness check; every new report emits them.
+**#4155:** run `gsd_run query verification.fingerprint {phaseDir} {covered-file}...` (PLAN/SUMMARY/requirement/impl paths) and copy its output into frontmatter — never hand-write `covered_digest`.
 
 Create `.planning/phases/{phase_dir}/{phase_num}-VERIFICATION.md`:
 
@@ -684,11 +678,8 @@ phase: XX-name
 verified: YYYY-MM-DDTHH:MM:SSZ
 status: passed | gaps_found | human_needed
 score: N/M must-haves verified
-covered_files: # #4155 — from verification.fingerprint's covered_files output
-  - .planning/phases/XX-name/{phase_num}-{plan}-PLAN.md
-  - .planning/phases/XX-name/{phase_num}-{plan}-SUMMARY.md
-  - src/{changed-file}.cts
-covered_digest: "v1:sha256:{digest from verification.fingerprint}"
+covered_files: [from verification.fingerprint] # #4155
+covered_digest: "v1:sha256:..." # #4155
 behavior_unverified: 0 # Count of ⚠️ PRESENT_BEHAVIOR_UNVERIFIED truths (present + wired, behavior not exercised); each is detailed in behavior_unverified_items below (and in human_verification when status is human_needed)
 overrides_applied: 0 # Count of PASSED (override) items included in score
 overrides: # Only if overrides exist — carried forward or newly added
@@ -948,7 +939,6 @@ return <div>No messages</div>  // Always shows "no messages"
 - [ ] Gaps structured in YAML frontmatter (if gaps_found)
 - [ ] Deferred items structured in YAML frontmatter (if deferred items exist)
 - [ ] Re-verification metadata included (if previous existed)
-- [ ] covered_files/covered_digest computed via `verification.fingerprint` and included (#4155)
 - [ ] VERIFICATION.md created with complete report
 - [ ] Results returned to orchestrator (NOT committed)
 </success_criteria>
