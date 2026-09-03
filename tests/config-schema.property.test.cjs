@@ -1097,10 +1097,16 @@ describe('feat-3210: workflow and config contracts', () => {
 
   test('config-set accepts code_quality.fallow keys', () => {
     const originalTmpDir = process.env.TMPDIR;
+    const originalTemp = process.env.TEMP;
+    const originalTmp = process.env.TMP;
     // L2: fail loudly if no writable tmp dir is found (was silent skip)
     const writableTmp = getWritableTmp(); // N2: use shared helper
     assert.ok(writableTmp, 'no writable tmp directory found'); // L2: explicit fail-loud assertion
+    // #4220 class: os.tmpdir() never reads TMPDIR on Windows (only TEMP, then
+    // TMP), so redirecting only TMPDIR silently no-ops there — set all three.
     process.env.TMPDIR = writableTmp;
+    process.env.TEMP = writableTmp;
+    process.env.TMP = writableTmp;
     const tmpDir = createTempProject('gsd-fallow-config-');
     try {
       const cases = [
@@ -1117,6 +1123,10 @@ describe('feat-3210: workflow and config contracts', () => {
       cleanup(tmpDir);
       if (originalTmpDir === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = originalTmpDir;
+      if (originalTemp === undefined) delete process.env.TEMP;
+      else process.env.TEMP = originalTemp;
+      if (originalTmp === undefined) delete process.env.TMP;
+      else process.env.TMP = originalTmp;
     }
   });
 
