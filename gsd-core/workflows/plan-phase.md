@@ -1284,7 +1284,11 @@ if ! CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_converg
   exit 1
 fi
 REVIEWS_FILE="${REVIEWS_PATH}"
-if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ ! -f "${REVIEWS_FILE}" ]; then
+# #3916: a phase's first-ever revision cycle can hit REVISION_CONFLICT before any REVIEWS.md
+# exists — REVIEWS_PATH is then legitimately empty, not a corrupt/deleted file. Only hard-block
+# when a path WAS resolved but isn't a regular file; an empty path just means "nothing to persist
+# into yet" and falls through to the shared Conflict Return protocol without this record channel.
+if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ] && [ ! -f "${REVIEWS_FILE}" ]; then
   echo "BLOCKED: cannot persist plan-revision conflict because REVIEWS_PATH is not a regular file: ${REVIEWS_FILE}" >&2
   exit 1
 fi

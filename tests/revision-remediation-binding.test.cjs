@@ -652,6 +652,10 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'a second glob lookup can select a different review artifact');
     assert.match(flat(PLAN_PHASE), /CONVERGENCE_ENABLED.*true.*\[ ! -f "\$\{REVIEWS_FILE\}" \].*BLOCKED: cannot persist plan-revision conflict/i,
       'enabled persistence must fail closed unless REVIEWS_PATH is a regular file');
+    // #3916: a phase's FIRST revision cycle can hit REVISION_CONFLICT before any REVIEWS.md
+    // exists, so REVIEWS_PATH is legitimately empty there — that must not hard-block the return.
+    assert.match(flat(PLAN_PHASE), /CONVERGENCE_ENABLED.*true.*\[ -n "\$\{REVIEWS_FILE\}" \].*\[ ! -f "\$\{REVIEWS_FILE\}" \].*BLOCKED: cannot persist plan-revision conflict/i,
+      'the hard-block must require a NON-EMPTY REVIEWS_FILE, or a brand-new phase with no reviews yet can never return a conflict at all');
     assert.match(flat(PLAN_PHASE), /plan-phase wrote the line, so plan-phase closes it/,
       'closure must have exactly one named owner, or a line can be orphaned open');
     assert.match(flat(REVISION_LOOP), /never invokes `\/gsd:plan-review-convergence`/,
