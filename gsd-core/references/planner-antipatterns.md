@@ -249,7 +249,7 @@ The external reviewer spends its first pass on a diff the plan already expects t
 Wave 1: Run internal review
 Wave 2: Apply accepted fixes
 Wave 3: If applicable, re-check the open-time property; then immediately open PR
-Wave 4+: Run post-open CI, external review, changeset, and tracking work
+Wave 4+: Run post-open CI, external review, and tracking work
 ```
 
 Nothing may intervene between an applicable re-check and the open. Post-open work may follow; "immediately" constrains only that gap. Opening-time properties do not justify an early PR.

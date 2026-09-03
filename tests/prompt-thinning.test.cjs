@@ -83,7 +83,7 @@ describe('prompt thinning — sub-200K context window support (#1978)', () => {
       // Directionality fixture (#4107): an inverted-order sentence — PR opens
       // first, fixes land after — must fail the ordering-sensitive assertion
       // above. Proves the regex tests sequence, not mere keyword co-occurrence.
-      const invertedOrdering = 'Open the PR immediately, then schedule the accepted internal-review fixes afterward.';
+      const invertedOrdering = 'Open the PR before scheduling the accepted internal-review fixes.';
       assert.doesNotMatch(invertedOrdering, /accepted internal-review fixes[^.]*before[^.]*open/i);
       assert.match(assignWaves, /planner-antipatterns\.md \("External Review Before PR Open \(#4107\)"\)/);
 
@@ -95,7 +95,7 @@ describe('prompt thinning — sub-200K context window support (#1978)', () => {
       assert.match(example, /post-open work may follow/i);
       // Directionality fixture: a Good section that opens the PR before
       // internal review must fail the "Good" assertion above.
-      const invertedExample = 'Good:\nWave 1: Open PR immediately\nWave 2: Run internal review\nWave 3: Apply accepted fixes\n';
+      const invertedExample = 'Good:\nWave 1: If applicable, re-check the open-time property; then immediately open PR\nWave 2: Run internal review\nWave 3: Apply accepted fixes\n';
       assert.doesNotMatch(invertedExample, /Good[\s\S]*internal review[\s\S]*accepted fixes[\s\S]*if applicable[^\n]*re-check[^\n]*then immediately open PR/i);
     });
   });
