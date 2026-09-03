@@ -39,8 +39,8 @@ describe('#3968 — measured commit claims', () => {
     const verify = read('gsd-core/workflows/verify-work.md');
     assert.ok(verify.includes('Commit-claim reconciliation'),
       'verify-work must run a commit-claim reconciliation over each SUMMARY');
-    assert.ok(verify.includes('git rev-list --count'),
-      'the reconciliation compares the claimed count against rev-list');
+    assert.ok(/git (?:rev-list --count|log)/.test(verify.slice(verify.indexOf('Commit-claim reconciliation'), verify.indexOf('Commit-claim reconciliation') + 1800)),
+      'the reconciliation compares the claimed count against git');
     assert.ok(/BLOCKER/.test(verify.slice(verify.indexOf('Commit-claim reconciliation'), verify.indexOf('Commit-claim reconciliation') + 1800)),
       'a mismatch must be flagged BLOCKER — the phase must not read as done');
   });

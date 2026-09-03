@@ -670,7 +670,7 @@ changed code means the changes are sitting UNCOMMITTED in the working tree: **HA
 write the SUMMARY with a narrated count.** Surface the state (`git status --short`) and the
 failed/missing commit step in your return message so the orchestrator can recover the work.
 A measured `0` with NO code changes (docs-only/no-op plan) is legitimate — write it and move
-on. `/gsd-verify-work` cross-checks this number against git and flags a mismatch as a
+on. `/gsd:verify-work` cross-checks this number against git and flags a mismatch as a
 BLOCKER, so a narrated count will fail the phase later — measure it now.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
