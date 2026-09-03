@@ -123,8 +123,16 @@ const rule = {
       ) {
         return true;
       }
-      // Bare local helper: runNode(...)
-      if (callee.type === 'Identifier' && ENV_LOCAL_HELPER_NAMES.has(callee.name)) {
+      // Bare identifier: either a destructured child_process method
+      // (`const { spawnSync } = require('child_process'); spawnSync(...)`)
+      // or a local helper known to wrap one (`runNode(...)`). Matched by
+      // name only, same lightweight convention as this repo's other
+      // eslint-rules/*.cjs (e.g. no-hardcoded-tmp.cjs's isFsMethodCall) —
+      // no import/require data-flow tracing.
+      if (
+        callee.type === 'Identifier' &&
+        (ENV_LOCAL_HELPER_NAMES.has(callee.name) || ENV_CHILD_PROCESS_METHODS.has(callee.name))
+      ) {
         return true;
       }
       return false;
