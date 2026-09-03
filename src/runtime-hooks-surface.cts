@@ -644,7 +644,7 @@ interface BashRunnerOpts {
   existsSync?: (p: string) => boolean;
 }
 
-function resolveBashRunner(opts?: BashRunnerOpts): string | null {
+function resolveBashExecutable(opts?: BashRunnerOpts): string | null {
   const platform = (opts && opts.platform) || process.platform;
   if (platform !== 'win32') return 'bash';
 
@@ -660,11 +660,17 @@ function resolveBashRunner(opts?: BashRunnerOpts): string | null {
   }
 
   for (const candidate of candidates) {
-    if (candidate && exists(candidate)) {
-      return JSON.stringify(shellCmdProjection.posixNormalize(candidate));
-    }
+    if (candidate && exists(candidate)) return shellCmdProjection.posixNormalize(candidate);
   }
   return null;
+}
+
+function resolveBashRunner(opts?: BashRunnerOpts): string | null {
+  const executable = resolveBashExecutable(opts);
+  if (executable === null) return null;
+  return ((opts && opts.platform) || process.platform) === 'win32'
+    ? JSON.stringify(executable)
+    : executable;
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +937,7 @@ interface ReconcileResult {
   changed: boolean;
   wrote: boolean;
   path: string;
+  configuredEntrypoints?: ConfiguredEntrypoint[];
 }
 
 /**
@@ -1119,14 +1126,17 @@ interface ShimIR {
   render: { cmd: () => string };
 }
 
+function parseAbsoluteRunnerToken(absoluteRunnerToken: string): string {
+  try {
+    return JSON.parse(absoluteRunnerToken) as string;
+  } catch {
+    return absoluteRunnerToken;
+  }
+}
+
 function buildCodexHookWindowsShimIR(scriptAbsPath: string, absoluteRunnerToken: string | null): ShimIR | null {
   if (!absoluteRunnerToken) return null;
-  let interpreter: string;
-  try {
-    interpreter = JSON.parse(absoluteRunnerToken) as string;
-  } catch {
-    interpreter = absoluteRunnerToken;
-  }
+  const interpreter = parseAbsoluteRunnerToken(absoluteRunnerToken);
   const targetAbs = shellCmdProjection.posixNormalize(scriptAbsPath);
   const scriptQuoted = JSON.stringify(targetAbs);
   const cmdPath = scriptAbsPath.replace(/\.js$/, '.cmd');
@@ -1161,8 +1171,9 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
 
   const scriptPath = shellCmdProjection.posixNormalize(path.resolve(targetDir, 'hooks', 'gsd-check-update.js'));
   const cmdShimPath = scriptPath.replace(/\.js$/, '.cmd');
-
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
   let managedCommand: string | undefined;
+
   if (platform === 'win32') {
     const shimIR = buildCodexHookWindowsShimIR(scriptPath, absoluteRunner);
     if (!shimIR) return { changed: false, wrote: false, path: hooksJsonPath };
@@ -1178,6 +1189,10 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
       return { changed: false, wrote: false, path: hooksJsonPath };
     }
     managedCommand = shimIR.hookCommand;
+    configuredEntrypoints.push(
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform },
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath, interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)], platform },
+    );
   } else {
     managedCommand = projectManagedHookCommand({
       absoluteRunner,
@@ -1185,15 +1200,23 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
       runtime: 'codex',
       platform,
     }) ?? undefined;
+    if (managedCommand) {
+      configuredEntrypoints.push({
+        runtime: 'codex',
+        configPath: hooksJsonPath,
+        scriptPath,
+        interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)],
+        platform,
+      });
+    }
   }
 
   if (!managedCommand) return { changed: false, wrote: false, path: hooksJsonPath };
-
   const commandWindows = platform === 'win32'
     ? JSON.stringify(shellCmdProjection.posixNormalize(cmdShimPath))
     : undefined;
-
-  return reconcileCodexHooksJsonSessionStart(targetDir, { managedCommand, commandWindows });
+  const result = reconcileCodexHooksJsonSessionStart(targetDir, { managedCommand, commandWindows });
+  return { ...result, configuredEntrypoints };
 }
 
 // ---------------------------------------------------------------------------
@@ -1212,8 +1235,9 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
   if (!absoluteRunner) return { changed: false, wrote: false, path: hooksJsonPath };
 
   const scriptPath = shellCmdProjection.posixNormalize(path.resolve(targetDir, 'hooks', 'gsd-context-monitor.js'));
-
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
   let managedCommand: string | undefined;
+
   if (platform === 'win32') {
     const shimIR = buildCodexHookWindowsShimIR(scriptPath, absoluteRunner);
     if (!shimIR) return { changed: false, wrote: false, path: hooksJsonPath };
@@ -1228,6 +1252,10 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
       return { changed: false, wrote: false, path: hooksJsonPath };
     }
     managedCommand = shimIR.hookCommand;
+    configuredEntrypoints.push(
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform },
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath, interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)], platform },
+    );
   } else {
     managedCommand = projectManagedHookCommand({
       absoluteRunner,
@@ -1235,10 +1263,20 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
       runtime: 'codex',
       platform,
     }) ?? undefined;
+    if (managedCommand) {
+      configuredEntrypoints.push({
+        runtime: 'codex',
+        configPath: hooksJsonPath,
+        scriptPath,
+        interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)],
+        platform,
+      });
+    }
   }
 
   if (!managedCommand) return { changed: false, wrote: false, path: hooksJsonPath };
-  return reconcileCodexHooksJsonEvent(targetDir, eventName, { managedCommand, timeout: 10 });
+  const result = reconcileCodexHooksJsonEvent(targetDir, eventName, { managedCommand, timeout: 10 });
+  return { ...result, configuredEntrypoints };
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,7 +1437,68 @@ interface BuildHookCommandOpts {
   runtime?: string;
   hookShell?: string;
   env?: NodeJS.ProcessEnv;
+  execPath?: string;
   existsSync?: (p: string) => boolean;
+  configPath?: string;
+  configuredEntrypoints?: ConfiguredEntrypoint[];
+}
+
+function configuredEntrypointsForHook(
+  configDir: string,
+  hookName: string,
+  opts: BuildHookCommandOpts,
+): ConfiguredEntrypoint[] {
+  const platform = opts.platform || process.platform;
+  const runtime = opts.runtime || 'generic';
+  const configPath = opts.configPath || configDir;
+  const target: ConfiguredEntrypoint = {
+    runtime,
+    configPath,
+    scriptPath: path.join(configDir, 'hooks', hookName),
+    platform,
+  };
+  const isShellHook = hookName.endsWith('.sh');
+
+  if (shellHookOmitsBashRunner({ platform, runtime, isShellHook })) return [target];
+
+  const bash = resolveBashExecutable(opts);
+  if (isShellHook) {
+    return bash === null ? [target] : [{ ...target, interpreterCandidates: [bash] }];
+  }
+
+  const nodeCandidates = [
+    opts.execPath || process.execPath,
+    'node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  if (!opts.portableHooks) {
+    return [{ ...target, interpreterCandidates: nodeCandidates }];
+  }
+
+  const runner: ConfiguredEntrypoint = {
+    runtime,
+    configPath,
+    scriptPath: path.join(configDir, 'hooks', NODE_RUNNER_RESOLVER_HOOK),
+    interpreterCandidates: bash === null ? ['bash'] : [bash],
+    platform,
+  };
+  return [runner, { ...target, interpreterCandidates: nodeCandidates }];
+}
+
+function recordConfiguredHookCommand(
+  command: string | null,
+  configDir: string,
+  hookName: string,
+  opts: BuildHookCommandOpts,
+): string | null {
+  if (command && opts.configuredEntrypoints) {
+    opts.configuredEntrypoints.push(
+      ...configuredEntrypointsForHook(configDir, hookName, opts).map(entry => ({ ...entry, command })),
+    );
+  }
+  return command;
 }
 
 function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookCommandOpts): string | null {
@@ -1408,6 +1507,8 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
   const runtime = opts.runtime || 'generic';
   const hookShell = opts.hookShell;
   const isShellHook = hookName.endsWith('.sh');
+  const track = (command: string | null): string | null =>
+    recordConfiguredHookCommand(command, configDir, hookName, opts);
 
   if (shellHookOmitsBashRunner({ platform, runtime, isShellHook })) {
     if (opts.portableHooks) {
@@ -1415,9 +1516,9 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
         configDir,
         homeDir: os.homedir(),
       });
-      return JSON.stringify(`${portableBaseDir}/hooks/${hookName}`);
+      return track(JSON.stringify(`${portableBaseDir}/hooks/${hookName}`));
     }
-    return JSON.stringify(shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName);
+    return track(JSON.stringify(shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName));
   }
 
   // .sh hooks keep the pre-#3662 shape everywhere: the bash runner resolves
@@ -1432,23 +1533,23 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
         configDir,
         homeDir: os.homedir(),
       });
-      return projectManagedHookCommand({
+      return track(projectManagedHookCommand({
         absoluteRunner: runner,
         scriptPath: `${portableBaseDir}/hooks/${hookName}`,
         runtime: opts.runtime || 'generic',
         platform,
         hookShell,
-      });
+      }));
     }
 
     const hooksPath = shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName;
-    return projectManagedHookCommand({
+    return track(projectManagedHookCommand({
       absoluteRunner: runner,
       scriptPath: hooksPath,
       runtime,
       platform,
       hookShell,
-    });
+    }));
   }
 
   // JS hooks (#3662): the node runner is resolved at hook-fire time, never
@@ -1472,7 +1573,7 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
     // Absolute Git-Bash discovery on win32 when available (#580); `bash` on
     // PATH otherwise — the same assumption .sh hooks already make.
     const resolverRunner = resolveBashRunner(opts) || 'bash';
-    return shellCmdProjection.projectShellCommandText({
+    return track(shellCmdProjection.projectShellCommandText({
       runnerToken: resolverRunner,
       argTokens: [
         JSON.stringify(`${portableBaseDir}/hooks/${NODE_RUNNER_RESOLVER_HOOK}`),
@@ -1482,19 +1583,19 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
       runtime,
       platform,
       hookShell,
-    });
+    }));
   }
 
   const chainRunner = buildNodeRunnerChainToken(opts);
   if (chainRunner === null) return null;
   const hooksPath = shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName;
-  return shellCmdProjection.projectShellCommandText({
+  return track(shellCmdProjection.projectShellCommandText({
     runnerToken: chainRunner,
     argTokens: [JSON.stringify(hooksPath)],
     runtime,
     platform,
     hookShell,
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1858,7 +1959,7 @@ function stageTransitiveHookLibs(opts: {
   return staged;
 }
 
-function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursorHooksJsonOpts): { hooksJsonPath: string; changed: boolean } {
+function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursorHooksJsonOpts): { hooksJsonPath: string; changed: boolean; configuredEntrypoints: ConfiguredEntrypoint[] } {
   opts = opts || {};
   const hooksDir = path.join(targetDir, 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
@@ -1917,7 +2018,13 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
     ensureCommonJsMarker(hooksDir);
   }
 
-  const hookOpts: BuildHookCommandOpts = { runtime: 'cursor', platform: opts.platform || process.platform };
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
+  const hookOpts: BuildHookCommandOpts = {
+    runtime: 'cursor',
+    platform: opts.platform || process.platform,
+    configPath: path.join(targetDir, 'hooks.json'),
+    configuredEntrypoints,
+  };
   const commands: Record<string, string | null> = {};
   for (const ev of events) {
     const script = CURSOR_EVENT_SCRIPT_MAP[ev];
@@ -1931,7 +2038,7 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
 
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
   const result = reconcileCursorHooksJson(hooksJsonPath, managedEntries);
-  return { hooksJsonPath, changed: result.changed };
+  return { hooksJsonPath, changed: result.changed, configuredEntrypoints };
 }
 
 function removeCursorHooksJson(targetDir: string): { changed: boolean } {
@@ -2104,7 +2211,7 @@ interface WriteWindsurfHooksJsonOpts {
  * @param opts      - `{ platform? }`
  * @returns `{ hooksJsonPath, changed }`
  */
-function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWindsurfHooksJsonOpts): { hooksJsonPath: string; changed: boolean } {
+function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWindsurfHooksJsonOpts): { hooksJsonPath: string; changed: boolean; configuredEntrypoints: ConfiguredEntrypoint[] } {
   opts = opts || {};
   const hooksDir = path.join(targetDir, 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
@@ -2156,7 +2263,13 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
     ensureCommonJsMarker(hooksDir);
   }
 
-  const hookOpts: BuildHookCommandOpts = { runtime: 'windsurf', platform: opts.platform || process.platform };
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
+  const hookOpts: BuildHookCommandOpts = {
+    runtime: 'windsurf',
+    platform: opts.platform || process.platform,
+    configPath: path.join(targetDir, 'hooks.json'),
+    configuredEntrypoints,
+  };
   const commands: Record<string, string | null> = {};
   for (const ev of WINDSURF_HOOK_EVENTS) {
     const script = WINDSURF_EVENT_SCRIPT_MAP[ev];
@@ -2171,7 +2284,7 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
 
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
   const result = reconcileWindsurfHooksJson(hooksJsonPath, managedEntries);
-  return { hooksJsonPath, changed: result.changed };
+  return { hooksJsonPath, changed: result.changed, configuredEntrypoints };
 }
 
 /**
@@ -3152,30 +3265,38 @@ function writeKimiHooksToml(
   configPath: string,
   targetDir: string,
   opts: { hookOpts: BuildHookCommandOpts },
-): { changed: boolean; path: string; entryCount: number } {
+): { changed: boolean; path: string; entryCount: number; configuredEntrypoints: ConfiguredEntrypoint[] } {
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
+  const trackedOpts = {
+    hookOpts: {
+      ...opts.hookOpts,
+      configPath,
+      configuredEntrypoints,
+    },
+  };
   const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   const stripped = stripKimiHooksTomlBlock(existing) ?? '';
-  const block = buildKimiHooksTomlBlock(targetDir, opts);
+  const block = buildKimiHooksTomlBlock(targetDir, trackedOpts);
   const entryCount = block ? (block.match(/\[\[hooks\]\]/g) || []).length : 0;
 
   if (!block) {
-    if (stripped === existing) return { changed: false, path: configPath, entryCount: 0 };
+    if (stripped === existing) return { changed: false, path: configPath, entryCount: 0, configuredEntrypoints };
     if (stripped.trim() === '') {
       if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
     } else {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       atomicWriteFileSync(configPath, stripped, 'utf8');
     }
-    return { changed: true, path: configPath, entryCount: 0 };
+    return { changed: true, path: configPath, entryCount: 0, configuredEntrypoints };
   }
 
   const separator = stripped.trim() === '' ? '' : (stripped.endsWith('\n') ? '\n' : '\n\n');
   const next = stripped.trim() === '' ? `${block}\n` : `${stripped}${separator}${block}\n`;
-  if (next === existing) return { changed: false, path: configPath, entryCount };
+  if (next === existing) return { changed: false, path: configPath, entryCount, configuredEntrypoints };
 
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   atomicWriteFileSync(configPath, next, 'utf8');
-  return { changed: true, path: configPath, entryCount };
+  return { changed: true, path: configPath, entryCount, configuredEntrypoints };
 }
 
 /**
@@ -3230,6 +3351,7 @@ interface ConfiguredEntrypoint {
   scriptPath: string;
   interpreterCandidates?: string[];
   platform?: string;
+  command?: string;
 }
 
 interface ConfiguredEntrypointInvalid {
@@ -3344,6 +3466,7 @@ export = {
   // Shared
   stageTransitiveHookLibs,
   buildHookCommand,
+  recordConfiguredHookCommand,
   applySettingsJsonHooks,
   validateConfiguredEntrypoints,
   referencesHook,

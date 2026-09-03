@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
+const helpers = require('./helpers.cjs');
+
 const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { finishInstall } = require('../bin/install.js');
 
@@ -19,7 +21,7 @@ test('configured entrypoint validation exposes an aggregate typed boundary', () 
 
 test('finishInstall rejects an invalid configured entrypoint before Done output', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-finish-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => helpers.cleanup(root));
   const logs = [];
   const originalLog = console.log;
   console.log = (...args) => logs.push(args.join(' '));
@@ -35,7 +37,7 @@ test('finishInstall rejects an invalid configured entrypoint before Done output'
 
 test('configured entrypoint validation aggregates file and interpreter failures without execution', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => helpers.cleanup(root));
   const directory = path.join(root, 'directory');
   fs.mkdirSync(directory);
 
@@ -58,8 +60,21 @@ test('configured entrypoint validation aggregates file and interpreter failures 
 
 test('runtime config writers expose the exact configured entrypoints they emit', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-writers-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => helpers.cleanup(root));
   const sourceRoot = path.join(__dirname, '..');
+
+  const codexRoot = path.join(root, 'codex');
+  fs.mkdirSync(codexRoot, { recursive: true });
+  const codex = hooksSurface.ensureCodexHooksJsonSessionStart(codexRoot, {
+    absoluteRunner: JSON.stringify(process.execPath),
+  });
+  assert.deepEqual(codex.configuredEntrypoints, [{
+    runtime: 'codex',
+    configPath: path.join(codexRoot, 'hooks.json'),
+    scriptPath: path.join(codexRoot, 'hooks', 'gsd-check-update.js'),
+    interpreterCandidates: [process.execPath],
+    platform: process.platform,
+  }]);
 
   const cursorRoot = path.join(root, 'cursor');
   const cursor = hooksSurface.writeCursorHooksJson(cursorRoot, sourceRoot, {

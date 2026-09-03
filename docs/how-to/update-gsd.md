@@ -26,7 +26,9 @@ GSD will:
 8. Offer to restore the user-added files it backed up in step 5.
 9. Report whether locally modified GSD files were backed up to `gsd-local-patches/`.
 
-Restart your runtime after the update to pick up new commands and agents.
+Before reporting completion, the installer checks each GSD-managed script and interpreter path written into runtime configuration. If a path is missing, has the wrong file type, or its interpreter cannot be resolved, the update fails, reports every invalid path, and uses the existing rollback path where available. Fix the reported path problem and rerun `/gsd-update`; do not restart into the incomplete update.
+
+Restart your runtime after a successful update to pick up new commands and agents.
 
 ---
 
