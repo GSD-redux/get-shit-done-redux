@@ -183,8 +183,10 @@ describe('no-unbounded-dirname-walk: valid — fixed-point guard present', () =>
   test('invalid: a length comparison against another expression\'s length is still unguarded — no fixed-point conjunct present', () => {
     // Confirms the rule does not special-case a dynamic (non-literal) length
     // bound as an implicit guard: only an explicit fixed-point conjunct
-    // silences it. A loop shaped like this needs either an added
-    // `dirname(cur) !== cur` conjunct or the // allow-dirname-walk marker.
+    // silences it. This rule has NO comment-marker escape hatch (ADR-1703
+    // zero-escape-hatch) — a loop shaped like this needs an added
+    // `dirname(cur) !== cur` (or `path.parse(cur).root`) conjunct; there is
+    // no annotation-based way to silence it instead.
     ruleTester.run('no-unbounded-dirname-walk', rule, {
       valid: [],
       invalid: [
