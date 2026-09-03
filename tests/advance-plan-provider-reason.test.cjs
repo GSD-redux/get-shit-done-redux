@@ -122,8 +122,12 @@ describe('#3830: resolvePlanSetForPhase reasons describe the enumeration it perf
 
       const result = captureProviderResult(tmpDir);
 
-      // Without this, the assertion above passes for any reason at all —
-      // including the provider never resolving anything in this fixture.
+      // Not a guard against "the provider never ran" — the first test already
+      // rules that out, by requiring a non-null result AND an exact string. What
+      // this pins is the other half: that the no-match branch is reached because
+      // the phase is genuinely absent, and not because this fixture cannot resolve
+      // ANY phase. A provider that abstained unconditionally would satisfy the
+      // first test and fail here.
       assert.ok(result, 'the provider must have been built and called');
       assert.strictEqual(result.ok, true, `phase 01 is on disk and must resolve; got ${JSON.stringify(result)}`);
       assert.strictEqual(result.planCount, 1, 'and it must report the one plan seeded');
