@@ -98,7 +98,13 @@ module.exports = {
   create(context) {
     function checkWhile(node) {
       const test = node.test;
-      if (!test || test.type !== 'LogicalExpression') return;
+      // NOTE: test may be a single BinaryExpression (`while (cur !== root)`),
+      // not only a compound LogicalExpression (`while (cur !== root && …)`)
+      // — the minimal #4020/#4220 shape is a SINGLE unguarded condition, so
+      // this must not require LogicalExpression up front. collect() below
+      // already handles a non-LogicalExpression test correctly (pushes it as
+      // the sole conjunct); only this early gate needs to admit that shape.
+      if (!test) return;
 
       // The reassignment: cur = dirname(cur) somewhere in the body (or the
       // update clause of a for-loop shape routed through the same check).
