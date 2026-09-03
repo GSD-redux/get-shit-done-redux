@@ -134,6 +134,10 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # #2665 round 4: every job that runs the suite wires the strict guard
+      # (job-level env, where the live-config-guard derivation reads it).
+      GSD_STRICT_LIVE_CONFIG_GUARD: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -149,9 +153,6 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
       - name: Run plugin-manifest suite (C1+C2+C3)
         run: node scripts/run-tests.cjs --files plugin-manifest.test.cjs
-        env:
-          # #2665 round 4: every job that runs the suite wires the strict guard.
-          GSD_STRICT_LIVE_CONFIG_GUARD: '1' 
 
   test:
     name: test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
