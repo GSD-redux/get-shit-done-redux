@@ -1347,8 +1347,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `plan`/`invoke` are the only subs that need the expensive plan-building path
     // below; `sections`/`flags` return earlier still. Anything else errors here, before
     // any of that work starts.
-    if (!['plan', 'invoke', 'sections', 'flags'].includes(sub)) {
-      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
+    if (!['plan', 'invoke', 'sections', 'flags', 'dispatch-step'].includes(sub)) {
+      error("Usage: review-lane <plan|invoke|sections|flags|dispatch-step> [--selected a,b] [--run-dir D] [--repo-root R]");
       return;
     }
     const runDir = flag('--run-dir') || '.';
@@ -1369,6 +1369,86 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       }
       return cur;
     };
+
+    // Shared by `invoke` and `dispatch-step` (#4209) — both need the SAME bounded
+    // spawn/http/fs seam `runLane` requires (RunnerDeps). Factored out so the two
+    // callers can never disagree about how a lane's binary is resolved or how its
+    // process is bounded; a fix to either reaches both.
+    const buildLaneRunnerDeps = () => ({
+      spawn: (binary, argv, opts) => {
+        // #3086: on Windows, reviewer CLIs (gemini, codex, etc.) are installed
+        // as .cmd shims. spawnSync with a bare name + shell:false fails with
+        // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
+        // gate used in runWithTimeout: detect .cmd/.bat and mediate through
+        // cmd.exe /d /s /c with an explicit argv array (no shell:true).
+        //
+        // #3275: descriptors declare BARE names, so the gate above never saw an
+        // extension — resolve through the shared PATH+PATHEXT resolver FIRST
+        // (the same one `hasBinary` uses, so probe and spawn can never disagree
+        // about what the lane's binary is). POSIX keeps the bare name: Node's own
+        // PATH search already worked there, and the #3275 acceptance contract
+        // holds macOS/Linux behavior unchanged. A name that resolves to nothing
+        // falls back to the declared name so the ENOENT still surfaces (#3086).
+        // #3411: the resolve-then-mediate pair is one seam call now. Both halves had
+        // private copies here; `projectSpawnInvocation` owns them, so a fix to either
+        // reaches every spawn site instead of only this one.
+        //
+        // Unlike execTool, this lane adopts the RESOLVED path even for a non-batch
+        // binary: that is the behavior #3445 shipped and `deps.hasBinary` answers
+        // from the same resolver, so probe and spawn must agree on the exact file.
+        const { projectSpawnInvocation } = require('./lib/shell-command-projection.cjs');
+        const { command: spawnBinary, args: spawnArgv, windowsVerbatimArguments } = projectSpawnInvocation(binary, argv);
+        const r = cp.spawnSync(spawnBinary, spawnArgv, {
+          input: opts.input,
+          encoding: 'utf8',
+          timeout: opts.timeoutMs,
+          killSignal: 'SIGKILL',
+          maxBuffer: 64 * 1024 * 1024,
+          shell: false, // argv array only — never a shell string (no interpolation of config values)
+          // #2483: a lane's declared env pairs merged OVER this process's environment, for this
+          // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
+          // into the orchestrating session or into the next lane.
+          ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+          ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+        });
+        return {
+          status: r.status,
+          stdout: r.stdout || '',
+          stderr: r.stderr || '',
+          errorCode: r.error && r.error.code ? r.error.code : undefined,
+        };
+      },
+      httpJson: async (url, opts) => {
+        try {
+          const res = await fetch(url, {
+            method: opts.method,
+            headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+            body: opts.body,
+            signal: AbortSignal.timeout(opts.timeoutMs),
+          });
+          return { ok: res.ok, status: res.status, body: await res.text() };
+        } catch (e) {
+          return { ok: false, status: 0, body: '', error: e && e.message ? e.message : String(e) };
+        }
+      },
+      readFile: (p) => fsx.readFileSync(p, 'utf8'),
+      writeFile: (p, c) => fsx.writeFileSync(p, c, 'utf8'),
+      exists: (p) => fsx.existsSync(p),
+      // PATH scan rather than spawning `command -v` / `where`. Two reasons: it spawns nothing at
+      // all (a probe that costs a process is a probe you avoid running, which is how the original
+      // Kimi probe ended up unbounded), and `shell: true` with an args array is deprecated in
+      // Node 26 (DEP0190) because the arguments are concatenated rather than escaped.
+      //
+      // #3275: the scan lives in `resolveSpawnBinary` now, SHARED with `deps.spawn`
+      // above. Two private copies of "what is this declared binary?" is how the
+      // defect hid: the probe resolved WITH PATHEXT while spawn resolved WITHOUT,
+      // so a lane reported available for a spawn that could never start. One
+      // resolver, both seams — if one changes, the other changes with it.
+      hasBinary: (name) => resolveSpawnBinary(name) !== null,
+      configGet,
+      homeDir: os.homedir(),
+      warn: (m) => process.stderr.write(`${m}\n`),
+    });
 
     const selected = (flag('--selected') || '')
       .split(',').map((s) => s.trim()).filter(Boolean);
@@ -1475,6 +1555,101 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return isNum(global) ? global : null;
     };
 
+    // #4209 (ADR-2782 seam) — the ONE interpreter route for a step that declared
+    // `supportsReviewerLanes: true`. Wires `dispatchReviewerLanes` (src/reviewer-step-dispatch.cts)
+    // to the SAME plan/invoke machinery `plan`/`invoke` above use, so a step opting in gets exact
+    // parity with hand-driven `review-lane plan|invoke` rather than a second implementation.
+    // Canonical file paths travel on stdin, never argv (see gsd-core/workflows/code-review.md's
+    // "Files travel on stdin" note) — a 50+-file scope with long paths approaches the Windows
+    // execFileSync argv ceiling, and stdin has no such bound.
+    //
+    // Returns EARLY, like `sections`/`flags` above, rather than falling into the `plans` builder
+    // below: that builder spawns one `effortFor` child process PER LANE IN THE ROSTER (chosen
+    // defaults to every merged lane when nothing is selected), which would burn ~12 wasted spawns
+    // on every dispatch-step call whether or not anything was actually selected. `dispatchReviewerLanes`
+    // builds its own per-SELECTED-lane plan below instead, bounded by the (typically 0-3) explicitly
+    // requested slugs, not the whole roster.
+    if (sub === 'dispatch-step') {
+      const { dispatchReviewerLanes } = require('./lib/reviewer-step-dispatch.cjs');
+      const explicitFlags = (flag('--explicit') || '').split(',').map((s) => s.trim()).filter(Boolean);
+      const depth = flag('--depth') || '';
+      const baseSha = flag('--base-sha') || '';
+      let stdinPaths = '';
+      try { stdinPaths = fsx.readFileSync(0, 'utf8'); } catch { stdinPaths = ''; }
+      const paths = stdinPaths.split('\n').map((s) => s.trim()).filter(Boolean);
+
+      // Reuse the exact effort-aware, per-lane plan `plan` builds above (DISP-03: "planned
+      // through the existing `review-lane plan` interface") rather than the interpreter's
+      // simpler default plan callback, which does not resolve per-host effort.
+      const planFn = (lane, ctx) => {
+        const effort = effortFor(lane.slug);
+        return resolveLanePlan({
+          lane, configGet: ctx.configGet, runDir: ctx.runDir, repoRoot: ctx.repoRoot,
+          effortArgs: effort.argv, effortValue: effort.value,
+        });
+      };
+
+      const runnerDeps = buildLaneRunnerDeps();
+      const invokeFn = async (lane, plan) => {
+        let consentedHost;
+        if (plan.transport === 'openai-http') {
+          try {
+            const consent = require('./lib/capability-consent.cjs');
+            const projectRoot = require('./lib/project-root.cjs').consentProjectRoot(cwd);
+            const capId = String(lane.slug).replace(/_/g, '-');
+            consentedHost = consent.readConsentedReviewerHost({ projectRoot, id: capId });
+          } catch { consentedHost = undefined; }
+        }
+        // DISP-04/05: every selected lane is invoked through this SAME `runner.runLane` seam
+        // `invoke` uses, exactly once (the interpreter's own for-loop over `selection.selected`
+        // never revisits a slug).
+        return runner.runLane(plan, runnerDeps, { consentedHost, explicitlyRequested: true, repoRoot });
+      };
+
+      // `resolveReviewerSelection` only selects an explicit flag present in `detected`
+      // (ADR-2782 D4: absent-safe governs discovery, never explicit selection — a slug the
+      // roster does not declare is rejected here as an explicit-selection error). REAL
+      // host availability (is the CLI actually installed?) is a separate, already-owned
+      // check inside `runner.runLane`'s `probeLane` at invoke time below — duplicating a
+      // second `command -v` probe here would let the two disagree about what "available"
+      // means, which is the exact defect class `resolveSpawnBinary` was consolidated to
+      // prevent (#3275).
+      //
+      // GUARDED ON explicitFlags.length, not unconditional: `resolveReviewerSelection`'s
+      // precedence chain (explicit > --all > review.default_reviewers > all detected) ends,
+      // when none of the first three apply, in `selected = [...detected]` — the SAME
+      // "no flags means every detected reviewer" default `/gsd:review` intentionally uses.
+      // Source review's COMP-01 contract is the opposite: no reviewer-lane flag means ZERO
+      // external calls, byte-for-behavior identical to before #4209. Passing a non-empty
+      // `detected` unconditionally would silently opt every dispatch-step call with no
+      // `--explicit` into planning+invoking the WHOLE roster via that fallback branch. An
+      // empty `detected` when nothing was asked for makes that fallback resolve to
+      // `[...[]]` = `[]`, so `dispatchReviewerLanes` hits its own `NO_LANES_SELECTED`
+      // early-return before any plan/invoke call — the same fast, inert no-op the caller
+      // gets from an absent `supportsReviewerLanes` trait.
+      const rosterSlugs = explicitFlags.length > 0 ? [...laneBySlug.keys()] : [];
+
+      const dispatchResult = await dispatchReviewerLanes(
+        {
+          trait: true,
+          selection: { explicitFlags, detected: rosterSlugs },
+          repoRoot,
+          paths,
+          depth,
+          baseSha,
+          runDir,
+        },
+        {
+          getLane: (slug) => laneBySlug.get(slug),
+          configGet,
+          plan: planFn,
+          invoke: invokeFn,
+        },
+      );
+      output(dispatchResult, raw);
+      return;
+    }
+
     const plans = chosen.map((slug) => {
       const lane = laneBySlug.get(slug);
       if (!lane) return { slug, ok: false, reason: 'malformed_lane', detail: 'no such declared lane' };
@@ -1508,7 +1683,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
 
     if (sub !== 'invoke') {
-      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
+      error("Usage: review-lane <plan|invoke|sections|flags|dispatch-step> [--selected a,b] [--run-dir D] [--repo-root R]");
       return;
     }
 
@@ -1522,81 +1697,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
     // EVERY spawn bounded — `DEFECT.UNBOUNDED-SUBPROCESS` (CONTEXT.md:772). A frozen sync spawn
     // cannot be interrupted by --test-force-exit and hangs a whole CI chunk to its 10-minute kill.
-    const deps = {
-      spawn: (binary, argv, opts) => {
-        // #3086: on Windows, reviewer CLIs (gemini, codex, etc.) are installed
-        // as .cmd shims. spawnSync with a bare name + shell:false fails with
-        // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
-        // gate used in runWithTimeout: detect .cmd/.bat and mediate through
-        // cmd.exe /d /s /c with an explicit argv array (no shell:true).
-        //
-        // #3275: descriptors declare BARE names, so the gate above never saw an
-        // extension — resolve through the shared PATH+PATHEXT resolver FIRST
-        // (the same one `hasBinary` uses, so probe and spawn can never disagree
-        // about what the lane's binary is). POSIX keeps the bare name: Node's own
-        // PATH search already worked there, and the #3275 acceptance contract
-        // holds macOS/Linux behavior unchanged. A name that resolves to nothing
-        // falls back to the declared name so the ENOENT still surfaces (#3086).
-        // #3411: the resolve-then-mediate pair is one seam call now. Both halves had
-        // private copies here; `projectSpawnInvocation` owns them, so a fix to either
-        // reaches every spawn site instead of only this one.
-        //
-        // Unlike execTool, this lane adopts the RESOLVED path even for a non-batch
-        // binary: that is the behavior #3445 shipped and `deps.hasBinary` answers
-        // from the same resolver, so probe and spawn must agree on the exact file.
-        const { projectSpawnInvocation } = require('./lib/shell-command-projection.cjs');
-        const { command: spawnBinary, args: spawnArgv, windowsVerbatimArguments } = projectSpawnInvocation(binary, argv);
-        const r = cp.spawnSync(spawnBinary, spawnArgv, {
-          input: opts.input,
-          encoding: 'utf8',
-          timeout: opts.timeoutMs,
-          killSignal: 'SIGKILL',
-          maxBuffer: 64 * 1024 * 1024,
-          shell: false, // argv array only — never a shell string (no interpolation of config values)
-          // #2483: a lane's declared env pairs merged OVER this process's environment, for this
-          // child only. Passing a fresh object leaves `process.env` untouched, so nothing leaks
-          // into the orchestrating session or into the next lane.
-          ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
-          ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-        });
-        return {
-          status: r.status,
-          stdout: r.stdout || '',
-          stderr: r.stderr || '',
-          errorCode: r.error && r.error.code ? r.error.code : undefined,
-        };
-      },
-      httpJson: async (url, opts) => {
-        try {
-          const res = await fetch(url, {
-            method: opts.method,
-            headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
-            body: opts.body,
-            signal: AbortSignal.timeout(opts.timeoutMs),
-          });
-          return { ok: res.ok, status: res.status, body: await res.text() };
-        } catch (e) {
-          return { ok: false, status: 0, body: '', error: e && e.message ? e.message : String(e) };
-        }
-      },
-      readFile: (p) => fsx.readFileSync(p, 'utf8'),
-      writeFile: (p, c) => fsx.writeFileSync(p, c, 'utf8'),
-      exists: (p) => fsx.existsSync(p),
-      // PATH scan rather than spawning `command -v` / `where`. Two reasons: it spawns nothing at
-      // all (a probe that costs a process is a probe you avoid running, which is how the original
-      // Kimi probe ended up unbounded), and `shell: true` with an args array is deprecated in
-      // Node 26 (DEP0190) because the arguments are concatenated rather than escaped.
-      //
-      // #3275: the scan lives in `resolveSpawnBinary` now, SHARED with `deps.spawn`
-      // above. Two private copies of "what is this declared binary?" is how the
-      // defect hid: the probe resolved WITH PATHEXT while spawn resolved WITHOUT,
-      // so a lane reported available for a spawn that could never start. One
-      // resolver, both seams — if one changes, the other changes with it.
-      hasBinary: (name) => resolveSpawnBinary(name) !== null,
-      configGet,
-      homeDir: os.homedir(),
-      warn: (m) => process.stderr.write(`${m}\n`),
-    };
+    const deps = buildLaneRunnerDeps();
 
     // ADR-1517 reviewer instances resolve THROUGH a lane rather than being lanes themselves
     // (ADR-2782 D8), so they reuse this seam with three substitutions instead of duplicating the
