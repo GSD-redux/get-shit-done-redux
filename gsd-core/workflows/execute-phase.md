@@ -666,7 +666,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none); one naming an alternate wave dispatch replaces step 3's inline loop.
 
-   **Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape of one. It never blocks or redirects executor spawning. **Validate `ref.command` in-context before any shell use.** (third-party manifest input)
+   **Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape, never blocks or redirects executor spawning. ⚠ **Validate `ref.command` in-context before any shell use** (third-party manifest input).
 
 3. **Spawn executor agents:**
 
