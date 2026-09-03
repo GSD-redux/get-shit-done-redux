@@ -2063,6 +2063,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       'gsd-worktree-path-guard',
       'gsd-agent-isolation-guard',
       'gsd-write-guard',
+      'gsd-secret-read-guard',
       'gsd-validate-commit',
     ];
     for (const entries of Object.values(settings.hooks as Record<string, HookGroup[]>)) {
@@ -2351,6 +2352,35 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       console.log(`  ${green}✓${reset} Configured write guard hook (catastrophic-shrink protection)`);
     } else if (!hasWriteGuardHook && !fs.existsSync(writeGuardFile)) {
       console.warn(`  ${yellow}⚠${reset}  Skipped write guard hook — gsd-write-guard.js not found at target`);
+    }
+
+    // Configure PreToolUse hook for secret-file read protection (#4221).
+    // Hard-blocks Read/Grep/Bash reads of .env, .env.<suffix> and .secrets.
+    // Replaces the Read(.env*) permission deny rules the installer used to
+    // write (#768): on Claude Code >= 2.1.259 ANY Read() deny rule makes every
+    // `cd DIR && grep …` compound prompt for approval, even in auto mode; a
+    // hook denial is not a permission rule and never arms that check.
+    const secretReadGuardCommand = isGlobal
+      ? buildHookCommand(targetDir, 'gsd-secret-read-guard.js', hookOpts)
+      : localCmd('gsd-secret-read-guard.js');
+    const hasSecretReadGuardHook = settings.hooks[preToolEvent].some((entry: HookGroup) =>
+      entry.hooks && entry.hooks.some((h: HookEntry) => referencesHook(h as Record<string, unknown>, 'gsd-secret-read-guard'))
+    );
+    const secretReadGuardFile = path.join(targetDir, 'hooks', 'gsd-secret-read-guard.js');
+    if (!hasSecretReadGuardHook && fs.existsSync(secretReadGuardFile) && secretReadGuardCommand) {
+      settings.hooks[preToolEvent].push({
+        matcher: 'Read|Grep|Bash',
+        hooks: [
+          {
+            type: 'command',
+            command: secretReadGuardCommand,
+            timeout: BLOCKING_GUARD_TIMEOUT_S
+          }
+        ]
+      });
+      console.log(`  ${green}✓${reset} Configured secret read guard hook (.env / .secrets read protection)`);
+    } else if (!hasSecretReadGuardHook && !fs.existsSync(secretReadGuardFile)) {
+      console.warn(`  ${yellow}⚠${reset}  Skipped secret read guard hook — gsd-secret-read-guard.js not found at target`);
     }
 
     // Configure commit validation hook (Conventional Commits enforcement, opt-in)
@@ -2716,6 +2746,7 @@ function buildKimiHooksTomlBlock(targetDir: string, opts: { hookOpts: BuildHookC
     { event: 'PreToolUse', command: cmd('gsd-read-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-worktree-path-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-write-guard.js'), matcher: 'WriteFile', timeout: 5 },
+    { event: 'PreToolUse', command: cmd('gsd-secret-read-guard.js'), matcher: 'ReadFile|Grep|Shell', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-workflow-guard.js'), matcher: 'Shell|WriteFile|StrReplaceFile', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-validate-commit.sh'), matcher: 'Shell', timeout: 5 },
 

@@ -61,6 +61,8 @@ const HOOKS_TO_COPY = [
   'gsd-prompt-guard.js',
   'gsd-read-guard.js',
   'gsd-read-injection-scanner.js',
+  // Secret-file read guard (#4221) — replaces the installer's Read(.env*) deny rules
+  'gsd-secret-read-guard.js',
   'gsd-statusline.js',
   'gsd-update-banner.js',
   'gsd-workflow-guard.js',
