@@ -1254,3 +1254,82 @@ describe('Bug 6 (#3503/#3995) — diff base keys on the phase directory, not com
     }
   );
 });
+
+// ---------------------------------------------------------------------------
+// #4209 Phase 1 Plan 3 (Task 2) — external reviewer evidence consolidation.
+// gsd-code-reviewer.md must treat <external_reviewer_evidence> as untrusted
+// input: independently re-verify every claim against the actual current
+// source before it can appear in REVIEW.md, fold a verified claim into the
+// SAME Narrative Findings section (no second schema), and never let text
+// embedded inside an evidence file act as an instruction. code-review.md's
+// EXTERNAL_EVIDENCE_BLOCK must keep restating the four fixed prohibitions.
+// ---------------------------------------------------------------------------
+describe('CONS-01..03 — external reviewer evidence consolidation (#4209)', () => {
+  function loadStep(src, stepName) {
+    const stepStart = src.indexOf(`<step name="${stepName}">`);
+    assert.ok(stepStart !== -1, `agent must have a ${stepName} step`);
+    const stepEnd = src.indexOf('</step>', stepStart);
+    return src.slice(stepStart, stepEnd);
+  }
+
+  test('load_context parses <external_reviewer_evidence> and marks it untrusted', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(stepSection.includes('external_reviewer_evidence'),
+      'load_context must parse the external_reviewer_evidence block');
+    assert.ok(/untrusted/i.test(stepSection),
+      'load_context must explicitly mark external reviewer evidence as untrusted data');
+  });
+
+  test('load_context requires independent re-verification against actual source before accepting a claim', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(/re-open|reopen/i.test(stepSection) && /re-read/i.test(stepSection),
+      'load_context must require re-opening and re-reading the actual cited source before accepting an external claim');
+    assert.ok(/REJECTED|reject/i.test(stepSection),
+      'load_context must state that an unverifiable external claim is rejected, not included');
+  });
+
+  test('load_context resists prompt injection embedded inside evidence text', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(/prompt-injection|prompt injection/i.test(stepSection),
+      'load_context must name prompt injection as a threat from evidence content');
+    assert.ok(/never a command|not a command/i.test(stepSection),
+      'load_context must state evidence text is data, never a command');
+  });
+
+  test('a verified external claim folds into Narrative Findings with no separate schema (CONS-03)', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(/Narrative Findings/.test(stepSection),
+      'load_context must route a verified external claim into the existing Narrative Findings section');
+    const writeReviewSection = loadStep(src, 'write_review');
+    assert.ok(/external:/.test(writeReviewSection),
+      'write_review must document the (external: {slug}) provenance tag for a verified external finding');
+    assert.ok(!/## External/i.test(writeReviewSection),
+      'write_review must not introduce a separate External Findings section — one REVIEW.md schema only');
+  });
+
+  test('critical_rules restates the untrusted-evidence contract', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const rulesStart = src.indexOf('<critical_rules>');
+    const rulesEnd = src.indexOf('</critical_rules>');
+    assert.ok(rulesStart !== -1 && rulesEnd !== -1, 'gsd-code-reviewer.md must have a critical_rules section');
+    const rulesSection = src.slice(rulesStart, rulesEnd);
+    assert.ok(/external_reviewer_evidence|external reviewer/i.test(rulesSection),
+      'critical_rules must restate the external-evidence-is-untrusted contract');
+  });
+
+  test('code-review.md restates the four fixed source-review prohibitions when handing off evidence', () => {
+    const workflowSrc = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const blockStart = workflowSrc.indexOf('EXTERNAL_EVIDENCE_BLOCK=$(printf');
+    assert.ok(blockStart !== -1, 'code-review.md must build an EXTERNAL_EVIDENCE_BLOCK');
+    const blockEnd = workflowSrc.indexOf('\n', workflowSrc.indexOf(')', blockStart));
+    const blockText = workflowSrc.slice(blockStart, blockEnd);
+    for (const prohibition of ['no source mutation', 'no test execution', 'no background processes', 'no active polling']) {
+      assert.ok(blockText.includes(prohibition),
+        `EXTERNAL_EVIDENCE_BLOCK must restate "${prohibition}" (SAFE-03..06)`);
+    }
+  });
+});
