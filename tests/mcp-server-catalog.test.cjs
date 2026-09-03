@@ -63,7 +63,7 @@ describe('prompts — protocol surface', () => {
     const res = handleMessage({ jsonrpc: '2.0', id: 1, method: 'prompts/list' });
     assert.equal(res.error, undefined, 'prompts/list must not error');
     assert.ok(res.result && Array.isArray(res.result.prompts), 'result.prompts must be an array');
-    assert.equal(res.result.prompts.length, 71, 'must list all 71 commands/gsd/*.md as prompts');
+    assert.equal(res.result.prompts.length, 72, 'must list all 72 commands/gsd/*.md as prompts');
     for (const p of res.result.prompts) {
       assert.equal(typeof p.name, 'string');
       assert.equal(p.name.includes('/'), false, 'name must be the bare command, not a path');

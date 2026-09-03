@@ -179,14 +179,18 @@ describe('#114: npm integrity gate — --help output', () => {
  * high or moderate npm-audit advisories.
  *
  * Strategy: run `npm audit --omit=dev --json` against both the root
- * workspace and the embedded SDK package and assert that the metadata
- * vulnerability counts are zero across info/low/moderate/high/critical.
+ * workspace and the embedded SDK package, then diff the resulting
+ * vulnerable-package set against a baseline tree (see #4196 and
+ * scripts/npm-audit-baseline.cjs) so the gate only fails on advisories
+ * this PR/push actually introduces — not on pre-existing advisories in
+ * an untouched transitive dependency. When no baseline can be resolved,
+ * falls back to the original zero-tolerance check across
+ * info/low/moderate/high/critical.
  *
- * The test is intentionally strict — any advisory of any severity (other
- * than 'low' if the maintainer accepts it; that branch is left explicit
- * here) blocks CI. If a future advisory lands without an upstream patch,
- * either bump the patched transitive (preferred), or annotate the
- * acceptance below with a justification AND a link to the upstream tracker.
+ * If a future advisory lands without an upstream patch on a package this
+ * PR touches, either bump the patched transitive (preferred), or annotate
+ * the acceptance below with a justification AND a link to the upstream
+ * tracker.
  *
  * Skips automatically when `node_modules/` is absent (a fresh checkout
  * before `npm install`) so the test does not falsely report on developer
@@ -198,6 +202,13 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
+const {
+  evaluateAuditDiff,
+  runPackageLockAudit,
+  extractBaselineTree,
+  resolveBaselineRef,
+} = require('../scripts/npm-audit-baseline.cjs');
+const { cleanup } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SDK = path.join(ROOT, 'sdk');
@@ -249,37 +260,55 @@ function auditProductionVulns(cwd) {
   // (npm changed its output format, audit aborted before metadata, etc.) —
   // throw so the test fails loudly instead of skipping silently.
   if (parsed && parsed.metadata && parsed.metadata.vulnerabilities) {
-    return parsed.metadata.vulnerabilities;
+    return parsed;
   }
   throw new Error(`Unexpected npm audit JSON shape in ${cwd}: missing metadata.vulnerabilities`);
 }
 
-describe('#3588: npm audit --omit=dev reports zero advisories', () => {
-  test('root workspace production tree has no advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
-    const vulns = auditProductionVulns(ROOT);
-    if (vulns === null) {
-      t.skip('auditable npm package not present or node_modules/ missing');
+describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (#4196)', () => {
+  // #4196: a pre-existing advisory in an untouched transitive dependency
+  // must not block this PR/push -- only an advisory THIS change actually
+  // introduces should fail the gate. When no baseline can be resolved
+  // (e.g. a bare local run with no git history), fall back to the
+  // original #3588 zero-tolerance behavior rather than silently skipping.
+  function checkTreeAgainstBaseline(t, cwd, subdir, skipMessage) {
+    const audit = auditProductionVulns(cwd);
+    if (audit === null) {
+      t.skip(skipMessage);
       return;
     }
-    assert.strictEqual(vulns.critical, 0, `expected 0 critical; got ${vulns.critical}`);
-    assert.strictEqual(vulns.high, 0, `expected 0 high; got ${vulns.high}`);
-    assert.strictEqual(vulns.moderate, 0, `expected 0 moderate; got ${vulns.moderate}`);
-    // Low advisories are not explicitly forbidden by the #3588 acceptance
-    // criterion but the issue listed only high/moderate as actual findings —
-    // tighten if any future low advisory is introduced.
-    assert.strictEqual(vulns.low, 0, `expected 0 low; got ${vulns.low}`);
+    const baselineRef = resolveBaselineRef(ROOT);
+    const baselineDir = baselineRef ? extractBaselineTree(baselineRef, ROOT, subdir) : null;
+    if (baselineDir === null) {
+      const vulns = audit.metadata.vulnerabilities;
+      assert.strictEqual(vulns.critical, 0, `no baseline available; falling back to zero-tolerance -- expected 0 critical; got ${vulns.critical}`);
+      assert.strictEqual(vulns.high, 0, `no baseline available; falling back to zero-tolerance -- expected 0 high; got ${vulns.high}`);
+      assert.strictEqual(vulns.moderate, 0, `no baseline available; falling back to zero-tolerance -- expected 0 moderate; got ${vulns.moderate}`);
+      assert.strictEqual(vulns.low, 0, `no baseline available; falling back to zero-tolerance -- expected 0 low; got ${vulns.low}`);
+      return;
+    }
+    t.after(() => cleanup(baselineDir));
+    const baselineAudit = runPackageLockAudit(baselineDir);
+    const baselineVulns = (baselineAudit && baselineAudit.vulnerabilities) || {};
+    const result = evaluateAuditDiff({
+      baselineVulnerabilities: baselineVulns,
+      headVulnerabilities: audit.vulnerabilities || {},
+    });
+    assert.strictEqual(
+      result.ok,
+      true,
+      result.ok
+        ? ''
+        : `new advisory introduced vs baseline (${baselineRef}): ${result.newlyIntroduced.join(', ')}. Pre-existing advisories are tracked separately (see #4196) and do not block this change.`,
+    );
+  }
+
+  test('root workspace production tree introduces no new advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
+    checkTreeAgainstBaseline(t, ROOT, '', 'auditable npm package not present or node_modules/ missing');
   });
 
-  test('sdk/ production tree has no advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
-    const vulns = auditProductionVulns(SDK);
-    if (vulns === null) {
-      t.skip('sdk/ is not an auditable npm package or sdk/node_modules/ is missing');
-      return;
-    }
-    assert.strictEqual(vulns.critical, 0, `expected 0 critical; got ${vulns.critical}`);
-    assert.strictEqual(vulns.high, 0, `expected 0 high; got ${vulns.high}`);
-    assert.strictEqual(vulns.moderate, 0, `expected 0 moderate; got ${vulns.moderate}`);
-    assert.strictEqual(vulns.low, 0, `expected 0 low; got ${vulns.low}`);
+  test('sdk/ production tree introduces no new advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
+    checkTreeAgainstBaseline(t, SDK, 'sdk', 'sdk/ is not an auditable npm package or sdk/node_modules/ is missing');
   });
 });
   });

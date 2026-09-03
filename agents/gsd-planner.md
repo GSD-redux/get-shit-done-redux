@@ -587,6 +587,7 @@ Check the invocation mode and load the relevant reference file:
 - If `--gaps` flag or gap_closure context present: Read `gsd-core/references/planner-gap-closure.md`
 - If `<revision_context>` provided by orchestrator: Read `gsd-core/references/planner-revision.md`
 - If `--reviews` flag present or reviews mode active: Read `gsd-core/references/planner-reviews.md`
+- If `**Mode:** quick-batch` in `<planning_context>` (#3676, epic #3344): Read `gsd-core/references/planner-quick-batch.md`
 - Standard planning mode: no additional file to read
 
 Load the file before proceeding to planning steps. The reference file contains the full

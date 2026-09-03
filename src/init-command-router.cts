@@ -30,6 +30,7 @@ interface InitModule {
   cmdInitNewMilestone(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitOnboard(cwd: string, raw: boolean, opts?: Record<string, string | boolean | null>): void;
   cmdInitQuick(cwd: string, name: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitQuickBatch(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitIngestDocs(cwd: string, raw: boolean): void;
   cmdInitResume(cwd: string, raw: boolean): void;
   cmdInitVerifyWork(cwd: string, phase: string | undefined, raw: boolean): void;
@@ -204,6 +205,20 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
           research: namedArgs['research'],
           validate: namedArgs['validate'],
           full: namedArgs['full'],
+        });
+      },
+      // #3676 (Phase 4, epic #3344): `init.quick-batch` supplies model
+      // profiles/commit_docs/roadmap-existence/section_manifest — batch
+      // creation itself is the `quick-batch create` verb's job (wraps
+      // `createBatch`, src/quick-batch.cts). No free-text description to
+      // strip: `--research`/`--validate` are the only recognized flags
+      // (`--discuss`/`--full` are rejected upstream by `parseQuickBatchArgs`
+      // before this init bundle is ever reached).
+      'quick-batch': () => {
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['research', 'validate'], positionals: 2 }, error);
+        init.cmdInitQuickBatch(cwd, raw, {
+          research: namedArgs['research'],
+          validate: namedArgs['validate'],
         });
       },
       'ingest-docs': () => init.cmdInitIngestDocs(cwd, raw),
