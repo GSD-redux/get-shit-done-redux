@@ -1463,7 +1463,11 @@ function configuredEntrypointsForHook(
 
   const bash = resolveBashExecutable(opts);
   if (isShellHook) {
-    return bash === null ? [target] : [{ ...target, interpreterCandidates: [bash] }];
+    // An unresolved bash must still surface as an interpreterCandidates entry
+    // (the literal token, same as the portableHooks runner below) so
+    // validateConfiguredEntrypoints reports 'unresolved-interpreter' instead
+    // of silently skipping the check because the field is absent.
+    return [{ ...target, interpreterCandidates: [bash === null ? 'bash' : bash] }];
   }
 
   const nodeCandidates = [
