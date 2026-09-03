@@ -37,6 +37,22 @@ EXEC_CONCURRENCY=$(printf '%s' "$QB_EXEC_CONC_JSON" | node -e 'let s="";process.
    Parse `eligible` (quick ids ready to execute — every dependency already
    `complete`) and refresh `$BATCH_MANIFEST_JSON` from its `manifest`.
 
+   **Crash-window guard (mirrors `planner-wave.md`'s PLAN.md-existence
+   check one layer earlier — #3677):** `quick-batch resume`'s `eligible` is
+   purely status/dependency-derived; it does NOT know an item already
+   finished executing. A coordinator crash between this step returning
+   (executor committed, `SUMMARY.md` written) and Step 7's merge leaves
+   `BATCH.json` at `pending` with no STATE.md row yet (that row is written
+   only in Step 9) — so on `--resume`, such an item still comes back
+   `eligible` here. Before computing `spawn-plan`, drop every `quick_id`
+   from `$ELIGIBLE_IDS_JSON` whose `${item_dir}/${quick_id}-SUMMARY.md`
+   already exists on disk — NEVER re-dispatch it into a second worktree.
+   It is not lost: Step 7's own mergeable-wave criterion
+   (`gsd-core/workflows/quick-batch/steps/merge-wave.md` Step 1) already
+   picks up any `pending` item with an on-disk `SUMMARY.md` that isn't yet
+   merged, independent of this eligible/spawn list — dropping it here only
+   prevents the duplicate dispatch, it does not remove it from the batch.
+
 2. **Backpressure.** Not every eligible item necessarily spawns this round —
    cap fan-out at `$EXEC_CONCURRENCY` minus current in-flight count (row
    27/39):
