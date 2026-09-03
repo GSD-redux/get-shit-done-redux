@@ -43,6 +43,22 @@ describe('quick-batch: /gsd:quick command + workflow stay byte-identical (row 48
     }
 
     const changed = resolveChangedPaths(resolved.ref);
+    // #3730 review: row 48 is the #3676 PHASE's invariant — quick-batch adds new
+    // call sites onto shared primitives without editing ordinary quick. Judging
+    // every FUTURE branch by it would freeze quick.md forever (observed: the
+    // #3730 migration note tripped this row on an unrelated branch). Scope the
+    // row to branches that actually touch the quick-batch surface; an unrelated
+    // branch's quick.md edit is none of this guard's business.
+    // tests/ excluded: this guard file's own name matches, which would make
+    // the scope check self-satisfying on every branch that edits it.
+    const touchesQuickBatch = changed.some((p) => /quick-batch/.test(p) && !p.startsWith('tests/'));
+    if (!touchesQuickBatch) {
+      t.skip(
+        `branch does not touch the quick-batch surface (${changed.length} changed paths) — ` +
+        'row 48 governs #3676-phase branches only',
+      );
+      return;
+    }
     assert.ok(
       !changed.includes('commands/gsd/quick.md'),
       'commands/gsd/quick.md must stay untouched by the #3676 quick-batch phase',
