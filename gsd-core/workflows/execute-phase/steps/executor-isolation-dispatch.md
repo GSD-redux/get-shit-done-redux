@@ -146,10 +146,11 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #
 # ORCHESTRATOR BUILD-TIME EMBEDS (do these BEFORE the spawn, in order):
 #   1. Read the selected PLAN.md from the repository root at `{phase_dir}/{plan_file}`.
-#      Ignore an optional BOM before leading YAML frontmatter. Set `PLAN_TDD_CONTEXT=true` only
-#      when that frontmatter has `type: tdd` or a quoted scalar `tdd`, or an actual task opening tag (which may be multiline) has `tdd="true"`
-#      (or another quoted true form; whitespace around `=` is allowed) at the start of a non-fenced line. Literal task examples in prose or fenced code blocks
-#      opened by backticks or tildes do not qualify.
+#      Ignore an optional BOM before leading YAML frontmatter. Set `PLAN_TDD_CONTEXT=true`
+#      when the leading YAML frontmatter has `type: tdd` (quoted scalar allowed), or a
+#      non-fenced task opening tag (which may be multiline) has `tdd="true"` at the start
+#      of a line; whitespace around `=` is allowed. Fenced prose, backticks, and tildes do
+#      not qualify.
 #      Halt if that PLAN.md cannot be read, or if `PLAN_TDD_CONTEXT=true` and
 #      `tdd.md` cannot be read. The conditional canonical tdd.md entry below
 #      must be included only when `PLAN_TDD_CONTEXT=true`.

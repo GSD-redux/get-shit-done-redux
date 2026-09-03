@@ -1,5 +1,6 @@
-// allow-test-rule: source-text-is-the-product (#3990)
-// Executor prompts are assembled from these shipped workflow templates.
+// This file greps shipped workflow templates (.md), not .cjs/.cts/.js/.mjs/.mts/.ts
+// source — outside no-source-grep's scope, so no allow-test-rule marker applies (#3990).
+// Executor prompts are assembled from these templates; the text IS the product under test.
 'use strict';
 
 const { test, describe } = require('node:test');
@@ -42,7 +43,27 @@ function assertConditionalComposer(source, name, startMarker, endMarker) {
     `${name} must not use phase-wide TDD_MODE as selected-plan eligibility`);
 }
 
+function detectionRuleText(source) {
+  const normalized = source
+    .replace(/^#\s?/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const start = normalized.indexOf('Set `PLAN_TDD_CONTEXT=true`');
+  const end = normalized.indexOf('do not qualify.', start);
+  assert.ok(start !== -1 && end !== -1, 'detection-rule sentence must exist');
+  return normalized.slice(start, end + 'do not qualify.'.length);
+}
+
 describe('conditional canonical TDD executor context', () => {
+  test('both dispatch backends use byte-identical PLAN_TDD_CONTEXT detection prose (#3990 regression)', () => {
+    const harnessRule = detectionRuleText(composerSource(HARNESS));
+    const worktreeRule = detectionRuleText(composerSource(WORKTREE));
+
+    assert.equal(harnessRule, worktreeRule,
+      'a wording drift between the two backends means the same PLAN.md can be classified TDD-eligible on one backend and TDD-ineligible on the other');
+  });
+
+
   test('both dispatch backends conditionally compose the canonical reference from the selected plan', () => {
     const backends = [
       ['harness-worktree prompt', composerSource(HARNESS), 'subagent_type="{EXECUTOR_TYPE}"', 'After each `Agent()` returns'],
