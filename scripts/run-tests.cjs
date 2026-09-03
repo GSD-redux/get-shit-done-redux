@@ -350,6 +350,124 @@ function positiveNumberEnv(raw, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+// ── #4020: run-scoped temp root ─────────────────────────────────────────────
+//
+// Fixture trees leak under os.tmpdir() on the SUCCESS path (the untouched half
+// of #856): on a tmpfs /tmp a full run exhausts the filesystem, and the failure
+// surfaces as EDQUOT (errno -122) copyfile errors in whichever suite runs next
+// — actively misleading, twice misdiagnosed in the report. The bound is
+// runner-level, not per-fixture: 234 mkdtempSync sites are unauditable in one
+// place and every future fixture reintroduces the hazard, while a run-private
+// root + between-chunk sweep caps peak usage for every fixture at once.
+
+const RUN_TEMP_ROOT_PREFIX = 'gsd-test-run-';
+// Children the runner itself keeps alive across chunks — the sweep must spare
+// them (GSD_HOME's nested-spawn REUSE contract; the chunk-diagnostics events dir).
+const RESERVED_TEMP_PREFIXES = ['gsd-test-home-', 'gsd-run-tests-events-'];
+
+/**
+ * Create (or reuse) this run's private temp root and repoint the env at it.
+ *
+ * TMPDIR/TEMP/TMP all move, so every `mkdtempSync(os.tmpdir())` in a spawned
+ * test child lands inside the root — that is what makes a sweep scoped and
+ * safe. IDEMPOTENT exactly like the GSD_HOME sandbox below: a nested run-tests
+ * spawn (tests/run-tests-harness.test.cjs) inherits the root via env and must
+ * REUSE it, never mkdtemp a fresh root per invocation. An operator's TMPDIR
+ * redirect (the tmpfs workaround) keeps working: the root is created INSIDE the
+ * current tmpdir, so a disk-backed redirect stays disk-backed — and is now also
+ * cleaned at exit.
+ *
+ * Exported for in-process tests (tests/run-tests-temp-root.test.cjs).
+ */
+/** True when THIS process created the active run temp root (see setupRunTempRoot). */
+let createdRunTempRoot = false;
+
+function setupRunTempRoot() {
+  // Ownership (a nested run-tests spawn REUSES an inherited root and must never
+  // remove it on ITS exit — that would delete the outer run's root mid-suite,
+  // mass-ENOENTing every later fixture). PRECEDENCE: the FIRST SET var in
+  // TMPDIR > TEMP > TMP order decides — a set-but-not-a-run-root TMPDIR is an
+  // operator redirect (or a test sandboxing a child) and must WIN over leftover
+  // inherited TEMP/TMP, never be overridden by them (a CI-observed failure: the
+  // child redirected TMPDIR but inherited TEMP=<outer root>, and the any-of-three
+  // reuse check silently preferred the inherited root).
+  let inherited = '';
+  for (const key of ['TMPDIR', 'TEMP', 'TMP']) {
+    const v = process.env[key] || '';
+    if (!v) continue;
+    inherited = basename(v).startsWith(RUN_TEMP_ROOT_PREFIX) ? v : '';
+    break;
+  }
+  createdRunTempRoot = !inherited;
+  const root = inherited || mkdtempSync(join(tmpdir(), RUN_TEMP_ROOT_PREFIX));
+  for (const key of ['TMPDIR', 'TEMP', 'TMP']) process.env[key] = root;
+  return root;
+}
+
+/**
+ * Remove every non-reserved entry under the run root. Returns the removed
+ * count. `protect` is a set of absolute paths that must survive — the runner
+ * populates it with every ancestor of its SELECTED test files: a harness may
+ * stage synthetic test files under the temp root (tests/run-tests-harness.test.cjs
+ * writes 30 of them for its chunking rows), and a sweep that deleted them between
+ * chunks would make every later chunk fail with "Could not find". Best-effort per
+ * entry: a dir wedged open on Windows must not fail the run — the leak guard below
+ * is what makes persistent residue loud.
+ *
+ * Exported for in-process tests.
+ */
+function sweepRunTempRoot(root, protect = new Set()) {
+  let entries;
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of entries) {
+    if (RESERVED_TEMP_PREFIXES.some((p) => name.startsWith(p))) continue;
+    const full = join(root, name);
+    if (protect.has(full)) continue;
+    try {
+      rmSync(full, { recursive: true, force: true });
+      removed++;
+    } catch {
+      /* best-effort; the guard below reports persistent residue */
+    }
+  }
+  return removed;
+}
+
+/**
+ * Fail fast when post-sweep residue exceeds `limit` (#4020 acceptance 4):
+ * converting unbounded growth into a named-culprit runner error, BEFORE the
+ * temp filesystem fills and the failure metastasizes into unrelated
+ * EDQUOT/-122 copyfile errors. Leaked-directory COUNT is the proxy —
+ * statSync-walking multi-hundred-MB trees per chunk costs more than it
+ * protects. Override via RUN_TESTS_TMP_LEAK_LIMIT.
+ *
+ * Exported for in-process tests.
+ */
+function assertTempRootBounded(root, limit) {
+  const max = limit !== undefined ? limit
+    : positiveNumberEnv(process.env.RUN_TESTS_TMP_LEAK_LIMIT, 50);
+  let entries;
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return;
+  }
+  const leaked = entries.filter((n) => !RESERVED_TEMP_PREFIXES.some((p) => n.startsWith(p)));
+  if (leaked.length > max) {
+    throw new Error(
+      `run-tests: temp root leak — ${leaked.length} entries remain under ${root} after the ` +
+        `chunk sweep (limit ${max}). Likely culprits: ${leaked.slice(0, 5).join(', ')}. Failing ` +
+        `fast per #4020, before the temp filesystem fills and the failure surfaces as ` +
+        `unrelated EDQUOT/-122 copyfile errors in a later suite.`,
+    );
+  }
+}
+
 // Per-file measured durations, regenerated by scripts/gen-test-timings.cjs from
 // gsd-test reporter event streams. Overridable so tests can inject a synthetic
 // table instead of depending on the real suite's cost profile.
@@ -952,6 +1070,7 @@ function main() {
 
   const selected = selectedNames.map(f => join(testDir, f));
 
+
   if (selected.length === 0) {
     // A legitimately-empty shard: --shard was given, the pre-shard selection
     // had files, but this shard index drew zero (total > file count). Exit 0.
@@ -992,6 +1111,43 @@ function main() {
   delete process.env.GSD_PROJECT;
   delete process.env.GSD_WORKSTREAM;
   delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+
+  // #4020: bound the run's temp footprint BEFORE any sandbox below mkdtemps, so
+  // every child allocation (fixtures, GSD_HOME, events) lands inside one root
+  // that is swept between chunks and removed on exit. Announced on stderr so an
+  // operator (and tests/run-tests-temp-root.test.cjs) can observe it.
+  const runTempRoot = setupRunTempRoot();
+  console.error(`run-tests: tmp-root=${runTempRoot}`);
+  // OWNERSHIP-GATED (#4020 review): only the process that CREATED the root
+  // removes it — a nested run-tests spawn (the harness regression test) reuses
+  // the outer run's root and must leave it standing mid-suite.
+  if (createdRunTempRoot) {
+    process.on('exit', () => {
+      try {
+        rmSync(runTempRoot, { recursive: true, force: true });
+      } catch {
+        /* best-effort; a wedged child dir must not block exit reporting */
+      }
+    });
+  }
+
+  // #4020: the temp sweep must never remove a directory holding a file a LATER
+  // chunk still runs — a harness may stage synthetic test files under the run
+  // root (tests/run-tests-harness.test.cjs's 30-file chunking fixture). Protect
+  // every ancestor of every selected file that lies INSIDE the run root.
+  const sweepProtectSet = new Set();
+  {
+    const { dirname } = require('path');
+    for (const f of selected) {
+      let cur = f;
+      while (cur && cur !== runTempRoot && cur.length > 1) {
+        sweepProtectSet.add(cur);
+        cur = dirname(cur);
+      }
+      if (cur === runTempRoot) sweepProtectSet.add(f); // exact-file case
+    }
+  }
+
   // Sandbox the overlay home so the loader's global scan ($GSD_HOME/.gsd/capabilities)
   // cannot read a developer's real installed capabilities during tests (ADR-1244 D2).
   // IDEMPOTENT: a nested run-tests spawn (e.g. tests/run-tests-harness.test.cjs)
@@ -1301,6 +1457,26 @@ function main() {
       } catch {
         // Best-effort; a missing/already-gone file is not an error here.
       }
+      // #4020: bound peak temp usage to ONE chunk, not the whole run — sweep
+      // the leaked fixture trees the chunk's tests left behind, then fail fast
+      // if residue persists (a fixture nothing cleans, wedged open), before the
+      // temp filesystem fills. OWNER-ONLY: a nested run-tests spawn (the harness
+      // regression test) REUSES the outer run's root and runs while the outer
+      // chunk's OTHER test files are live — its sweep would delete their
+      // fixtures mid-run (macOS CI: template.test.cjs's plan file vanished and
+      // its classifier silently fell back to 'standard'). Only the process that
+      // created the root manages its lifecycle; the inheritor leaves sweeping to
+      // the owner. PROTECTED (for the owner): ancestors of the runner's own
+      // selected files — a harness may stage synthetic test files under the temp
+      // root and later chunks still need them (tests/run-tests-harness.test.cjs
+      // #3597).
+      if (createdRunTempRoot) {
+        const swept = sweepRunTempRoot(runTempRoot, sweepProtectSet);
+        if (swept > 0) {
+          console.error(`run-tests: temp sweep after chunk ${i + 1}/${chunks.length} — removed ${swept} leaked entr${swept === 1 ? 'y' : 'ies'}`);
+        }
+        assertTempRootBounded(runTempRoot);
+      }
     } catch (err) {
       const elapsedMs = Number(process.hrtime.bigint() - chunkStartedAt) / 1e6;
       // When the per-chunk timeout fires, execFileSync kills the child and
@@ -1463,4 +1639,8 @@ module.exports = {
   selectExplicitFiles,
   selectFiles,
   walkTestFiles,
+  // #4020: run-scoped temp root — see the block above their definitions.
+  setupRunTempRoot,
+  sweepRunTempRoot,
+  assertTempRootBounded,
 };
