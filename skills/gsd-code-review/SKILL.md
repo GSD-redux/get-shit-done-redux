@@ -1,7 +1,7 @@
 ---
 name: gsd-code-review
 description: "Review source files changed during a phase for bugs, security issues, and code quality problems"
-argument-hint: "<phase-number> [--depth=quick|standard|deep] [--files file1,file2,...] [--fix [--all] [--auto]]"
+argument-hint: "<phase-number> [--depth=quick|standard|deep] [--files file1,file2,...] [--fix [--all] [--auto]] [reviewer-lane flags]"
 allowed-tools:
   - Read
   - Bash
@@ -26,6 +26,7 @@ Arguments:
 - `--fix` (optional) — after review completes (or if REVIEW.md already exists), auto-apply fixes found. Spawns gsd-code-fixer agent. Accepts sub-flags:
   - `--all` — include Info findings in fix scope (default: Critical + Warning only)
   - `--auto` — enable fix + re-review iteration loop, capped at 3 iterations
+- Optional reviewer-lane flags (#4209) — any flag returned by `gsd_run review-lane flags` (the canonical reviewer-lane roster; e.g. `--codex`, `--agy`) requests that lane independently review the same already-resolved scope alongside the internal `gsd-code-reviewer` agent. Its findings are corroborating evidence only — `gsd-code-reviewer` alone verifies each claim against the actual source and writes REVIEW.md; there is exactly one REVIEW.md schema. No reviewer-lane flag (the default) reviews with only the internal agent, byte-for-behavior unchanged from before #4209.
 
 Output: {padded_phase}-REVIEW.md in phase directory + inline summary of findings
 </objective>

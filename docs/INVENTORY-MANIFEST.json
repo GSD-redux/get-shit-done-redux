@@ -496,6 +496,7 @@
       "review-lane-invocation.cjs",
       "review-lane-runner.cjs",
       "review-reviewer-selection.cjs",
+      "reviewer-step-dispatch.cjs",
       "roadmap-command-router.cjs",
       "roadmap-parser.cjs",
       "roadmap-upgrade.cjs",
