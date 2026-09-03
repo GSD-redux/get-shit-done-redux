@@ -30,6 +30,7 @@ const {
   routeVerificationOutcome,
   routeMergeOutcome,
   buildCleanupManifestEntry,
+  filterAlreadyExecuted,
 } = require('../gsd-core/bin/lib/quick-batch-dispatch.cjs');
 
 // ─── parseQuickBatchArgs (rows 5,7-10,13-15) ────────────────────────────────
@@ -363,5 +364,58 @@ describe('quick-batch-dispatch: buildCleanupManifestEntry — sourced FRESH from
       planContent: '',
     });
     assert.equal('allowed_bases' in withoutBases, false);
+  });
+});
+
+// ─── filterAlreadyExecuted — crash-window duplicate-dispatch guard (#3677) ──
+//
+// Pure-decision unit tests (this module performs no filesystem I/O — the
+// caller determines `executedIds` via its own check). A REAL fixture
+// combining this function with an actual on-disk SUMMARY.md and a real
+// resumeBatch call lives in tests/quick-batch.test.cjs (crosses
+// quick-batch.cjs + quick-batch-dispatch.cjs, so it belongs with the
+// filesystem-backed suite, not this pure one).
+
+describe('quick-batch-dispatch: filterAlreadyExecuted', () => {
+  test('an id present in executedIds is excluded from spawnEligible and reported in alreadyExecuted', () => {
+    const result = filterAlreadyExecuted(['a', 'b', 'c'], ['b']);
+    assert.deepEqual(result.spawnEligible, ['a', 'c']);
+    assert.deepEqual(result.alreadyExecuted, ['b']);
+  });
+
+  test('boundary: empty executedIds — every eligible id is spawnEligible, alreadyExecuted is empty', () => {
+    const result = filterAlreadyExecuted(['a', 'b'], []);
+    assert.deepEqual(result.spawnEligible, ['a', 'b']);
+    assert.deepEqual(result.alreadyExecuted, []);
+  });
+
+  test('boundary: every eligible id already executed — spawnEligible is empty, nothing is silently dropped', () => {
+    const result = filterAlreadyExecuted(['a', 'b'], ['a', 'b']);
+    assert.deepEqual(result.spawnEligible, []);
+    assert.deepEqual(result.alreadyExecuted, ['a', 'b']);
+  });
+
+  test('boundary: empty eligibleIds — both outputs empty regardless of executedIds', () => {
+    const result = filterAlreadyExecuted([], ['x', 'y']);
+    assert.deepEqual(result.spawnEligible, []);
+    assert.deepEqual(result.alreadyExecuted, []);
+  });
+
+  test('order-preserving: spawnEligible/alreadyExecuted each keep eligibleIds\' original relative order', () => {
+    const result = filterAlreadyExecuted(['c', 'a', 'b', 'd'], ['a', 'd']);
+    assert.deepEqual(result.spawnEligible, ['c', 'b']);
+    assert.deepEqual(result.alreadyExecuted, ['a', 'd']);
+  });
+
+  test('accepts a Set for executedIds, not only an array (same convention as computeSpawnPlan\'s refused param)', () => {
+    const result = filterAlreadyExecuted(['a', 'b'], new Set(['a']));
+    assert.deepEqual(result.spawnEligible, ['b']);
+    assert.deepEqual(result.alreadyExecuted, ['a']);
+  });
+
+  test('an id in executedIds that is NOT in eligibleIds is ignored — never invented into either output', () => {
+    const result = filterAlreadyExecuted(['a'], ['a', 'phantom-id']);
+    assert.deepEqual(result.spawnEligible, []);
+    assert.deepEqual(result.alreadyExecuted, ['a']);
   });
 });

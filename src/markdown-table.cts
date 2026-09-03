@@ -885,6 +885,136 @@ export function appendQuickTaskRow(
   return { ok: true, value: { content, row, variant: match.label } };
 }
 
+
+// ─── migrateQuickTasksTable (#3730 option b) ───────────────────────────────
+
+/**
+ * Column-name → canonical-cell mapping for migrating a legacy Quick Tasks table
+ * (#3730). Name-based, case-insensitive; every column NOT in this map lands in
+ * the Description bucket (joined with ' · ' in original column order, unknown
+ * names kept as `name: value`) so no historical datum is dropped.
+ */
+const QUICK_TASKS_COLUMN_ALIASES: Record<string, string> = {
+  '#': '#', id: '#',
+  date: 'Date', when: 'Date',
+  commit: 'Commit', sha: 'Commit',
+  status: 'Status',
+  directory: 'Directory', artifacts: 'Directory', path: 'Directory', dir: 'Directory',
+  description: 'Description', task: 'Description', summary: 'Description',
+  slug: 'Description', scope: 'Description', title: 'Description',
+};
+
+/**
+ * Migrate STATE.md's "Quick Tasks Completed" table onto the canonical
+ * `with-status` schema (#3730, maintainer decision 2026-09-02: option b).
+ *
+ * The pre-registry prose template licensed arbitrary column shapes GSD itself
+ * emitted, and `appendQuickTaskRow` fails loud on every one of them — leaving a
+ * project permanently unappendable. This is the supported repair path: the
+ * `gsd-tools quick-tasks-migrate` subcommand, plus an automatic check on the
+ * first `quick`/`fast` run (the workflow calls this before appending), which is
+ * a silent no-op when the section is absent, the table is already canonical, or
+ * the user never runs quick at all.
+ *
+ * Same section-selection, parse, and fail-loud posture as `appendQuickTaskRow`
+ * (ADR-2143 §7 upheld — append still rejects; this REPAIRS). Returns
+ * `{ok:true, value:{content, migrated:false}}` for the no-op cases so callers
+ * can stay silent, and `{migrated:true, from, rows}` when a rewrite happened so
+ * the CLI can report exactly what moved.
+ */
+export function migrateQuickTasksTable(
+  stateContent: string,
+): Result<{ content: string; migrated: boolean; from?: string[]; rows?: number }> {
+  const section = selectQuickTasksSection(stateContent);
+  if (!section) {
+    return { ok: true, value: { content: stateContent, migrated: false } };
+  }
+
+  const parsed = parseMarkdownTable(section.body);
+  if (!parsed.ok) {
+    return { ok: false, reason: `quick-tasks table: ${parsed.reason}` };
+  }
+
+  const match = matchTableSchema(parsed.value.columns);
+  if (match && match.id === 'QuickTasks') {
+    return { ok: true, value: { content: stateContent, migrated: false } };
+  }
+
+  const canonical = TABLE_SCHEMAS.QuickTasks.find((v) => v.label === 'with-status')!.columns;
+  // Map each legacy column to its canonical target; unmapped names keep their
+  // identity so the Description bucket can render them losslessly.
+  const targets = parsed.value.columns.map((c) => QUICK_TASKS_COLUMN_ALIASES[c.trim().toLowerCase()] ?? null);
+
+  const rows = parsed.value.rows.map((row, rowIdx) => {
+    const bucket: Record<string, string> = {
+      '#': '', Description: '', Date: '', Commit: '', Status: '', Directory: '',
+    };
+    const descriptionParts: string[] = [];
+    // parseMarkdownTable hands back name-keyed records (rows[i][columnName]).
+    parsed.value.columns.forEach((col, i) => {
+      const raw = (row[col] ?? '').trim();
+      const target = targets[i];
+      if (target === 'Description') {
+        if (raw) descriptionParts.push(raw);
+      } else if (target) {
+        // Collision-safe (#3730 review): two legacy columns aliasing the same
+        // canonical target must not silently overwrite — the displaced value
+        // joins the Description bucket under its own name, same convention as
+        // an unknown column, so no historical datum is dropped.
+        if (raw && bucket[target]) {
+          descriptionParts.push(`${col.trim()}: ${raw}`);
+        } else if (raw) {
+          bucket[target] = raw;
+        }
+      } else if (raw) {
+        descriptionParts.push(`${col.trim()}: ${raw}`);
+      }
+    });
+    bucket['#'] = bucket['#'] || String(rowIdx + 1);
+    bucket.Description = descriptionParts.join(' · ');
+    bucket.Date = bucket.Date || '—';
+    bucket.Commit = bucket.Commit || '—';
+    bucket.Status = bucket.Status || '—';
+    bucket.Directory = bucket.Directory || '—';
+    return `| ${canonical.map((c) => escapeCell(bucket[c])).join(' | ')} |`;
+  });
+
+  const eol = /\r\n/.test(section.body) ? '\r\n' : '\n';
+  const lines = section.body.split(/\r?\n/);
+  // CONTIGUOUS-run bound (#3730 review), mirroring resetQuickTaskRows: the
+  // section body may carry a SECOND table (a `#### Notes` subsection or a
+  // trailing table after a blank line) that parseMarkdownTable never read —
+  // scanning for the last pipe line anywhere in the body would splice the
+  // rewrite across it and silently destroy it. Only the first CONTIGUOUS run
+  // of pipe lines — the table that was parsed — is replaced.
+  const firstTableLineIdx = lines.findIndex((l) => l.trim().startsWith('|'));
+  let lastTableLineIdx = firstTableLineIdx;
+  while (lastTableLineIdx + 1 < lines.length && lines[lastTableLineIdx + 1].trim().startsWith('|')) {
+    lastTableLineIdx++;
+  }
+  const header = `| ${canonical.join(' | ')} |`;
+  // Widths match workflows/quick.md's canonical template byte-for-byte
+  // (#3730 review): its delimiter is max(3, len+2) per column.
+  const delimiter = `| ${canonical.map((c) => '-'.repeat(Math.max(3, c.length + 2))).join(' | ')} |`;
+  const newBody = [
+    ...lines.slice(0, firstTableLineIdx),
+    header,
+    delimiter,
+    ...rows,
+    ...lines.slice(lastTableLineIdx + 1),
+  ].join(eol);
+
+  return {
+    ok: true,
+    value: {
+      content: replaceSection(stateContent, section, newBody),
+      migrated: true,
+      from: parsed.value.columns,
+      rows: rows.length,
+    },
+  };
+}
+
 // ─── resetQuickTaskRows (#2142) ────────────────────────────────────────────
 
 /**

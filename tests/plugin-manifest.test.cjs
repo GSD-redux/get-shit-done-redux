@@ -421,12 +421,13 @@ describe('C: plugin.json schema validation', () => {
   // symlinked. An earlier revision also copied agents/, on the (correct)
   // observation that the CLI auto-validates it and a frontmatter-less
   // agents/*.md exits 1. Dropped in review: it is a NEW gate the issue does not
-  // ask for, on the largest of the trees, and because C2 never runs in CI it
-  // would be red only on contributor machines with `claude` installed — the
-  // same worst-of-both-states #3613 exists to remove. agents/ coverage is worth
-  // having and is tracked as #3751, where "should CI provision the CLI" — the
-  // decision it actually turns on — can be answered for it.
-  const COMPONENT_DIRS = ['commands', 'hooks', 'skills'];
+  // ask for, on the largest of the trees. RESOLVED by #3751 (2026-09-02,
+  // options 1+3): CI provisions the claude CLI, agents/ is in the fixture, and
+  // the asymmetry #3613 existed to remove is gone — C2 runs in CI.
+  // #3751 (decision 1+3, 2026-09-02): agents/ is included — the CLI validates
+  // it by convention (measured on 2.1.239), and CI now provisions the claude
+  // CLI in a dedicated test.yml job, so C2 is a real gate over this tree.
+  const COMPONENT_DIRS = ['commands', 'hooks', 'skills', 'agents'];
 
   /**
    * One entry that must survive the copy into each component tree, so C3 catches
@@ -439,6 +440,9 @@ describe('C: plugin.json schema validation', () => {
     commands: 'gsd',
     hooks: 'hooks.json',
     skills: 'gsd-add-tests',
+    // #3751: agents/ is undeclared in plugin.json (CLI-convention pickup), so
+    // the expected entry is a shipped agent file, not a manifest-declared path.
+    agents: 'gsd-executor.md',
   };
 
   /**
@@ -532,6 +536,43 @@ describe('C: plugin.json schema validation', () => {
       }
     }
   );
+
+  // ── #3751: agents/ coverage (maintainer decision 2026-09-02: options 1+3) ────
+  //
+  // `claude plugin validate` auto-validates agents/ by CLI CONVENTION (the
+  // manifest does not declare it), measured live on CLI 2.1.239 in the issue.
+  // Decision: CI provisions the claude CLI (a dedicated test.yml job), so C2 is
+  // a real gate, and the fixture + C3 cover the tree everywhere else.
+
+  test('C3+#3751: the validation fixture covers agents/, the tree the CLI validates by convention', () => {
+    const pluginRoot = buildValidationPluginRoot();
+    try {
+      const agentsDir = path.join(pluginRoot, 'agents');
+      const stat = fs.lstatSync(agentsDir);
+      assert.ok(stat.isDirectory(), 'agents/ must be a real directory in the C2 validation fixture');
+      assert.equal(stat.isSymbolicLink(), false, 'agents/ must be copied, not symlinked');
+      const entries = fs.readdirSync(agentsDir);
+      assert.ok(entries.length > 0, 'agents/ is EMPTY in the C2 validation fixture');
+      assert.ok(
+        entries.some((e) => /^gsd-.*\.md$/.test(e)),
+        'agents/ must carry the shipped gsd-*.md files, not a stub'
+      );
+    } finally {
+      cleanup(pluginRoot);
+    }
+  });
+
+  test('#3751: CI provisions the claude CLI so C2 is a real gate, not a local-only tier', () => {
+    const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'test.yml'), 'utf8');
+    assert.ok(
+      /@anthropic-ai\/claude-code/.test(workflow),
+      'test.yml must install the claude CLI (npm i -g @anthropic-ai/claude-code) in a job'
+    );
+    assert.ok(
+      /plugin-manifest\.test\.cjs/.test(workflow),
+      'the provisioning job must run tests/plugin-manifest.test.cjs (the C2 gate)'
+    );
+  });
 
   // ── C3: Unconditional fixture-construction guard ─────────────────────────────
   //

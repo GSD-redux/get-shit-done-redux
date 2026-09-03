@@ -83,6 +83,10 @@ the root cause of #2133.
 ```bash
 # Detect whether STATE.md has a Quick Tasks Completed table
 if grep -q "Quick Tasks Completed" .planning/STATE.md 2>/dev/null; then
+  # #3730: bring a legacy pre-registry table onto the canonical schema BEFORE
+  # appending — silent no-op when already canonical, so this runs harmlessly
+  # on every fast task and migrates exactly once, on the first.
+  gsd_run quick-tasks-migrate || true
   gsd_run quick-tasks-append --task "$TASK" || echo "⚠ fast.md log_to_state: could not append Quick Tasks row (see message above); continuing."
 fi
 ```
