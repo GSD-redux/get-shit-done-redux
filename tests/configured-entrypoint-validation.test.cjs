@@ -25,12 +25,26 @@ test('finishInstall rejects an invalid configured entrypoint before Done output'
   const logs = [];
   const originalLog = console.log;
   console.log = (...args) => logs.push(args.join(' '));
+  // #2665: finishInstall calls writeNonClaudeDefaults(runtime) in-process before
+  // the entrypoint assertion throws; sandbox HOME (+ USERPROFILE for os.homedir()
+  // on Windows) and config-location env so that an ambient CLAUDE_CONFIG_DIR/etc
+  // cannot redirect the write to a live config dir.
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
   try {
     assert.throws(() => finishInstall(null, null, null, false, 'cline', false, root, {
       configuredEntrypoints: [{ runtime: 'cline', configPath: path.join(root, 'config'), scriptPath: path.join(root, 'missing.js') }],
     }), /Configured entrypoint validation failed/);
   } finally {
     console.log = originalLog;
+    restoreConfigLocationEnv();
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
   }
   assert.equal(logs.some(line => line.includes('Done!')), false);
 });
