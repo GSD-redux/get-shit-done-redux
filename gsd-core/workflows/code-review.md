@@ -594,7 +594,13 @@ file paths travel on stdin, never argv (`REVIEW_FILES`, already scoped and filte
 `compute_file_scope`):
 ```bash
 EXTERNAL_EVIDENCE_BLOCK=""
-if [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
+if [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ] && [ -z "$DIFF_BASE" ]; then
+  # No prior review and no resolvable phase-start commit (e.g. a phase's very first review):
+  # dispatch-step's provenance check would fail closed on an empty --base-sha anyway, but
+  # silently — explain why explicitly requested lanes did not run instead of letting that
+  # generic rejection stand unexplained.
+  echo "Warning: external reviewer lane(s) requested (${EXPLICIT_REVIEWER_SLUGS[*]}) but no diff base could be resolved (no prior review, no phase-start commit) — skipping external dispatch." >&2
+elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
   DISPATCH_JSON=$(printf '%s\n' "${REVIEW_FILES[@]}" | gsd_run review-lane dispatch-step \
     --repo-root "$REPO_ROOT" --depth "$REVIEW_DEPTH" --base-sha "$DIFF_BASE" \
     --run-dir "$PHASE_DIR" --explicit "$EXPLICIT_JOINED" --raw)
