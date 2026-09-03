@@ -183,10 +183,11 @@ function isCodexHooksFeatureKey(key) {
   return CODEX_HOOKS_FEATURE_ALL_KEYS.includes(key);
 }
 
-// #768 \u2014 Claude Code permissions.allow / permissions.deny entries.
+// #768 \u2014 Claude Code permissions.allow entries.
 // Pre-populated during Claude installs to eliminate first-run approval friction
-// for gsd-core's own known-safe tool calls, and to add defense-in-depth deny
-// entries for common credential files.
+// for gsd-core's own known-safe tool calls. (The defense-in-depth deny entries
+// for credential files that #768 also wrote are retired \u2014 see
+// GSD_CLAUDE_LEGACY_DENY_PERMISSIONS below.)
 //
 // Format: each string uses Claude Code's documented permission rule syntax \u2014
 //   "Tool(pattern)"  e.g. "Bash(npx gsd-core *)", "Read(.planning/*)"
@@ -204,7 +205,20 @@ const GSD_CLAUDE_ALLOW_PERMISSIONS = Object.freeze([
   'Read(STATE.md)',
   'Edit(STATE.md)',
 ]);
-const GSD_CLAUDE_DENY_PERMISSIONS = Object.freeze([
+// #4221 \u2014 Retired deny rules. #768 wrote these three `Read()` deny rules
+// into settings.json; Claude Code 2.1.259 hardened the Bash-side enforcement
+// of Read() deny rules so that ANY such rule makes every
+// `cd DIR && grep/cat relative-path` compound prompt for approval, even in
+// `auto` permission mode \u2014 and GSD subagents emit hundreds of those per
+// session. The same protection now ships as the managed PreToolUse hook
+// hooks/gsd-secret-read-guard.js (a hook denial is not a permission rule and
+// never arms that check). Unlike the #2278 allow-side migration, there is no
+// surviving "current" deny list: the constant is RENAMED to its legacy role
+// and only ever filtered, never added. Byte-equal strings only \u2014 a user's
+// own hand-written identical rule is indistinguishable and is removed too
+// (the install manifest never recorded permission strings, so a
+// manifest-gated cleanup is not possible).
+const GSD_CLAUDE_LEGACY_DENY_PERMISSIONS = Object.freeze([
   'Read(.env)',
   'Read(.env.*)',
   'Read(.secrets)',
@@ -236,6 +250,13 @@ const GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS = Object.freeze([
  * so existing installs end up with the working `Edit(...)` forms instead of
  * both the dead legacy entry and its replacement sitting side by side.
  *
+ * Migration (#4221): the retired GSD_CLAUDE_LEGACY_DENY_PERMISSIONS entries
+ * are removed from permissions.deny (byte-equal only). Nothing is added to
+ * deny any more: an absent `deny` key is left absent (never created as an
+ * empty array), and a `deny` array emptied BY THIS FILTER is deleted so the
+ * retirement leaves no `"deny": []` residue; a user's pre-existing empty
+ * `deny: []` is untouched.
+ *
  * Defensive: if settings is not a plain object, returns immediately without
  * throwing. If permissions.allow / permissions.deny exist but are not arrays
  * (malformed settings), they are replaced with valid arrays.
@@ -252,7 +273,7 @@ function mergeClaudePermissions(settings) {
   if (!Array.isArray(settings.permissions.allow)) {
     settings.permissions.allow = [];
   }
-  if (!Array.isArray(settings.permissions.deny)) {
+  if (settings.permissions.deny !== undefined && !Array.isArray(settings.permissions.deny)) {
     settings.permissions.deny = [];
   }
 
@@ -265,9 +286,13 @@ function mergeClaudePermissions(settings) {
       settings.permissions.allow.push(entry);
     }
   }
-  for (const entry of GSD_CLAUDE_DENY_PERMISSIONS) {
-    if (!settings.permissions.deny.includes(entry)) {
-      settings.permissions.deny.push(entry);
+  if (Array.isArray(settings.permissions.deny)) {
+    const before = settings.permissions.deny.length;
+    settings.permissions.deny = settings.permissions.deny.filter(
+      (e) => !GSD_CLAUDE_LEGACY_DENY_PERMISSIONS.includes(e)
+    );
+    if (settings.permissions.deny.length === 0 && before > 0) {
+      delete settings.permissions.deny;
     }
   }
 }
@@ -9039,16 +9064,28 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         );
         if (settings.permissions.allow.length !== before) {
           permissionsModified = true;
+          // #4221: an array this filter emptied was GSD-only \u2014 remove the
+          // key rather than leave an empty array behind (Antigravity symmetry).
+          if (settings.permissions.allow.length === 0) {
+            delete settings.permissions.allow;
+          }
         }
       }
       if (Array.isArray(settings.permissions.deny)) {
         const before = settings.permissions.deny.length;
+        // #4221: the deny rules are retired, so this is a legacy-only filter.
         settings.permissions.deny = settings.permissions.deny.filter(
-          (e) => !GSD_CLAUDE_DENY_PERMISSIONS.includes(e)
+          (e) => !GSD_CLAUDE_LEGACY_DENY_PERMISSIONS.includes(e)
         );
         if (settings.permissions.deny.length !== before) {
           permissionsModified = true;
+          if (settings.permissions.deny.length === 0) {
+            delete settings.permissions.deny;
+          }
         }
+      }
+      if (permissionsModified && Object.keys(settings.permissions).length === 0) {
+        delete settings.permissions;
       }
       if (permissionsModified) {
         settingsModified = true;
@@ -13881,7 +13918,7 @@ module.exports = {
     mergeClaudePermissions,
     GSD_CLAUDE_ALLOW_PERMISSIONS,
     GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS,
-    GSD_CLAUDE_DENY_PERMISSIONS,
+    GSD_CLAUDE_LEGACY_DENY_PERMISSIONS,
     GSD_CODEX_MARKER,
     // #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2)
     CODEX_SANDBOX_HOLDS,
