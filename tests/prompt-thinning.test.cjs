@@ -78,6 +78,7 @@ describe('prompt thinning — sub-200K context window support (#1978)', () => {
       assert.match(assignWaves, /known automatic external review/i);
       assert.match(assignWaves, /plan includes internal review lanes/i);
       assert.match(assignWaves, /accepted internal-review fixes[^.]*before[^.]*open/i);
+      assert.match(assignWaves, /run internal review and apply the accepted internal-review fixes before the final open/i);
       assert.match(assignWaves, /if an open-time property exists[^.]*re-check it immediately before opening[^.]*nothing intervening/i);
       assert.match(assignWaves, /post-open CI[^.]*review[^.]*tracking may follow/i);
       // Directionality fixture (#4107): an inverted-order sentence — PR opens
@@ -85,6 +86,8 @@ describe('prompt thinning — sub-200K context window support (#1978)', () => {
       // above. Proves the regex tests sequence, not mere keyword co-occurrence.
       const invertedOrdering = 'Open the PR before scheduling the accepted internal-review fixes.';
       assert.doesNotMatch(invertedOrdering, /accepted internal-review fixes[^.]*before[^.]*open/i);
+      const invertedPlannerText = 'Open the PR, then run internal review and apply the accepted internal-review fixes.';
+      assert.doesNotMatch(invertedPlannerText, /run internal review and apply the accepted internal-review fixes before the final open/i);
       assert.match(assignWaves, /planner-antipatterns\.md \("External Review Before PR Open \(#4107\)"\)/);
 
       const reference = fs.readFileSync(PLANNER_ANTIPATTERNS_REF, 'utf-8');
