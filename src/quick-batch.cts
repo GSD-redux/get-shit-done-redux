@@ -752,6 +752,86 @@ function completeQuickItem(
   }
 }
 
+// ─── Post-planning update (Phase 4, #3676) ──────────────────────────────────────
+
+/**
+ * One item's post-planning update: `dependsOn` (already-canonical `quick_id`
+ * strings — planning happens after allocation, so these are never indices or
+ * `clientId`s) and/or `plannedFiles` (normalized here, same as `createBatch`).
+ * Either field may be omitted to leave that item's existing value untouched.
+ */
+interface QuickBatchItemUpdate {
+  quickId: string;
+  dependsOn?: string[];
+  plannedFiles?: string[];
+}
+
+/**
+ * Persist post-planning `depends_on`/`planned_files` updates and recompute
+ * `wave` for every item (Phase 4 / #3676, resolving design doc Open
+ * Question 1's "no mutator exists" gap as ONE additive export on this
+ * module — never a second, independent writer against the same
+ * `BATCH.json`). Runs inside ONE `withPlanningLock` transaction, reusing
+ * the exact `loadBatch` -> mutate -> `computeWaves` -> `platformWriteSync`
+ * shape `resumeBatch`/`completeQuickItem` already use.
+ *
+ * Fails closed WITHOUT persisting anything when an update references an
+ * unknown `quickId`, an unknown/self dependency, or the resulting graph has
+ * a cycle — `computeWaves` (reused, not duplicated) is the single source of
+ * truth for that validation, exactly as it is at `createBatch` time.
+ */
+function updateBatchItems(
+  cwd: string,
+  batchId: string,
+  updates: QuickBatchItemUpdate[],
+  options: { clock?: Clock } = {},
+): Result<{ manifest: QuickBatchManifest }> {
+  const clock = options.clock ?? realClock;
+  try {
+    return withPlanningLock(cwd, (): Result<{ manifest: QuickBatchManifest }> => {
+      const loaded = loadBatch(cwd, batchId);
+      if (!loaded.ok) return loaded;
+      const manifest = loaded.value;
+      const byId = new Map(manifest.items.map((it) => [it.quick_id, it]));
+
+      for (const update of updates) {
+        const item = byId.get(update.quickId);
+        if (!item) {
+          return { ok: false, reason: `batch ${batchId} has no item ${update.quickId}` };
+        }
+        if (update.dependsOn !== undefined) {
+          for (const dep of update.dependsOn) {
+            if (dep === update.quickId) {
+              return { ok: false, reason: `item ${update.quickId} declares a dependency on itself` };
+            }
+            if (!byId.has(dep)) {
+              return { ok: false, reason: `item ${update.quickId} declares an unknown dependency reference: ${JSON.stringify(dep)}` };
+            }
+          }
+          item.depends_on = [...update.dependsOn];
+        }
+        if (update.plannedFiles !== undefined) {
+          item.planned_files = update.plannedFiles.map(posixNormalize);
+        }
+      }
+
+      const wavesResult = computeWaves(toWaveInput(manifest.items));
+      if (!wavesResult.ok) return wavesResult;
+      const waveOf = new Map<string, number>();
+      wavesResult.value.forEach((wave, idx) => {
+        for (const quickId of wave) waveOf.set(quickId, idx);
+      });
+      for (const it of manifest.items) it.wave = waveOf.get(it.quick_id) as number;
+
+      platformWriteSync(batchManifestPath(cwd, batchId), JSON.stringify(manifest, null, 2) + '\n');
+
+      return { ok: true, value: { manifest } };
+    }, clock);
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ─── Resume ──────────────────────────────────────────────────────────────────────
 
 interface QuickBatchTransition {
@@ -870,4 +950,5 @@ export = {
   resumeBatch,
   completeQuickItem,
   hasQuickTaskRow,
+  updateBatchItems,
 };

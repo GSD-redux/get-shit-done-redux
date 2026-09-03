@@ -168,6 +168,7 @@ Four cases look similar from the outside but mean different things:
 
 ## Related
 
+- [Batch quick tasks](batch-quick-tasks.md) — run several `/gsd-quick`-shaped tasks together with `/gsd-quick-batch`
 - [The phase loop](../explanation/the-phase-loop.md)
 - [Context engineering](../explanation/context-engineering.md)
 - [Commands](../COMMANDS.md)

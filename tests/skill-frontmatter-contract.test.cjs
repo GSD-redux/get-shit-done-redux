@@ -493,6 +493,10 @@ const KNOWN_SKILLS = new Set([
   'pr-branch.md',
   'profile-user.md',
   'progress.md',
+  // #3676 (epic #3344, ADR-1239 "Quick-batch binding"): genuinely new
+  // first-party command batching several /gsd:quick-shaped tasks together —
+  // not a consolidation of an existing skill.
+  'quick-batch.md',
   'quick.md',
   'resume-work.md',
   'review-backlog.md',
