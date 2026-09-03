@@ -261,3 +261,176 @@ None of the new tests duplicate existing coverage:
   (`worktree-dispatch.md:118-121`'s own post-dispatch check treats
   SUMMARY.md existence as the completion signal, no partial-write handling
   anywhere in this design).
+
+## 9. Review Pass 2 addendum — orthogonal Spec + Security findings, both closed
+
+Two isolated review passes (neither authored the original diff) found two
+real test-quality gaps in §1's implementation and the ownership-tampering
+tests in §3. Both are closed here, WITHOUT deferral, per this repo's
+absolute no-defer rule — including a THIRD, self-discovered defect surfaced
+while fixing the first finding (see §9.3).
+
+### 9.1 Spec finding — crash-window test was a prose proxy, not behavioral proof
+
+The original `tests/gsd-quick-batch-workflow.test.cjs` regression tests for
+§1's fix only asserted `readStep('worktree-dispatch.md')` + regex matches
+against the MARKDOWN — proving the documentation says the right thing,
+never that the runtime condition (pending status + on-disk SUMMARY.md +
+absent STATE row) is actually handled correctly. #3677's own "Alternatives
+considered" explicitly rejects "document recovery without fault injection."
+
+**Fix:** the filtering decision itself — "drop items whose SUMMARY.md
+exists from the eligible-for-dispatch set" — is now a pure, independently
+testable function, `filterAlreadyExecuted(eligibleIds, executedIds)` in
+`src/quick-batch-dispatch.cts`, wired to a new `quick-batch filter-executed`
+CLI verb (`src/quick-batch-command-router.cts`), following the SAME
+pure-decision-then-CLI-wired pattern `computeSpawnPlan`/`computeMergeOrder`
+already establish in that module. `worktree-dispatch.md` now calls this
+verb explicitly instead of describing the decision only in prose.
+
+A genuine fixture-based test in `tests/quick-batch.test.cjs` (new describe
+block "crash-window duplicate-dispatch guard (#3677)") constructs a REAL
+`BATCH.json` via `createBatch`, writes a REAL `SUMMARY.md` file on disk at
+the item's real `item_dir` (via `generateSlugInternal`, the same slug
+derivation every workflow step uses), calls the REAL `resumeBatch`, and
+proves `resumeBatch` alone still reports the item eligible — then proves
+`filterAlreadyExecuted`, fed a real filesystem check, correctly excludes
+it. A second test proves an item with no real SUMMARY.md is NOT excluded
+(boundary case — the guard must not over-fire). The prior prose-assertion
+tests are KEPT (they still prove the workflow markdown is correctly WIRED
+to call the new verb, in the right order) but are no longer the only proof.
+Pure-function boundary tests (empty/all-executed/order-preserving/Set vs
+array/phantom-id) live in `tests/quick-batch-dispatch.test.cjs`; CLI-wiring
+tests live in `tests/quick-batch-command-router.test.cjs`.
+
+### 9.2 Security finding — ownership-tampering tests didn't test ownership
+
+The original two tests (branch-name-fails-shape-check; wholly-foreign
+never-registered repo) proved real things, but neither exercised what
+"arbitrary-worktree ownership" actually names: a manifest entry whose
+`worktree_path`/`branch` are swapped to point at a DIFFERENT,
+GENUINELY-REGISTERED sibling worktree of the SAME `repoRoot` (a concurrent
+batch's own agent worktree, or a stale worktree from a prior crashed run),
+with a branch name that passes `WORKTREE_AGENT_BRANCH_RE`'s shape check and
+a base that is legitimately in `allowed_bases`.
+
+**Investigation conclusion: ALREADY SAFE — not a reachable gap.** Traced
+`executeWorktreeWaveCleanupPlan` (`src/worktree-safety.cts:1005-1217`)
+directly against two REAL, concurrently-alive sibling worktrees of one
+repo. Git itself enforces branch-per-worktree uniqueness — the same branch
+cannot be checked out in two worktrees of one repo at once — so
+`worktree_path`'s ACTUAL checked-out branch
+(`git -C worktree_path rev-parse --abbrev-ref HEAD`, `:1047`) can only
+equal a swapped-in `entry.branch` if that `entry.branch` is the SIBLING's
+own real, uniquely-generated branch name. Manifest tampering confined to
+ONE batch's own record has no way to know that name: branch names are
+`agent-<quick_id>[-<timestamp>]`-shaped (`execute-phase`'s own
+`executor-isolation-dispatch.md:269-270` convention, reused verbatim per
+`worktree-dispatch.md`'s own text), and `quick_id` allocation is
+collision-checked GLOBALLY across every existing quick task AND batch
+(`src/quick-batch.cts` `collectExistingBatchQuickIds`) — not merely
+within one batch. Constructing a passing swap therefore requires ALSO
+having legitimate read access to the sibling's own worktree/branch record,
+which is a strictly larger compromise than "tamper with this batch's own
+manifest," the scope the AC bullet actually names.
+
+Empirically verified (not merely reasoned about) with two real
+`git worktree add`-created siblings sharing one merge-base: a manifest
+entry naming item 2's real path but item 1's real branch name (the direct
+swap), and the reverse, both come back `status: 'blocked',
+reason: 'branch_mismatch'` — never `merge_failed`, never a wrongly
+successful merge. Both real worktrees, their branches, and item 2's real
+uncommitted-to-main commit survive completely untouched by either attempt.
+
+**Fix:** a new, stronger test in `tests/gsd-quick-batch-merge-integration.test.cjs`
+("a manifest entry with one sibling worktree's real PATH but the OTHER
+sibling's real BRANCH name is blocked") supplements (does not replace) the
+original two tests, which still prove real, distinct boundaries
+(branch-shape rejection at the manifest-normalization layer; a wholly
+foreign, never-registered repo blocked via `base_mismatch`).
+
+**Explicitly documented trust boundary (not a gap, not fixed):**
+`executeWorktreeWaveCleanupPlan` defends against fabricated/mismatched
+`{worktree_path, branch, base}` triples; it does NOT defend against a
+CALLER bug that correctly copies a real-but-wrong-item's triple into the
+wrong manifest entry (i.e. gets `agent_id` attribution wrong while every
+git-verifiable field is internally consistent for SOME real worktree). This
+is why §9.3's durable `dispatched_worktree`/`dispatched_branch`/
+`dispatched_base` fields are stored PER quick_id (a direct keyed lookup),
+never via a shared array requiring an `agent_id`-matching search — the
+storage shape itself avoids the one class of caller-side attribution bug
+this primitive cannot see.
+
+### 9.3 Self-discovered defect (not deferred) — durable worktree recovery was missing entirely
+
+While building §9.1's real fixture, tracing `merge-wave.md` substep 3
+("`$WT_PATH`/`$WT_BRANCH`/`$EXPECTED_BASE` per item come from the recorded
+`$QUICK_BATCH_WORKTREE_MANIFEST` entry Step 6 wrote for that `agent_id`")
+against `/gsd:quick`'s own prior art (`gsd-core/workflows/quick.md:415`:
+`QUICK_WORKTREE_MANIFEST=$(mktemp ...)`) revealed that
+`$QUICK_BATCH_WORKTREE_MANIFEST` — quick-batch explicitly models it on the
+SAME mechanism — is a fresh, PER-PROCESS `mktemp` file, not a durable
+record. §1's own fix (never re-dispatch an item whose SUMMARY.md already
+exists) means a RESUMED coordinator process's Step 6 correctly does NOT
+create a fresh manifest entry for that item — but nothing else durably
+recorded that item's `worktree_path`/`branch`/`expected_base` either, so
+Step 7 in the resumed process would have had NO data to build that item's
+cleanup-wave entry from. §1's original claim ("not lost: merge-wave.md's
+own criterion already picks it up") was therefore ACCURATE about
+merge-eligibility ("should this item be merged") but WRONG about data
+availability ("with what worktree/branch"). Before §1's fix, this never
+surfaced as a visible bug because the old (harmful) re-dispatch behavior
+always populated a fresh manifest entry for whichever (wrong, duplicate)
+worktree it just created — the durable-recovery gap was latent, masked by
+the duplicate-dispatch bug itself.
+
+**Fix:** three new fields on `QuickBatchItem`
+(`dispatched_worktree`/`dispatched_branch`/`dispatched_base`,
+`src/quick-batch.cts`) — deliberately NOT a reuse of the pre-existing
+`worktree` field, whose `loadBatch` validation requires the path to exist
+on disk (verified empirically: reusing it made the batch permanently
+unloadable the moment a legitimately-merged worktree was removed, since
+`updateBatchItems` itself calls `loadBatch` first). The three new fields
+carry no existence check — their entire purpose is to stay readable (and
+clearable) after a legitimate post-merge removal. `updateBatchItems`
+(`QuickBatchItemUpdate`) gained matching optional `dispatchedWorktree`/
+`dispatchedBranch`/`dispatchedBase` fields (explicit `null` clears,
+`undefined` leaves untouched — same convention as `dependsOn`/
+`plannedFiles`). `worktree-dispatch.md` persists the triple immediately
+after recording the ephemeral entry; `merge-wave.md` falls back to it when
+the ephemeral manifest lacks an entry, clears it after a successful merge,
+and fails closed (`merge_failed: "missing durable worktree record"`) rather
+than guessing if somehow all three are still null.
+
+Verified end-to-end (persist → fresh `loadBatch` recovers the triple →
+clear → a SUBSEQUENT `loadBatch` still succeeds even though the path no
+longer exists) in `tests/quick-batch.test.cjs`'s new "durable
+worktree-recovery fields (#3677)" describe block, plus structural wiring
+tests in `tests/gsd-quick-batch-workflow.test.cjs` for both workflow files.
+
+### 9.4 Revised blast radius (supersedes §5 for the fields below)
+
+- `src/quick-batch.cts` — `QuickBatchItem`/`QuickBatchItemInput`/
+  `QuickBatchItemUpdate` gain `dispatched_worktree`/`dispatched_branch`/
+  `dispatched_base` (+ camelCase input/update equivalents);
+  `validateBatchSchema` gains matching type checks (no existence check).
+- `src/quick-batch-dispatch.cts` — new `filterAlreadyExecuted` pure
+  function + `FilterAlreadyExecutedResult` type.
+- `src/quick-batch-command-router.cts` — new `filter-executed` CLI verb.
+- `gsd-core/workflows/quick-batch/steps/worktree-dispatch.md` — the guard
+  now calls `quick-batch filter-executed` instead of describing the split
+  only in prose; a new durable-persistence step after recording the
+  ephemeral manifest entry.
+- `gsd-core/workflows/quick-batch/steps/merge-wave.md` — durable fallback
+  for `$WT_PATH`/`$WT_BRANCH`/`$EXPECTED_BASE`; clears the triple on a
+  successful merge; fails closed when no record exists anywhere.
+- Test files: `tests/quick-batch.test.cjs`, `tests/quick-batch-dispatch.test.cjs`,
+  `tests/quick-batch-command-router.test.cjs`,
+  `tests/gsd-quick-batch-workflow.test.cjs`,
+  `tests/gsd-quick-batch-merge-integration.test.cjs` — all gain new,
+  independently-verified (real fixture / real git, not merely prose-proxy)
+  coverage per §9.1-9.3.
+- §5's "No `src/*.cts` production module changes required" is SUPERSEDED —
+  three `.cts` modules changed, all additive (new fields/functions/verbs,
+  zero changes to existing field shapes, existing function signatures, or
+  existing CLI verb behavior).
