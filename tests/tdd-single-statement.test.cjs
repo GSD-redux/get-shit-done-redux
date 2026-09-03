@@ -20,7 +20,19 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-const CYCLE_COMMIT_TRIPLET = /\*\*2?\.?\s*RED:\*\*[^]*?commit: `test\(\{phase\}-\{plan\}\)[^]*?\*\*3?\.?\s*GREEN:\*\*[^]*?commit: `feat\(\{phase\}-\{plan\}\)/;
+// #4228 diagnosis: the first draft used a regex with two lazy [^]*? spans to
+// detect a restated RED/GREEN pair — on a 47KB agent file that is a
+// superlinear backtracking walk which completed on linux but pinned a Windows
+// CI core for the whole 32-minute job cap (the lane's three cancellations at
+// 21m/32m/41m all traced here). IndexOf on disjoint anchors is linear and
+// cannot backtrack: a restatement exists iff a RED commit-scope line and a
+// LATER GREEN commit-scope line both appear outside the canonical reference.
+function restatesCycle(text) {
+  const red = text.indexOf('commit: `test({phase}-{plan})');
+  if (red === -1) return false;
+  const green = text.indexOf('commit: `feat({phase}-{plan})', red);
+  return green !== -1;
+}
 
 describe('#3990 — one statement of the cycle', () => {
   test('the cycle is stated in full only in the canonical reference', () => {
@@ -33,7 +45,7 @@ describe('#3990 — one statement of the cycle', () => {
 
   test('the executor carries a pointer, not a third restatement', () => {
     const executor = read('agents/gsd-executor.md');
-    assert.ok(!CYCLE_COMMIT_TRIPLET.test(executor),
+    assert.ok(!restatesCycle(executor),
       '<tdd_execution> must not restate the numbered RED/GREEN commit protocol — point at tdd.md');
     assert.ok(/references\/tdd\.md/.test(executor),
       'the executor points at the canonical reference');
@@ -41,7 +53,7 @@ describe('#3990 — one statement of the cycle', () => {
 
   test('execute-plan carries a pointer, not a second restatement', () => {
     const plan = read('gsd-core/workflows/execute-plan.md');
-    assert.ok(!CYCLE_COMMIT_TRIPLET.test(plan),
+    assert.ok(!restatesCycle(plan),
       '<tdd_plan_execution> must not restate the numbered RED/GREEN commit protocol');
     assert.ok(/references\/tdd\.md/.test(plan.slice(plan.indexOf('tdd_plan_execution'))),
       'the plan-execution section points at the canonical reference');
