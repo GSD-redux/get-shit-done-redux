@@ -1,0 +1,18 @@
+{
+  "phase": "feat-3677-quick-batch-hardening-acceptance",
+  "issue": 3677,
+  "epic": 3344,
+  "epic_phase": 5,
+  "branch": "feat/3677-quick-batch-hardening-acceptance",
+  "base_revision": "114dfcb739",
+  "base_ref": "origin/next",
+  "note": "Design artifacts rebuilt after a prior research-pass worktree was garbage-collected (no commits ever landed, so gitignored .gsd/ content was lost with it). This directory is force-added via a one-off checkpoint commit so a future resume can read it even though .gsd/ is normally gitignored project-wide.",
+  "prior_summary_reverified": true,
+  "step1_conclusion": "crash-window gap CONFIRMED REAL — see 40-design.md Open Question 1 / Resolution",
+  "dependencies": {
+    "phase1": "feat/3673-dispatch-maxconcurrency-axis (merged, #4190 area)",
+    "phase2": "feat/3674-shared-wave-partitioner (merged)",
+    "phase3": "feat/3675-quick-batch-core-primitives (merged, PR #4190)",
+    "phase4": "feat/3676-quick-batch-command-workflow (merged, PR #4212)"
+  }
+}

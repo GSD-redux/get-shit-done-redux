@@ -117,6 +117,49 @@ runnable:
 Items unrelated to a failure continue normally in the same or a later batch
 run — one item's problem never blocks the rest of the batch.
 
+### Diagnosing a preserved worktree
+
+When a merge conflicts or a committed diff includes an undeclared file
+deletion, the coordinator preserves that item's worktree instead of deleting
+it, so you can inspect exactly what the executor did:
+
+1. **Find it.** The preserved directory is
+   `<repo-root>/../<quick_id>-<slug>-wt/` (or wherever your runtime's
+   worktree layout places it) — the item's own quick directory,
+   `.planning/quick/<quick_id>-<slug>/`, still has the `PLAN.md` the
+   executor was given, which tells you what it was trying to do.
+2. **See what actually changed.** From the preserved worktree:
+   `git log <base>..HEAD` shows the executor's real commit(s);
+   `git diff <base>...HEAD --stat` shows exactly which files it touched
+   (compare that against `PLAN.md`'s declared `files_modified` if you want
+   to confirm whether the failure was a genuine conflict or an
+   out-of-scope change).
+3. **Read the item's own `SUMMARY.md`** in its quick directory — the
+   executor wrote it before the merge was attempted, so it still describes
+   what the executor believed it accomplished, independent of whether the
+   merge itself succeeded.
+4. **Decide how to resolve it:**
+   - If the work is good and only the automated merge failed (a real
+     conflict, or a deletion that should have been declared): merge the
+     worktree's branch by hand (`git merge <branch> --no-ff`), resolve any
+     conflicts, then remove the worktree yourself
+     (`git worktree remove <path> --force`) and its branch
+     (`git branch -D <branch>`).
+   - If the work should be discarded: remove the worktree and branch the
+     same way, without merging.
+   - If a coordinator crash left the item's `SUMMARY.md` written but its
+     `BATCH.json` status still `pending` (the executor finished before the
+     coordinator process crashed, before the merge step ran) — this is NOT
+     a preserved-worktree failure and needs no manual merge. `--resume`
+     recognizes the on-disk `SUMMARY.md` and routes the item straight to
+     the merge step on its own; it will not re-dispatch a second executor
+     for it.
+5. **Re-run** `/gsd-quick-batch --resume <batch-id>` once you're done. A
+   `failed`/`merge_failed`/`scope_violation` item you resolved manually
+   (merged and cleaned up yourself) is picked up as already-merged on the
+   next resume; an item you decided to abandon stays `failed` and is
+   skipped.
+
 ---
 
 ## Related
