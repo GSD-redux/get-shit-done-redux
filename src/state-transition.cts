@@ -1841,17 +1841,22 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   }
 
   // #3830: everything above came out of `## Current Position` prose and out of
-  // nothing else — there is no filesystem read anywhere in this function. Every
-  // guard above it is SYNTACTIC: it decides whether the prose is well-formed,
-  // never whether it is TRUE. So a stale-but-well-formed `2 of 8` passes them all
-  // and gets incremented, written back, and reported as `advanced: true` for a
-  // phase that may have twelve plans on disk, all summarized. Cross-check the
-  // prose against the plan set actually on disk before mutating on it.
+  // nothing else — there is no filesystem read anywhere in this function. The
+  // guards above check the prose's SHAPE and its INTERNAL agreement — #3791's
+  // `ambiguous_plan_position` compares the two spellings' parsed positions
+  // against each other, which is a judgement about meaning, not shape — but not
+  // one of them compares the prose against the plans on disk. So a single
+  // well-formed, self-consistent `2 of 8` passes every one of them and gets
+  // incremented, written back, and reported as `advanced: true` for a phase that
+  // may have twelve plans on disk, all summarized. Cross-check the prose against
+  // the plan set actually on disk before mutating on it.
   //
-  // (This paragraph named the `isNaN` check when it was written. #3791 replaced
-  // that with anchored grammars and null checks — a different mechanism, and a
-  // stricter one, but syntactic in exactly the same way, which is why the gate
-  // below is still needed and the argument is unchanged.)
+  // (This paragraph named the `isNaN` check when it was written, then briefly
+  // over-corrected to "every guard above is SYNTACTIC" — which #3791's
+  // cross-spelling comparison falsifies. The property the gate actually rests on
+  // is the narrower one above: no guard above it reads the disk. Both earlier
+  // wordings were caught by review; the note is kept so the next edit reaches for
+  // that property rather than for whichever mechanism is current.)
   //
   // The gate sits BEFORE both branches deliberately: the phase-completion test
   // below (`currentPlan >= totalPlans`) reads the same two operands, so drift
