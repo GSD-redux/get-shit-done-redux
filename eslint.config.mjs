@@ -257,6 +257,11 @@ export default tseslint.config(
       'gsd-core/bin/lib/file-overlap-partitioner.cjs',
       // #3675: tsc-generated runtime artifact — lint the src/quick-batch.cts source, not this.
       'gsd-core/bin/lib/quick-batch.cjs',
+      // #3676: tsc-generated runtime artifacts — lint the
+      // src/quick-batch-dispatch.cts / src/quick-batch-command-router.cts
+      // sources, not these emitted .cjs files.
+      'gsd-core/bin/lib/quick-batch-dispatch.cjs',
+      'gsd-core/bin/lib/quick-batch-command-router.cjs',
       'gsd-core/bin/lib/roadmap-parser.cjs',
       'gsd-core/bin/lib/drift.cjs',
       'gsd-core/bin/lib/cjs-command-router-adapter.cjs',

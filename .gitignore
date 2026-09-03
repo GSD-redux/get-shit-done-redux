@@ -258,6 +258,10 @@ build/
 /gsd-core/bin/lib/file-overlap-partitioner.cjs
 # #3675: compiled from src/quick-batch.cts (ADR-457 build-at-publish).
 /gsd-core/bin/lib/quick-batch.cjs
+# #3676: compiled from src/quick-batch-dispatch.cts and
+# src/quick-batch-command-router.cts (ADR-457 build-at-publish).
+/gsd-core/bin/lib/quick-batch-dispatch.cjs
+/gsd-core/bin/lib/quick-batch-command-router.cjs
 /gsd-core/bin/lib/phase-estimation.cjs
 /gsd-core/bin/lib/estimate-cli.cjs
 /gsd-core/bin/lib/roadmap-parser.cjs

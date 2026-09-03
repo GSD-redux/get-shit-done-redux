@@ -420,6 +420,9 @@ test('leavesUnmarkedWorkflowEmissionByteIdentical', () => {
     'new-project.md',
     'plan-phase.md',
     'progress.md',
+    // #3676 (epic #3344, ADR-1239 "Quick-batch binding"): research-phase and
+    // verification-wave sections are gated on flag:--research/flag:--validate.
+    'quick-batch.md',
     'quick.md',
     'review.md',
     'transition.md',
