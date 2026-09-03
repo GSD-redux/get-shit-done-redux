@@ -11,16 +11,26 @@
  * is the one required, caller-supplied seam (wired for real in `gsd-core/bin/gsd-tools.cjs`'s
  * `review-lane dispatch-step` route).
  *
- * Scope note (this task): a step with the trait off, or a selection resolving to zero lanes,
- * dispatches nothing. Each selected lane is planned and invoked exactly once. The bounded
- * source-review prompt built here is METADATA ONLY — repository root, canonical file paths,
- * review depth, base SHA, and four fixed prohibitions. It never embeds file contents. The
- * remaining fail-closed guards (explicit-unavailable still failing the aggregate, unsafe
- * paths, missing provenance, budget overflow) land in the next task.
+ * Fail-closed contract:
+ * - Trait not exactly `true`, or nothing selected → inert. Zero plan/invoke calls.
+ * - Missing/unsafe request-level input (paths escaping `repoRoot`, absent depth/base SHA) stops
+ *   the WHOLE dispatch before any lane is planned or invoked.
+ * - An explicitly requested lane the selector could not resolve does not silently narrow the
+ *   result to only what worked: lanes that DID resolve still run and their results are kept,
+ *   but the aggregate `ok` is `false` so no caller mistakes a partial run for a clean one.
+ * - Once a lane is planned, a per-lane plan/budget/invoke failure never displaces or cancels a
+ *   sibling lane already run.
+ *
+ * The bounded source-review prompt built here is METADATA ONLY — repository root, canonical
+ * file paths, review depth, base SHA, and four fixed prohibitions. It never embeds file
+ * contents. If the assembled prompt exceeds a lane's resolved budget, that lane's dispatch
+ * hard-fails before `invoke` runs for it — no silent truncation of the file list.
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 
+import { estimateTokens } from './prompt-budget.cjs';
 import type { LanePlan, ResolveResult } from './review-lane-invocation.cjs';
 import { resolveLanePlan } from './review-lane-invocation.cjs';
 import type { ReviewerLane } from './review-lane-descriptor.cjs';
@@ -35,6 +45,10 @@ import { resolveReviewerSelection } from './review-reviewer-selection.cjs';
 export const DISPATCH_REASON = Object.freeze({
   TRAIT_NOT_ENABLED: 'trait_not_enabled',
   NO_LANES_SELECTED: 'no_lanes_selected',
+  SELECTION_FAILED: 'selection_failed',
+  INVALID_PATHS: 'invalid_paths',
+  PATH_ESCAPES_REPO_ROOT: 'path_escapes_repo_root',
+  MISSING_PROVENANCE: 'missing_provenance',
 } as const);
 export type DispatchReason = (typeof DISPATCH_REASON)[keyof typeof DISPATCH_REASON];
 
@@ -138,6 +152,40 @@ function defaultWritePromptFile(filePath: string, content: string): void {
 }
 
 /**
+ * Validate that every path is a non-empty string resolving INSIDE `repoRoot` — blocks `..`
+ * traversal and absolute paths pointing elsewhere before any lane sees them.
+ */
+function validatePaths(
+  repoRoot: string,
+  paths: readonly string[],
+): { ok: true } | { ok: false; reason: DispatchReason } {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
+  }
+  const root = path.resolve(String(repoRoot ?? ''));
+  for (const p of paths) {
+    if (typeof p !== 'string' || p.length === 0) {
+      return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
+    }
+    const resolved = path.resolve(root, p);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return { ok: false, reason: DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT };
+    }
+  }
+  return { ok: true };
+}
+
+/** Resolved per-lane budget: `null` means unbounded. Mirrors `gsd-tools.cjs`'s `budgetFor`. */
+function resolveBudget(lane: ReviewerLane, configGet: (key: string) => unknown): number | null {
+  if (!lane.promptBudgetKey) return null;
+  const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const per = configGet(lane.promptBudgetKey);
+  if (isNum(per) && per !== -1) return per;
+  const global = configGet('review.max_prompt_tokens');
+  return isNum(global) ? global : null;
+}
+
+/**
  * Build the bounded source-review prompt. Metadata only — repoRoot, paths, depth, base SHA, and
  * the four fixed prohibitions. NEVER embeds file contents.
  */
@@ -179,7 +227,21 @@ export async function dispatchReviewerLanes(
   const selection = resolveSelection(input.selection);
 
   if (selection.selected.length === 0) {
-    return { dispatched: false, ok: true, reason: DISPATCH_REASON.NO_LANES_SELECTED, selection, results: [] };
+    // Distinguish "explicitly requested but every candidate was unavailable" (a real failure —
+    // `errors` is non-empty) from "nothing was ever requested" (a clean, inert no-op).
+    const reason = selection.errors.length > 0
+      ? DISPATCH_REASON.SELECTION_FAILED
+      : DISPATCH_REASON.NO_LANES_SELECTED;
+    return { dispatched: false, ok: selection.errors.length === 0, reason, selection, results: [] };
+  }
+
+  const pathCheck = validatePaths(input.repoRoot, input.paths);
+  if (!pathCheck.ok) {
+    return { dispatched: false, ok: false, reason: pathCheck.reason, selection, results: [] };
+  }
+  if (typeof input.depth !== 'string' || input.depth.length === 0
+    || typeof input.baseSha !== 'string' || input.baseSha.length === 0) {
+    return { dispatched: false, ok: false, reason: DISPATCH_REASON.MISSING_PROVENANCE, selection, results: [] };
   }
 
   const configGet = deps.configGet ?? (() => undefined);
@@ -188,10 +250,14 @@ export async function dispatchReviewerLanes(
   const writePromptFile = deps.writePromptFile ?? defaultWritePromptFile;
 
   const prompt = buildSourceReviewPrompt(input);
+  const estimatedTokens = estimateTokens(prompt);
   let promptWritten = false;
 
   const results: ReviewerLaneDispatchResult[] = [];
-  let anyFailed = false;
+  // Never narrow the requested set: an explicit reviewer the selector could not resolve is
+  // already surfaced in `selection.errors` — reflect that in the aggregate `ok` even though
+  // lanes that DID resolve still run below and keep their own results.
+  let anyFailed = selection.errors.length > 0;
 
   for (const slug of selection.selected) {
     const lane = getLane(slug);
@@ -204,6 +270,18 @@ export async function dispatchReviewerLanes(
     const planOutcome = plan(lane, { configGet, runDir: input.runDir, repoRoot: input.repoRoot });
     if (!planOutcome.ok) {
       results.push({ slug, ok: false, reason: planOutcome.reason, detail: planOutcome.detail });
+      anyFailed = true;
+      continue;
+    }
+
+    const budget = resolveBudget(lane, configGet);
+    if (budget !== null && budget !== 0 && estimatedTokens > budget) {
+      results.push({
+        slug,
+        ok: false,
+        reason: 'budget_exceeded',
+        detail: `estimated ${estimatedTokens} tokens exceeds resolved budget ${budget} for lane '${slug}'`,
+      });
       anyFailed = true;
       continue;
     }
