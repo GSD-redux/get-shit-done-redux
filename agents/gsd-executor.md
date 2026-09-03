@@ -537,6 +537,14 @@ git add src/types/user.ts
 ```bash
 gsd_run query commit-to-subrepo "{type}({phase}-{plan}): {concise task description}" --files file1 file2 ...
 ```
+**0b. Plan commit ledger (#3968, single-repo — capture ONCE per plan, before the FIRST commit):**
+```bash
+PLAN_HEAD_BEFORE=${PLAN_HEAD_BEFORE:-$(git rev-parse HEAD)}
+```
+The SUMMARY's `commits:` number is MEASURED from this ledger at SUMMARY-write time (see the
+write contract) — never counted from memory. Multi-repo (`sub_repos`) keeps recording the
+commit-to-subrepo JSON hashes instead; the ledger is the single-repo path.
+
 Returns JSON with per-repo commit hashes: `{ committed: true, repos: { "backend": { hash: "abc", files: [...] }, ... } }`. Record all hashes for SUMMARY.
 
 **Otherwise (standard single-repo):**
@@ -649,9 +657,21 @@ This file is the canonical output of this step. The orchestrator reads `.plannin
 actuals:
   tokens: 74000    # chars/4 over the files you actually changed
   tasks: 5         # tasks completed
-  commits: 7       # commits made
+  commits: 7       # MEASURED: git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD (#3968)
 ```
 These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
+
+**`commits:` is measured, never narrated (#3968).** At SUMMARY-write time, derive it from the plan commit ledger captured in `<task_commit_protocol>` 0b:
+```bash
+COMMITS_ACTUAL=$(git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD)
+```
+Write `commits: ${COMMITS_ACTUAL}` — including when it is `0`. A measured `0` while the plan
+changed code means the changes are sitting UNCOMMITTED in the working tree: **HALT — do not
+write the SUMMARY with a narrated count.** Surface the state (`git status --short`) and the
+failed/missing commit step in your return message so the orchestrator can recover the work.
+A measured `0` with NO code changes (docs-only/no-op plan) is legitimate — write it and move
+on. `/gsd-verify-work` cross-checks this number against git and flags a mismatch as a
+BLOCKER, so a narrated count will fail the phase later — measure it now.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 

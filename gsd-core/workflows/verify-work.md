@@ -172,6 +172,24 @@ ls "$phase_dir"/*-SUMMARY.md 2>/dev/null || true
 ```
 
 Read each SUMMARY.md to extract testable deliverables.
+
+**Commit-claim reconciliation (#3968).** A SUMMARY's `commits:` frontmatter is a MEASURED
+number (the executor derives it from its plan commit ledger), and this is where that claim is
+checked against reality — the executor's own narration is never the last word. For each
+`*-SUMMARY.md` with a `commits:` field, compare it against the git history that exists for
+the plan:
+```bash
+# Over the plan's own scope: the anchored, milestone-bounded commit grep (#4003 shape).
+CLAIMED=$(grep -oE '^commits: [0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' || echo "absent")
+ACTUAL=$(git log --oneline -E --grep="${PLAN_SCOPE_RE}" | wc -l | tr -d ' ')
+```
+A `commits: absent` SUMMARY (pre-#3968 legacy) is reported as a WARNING with the
+measured actual, not a mismatch. A CLAIMED ≠ ACTUAL mismatch is a **BLOCKER** — the phase
+must not read as done: real project evidence (#3968) showed 14 plans declaring `commits: 1`
+with zero git activity, their code sitting uncommitted and one `git reset --hard` from loss.
+Record it as `commit_claim_mismatch` with both numbers and the SUMMARY path; a mismatch
+means either the executor narrated instead of measuring or commits were lost after the
+fact — both require reconciliation before the phase can pass.
 </step>
 
 <step name="extract_tests">

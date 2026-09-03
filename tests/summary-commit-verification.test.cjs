@@ -28,8 +28,7 @@ describe('#3968 — measured commit claims', () => {
     assert.ok(executor.includes('git rev-list --count'),
       'the SUMMARY commit count must come from git rev-list --count, not narration');
     // A measured zero WITH code changes is a HALT, never a narrated success.
-    assert.ok(/HALT|do not write the SUMMARY/i.test(
-      executor.slice(executor.indexOf('#3968'), executor.indexOf('#3968') + 2000)),
+    assert.ok(/HALT — do not\s+write the SUMMARY/i.test(executor),
       'a measured zero with uncommitted code changes must halt the SUMMARY write');
     // actuals.commits sources the same measured number (ADR-2629 shape kept).
     assert.ok(executor.includes('actuals'),
@@ -38,11 +37,11 @@ describe('#3968 — measured commit claims', () => {
 
   test('verify-work flags SUMMARY-vs-git mismatch as BLOCKER', () => {
     const verify = read('gsd-core/workflows/verify-work.md');
-    assert.ok(verify.includes('commit-claim reconciliation'),
+    assert.ok(verify.includes('Commit-claim reconciliation'),
       'verify-work must run a commit-claim reconciliation over each SUMMARY');
     assert.ok(verify.includes('git rev-list --count'),
       'the reconciliation compares the claimed count against rev-list');
-    assert.ok(/BLOCKER/.test(verify.slice(verify.indexOf('commit-claim reconciliation'), verify.indexOf('commit-claim reconciliation') + 1500)),
+    assert.ok(/BLOCKER/.test(verify.slice(verify.indexOf('Commit-claim reconciliation'), verify.indexOf('Commit-claim reconciliation') + 1800)),
       'a mismatch must be flagged BLOCKER — the phase must not read as done');
   });
 
