@@ -301,6 +301,116 @@ describe('quick-batch merge routing — arbitrary-worktree ownership tampering (
       cleanup(tmpBase);
     }
   });
+
+  // #3677 review pass 2 (Security finding): the two tests above prove
+  // branch-shape rejection and a wholly-foreign, never-registered repo are
+  // both handled — but neither exercises the scenario "arbitrary-worktree
+  // ownership" actually names: a manifest entry whose worktree_path/branch
+  // are SWAPPED to point at a DIFFERENT, GENUINELY-REGISTERED sibling
+  // worktree of the SAME repoRoot (a concurrent batch's own agent worktree,
+  // or a stale worktree from a prior crashed run), with a branch name that
+  // passes WORKTREE_AGENT_BRANCH_RE's shape check and a base that is
+  // legitimately in allowed_bases.
+  //
+  // Investigation conclusion (see
+  // `.gsd/phase/feat-3677-quick-batch-hardening-acceptance/40-design.md`
+  // §1's companion note): this is NOT a reachable gap in
+  // `executeWorktreeWaveCleanupPlan` itself. Git enforces branch-per-
+  // worktree uniqueness — the SAME branch cannot be checked out in two
+  // worktrees of one repo at once — so `worktree_path`'s ACTUAL checked-out
+  // branch (`git -C worktree_path rev-parse --abbrev-ref HEAD`,
+  // `src/worktree-safety.cts:1047`) can only equal a swapped-in
+  // `entry.branch` if that `entry.branch` is the SIBLING's own real,
+  // uniquely-generated branch name — which manifest tampering confined to
+  // ONE batch's own record has no way to know (branch names are
+  // `agent-<quick_id>[-<timestamp>]`-shaped, and `quick_id` allocation is
+  // collision-checked GLOBALLY across every existing quick task and batch,
+  // `src/quick-batch.cts` `collectExistingBatchQuickIds`). This test proves
+  // the boundary directly against TWO real, concurrently-alive sibling
+  // worktrees of the SAME repo, both created via real `git worktree add`,
+  // both with `WORKTREE_AGENT_BRANCH_RE`-passing names, both sharing the
+  // SAME merge-base — so base/branch-shape checks ALONE could not
+  // distinguish them if the primitive were naive; `branch_mismatch` is what
+  // actually does.
+  test('a manifest entry with one sibling worktree\'s real PATH but the OTHER sibling\'s real BRANCH name is blocked (branch_mismatch); both real, concurrently-alive worktrees survive untouched', () => {
+    const tmpBase = createTempDir('qb-ownership-sibling-swap-');
+    try {
+      const repoDir = path.join(tmpBase, 'repo');
+      const wt1Dir = path.join(tmpBase, 'wt-item1');
+      const wt2Dir = path.join(tmpBase, 'wt-item2');
+      const branch1 = 'agent-item1';
+      const branch2 = 'agent-item2';
+
+      initRepo(repoDir);
+      const headBefore = git(['rev-parse', 'HEAD'], repoDir).trim();
+
+      // TWO real, concurrently-alive sibling worktrees of the SAME repo —
+      // e.g. two items in the same batch dispatch round, or one item's
+      // worktree from THIS batch and a stale one left by a prior crashed
+      // run. Both branch off the SAME base commit.
+      addWorktree(repoDir, wt1Dir, branch1);
+      addWorktree(repoDir, wt2Dir, branch2);
+      fs.writeFileSync(path.join(wt2Dir, 'item2-own-work.txt'), 'item 2 real, uncommitted-to-main work\n');
+      git(['add', '-A'], wt2Dir);
+      git(['commit', '-m', 'item2: real work'], wt2Dir);
+      const item2CommitBefore = git(['rev-parse', 'HEAD'], wt2Dir).trim();
+
+      // Tampered/corrupted entry: intends item1's cleanup (branch1,
+      // item1's own base), but worktree_path has been swapped to point at
+      // item2's REAL, currently-in-use worktree.
+      const swappedPathPlan = {
+        ok: true,
+        repoRoot: repoDir,
+        action: 'cleanup_wave',
+        discovery: 'manifest',
+        entries: [{
+          agent_id: 'agent-item1',
+          worktree_path: wt2Dir,
+          branch: branch1,
+          expected_base: headBefore,
+          allowed_bases: [headBefore],
+        }],
+      };
+      const swappedPathResult = executeWorktreeWaveCleanupPlan(swappedPathPlan);
+      assert.equal(swappedPathResult.ok, false);
+      assert.equal(swappedPathResult.entries[0].status, 'blocked', `expected a blocked entry for a path/branch swap, got: ${JSON.stringify(swappedPathResult.entries[0])}`);
+      assert.equal(swappedPathResult.entries[0].reason, 'branch_mismatch', 'wt2Dir is really checked out on branch2, not branch1 — the swap cannot pass the branch check');
+
+      // The reverse swap is blocked the same way: item2's real path is
+      // untouched here too, so re-verify with wt1Dir/branch2 sharing the
+      // SAME base commit (no distinguishing signal except the branch
+      // check itself).
+      const reverseSwapPlan = {
+        ok: true,
+        repoRoot: repoDir,
+        action: 'cleanup_wave',
+        discovery: 'manifest',
+        entries: [{
+          agent_id: 'agent-item2',
+          worktree_path: wt1Dir,
+          branch: branch2,
+          expected_base: headBefore,
+          allowed_bases: [headBefore],
+        }],
+      };
+      const reverseSwapResult = executeWorktreeWaveCleanupPlan(reverseSwapPlan);
+      assert.equal(reverseSwapResult.entries[0].status, 'blocked');
+      assert.equal(reverseSwapResult.entries[0].reason, 'branch_mismatch');
+
+      // Both real, concurrently-alive sibling worktrees survive completely
+      // untouched by either tampered attempt — no merge landed, no
+      // worktree/branch removed, item2's real work is exactly as it was.
+      const headAfter = git(['rev-parse', 'HEAD'], repoDir).trim();
+      assert.equal(headAfter, headBefore, 'repoDir HEAD must not move for either blocked swap attempt');
+      assert.ok(fs.existsSync(wt1Dir), 'sibling worktree 1 must survive untouched');
+      assert.ok(fs.existsSync(wt2Dir), 'sibling worktree 2 must survive untouched');
+      assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD'], wt1Dir).trim(), branch1, 'worktree 1 must still be on its own real branch, never repointed');
+      assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD'], wt2Dir).trim(), branch2, 'worktree 2 must still be on its own real branch, never repointed');
+      assert.equal(git(['rev-parse', 'HEAD'], wt2Dir).trim(), item2CommitBefore, 'item 2\'s real, uncommitted-to-main work must be exactly as it was — never merged, never lost, never attributed to item1');
+    } finally {
+      cleanup(tmpBase);
+    }
+  });
 });
 
 describe('quick-batch merge routing — advisory scope drift merges but warns (Scheduling AC)', () => {
