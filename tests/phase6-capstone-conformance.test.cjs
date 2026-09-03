@@ -203,8 +203,16 @@ describe('ADR-857 Phase 6 capstone conformance (#1139)', () => {
     // Decision #1) — NOT the optional-feature inline logic this budget ratchets
     // toward capabilities — so its footprint legitimately raises the host-loop
     // ceiling rather than signalling an un-extracted optional feature.
+    //
+    // #3771: the plan-phase.md ceiling was raised from 94519 to accommodate the
+    // REVISION_CONFLICT persistence/routing gate (fail-closed conflict recording,
+    // the max-cycles escalation's OPEN_CONFLICTS branch). That protocol is core
+    // planner control flow, not an optional feature pending capability extraction
+    // — its footprint legitimately raises the host-loop ceiling, same rationale
+    // as #1298 above. Landed alongside an independent, unrelated same-file growth
+    // (the #4.6 context-drift pre-check) already on `next` when this PR rebased.
     const { lfByteCount } = require('../scripts/workflow-size.cjs');
-    const PRE_PHASE6 = { 'plan-phase.md': 94519, 'execute-phase.md': 93600 };
+    const PRE_PHASE6 = { 'plan-phase.md': 96700, 'execute-phase.md': 93600 };
     const notShrunk = [];
     for (const [file, frozen] of Object.entries(PRE_PHASE6)) {
       const now = lfByteCount(path.join(ROOT, 'gsd-core', 'workflows', file));
