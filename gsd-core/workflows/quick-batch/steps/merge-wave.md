@@ -45,7 +45,24 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
    done
    ```
    (`$WT_PATH`/`$WT_BRANCH`/`$EXPECTED_BASE` per item come from the recorded
-   `$QUICK_BATCH_WORKTREE_MANIFEST` entry Step 6 wrote for that `agent_id`.)
+   `$QUICK_BATCH_WORKTREE_MANIFEST` entry Step 6 wrote for that `agent_id`
+   THIS process, when present.
+
+   **Durable fallback (#3677):** for an item Step 6 did NOT dispatch this
+   process — the crash-window guard correctly skipped it because
+   `SUMMARY.md` already existed from a PRIOR, now-dead coordinator process —
+   `$QUICK_BATCH_WORKTREE_MANIFEST` has no entry for it at all (it is a
+   fresh per-process `mktemp` file). Read `$WT_PATH`/`$WT_BRANCH`/
+   `$EXPECTED_BASE` from that item's OWN durable
+   `dispatched_worktree`/`dispatched_branch`/`dispatched_base` fields in
+   `$BATCH_MANIFEST_JSON` instead — persisted by Step 6's own durable-
+   persistence step at the time it actually created the worktree, in
+   whichever process that was. If ALL THREE are still `null` (the item was
+   never durably recorded — should not happen once Step 6 always persists
+   on dispatch, but fail closed rather than guess): route this entry via
+   `merge-routing --kind merge_failed --detail "missing durable worktree
+   record"` the same as any other blocked entry below, and do NOT attempt
+   the cleanup-wave call for it.)
 
 4. **Merge, one at a time, via the SAME bounded primitive every other worktree
    consumer uses** (never hand-roll `git merge`):
@@ -61,7 +78,13 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 5. **Route each entry's result:**
    - `status == "merged_removed"`: success. Mark the item's completion pending
      (Step 9 calls `quick-batch complete` for it — do NOT call it here; a
-     `--validate` item still has verification ahead of it).
+     `--validate` item still has verification ahead of it). **Clear the
+     durable worktree-recovery fields now (#3677)** — the worktree no
+     longer exists on disk, so its `dispatched_worktree`/`dispatched_branch`/
+     `dispatched_base` must not keep pointing at a removed path:
+     ```bash
+     gsd_run quick-batch update --batch "$BATCH_ID" --updates '[{"quickId":"'"$quick_id"'","dispatchedWorktree":null,"dispatchedBranch":null,"dispatchedBase":null}]'
+     ```
    - Any other status: route via
      ```bash
      gsd_run quick-batch merge-routing --kind merge_failed --detail "$reason" --raw
