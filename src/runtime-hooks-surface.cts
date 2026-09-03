@@ -56,6 +56,7 @@ const {
   shellHookOmitsBashRunner,
   escapeTomlDoubleQuotedString,
   escapePosixDoubleQuoted,
+  resolveExecutableBinary,
 } = shellCmdProjection as {
   isManagedHookBasename: (scriptPath: string, opts?: { surface?: string }) => boolean;
   isManagedHookCommand: (cmd: string | null | undefined, opts?: { surface?: string; includeLegacyAliases?: boolean; configDir?: string }) => boolean;
@@ -66,6 +67,7 @@ const {
   shellHookOmitsBashRunner: (opts: { platform: string; runtime: string; isShellHook: boolean }) => boolean;
   escapeTomlDoubleQuotedString: (value: unknown) => string;
   escapePosixDoubleQuoted: (value: unknown) => string;
+  resolveExecutableBinary: (name: string, opts?: { platform?: string; requireExecutable?: boolean }) => string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -3220,6 +3222,53 @@ function referencesHook(h: Record<string, unknown>, hookName: string): boolean {
     (typeof url === 'string' && url.includes(hookName));
 }
 
+type ConfiguredEntrypointFailureReason = 'missing' | 'wrong-file-type' | 'unresolved-interpreter';
+
+interface ConfiguredEntrypoint {
+  runtime: string;
+  configPath: string;
+  scriptPath: string;
+  interpreterCandidates?: string[];
+  platform?: string;
+}
+
+interface ConfiguredEntrypointInvalid {
+  runtime: string;
+  configPath: string;
+  role: 'script' | 'interpreter';
+  path: string;
+  reason: ConfiguredEntrypointFailureReason;
+}
+
+type ConfiguredEntrypointValidationResult =
+  | { ok: true; checked: number }
+  | { ok: false; checked: number; invalid: ConfiguredEntrypointInvalid[] };
+
+function validateConfiguredEntrypoints(
+  entries: ConfiguredEntrypoint[],
+  deps: { statSync?: typeof fs.statSync; resolveExecutableBinary?: typeof resolveExecutableBinary } = {},
+): ConfiguredEntrypointValidationResult {
+  const statSync = deps.statSync ?? fs.statSync;
+  const resolve = deps.resolveExecutableBinary ?? resolveExecutableBinary;
+  const invalid: ConfiguredEntrypointInvalid[] = [];
+
+  for (const entry of entries) {
+    try {
+      if (!statSync(entry.scriptPath).isFile()) {
+        invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'wrong-file-type' });
+      }
+    } catch {
+      invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'missing' });
+    }
+    if (entry.interpreterCandidates && !entry.interpreterCandidates.some(candidate =>
+      resolve(candidate, { platform: entry.platform, requireExecutable: true }) !== null,
+    )) {
+      invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'interpreter', path: entry.interpreterCandidates.join(' | '), reason: 'unresolved-interpreter' });
+    }
+  }
+  return invalid.length === 0 ? { ok: true, checked: entries.length } : { ok: false, checked: entries.length, invalid };
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -3296,6 +3345,7 @@ export = {
   stageTransitiveHookLibs,
   buildHookCommand,
   applySettingsJsonHooks,
+  validateConfiguredEntrypoints,
   referencesHook,
   rewriteLegacyManagedNodeHookCommands,
   reconcileManagedShellHookCommands,
