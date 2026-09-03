@@ -298,6 +298,45 @@ describe('quick-batch workflow: worktree-dispatch.md never re-dispatches an item
   });
 });
 
+// ─── Durable worktree-recovery persistence (#3677) ──────────────────────────
+//
+// The ephemeral $QUICK_BATCH_WORKTREE_MANIFEST does not survive a
+// coordinator crash/restart (fresh mktemp file every process) — Step 6 must
+// durably persist worktree_path/branch/expected_base onto BATCH.json so a
+// RESUMED process's Step 7 can recover them for an item the crash-window
+// guard correctly did not re-dispatch.
+
+describe('quick-batch workflow: durable worktree-recovery persistence (#3677)', () => {
+  test('worktree-dispatch.md persists dispatchedWorktree/dispatchedBranch/dispatchedBase via quick-batch update right after recording the ephemeral manifest entry', () => {
+    const content = readStep('worktree-dispatch.md');
+    assert.match(content, /Durable worktree-recovery persistence/i);
+    assert.match(content, /dispatchedWorktree/);
+    assert.match(content, /dispatchedBranch/);
+    assert.match(content, /dispatchedBase/);
+    assert.match(content, /quick-batch update --batch/);
+  });
+
+  test('merge-wave.md falls back to the durable triple when the ephemeral manifest has no entry for a crash-recovered item', () => {
+    const content = readStep('merge-wave.md');
+    assert.match(content, /Durable fallback/i);
+    assert.match(content, /dispatched_worktree/);
+    assert.match(content, /dispatched_branch/);
+    assert.match(content, /dispatched_base/);
+  });
+
+  test('merge-wave.md clears the durable triple back to null after a successful merge_removed (the worktree no longer exists on disk)', () => {
+    const content = readStep('merge-wave.md');
+    assert.match(content, /Clear the\s*\n?\s*durable worktree-recovery fields now/i);
+    assert.match(content, /"dispatchedWorktree":null,"dispatchedBranch":null,"dispatchedBase":null/);
+  });
+
+  test('merge-wave.md fails closed (never guesses) when an item has no worktree record anywhere', () => {
+    const content = readStep('merge-wave.md');
+    assert.match(content, /still `null`/);
+    assert.match(content, /missing durable worktree/);
+  });
+});
+
 // ─── planner-quick-batch mode (rows 13-15) ──────────────────────────────────
 
 describe('quick-batch planner mode: agents/gsd-planner.md extension (rows 13-15)', () => {
