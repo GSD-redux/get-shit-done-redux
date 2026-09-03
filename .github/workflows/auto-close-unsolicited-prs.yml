@@ -39,6 +39,7 @@ jobs:
     # are evaluated.
     if: >-
       github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) == false
     runs-on: ubuntu-latest
     timeout-minutes: 2

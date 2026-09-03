@@ -150,6 +150,18 @@
         "read": "gsd-core/workflows/progress/steps/forensic-audit.md"
       }
     ],
+    "quick-batch": [
+      {
+        "id": "research-phase",
+        "when": "flag:--research",
+        "read": "gsd-core/workflows/quick-batch/steps/research-phase.md"
+      },
+      {
+        "id": "verification-wave",
+        "when": "flag:--validate",
+        "read": "gsd-core/workflows/quick-batch/steps/verification-wave.md"
+      }
+    ],
     "quick": [
       {
         "id": "discussion-phase",
