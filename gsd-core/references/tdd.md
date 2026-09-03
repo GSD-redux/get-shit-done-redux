@@ -270,12 +270,15 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 
 After completing a `type: tdd` plan, the executor validates the git log:
 ```bash
+# The commit protocol promises no zero-padding for ${PHASE}/${PLAN} — strip both and
+# match the commit-scope position anchored (#4003).
+PHASE_N=$((10#${PHASE})); PLAN_N=$((10#${PLAN}))
 # Check for RED gate commit
-git log --oneline --grep="^test(${PHASE}-${PLAN})" | head -1
+git log --oneline -E --grep="^test\((0*${PHASE_N})-(0*${PLAN_N})\):" | head -1
 # Check for GREEN gate commit  
-git log --oneline --grep="^feat(${PHASE}-${PLAN})" | head -1
+git log --oneline -E --grep="^feat\((0*${PHASE_N})-(0*${PLAN_N})\):" | head -1
 # Check for optional REFACTOR gate commit
-git log --oneline --grep="^refactor(${PHASE}-${PLAN})" | head -1
+git log --oneline -E --grep="^refactor\((0*${PHASE_N})-(0*${PLAN_N})\):" | head -1
 ```
 
 If RED or GREEN gate commits are missing, add a `## TDD Gate Compliance` section to SUMMARY.md with the violation details.

@@ -16,6 +16,7 @@ process.env.GSD_TEST_MODE = '1';
 //      formatShowReport) now has unit coverage.
 
 const { test } = require('node:test');
+const { cleanup } = require('./helpers.cjs'); // #4020: fixture-tree removal
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -66,8 +67,9 @@ test('parseFlags handles a missing `--` rest gracefully (no rest array)', () => 
 
 // ─── findPlanningDir ──────────────────────────────────────────────────────────
 
-test('findPlanningDir walks up to the nearest .planning and returns its path', () => {
+test('findPlanningDir walks up to the nearest .planning and returns its path', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-slurm-'));
+    t.after(() => cleanup(root)); // #4020: no leaked fixture tree on the success path
     const planning = path.join(root, '.planning');
     fs.mkdirSync(planning);
     const nested = path.join(root, 'a', 'b', 'c');
@@ -75,11 +77,12 @@ test('findPlanningDir walks up to the nearest .planning and returns its path', (
     assert.strictEqual(findPlanningDir(nested), planning);
 });
 
-test('findPlanningDir fails closed (ExitError) when no .planning is reachable', () => {
+test('findPlanningDir fails closed (ExitError) when no .planning is reachable', (t) => {
     // A tmp dir with no .planning anywhere up to the walk bound (10 levels).
     // Use a fresh tmp and create 11 nested dirs so the walk can't escape to a
     // parent that happens to contain .planning (e.g. the repo root).
     const deep = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-slurm-noplan-'));
+    t.after(() => cleanup(deep)); // #4020
     let cur = deep;
     for (let i = 0; i < 12; i++) {
         cur = path.join(cur, `n${i}`);
