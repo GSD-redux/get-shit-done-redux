@@ -12,6 +12,7 @@ const {
   EXACT_INLINE_DIRECTIVE_WORKFLOWS,
   INLINE_RESPONSE_LANGUAGE_DIRECTIVE,
   REFERENCE_ROOT,
+  WORKFLOW_EXTENSIONS,
   WORKFLOWS_DIR,
   carriesInlineDirective,
   findBrokenDirectiveReferences,
@@ -62,6 +63,37 @@ describe('response-language workflow coverage lint (#2529)', () => {
       'nested/mere-field-mention.md',
       'nested/modes/uncovered.md',
     ]);
+  });
+
+  test('an uppercase extension is discovered, and is a violation rather than an exemption', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-response-language-case-'));
+    tempDirs.push(root);
+    fs.writeFileSync(path.join(root, 'SHOUTING.MD'), '# no directive\n');
+    fs.writeFileSync(path.join(root, 'mixed.Md'), '# no directive\n');
+    fs.writeFileSync(path.join(root, 'not-a-workflow.mdx'), '# a format the catalog does not emit\n');
+
+    const relative = findMarkdownFilesRecursive(root)
+      .map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
+    assert.deepStrictEqual(relative, ['SHOUTING.MD', 'mixed.Md']);
+
+    // The point is the direction of the old failure: a case-sensitive suffix
+    // test dropped these two on Linux alone, and a dropped file is a file this
+    // lint certifies by never having looked at it. Both must land as
+    // violations, the same as any lowercase sibling carrying no directive.
+    const violations = findViolations(root)
+      .map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
+    assert.deepStrictEqual(violations, ['SHOUTING.MD', 'mixed.Md']);
+  });
+
+  test('every admitted extension is spelled so the case-insensitive match can reach it', () => {
+    // `isWorkflowFile` lowercases the extension before the lookup, so an entry
+    // carrying any uppercase would be unreachable — dead configuration that
+    // reads like coverage. The leading dot is the other half: `path.extname`
+    // returns one, and an entry without it matches nothing.
+    for (const extension of WORKFLOW_EXTENSIONS) {
+      assert.equal(extension, extension.toLowerCase(), `${extension} can never match`);
+      assert.ok(extension.startsWith('.'), `${extension} is not an extension path.extname returns`);
+    }
   });
 
   test('reports an uncovered nested workflow while accepting both coverage forms', () => {

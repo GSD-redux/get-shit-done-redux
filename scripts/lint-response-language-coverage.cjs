@@ -145,6 +145,23 @@ const USER_OUTPUT_RE = /\b(?:explanations?|language|narration|outputs?|prompts?|
 // toward copying wording instead of stating the rule (`tests/response-language-coverage.test.cjs`
 // pins the old weak wording as a FAILING case so this cannot silently loosen).
 const NARRATION_CLASS_RE = /\bnarration\b|\bbetween tool calls\b/i;
+// The catalog's extensions, matched case-insensitively and by whole extension.
+// `endsWith('.md')` failed in the one direction this lint cannot afford: it is
+// silent UNDER-enforcement, the same vacuous pass `main()` refuses when
+// discovery returns nothing. `SETTINGS.MD` is the same file to Windows and
+// macOS and a different one to Linux, so a case-sensitive test exempts it on
+// the only platform whose verdict gates the merge — a workflow certified by
+// having gone unseen.
+// `.mdx` stays out deliberately. Admitting an extension states what a workflow
+// IS, and that claim has a second half: `inheritsParentCoverage` resolves a
+// fragment's parent as `<workflow>.md`. If the repo ever emits an `.mdx`
+// workflow, the entry belongs here next to the parent resolution it must move
+// with, not ahead of it.
+const WORKFLOW_EXTENSIONS = new Set(['.md']);
+
+function isWorkflowFile(name) {
+  return WORKFLOW_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
 
 /**
  * Walk the catalog, FOLLOWING symlinked subtrees.
@@ -177,7 +194,7 @@ function findMarkdownFilesRecursive(dir, seen = new Set()) {
       isFile = stat.isFile();
     }
     if (isDirectory) files.push(...findMarkdownFilesRecursive(full, seen));
-    else if (isFile && entry.name.endsWith('.md')) files.push(full);
+    else if (isFile && isWorkflowFile(entry.name)) files.push(full);
   }
   return files.sort();
 }
@@ -489,6 +506,7 @@ module.exports = {
   EXACT_INLINE_DIRECTIVE_WORKFLOWS,
   INLINE_RESPONSE_LANGUAGE_DIRECTIVE,
   NARRATION_CLASS_RE,
+  WORKFLOW_EXTENSIONS,
   WORKFLOWS_DIR,
   REFERENCE_ROOT,
   carriesInlineDirective,
