@@ -754,7 +754,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
        <execution_context>
         ORCHESTRATOR build-time embed: inline the files below verbatim in order. Never leave `@` includes: they stay literal in an `Agent()` prompt (#3324).
-        From repository root `{phase_dir}/{plan_file}`, read the selected PLAN.md, allowing an optional BOM. Set `PLAN_TDD_CONTEXT=true` when the leading YAML frontmatter has `type: tdd` (quoted scalar allowed), or a non-fenced task opening tag (which may be multiline) contains `tdd="true"`; whitespace around `=` is allowed. Fenced prose, backticks, and tildes do not qualify. Conditionally embed `tdd.md`. If the plan/reference is unreadable or literal `${PLAN_TDD_CONTEXT` survives, halt before `Agent()`.
+        From repository root `{phase_dir}/{plan_file}`, read the selected PLAN.md, allowing an optional BOM. Set `PLAN_TDD_CONTEXT=true` for leading frontmatter `type: tdd` (quoted scalar allowed) or a non-fenced task opening tag (may be multiline) with `tdd="true"`; whitespace around `=` allowed. Reject fenced prose, backticks, tildes. Conditionally embed `tdd.md`. If the plan/reference is unreadable or literal `${PLAN_TDD_CONTEXT` survives, halt before `Agent()`.
        - `~/.claude/gsd-core/workflows/execute-plan.md`
        - `~/.claude/gsd-core/templates/summary.md`
        - `~/.claude/gsd-core/references/checkpoints.md`

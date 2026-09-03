@@ -49,9 +49,10 @@ function detectionRuleText(source) {
     .replace(/\s+/g, ' ')
     .trim();
   const start = normalized.indexOf('Set `PLAN_TDD_CONTEXT=true`');
-  const end = normalized.indexOf('do not qualify.', start);
+  const endMarker = 'Reject fenced prose, backticks, tildes.';
+  const end = normalized.indexOf(endMarker, start);
   assert.ok(start !== -1 && end !== -1, 'detection-rule sentence must exist');
-  return normalized.slice(start, end + 'do not qualify.'.length);
+  return normalized.slice(start, end + endMarker.length);
 }
 
 describe('conditional canonical TDD executor context', () => {
