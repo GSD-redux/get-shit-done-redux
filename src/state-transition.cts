@@ -1841,11 +1841,17 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   }
 
   // #3830: everything above came out of `## Current Position` prose and out of
-  // nothing else — there is no filesystem read anywhere in this function. The
-  // `isNaN` guard is SYNTACTIC, so a stale-but-well-formed `2 of 8` passes it
+  // nothing else — there is no filesystem read anywhere in this function. Every
+  // guard above it is SYNTACTIC: it decides whether the prose is well-formed,
+  // never whether it is TRUE. So a stale-but-well-formed `2 of 8` passes them all
   // and gets incremented, written back, and reported as `advanced: true` for a
   // phase that may have twelve plans on disk, all summarized. Cross-check the
   // prose against the plan set actually on disk before mutating on it.
+  //
+  // (This paragraph named the `isNaN` check when it was written. #3791 replaced
+  // that with anchored grammars and null checks — a different mechanism, and a
+  // stricter one, but syntactic in exactly the same way, which is why the gate
+  // below is still needed and the argument is unchanged.)
   //
   // The gate sits BEFORE both branches deliberately: the phase-completion test
   // below (`currentPlan >= totalPlans`) reads the same two operands, so drift
