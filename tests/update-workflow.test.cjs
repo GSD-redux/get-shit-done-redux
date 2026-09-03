@@ -62,11 +62,13 @@ describe('#4153 regression: unresolved update targets stop before later workflow
       'an unrecognized execution_context path must not infer Claude',
     );
     assert.match(step, /`\/\.claude\/` -> `claude`/);
+    assert.match(step, /`\/\.windsurf\/`, `\/\.devin\/` -> `windsurf`/);
     assert.doesNotMatch(step, /otherwise `?claude`?\./);
     assert.match(step, /INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty/);
     assert.match(step, /rerun from a valid installed runtime/i);
     assert.match(step, /Rerun from a valid installed runtime: `\/gsd:update`\./);
     assert.match(step, /npx -y --package=@opengsd\/gsd-core@latest -- gsd-core --global/);
+    assert.match(step, /target runtime \(`claude`, `opencode`, `kilo`, `codex`, `antigravity`, `windsurf`\)/);
     assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
 
     const mutationSpies = [
