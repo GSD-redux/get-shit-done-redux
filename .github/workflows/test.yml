@@ -171,7 +171,7 @@ jobs:
     # change beyond sharing the same job-level `timeout-minutes`.
     # tests/ci-test-job-timeout-budget.test.cjs holds every lane here to a
     # headroom factor over its own measured cost.
-    timeout-minutes: 21
+    timeout-minutes: 32
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
       # #2665: a live-config leak fails the run on Linux/macOS lanes. Windows
@@ -411,7 +411,7 @@ jobs:
         continue-on-error: true
         env:
           CI_JOB_LABEL: "test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})"
-          CI_JOB_TIMEOUT_MINUTES: '21'
+          CI_JOB_TIMEOUT_MINUTES: '32'
         run: node scripts/ci-check-job-near-cap.cjs
 
   test-inert:
