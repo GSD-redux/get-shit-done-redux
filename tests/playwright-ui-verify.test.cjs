@@ -60,3 +60,79 @@ describe('Playwright-MCP UI verification integration', () => {
     assert.ok(hasConditional, 'Playwright integration must be conditional with manual fallback');
   });
 });
+
+// #4176: the auditor's sole screenshot path had three defects — a 200-only
+// probe that misread a redirecting dev server as absent, an unconditional
+// "Screenshots captured" echo that survived total capture failure, and a
+// documented 3000 -> 5173 -> 8080 fallback the control flow never attempted.
+// These assert against the <screenshot_approach> BASH BLOCK specifically, not
+// the whole file: the pre-fix bug was precisely that the fallback existed as
+// a guidance sentence while the code hard-coded one port, so a whole-file
+// grep for "5173" passed on the broken version.
+const AUDITOR_PATH = path.join(__dirname, '..', 'agents', 'gsd-ui-auditor.md');
+
+function screenshotApproachBlock() {
+  const content = fs.readFileSync(AUDITOR_PATH, 'utf-8');
+  const section = content.split('<screenshot_approach>')[1].split('</screenshot_approach>')[0];
+  const fence = section.match(/```bash\n([\s\S]*?)\n```/);
+  assert.ok(fence, '<screenshot_approach> must contain a bash fence');
+  return fence[1];
+}
+
+describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
+  test('dev-server probe follows redirects and is time-bounded', () => {
+    const block = screenshotApproachBlock();
+    const followsRedirects = block.includes('curl -L') || block.includes('fetch(');
+    assert.ok(followsRedirects, 'probe must follow redirects (curl -L or fetch()) — a 307 dev server is not an absent one');
+    const timeBounded = /--max-time|AbortSignal\.timeout|run-with-timeout|--connect-timeout/.test(block);
+    assert.ok(timeBounded, 'probe must be time-bounded — an accepting-but-unresponsive port must not hang the audit');
+  });
+
+  test('probe accepts any 2xx rather than exact-matching 200', () => {
+    const block = screenshotApproachBlock();
+    assert.ok(
+      !/=[\s]*"200"/.test(block),
+      'probe must not exact-match "200" — that misreads redirects and other 2xx as no-server'
+    );
+  });
+
+  test('capture success is checked, not assumed', () => {
+    const block = screenshotApproachBlock();
+    const checksOutcome = /\[ -s "?\$SCREENSHOT_DIR|\[ -s |if npx |CAPTURED=|\$\?/.test(block);
+    assert.ok(checksOutcome, 'an exit-status or file-existence check must gate the captured/not-captured signal');
+    // The unconditional echo is the actual defect: a "captured" claim must not
+    // sit outside any conditional that could have observed a failure.
+    const unconditional = block
+      .split('\n')
+      .some((l) => /^\s*echo "Screenshots captured/.test(l) && !/CAPTURED|-eq|-s /.test(block.slice(0, block.indexOf(l))));
+    assert.ok(!unconditional, '"Screenshots captured" must never be echoed without an outcome check');
+  });
+
+  test('all three documented ports are tried in the control flow', () => {
+    const block = screenshotApproachBlock();
+    for (const port of ['3000', '5173', '8080']) {
+      assert.ok(block.includes(port), `port ${port} must appear in the capture control flow, not only in guidance prose`);
+    }
+    assert.ok(/for PORT in|for port in/.test(block), 'ports must be iterated, not hard-coded to one');
+  });
+
+  test('the resolved port — not a hard-coded 3000 — is what gets captured', () => {
+    const block = screenshotApproachBlock();
+    const captureLines = block.split('\n').filter((l) => l.includes('playwright screenshot'));
+    assert.ok(captureLines.length > 0, 'expected at least one capture invocation');
+    for (const line of captureLines) {
+      assert.ok(
+        !line.includes('localhost:3000'),
+        `capture must use the resolved port variable, not a literal localhost:3000: ${line.trim()}`
+      );
+    }
+  });
+
+  test('report surfaces can express partial capture', () => {
+    const content = fs.readFileSync(AUDITOR_PATH, 'utf-8');
+    assert.ok(
+      /partially captured/i.test(content),
+      'the Screenshots field must be able to say partial — full/none alone cannot describe 2 of 3'
+    );
+  });
+});

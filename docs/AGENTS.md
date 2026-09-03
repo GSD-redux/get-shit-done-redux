@@ -386,6 +386,16 @@ Three further dimensions carry no number: **Verify Command Format Sanity**,
 5. Spacing
 6. Experience Design
 
+**Screenshot capture.** Capture is CLI-only — the agent shells out to
+`npx playwright screenshot`, taking no MCP grant. It probes `localhost:3000`,
+then `5173`, then `8080`, following redirects and accepting any 2xx, and every
+capture runs against the port that answered. The reported `**Screenshots:**`
+field is derived from the observed exit statuses and the files on disk, so it
+distinguishes three outcomes — captured (3/3), partially captured (N/3, naming
+the viewports that failed), and not captured with its reason (no dev server,
+auth-gated, or capture failure). A failed capture never reports as a successful
+one, and leaves no empty review directory behind.
+
 ---
 
 ### gsd-dom-verifier

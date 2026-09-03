@@ -109,37 +109,75 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 ## Screenshot Capture (CLI only — no MCP, no persistent browser)
 
 ```bash
-# Check for running dev server
-DEV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || echo "000")
+# Detect a running dev server across the documented ports. The probe follows
+# redirects, accepts any 2xx, and is time-bounded, so a root path that
+# redirects (Next.js middleware/i18n, trailing-slash normalization) or a port
+# that accepts but never answers is not misread as "no dev server". fetch()
+# rather than curl, for cross-platform parity with
+# gsd-core/references/checkpoints.md.
+DEV_URL=""
+DEV_GATED=""
+for PORT in 3000 5173 8080; do
+  # process.stdout.write(String(...)), never console.log(r.status): console.log
+  # of a NUMBER is colorized by node, so the probe would emit "\033[33m200\033[39m"
+  # and every 2xx would fall through to the no-dev-server branch.
+  PROBE=$(node -e 'fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write("000"))' "http://localhost:$PORT" 2>/dev/null || echo "000")
+  PROBE=${PROBE:-000}
+  case "$PROBE" in
+    2??)     DEV_URL="http://localhost:$PORT"; break ;;
+    401|403) DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
+  esac
+done
 
-if [ "$DEV_STATUS" = "200" ]; then
+if [ -n "$DEV_URL" ]; then
   SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$SCREENSHOT_DIR"
 
-  # Desktop
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/desktop.png" \
-    --viewport-size=1440,900 2>/dev/null
+  # Capture each viewport from the RESOLVED port, and believe only what the
+  # exit status and the file on disk actually say.
+  CAPTURED=0
+  FAILED_SHOTS=""
+  for SHOT in "desktop:1440,900" "mobile:375,812" "tablet:768,1024"; do
+    SHOT_NAME="${SHOT%%:*}"
+    SHOT_VIEWPORT="${SHOT##*:}"
+    if npx playwright screenshot "$DEV_URL" \
+         "$SCREENSHOT_DIR/$SHOT_NAME.png" \
+         --viewport-size="$SHOT_VIEWPORT" >/dev/null 2>&1 \
+       && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
+      CAPTURED=$((CAPTURED + 1))
+    else
+      FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
+    fi
+  done
 
-  # Mobile
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/mobile.png" \
-    --viewport-size=375,812 2>/dev/null
-
-  # Tablet
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/tablet.png" \
-    --viewport-size=768,1024 2>/dev/null
-
-  echo "Screenshots captured to $SCREENSHOT_DIR"
+  if [ "$CAPTURED" -eq 3 ]; then
+    CAPTURE_STATUS="captured"
+    echo "Screenshots captured to $SCREENSHOT_DIR (3/3) from $DEV_URL"
+  elif [ "$CAPTURED" -gt 0 ]; then
+    CAPTURE_STATUS="partially captured"
+    echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
+  else
+    CAPTURE_STATUS="not captured (capture failed)"
+    rmdir "$SCREENSHOT_DIR" 2>/dev/null
+    echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
+  fi
+elif [ -n "$DEV_GATED" ]; then
+  CAPTURE_STATUS="not captured (dev server auth-gated)"
+  echo "Dev server at $DEV_GATED is auth-gated — code-only audit"
 else
-  echo "No dev server at localhost:3000 — code-only audit"
+  CAPTURE_STATUS="not captured (no dev server)"
+  echo "No dev server on ports 3000, 5173 or 8080 — code-only audit"
 fi
 ```
 
-If dev server not detected: audit runs on code review only (Tailwind class audit, string audit for generic labels, state handling check). Note in output that visual screenshots were not captured.
+Ports are tried in order — 3000, then 5173 (Vite default), then 8080 — and the
+first one that answers 2xx is the port every capture command uses.
 
-Try port 3000 first, then 5173 (Vite default), then 8080.
+`$CAPTURE_STATUS` is the single source of truth for the `**Screenshots:**` field
+of both the UI-REVIEW.md report and the structured return. Report what it holds
+— never assume capture succeeded because the block ran.
+
+If no dev server is detected, or capture fails: the audit runs on code review only (Tailwind class audit, string audit for generic labels, state handling check). Note in output that visual screenshots were not captured, and say why.
 
 </screenshot_approach>
 
@@ -299,7 +337,7 @@ Write to: `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`
 
 **Audited:** {date}
 **Baseline:** {UI-SPEC.md / abstract standards}
-**Screenshots:** {captured / not captured (no dev server)}
+**Screenshots:** {$CAPTURE_STATUS — captured / partially captured (N/3, list the failures) / not captured, with the reason}
 
 ---
 
@@ -366,7 +404,7 @@ Run the gitignore gate from `<gitignore_gate>`. This MUST happen before step 3.
 
 ## Step 3: Detect Dev Server and Capture Screenshots
 
-Run the screenshot approach from `<screenshot_approach>`. Record whether screenshots were captured.
+Run the screenshot approach from `<screenshot_approach>`. Carry `$CAPTURE_STATUS` forward and record it verbatim — full, partial, or none with its reason.
 
 ## Step 4: Scan Implemented Files
 
@@ -406,7 +444,7 @@ Use output format from `<output_format>`. If registry audit produced flags, add 
 
 **Phase:** {phase_number} - {phase_name}
 **Overall Score:** {total}/24
-**Screenshots:** {captured / not captured}
+**Screenshots:** {$CAPTURE_STATUS — captured / partially captured (N/3) / not captured, with the reason}
 
 ### Pillar Summary
 | Pillar | Score |
@@ -440,7 +478,7 @@ UI audit is complete when:
 - [ ] All `<required_reading>` loaded before any action
 - [ ] .gitignore gate executed before any screenshot capture
 - [ ] Dev server detection attempted
-- [ ] Screenshots captured (or noted as unavailable)
+- [ ] Capture outcome recorded from `$CAPTURE_STATUS` — full, partial, or none with its reason
 - [ ] All 6 pillars scored with evidence
 - [ ] Registry safety audit executed (if shadcn + third-party registries present)
 - [ ] Top 3 priority fixes identified with concrete solutions
