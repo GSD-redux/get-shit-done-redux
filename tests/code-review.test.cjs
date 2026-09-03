@@ -707,6 +707,16 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
     assert.ok(stepContent.includes('--base-sha "$DIFF_BASE"'), 'must pass already-resolved DIFF_BASE');
   });
 
+  test('dispatch_reviewer_lanes explains and skips rather than silently failing when explicit lanes have no resolvable DIFF_BASE', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    assert.ok(/\[\s+\${#EXPLICIT_REVIEWER_SLUGS\[@\]}\s+-gt\s+0\s+\]\s+&&\s+\[\s+-z\s+"\$DIFF_BASE"\s+\]/.test(stepContent),
+      'must guard against dispatching with an empty DIFF_BASE when lanes were explicitly requested');
+    assert.match(stepContent, /no diff base could be resolved/,
+      'must explain why explicitly requested lanes did not run, rather than leaving the generic missing_provenance rejection unexplained');
+  });
+
   test('dispatch_reviewer_lanes is a no-op when no explicit reviewer-lane flag is present (COMP-01)', () => {
     // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
     const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);

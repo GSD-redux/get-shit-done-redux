@@ -496,4 +496,49 @@ describe('dispatchReviewerLanes — fail-closed: budget overflow', () => {
     assert.match(bySlug.codex.detail, /boom: malformed manifest/);
     assert.equal(result.ok, false);
   });
+
+  test('WR-02b: a throwing writePromptFile() for the first lane does not stop a later sibling lane from running', async () => {
+    const lanes = new Map([
+      ['claude', fakeLane('claude')],
+      ['codex', fakeLane('codex')],
+    ]);
+    const plan = spy((lane) => okPlan(lane.slug));
+    const invoke = spy(() => ({ ok: true }));
+    const writePromptFile = spy(() => { throw new Error('boom: disk full'); });
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile },
+    );
+
+    const bySlug = Object.fromEntries(result.results.map((r) => [r.slug, r]));
+    assert.equal(bySlug.claude.ok, false);
+    assert.match(bySlug.claude.detail, /boom: disk full/);
+    assert.equal(bySlug.codex.ok, true, 'the later sibling lane must still be invoked despite the first lane\'s writePromptFile throw');
+    assert.equal(invoke.calls.length, 1);
+    assert.equal(result.ok, false);
+  });
+
+  test('WR-02c: a throwing invoke() for the first lane does not stop a later sibling lane from running', async () => {
+    const lanes = new Map([
+      ['claude', fakeLane('claude')],
+      ['codex', fakeLane('codex')],
+    ]);
+    const plan = spy((lane) => okPlan(lane.slug));
+    const invoke = spy((lane) => {
+      if (lane.slug === 'claude') throw new Error('boom: spawn EMFILE');
+      return { ok: true };
+    });
+
+    const result = await dispatchReviewerLanes(
+      baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
+      { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile: noopWrite },
+    );
+
+    const bySlug = Object.fromEntries(result.results.map((r) => [r.slug, r]));
+    assert.equal(bySlug.claude.ok, false);
+    assert.match(bySlug.claude.detail, /boom: spawn EMFILE/);
+    assert.equal(bySlug.codex.ok, true, 'the later sibling lane must still be invoked despite the first lane\'s invoke throw');
+    assert.equal(result.ok, false);
+  });
 });
