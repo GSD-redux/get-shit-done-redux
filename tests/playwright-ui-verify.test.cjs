@@ -6,6 +6,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 // #2994 fragmentization moved the automated_ui_verification step out of
 // verify-work.md into gsd-core/workflows/verify-work/steps/automated-ui-verification.md
@@ -71,12 +72,33 @@ describe('Playwright-MCP UI verification integration', () => {
 // grep for "5173" passed on the broken version.
 const AUDITOR_PATH = path.join(__dirname, '..', 'agents', 'gsd-ui-auditor.md');
 
+// Line-based rather than a fence regex: an unbounded [\s\S]*? over readFileSync
+// content is a backtracking risk (local/no-unbounded-quantifier), a triple-fence
+// body regex is ad-hoc markdown parsing (local/no-adhoc-markdown-parsing), and a
+// bare \n split is CRLF-fragile on Windows checkouts (local/no-crlf-fragile-split).
+// splitLines() handles the line endings; the scan below handles the fence.
 function screenshotApproachBlock() {
-  const content = fs.readFileSync(AUDITOR_PATH, 'utf-8');
-  const section = content.split('<screenshot_approach>')[1].split('</screenshot_approach>')[0];
-  const fence = section.match(/```bash\n([\s\S]*?)\n```/);
-  assert.ok(fence, '<screenshot_approach> must contain a bash fence');
-  return fence[1];
+  const lines = splitLines(fs.readFileSync(AUDITOR_PATH, 'utf-8'));
+  const FENCE = '`'.repeat(3);
+  const OPENER = FENCE + 'bash';
+  const body = [];
+  let inSection = false;
+  let inFence = false;
+  for (const line of lines) {
+    if (!inSection) {
+      if (line.includes('<screenshot_approach>')) inSection = true;
+      continue;
+    }
+    if (line.includes('</screenshot_approach>')) break;
+    if (!inFence) {
+      if (line.trim() === OPENER) inFence = true;
+      continue;
+    }
+    if (line.trim() === FENCE) break;
+    body.push(line);
+  }
+  assert.ok(body.length > 0, '<screenshot_approach> must contain a non-empty bash fence');
+  return body.join('\n');
 }
 
 describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
