@@ -37,6 +37,36 @@ EXEC_CONCURRENCY=$(printf '%s' "$QB_EXEC_CONC_JSON" | node -e 'let s="";process.
    Parse `eligible` (quick ids ready to execute — every dependency already
    `complete`) and refresh `$BATCH_MANIFEST_JSON` from its `manifest`.
 
+   **Crash-window guard (mirrors `planner-wave.md`'s PLAN.md-existence
+   check one layer earlier — #3677):** `quick-batch resume`'s `eligible` is
+   purely status/dependency-derived; it does NOT know an item already
+   finished executing. A coordinator crash between this step returning
+   (executor committed, `SUMMARY.md` written) and Step 7's merge leaves
+   `BATCH.json` at `pending` with no STATE.md row yet (that row is written
+   only in Step 9) — so on `--resume`, such an item still comes back
+   `eligible` here. Before computing `spawn-plan`, determine which eligible
+   items already have `${item_dir}/${quick_id}-SUMMARY.md` on disk (same
+   `item_dir` derivation via `generate-slug` every other step uses), then
+   let the PURE `quick-batch filter-executed` verb
+   (`filterAlreadyExecuted`, `src/quick-batch-dispatch.cts`) decide which
+   ids are actually safe to spawn — never re-derive that split inline:
+   ```bash
+   EXECUTED_IDS_JSON="[]" # JSON array of quick_ids whose SUMMARY.md already exists on disk this round
+   QB_FILTER_JSON=$(gsd_run quick-batch filter-executed --eligible "$ELIGIBLE_IDS_JSON" --executed "$EXECUTED_IDS_JSON" --raw)
+   ```
+   Parse `spawnEligible` (safe to spawn this round) and `alreadyExecuted`
+   (diagnostic only — report these as "already executed, routing to merge"
+   rather than dispatching them). Replace `$ELIGIBLE_IDS_JSON` with
+   `spawnEligible` before continuing to backpressure below.
+
+   NEVER re-dispatch it into a second worktree for any id `filter-executed`
+   returns in `alreadyExecuted`. It is not lost: Step 7's own mergeable-wave
+   criterion
+   (`gsd-core/workflows/quick-batch/steps/merge-wave.md` Step 1) already
+   picks up any `pending` item with an on-disk `SUMMARY.md` that isn't yet
+   merged, independent of this eligible/spawn list — dropping it here only
+   prevents the duplicate dispatch, it does not remove it from the batch.
+
 2. **Backpressure.** Not every eligible item necessarily spawns this round —
    cap fan-out at `$EXEC_CONCURRENCY` minus current in-flight count (row
    27/39):
@@ -112,6 +142,21 @@ EXEC_CONCURRENCY=$(printf '%s' "$QB_EXEC_CONC_JSON" | node -e 'let s="";process.
    **`isolation == "none"`:** no worktree. Dispatch the executor inline on the
    primary checkout (same prompt, minus the worktree-only framing), one item
    at a time — `EXEC_CONCURRENCY` is already forced to 1 in this mode.
+
+   **Durable worktree-recovery persistence (#3677 — `harness-worktree`/
+   `orchestrator-worktree` only, skip for `none`):** immediately after
+   recording `{agent_id, worktree_path, branch, expected_base}` into the
+   EPHEMERAL `$QUICK_BATCH_WORKTREE_MANIFEST` above, ALSO persist the same
+   triple durably onto this item in `BATCH.json`:
+   ```bash
+   gsd_run quick-batch update --batch "$BATCH_ID" --updates '[{"quickId":"'"$quick_id"'","dispatchedWorktree":"'"$worktree_path"'","dispatchedBranch":"'"$branch"'","dispatchedBase":"'"$expected_base"'"}]'
+   ```
+   The ephemeral manifest is a per-process `mktemp` file (same shape
+   `/gsd:quick`'s own `QUICK_WORKTREE_MANIFEST` uses) — it does NOT survive
+   a coordinator crash/restart. A RESUMED coordinator's Step 7
+   (`merge-wave.md`) reads this durable BATCH.json triple as its fallback
+   for any item the crash-window guard above correctly did NOT re-dispatch
+   in the current process.
 
    > **ORCHESTRATOR RULE — CODEX RUNTIME**: after each `Agent()` call above, wait for it to return before starting the next worktree create.
 
