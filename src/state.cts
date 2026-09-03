@@ -1110,7 +1110,7 @@ function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.
 
   const { matches } = matchPhaseDirs(phaseDirs, normalized);
   if (matches.length === 0) {
-    return { ok: false, reason: `phase ${normalized} not found among current-milestone phases` };
+    return { ok: false, reason: `phase ${normalized} not found among the phase directories on disk` };
   }
   if (matches.length > 1) {
     // #2237: several directories match the same bare phase number. Which plan
