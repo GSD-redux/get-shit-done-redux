@@ -172,7 +172,6 @@ describe('ESLint coverage tracks the bin/lib TS migration (ADR-457 / #537)', () 
 }
 
 
-
 // ────────────────────────────────────────────────────────────────────────
 // RETIRED: folded:bug-3054-stale-gsd-next-references (consolidation epic #1969 B8 #1977)
 // ────────────────────────────────────────────────────────────────────────
