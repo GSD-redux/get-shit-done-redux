@@ -52,6 +52,7 @@ const {
   resolveUatFile,
   readVerificationStatus,
   findStaleVerificationSummary,
+  computeCoveredDigest,
 } = require('../gsd-core/bin/lib/verification.cjs');
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
@@ -1458,6 +1459,219 @@ describe('#3057 B3: staleness check — indeterminate is distinguishable from no
       undefined,
       'a completed check that found nothing stale must not be flagged indeterminate',
     );
+  });
+});
+
+// ─── #4155: covered-input fingerprint ─────────────────────────────────────────
+//
+// A VERIFICATION.md that declares `covered_files` + `covered_digest` in its
+// frontmatter is checked by RECOMPUTING that digest over current file content
+// — this REPLACES the legacy SUMMARY-mtime check for that report (not merely
+// supplements it). A report with no fingerprint metadata keeps the exact
+// legacy mtime behavior (already covered above).
+
+describe('#4155: computeCoveredDigest — direct unit coverage', () => {
+  test('same covered set, different array order → identical digest (order-independent)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-order-'));
+    t.after(() => cleanup(root));
+    fs.writeFileSync(path.join(root, 'a.txt'), 'A');
+    fs.writeFileSync(path.join(root, 'b.txt'), 'B');
+
+    const d1 = computeCoveredDigest(root, ['a.txt', 'b.txt']);
+    const d2 = computeCoveredDigest(root, ['b.txt', 'a.txt']);
+    assert.equal(d1, d2);
+    assert.match(d1, /^v1:sha256:[0-9a-f]{64}$/);
+  });
+
+  test('a covered file whose content changes → digest changes', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-changed-'));
+    t.after(() => cleanup(root));
+    const target = path.join(root, 'impl.txt');
+    fs.writeFileSync(target, 'before');
+    const before = computeCoveredDigest(root, ['impl.txt']);
+    fs.writeFileSync(target, 'after');
+    const after = computeCoveredDigest(root, ['impl.txt']);
+    assert.notEqual(before, after);
+  });
+
+  test('a covered file that is missing → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-missing-'));
+    t.after(() => cleanup(root));
+    assert.equal(computeCoveredDigest(root, ['does-not-exist.txt']), null);
+  });
+
+  test('a covered file that is unreadable (directory, not a regular file) → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-unreadable-'));
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'a-directory'));
+    assert.equal(computeCoveredDigest(root, ['a-directory']), null);
+  });
+
+  test('a covered path that escapes the project root via ".." → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-escape-'));
+    t.after(() => cleanup(root));
+    fs.writeFileSync(path.join(path.dirname(root), 'outside.txt'), 'secret');
+    assert.equal(computeCoveredDigest(root, ['../outside.txt']), null);
+  });
+
+  test('an absolute covered path → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-absolute-'));
+    t.after(() => cleanup(root));
+    const absolute = path.join(root, 'impl.txt');
+    fs.writeFileSync(absolute, 'x');
+    assert.equal(computeCoveredDigest(root, [absolute]), null);
+  });
+
+  test('an empty covered-files array → null', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-empty-'));
+    t.after(() => cleanup(root));
+    assert.equal(computeCoveredDigest(root, []), null);
+  });
+});
+
+describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime staleness', () => {
+  test('unchanged covered inputs → status stays passed even though a SUMMARY is newer (legacy check bypassed)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-unchanged-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'implementation content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# Summary');
+    // SUMMARY newer than VERIFICATION — the LEGACY check would call this
+    // stale. The fingerprint check must be the one that actually runs.
+    setMtime(path.join(dir, '01-VERIFICATION.md'), '2026-01-01T00:00:00.000Z');
+    setMtime(summaryPath, '2026-01-01T00:01:00.000Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed');
+  });
+
+  test('a covered file that changed after verification → status is stale', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-changed-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'original content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    // Evidence drifts after verification — no SUMMARY touched at all, so the
+    // legacy mtime check would see nothing stale.
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'drifted content');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+    assert.equal(result.next_command, '/gsd-verify-work 01');
+  });
+
+  test('a covered file that disappeared after verification → status is stale', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-missing-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    fs.unlinkSync(path.join(dir, 'impl.txt'));
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+  });
+
+  test('a covered path that escapes project confinement → status is stale (fail closed)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-escape-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      '---\nstatus: passed\ncovered_files:\n  - "../outside.txt"\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
+    );
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+  });
+
+  test('a legacy report with no fingerprint metadata still uses the mtime check', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-legacy-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    const verificationPath = path.join(dir, '01-VERIFICATION.md');
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    writeVerificationMd(dir, '01-VERIFICATION.md', 'passed');
+    fs.writeFileSync(summaryPath, '# Summary');
+    setMtime(verificationPath, '2026-01-01T00:00:00.000Z');
+    setMtime(summaryPath, '2026-01-01T00:01:00.000Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale', 'unchanged: legacy mtime staleness must still fire with no covered_digest');
+  });
+});
+
+describe('#4155: verification.fingerprint CLI', () => {
+  const { runGsdTools, createTempGitProject } = require('./helpers.cjs');
+
+  test('emits a covered_digest matching the direct computeCoveredDigest call, sorted covered_files', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+
+      const res = runGsdTools(
+        [
+          'verification',
+          'fingerprint',
+          phaseDir,
+          '.planning/phases/01-example/01-01-SUMMARY.md',
+          '.planning/phases/01-example/01-01-PLAN.md',
+        ],
+        projectDir,
+      );
+      assert.equal(res.success, true, `expected success, got: ${res.output}${res.error}`);
+      const parsed = JSON.parse(res.output);
+      assert.deepEqual(parsed.covered_files, [
+        '.planning/phases/01-example/01-01-PLAN.md',
+        '.planning/phases/01-example/01-01-SUMMARY.md',
+      ]);
+      const expected = computeCoveredDigest(projectDir, [
+        '.planning/phases/01-example/01-01-PLAN.md',
+        '.planning/phases/01-example/01-01-SUMMARY.md',
+      ]);
+      assert.equal(parsed.covered_digest, expected);
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('a missing covered file fails the whole command (fail closed, no partial fingerprint)', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+
+      const res = runGsdTools(
+        ['verification', 'fingerprint', phaseDir, 'does-not-exist.md'],
+        projectDir,
+      );
+      assert.equal(res.success, false);
+    } finally {
+      cleanup(projectDir);
+    }
   });
 });
 
