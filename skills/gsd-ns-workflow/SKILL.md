@@ -32,5 +32,6 @@ workflow-advance command.
 | Execute a trivial task inline | gsd-fast |
 | Plan a phase as a vertical MVP slice | gsd-mvp-phase |
 | Execute a quick task with GSD guarantees | gsd-quick |
+| Batch several quick-shaped tasks together | gsd-quick-batch |
 
 Invoke the matched skill directly using the Skill tool.
