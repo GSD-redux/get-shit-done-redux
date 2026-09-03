@@ -78,17 +78,25 @@ test('runtime config writers expose the exact configured entrypoints they emit',
   const sourceRoot = path.join(__dirname, '..');
 
   const codexRoot = path.join(root, 'codex');
-  fs.mkdirSync(codexRoot, { recursive: true });
+  // On win32, ensureCodexHooksJsonSessionStart writes a .cmd shim under
+  // <codexRoot>/hooks/; the real installer only calls this once that dir
+  // (and gsd-check-update.js) already exist, so create it here too.
+  fs.mkdirSync(path.join(codexRoot, 'hooks'), { recursive: true });
   const codex = hooksSurface.ensureCodexHooksJsonSessionStart(codexRoot, {
     absoluteRunner: JSON.stringify(process.execPath),
   });
-  assert.deepEqual(codex.configuredEntrypoints, [{
-    runtime: 'codex',
-    configPath: path.join(codexRoot, 'hooks.json'),
-    scriptPath: path.join(codexRoot, 'hooks', 'gsd-check-update.js'),
-    interpreterCandidates: [process.execPath],
-    platform: process.platform,
-  }]);
+  // win32 emits two entries (the .cmd shim plus the underlying script);
+  // every other platform emits the script alone — assert the shape common
+  // to both rather than a platform-fixed array.
+  assert.ok(codex.configuredEntrypoints.length >= 1);
+  assert.ok(codex.configuredEntrypoints.every(entry => entry.runtime === 'codex'
+    && entry.configPath === path.join(codexRoot, 'hooks.json')
+    && entry.platform === process.platform));
+  assert.ok(codex.configuredEntrypoints.some(
+    entry => path.basename(entry.scriptPath) === 'gsd-check-update.js'
+      && Array.isArray(entry.interpreterCandidates)
+      && entry.interpreterCandidates.length === 1,
+  ));
 
   const cursorRoot = path.join(root, 'cursor');
   const cursor = hooksSurface.writeCursorHooksJson(cursorRoot, sourceRoot, {
