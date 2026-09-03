@@ -136,6 +136,8 @@ Run the full engineering directive (rubber-duck → software laws → architectu
 | `require-userprofile-with-home` | `WINDOWS-TEST-PORTABILITY` (G6) | tests | 4 |
 | `normalize-path-in-content` | `WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT` | `src/**/*.cts` | 5 |
 | `require-fs-op-fallback` | `WINDOWS-FS-OPS` | `src/**/*.cts`, `bin/install.js`, `scripts/build-hooks.js` | 6 |
+| `require-full-tmpdir-triad` | `WINDOWS-TEST-PORTABILITY` (#4220) | tests | #4244 |
+| `no-unbounded-dirname-walk` | `WINDOWS-TEST-PORTABILITY` (#4020/#4220) | tests, `scripts/**/*.cjs` | #4244 |
 
 `DEFECT.WINDOWS-ARGV-OVERFLOW` is deliberately **not** in this catalog: argv length is a runtime
 property (the args-array size is not statically knowable), so no AST rule can soundly detect it.
