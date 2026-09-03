@@ -1055,6 +1055,7 @@ const JS_HOOKS = [
   'gsd-workflow-guard.js',
   'gsd-worktree-path-guard.js',
   'gsd-write-guard.js',
+  'gsd-secret-read-guard.js',
 ];
 
 // Drives the real guarded registration function directly (local-install
@@ -3068,6 +3069,7 @@ describe('bug #3981: blocking-guard timeout budget + migration', () => {
     'gsd-worktree-path-guard.js',
     'gsd-agent-isolation-guard.js',
     'gsd-write-guard.js',
+    'gsd-secret-read-guard.js',
     'gsd-validate-commit.sh',
   ];
 
