@@ -42,7 +42,10 @@ describe('#4020 — run-tests temp root', () => {
     const outer = createTempDir('gsd-4020-outer-');
     t.after(() => cleanup(outer));
 
-    const r = runNode(['-e', setupProbe], { timeoutMs: 30_000, env: { ...process.env, TMPDIR: outer } });
+    const r = runNode(['-e', setupProbe], {
+      timeoutMs: 30_000,
+      env: { ...process.env, TMPDIR: outer, TEMP: outer, TMP: outer },
+    });
     assert.equal(r.exitCode, 0, `probe failed: ${r.stderr.slice(-300)}`);
     const out = JSON.parse(r.stdout.trim().split(/\n/).pop());
     assert.ok(out.base.startsWith('gsd-test-run-'),
@@ -64,7 +67,10 @@ describe('#4020 — run-tests temp root', () => {
     const outer = createTempDir('gsd-4020-idem-');
     t.after(() => cleanup(outer));
 
-    const r = runNode(['-e', probe], { timeoutMs: 30_000, env: { ...process.env, TMPDIR: outer } });
+    const r = runNode(['-e', probe], {
+      timeoutMs: 30_000,
+      env: { ...process.env, TMPDIR: outer, TEMP: outer, TMP: outer },
+    });
     assert.equal(r.exitCode, 0, `probe failed: ${r.stderr.slice(-300)}`);
     assert.ok(JSON.parse(r.stderr.trim().split('\n').pop()).reuse === true,
       'a second invocation with the root active reuses it');
