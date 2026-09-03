@@ -24,6 +24,8 @@ import noUnboundedQuantifier from './eslint-rules/no-unbounded-quantifier.cjs';
 import noHardcodedTmp from './eslint-rules/no-hardcoded-tmp.cjs';
 import noBareNpmExec from './eslint-rules/no-bare-npm-exec.cjs';
 import requireUserprofileWithHome from './eslint-rules/require-userprofile-with-home.cjs';
+import requireFullTmpdirTriad from './eslint-rules/require-full-tmpdir-triad.cjs';
+import noUnboundedDirnameWalk from './eslint-rules/no-unbounded-dirname-walk.cjs';
 import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs';
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
 import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
@@ -52,6 +54,8 @@ const localPlugin = {
     'no-hardcoded-tmp': noHardcodedTmp,
     'no-bare-npm-exec': noBareNpmExec,
     'require-userprofile-with-home': requireUserprofileWithHome,
+    'require-full-tmpdir-triad': requireFullTmpdirTriad,
+    'no-unbounded-dirname-walk': noUnboundedDirnameWalk,
     'normalize-path-in-content': normalizePathInContent,
     'require-fs-op-fallback': requireFsOpFallback,
     'no-unbounded-spawn': noUnboundedSpawn,
@@ -606,6 +610,10 @@ export default tseslint.config(
       'local/require-registered-exit': 'error',
       // #3624: see the src/**/*.cts block above for detail.
       'local/no-exact-case-env-access': 'error',
+      // #4244 (origin #4020 / #4220): scripts/run-tests.cjs is the actual site
+      // of the shipped Windows CI hang — registered here (not only on
+      // tests/**/*.cjs below) so the rule covers the real bug's own location.
+      'local/no-unbounded-dirname-walk': 'error',
     },
   },
 
@@ -687,6 +695,12 @@ export default tseslint.config(
       'local/no-bare-npm-exec': 'error',
       // Require USERPROFILE alongside HOME assignments (ADR-1703 Phase 4)
       'local/require-userprofile-with-home': 'error',
+      // Require TEMP+TMP alongside any TMPDIR override — TMPDIR is never read on
+      // Windows, so a TMPDIR-only redirect silently no-ops there (#4220).
+      'local/require-full-tmpdir-triad': 'error',
+      // Require a fixed-point termination guard on any dirname() ancestor walk —
+      // a length/equality-only bound spins forever at a Windows drive root (#4020 / #4220).
+      'local/no-unbounded-dirname-walk': 'error',
       // Ban unbounded sync child_process spawns in tests (DEFECT.UNBOUNDED-SUBPROCESS).
       // No allowlist: the epic (#3064) migrated every site; the rule runs with no
       // exemption surface. The only sanctioned escapes are an explicit `timeout` on
