@@ -1161,6 +1161,19 @@ describe('stamp-codebase-map CLI (#3418)', () => {
       'a document outside --files must be left unstamped, not stamped at HEAD');
   });
 
+  test('--files with an empty value stamps nothing rather than all seven (#4124 review)', () => {
+    writeMap();
+
+    const r = runGsdTools(['stamp-codebase-map', '--files', ''], tmp);
+    assert.strictEqual(r.success, true, 'must stay non-blocking');
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.reason, 'empty-codebase-map-file-filter');
+    assert.strictEqual(readMappedCommit(path.join(codebaseDir, 'STRUCTURE.md')), null,
+      'a caller narrowing the scope must not have it silently widened to the whole map');
+  });
+
   test('--files with an unknown name stamps nothing and reports why (#3418)', () => {
     writeMap();
 

@@ -2261,21 +2261,23 @@ function cmdStampCodebaseMap(cwd: string, raw: boolean, only?: string[]): void {
 
   const emit = (payload: unknown) => output(payload, raw);
 
+  const skip = (reason: string) => ({
+    stamped: [],
+    commit: null,
+    stamped_at: null,
+    skipped: true,
+    reason,
+  });
+
   try {
+    // Probed outside the lock on purpose: taking the lock creates `.planning/`
+    // if absent, and a stamp against a project that has no codebase map at all
+    // must not conjure the directory. The per-document existence check inside
+    // the lock is the one that matters -- a map deleted after this probe lands
+    // on `no-codebase-map` there rather than being recreated as stubs.
     const codebaseDir = path.join(planningDir(cwd), 'codebase');
     if (!fs.existsSync(codebaseDir)) {
-      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'no-codebase-dir' });
-      return;
-    }
-
-    const revProbe = execGit(['rev-parse', 'HEAD'], { cwd }) as unknown as { exitCode: number; stdout: string };
-    if (revProbe.exitCode !== 0) {
-      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'not-a-git-repo' });
-      return;
-    }
-    const commit = revProbe.stdout.trim();
-    if (!/^[0-9a-f]{7,40}$/.test(commit)) {
-      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'unreadable-head' });
+      emit(skip('no-codebase-dir'));
       return;
     }
 
@@ -2284,42 +2286,48 @@ function cmdStampCodebaseMap(cwd: string, raw: boolean, only?: string[]): void {
     // ARCHITECTURE.md only; stamping the other five at HEAD there would claim a
     // currency they do not have. Membership is checked against the closed
     // seven-document set, so an unknown name is a fail-loud non-answer rather
-    // than a path this function tries to resolve.
+    // than a path this function tries to resolve. An empty value is refused
+    // rather than read as "no filter": a caller that meant to narrow the scope
+    // must not silently widen it to all seven.
     let candidates = REQUIRED_CODEBASE_MAP_FILES;
-    if (only && only.length > 0) {
+    if (only) {
+      if (only.length === 0) {
+        emit(skip('empty-codebase-map-file-filter'));
+        return;
+      }
       const unknown = only.filter((file) => !candidates.includes(file));
       if (unknown.length > 0) {
-        emit({
-          stamped: [],
-          commit: null,
-          stamped_at: null,
-          skipped: true,
-          reason: 'unknown-codebase-map-file: ' + unknown.join(','),
-        });
+        emit(skip('unknown-codebase-map-file: ' + unknown.join(',')));
         return;
       }
       candidates = candidates.filter((file) => only.includes(file));
     }
 
-    const present = candidates.filter((file) =>
-      fs.existsSync(path.join(codebaseDir, file)),
-    );
-    if (present.length === 0) {
-      emit({ stamped: [], commit: null, stamped_at: null, skipped: true, reason: 'no-codebase-map' });
-      return;
-    }
+    // Everything the stamp reads is read under the lock it writes under, the
+    // same lock the rest of the .planning/ writers take. Two stampers can run
+    // at once (the full map-codebase run and the execute-phase auto-remap);
+    // one that resolved HEAD or listed the present documents before waiting on
+    // the lock would write its now-stale sha over the newer one, or recreate a
+    // document deleted while it waited as a frontmatter-only stub.
+    const result = withPlanningLock(cwd, () => {
+      const revProbe = execGit(['rev-parse', 'HEAD'], { cwd }) as unknown as { exitCode: number; stdout: string };
+      if (revProbe.exitCode !== 0) return skip('not-a-git-repo');
+      const commit = revProbe.stdout.trim();
+      if (!/^[0-9a-f]{7,40}$/.test(commit)) return skip('unreadable-head');
 
-    // Host-local calendar day, matching the `**Analysis Date:**` line the mapper
-    // agent writes -- the two freshness markers must not disagree by a timezone.
-    const stampedAt = realClock.localToday();
-    const write = drift['writeMappedCommit'] as (f: string, sha: string, iso: string) => void;
+      const present = candidates.filter((file) =>
+        fs.existsSync(path.join(codebaseDir, file)),
+      );
+      if (present.length === 0) return skip('no-codebase-map');
 
-    const stamped: string[] = [];
-    const failed: { file: string; reason: string }[] = [];
-    // Each stamp is a read-modify-write of a document's frontmatter, and two
-    // stampers can run at once: the full map-codebase run and the execute-phase
-    // auto-remap. Same hazard, same lock the rest of the .planning/ writers take.
-    withPlanningLock(cwd, () => {
+      // Host-local calendar day, matching the `**Analysis Date:**` line the
+      // mapper agent writes -- the two freshness markers must not disagree by
+      // a timezone.
+      const stampedAt = realClock.localToday();
+      const write = drift['writeMappedCommit'] as (f: string, sha: string, iso: string) => void;
+
+      const stamped: string[] = [];
+      const failed: { file: string; reason: string }[] = [];
       for (const file of present) {
         try {
           write(path.join(codebaseDir, file), commit, stampedAt);
@@ -2329,24 +2337,13 @@ function cmdStampCodebaseMap(cwd: string, raw: boolean, only?: string[]): void {
           failed.push({ file, reason: err instanceof Error ? err.message : String(err) });
         }
       }
+
+      return { stamped, failed, commit, stamped_at: stampedAt, skipped: false, reason: null };
     });
 
-    emit({
-      stamped,
-      failed,
-      commit,
-      stamped_at: stampedAt,
-      skipped: false,
-      reason: null,
-    });
+    emit(result);
   } catch (err) {
-    emit({
-      stamped: [],
-      commit: null,
-      stamped_at: null,
-      skipped: true,
-      reason: 'exception: ' + (err instanceof Error ? err.message : String(err)),
-    });
+    emit(skip('exception: ' + (err instanceof Error ? err.message : String(err))));
   }
 }
 
