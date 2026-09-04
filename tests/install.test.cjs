@@ -2347,13 +2347,28 @@ describe('bug #2256 — OpenCode adapter embeds per-project override', () => {
 });
 
 describe('bug #2256 — Codex skill adapter header documents transport', () => {
-  test('Task(model=...) line no longer says "omit" without explanation', () => {
+  test('documents static model_overrides as a fallback transport', () => {
     const header = getCodexSkillAdapterHeader('gsd-plan-phase');
-    // Header must mention that per-agent model_overrides are embedded in agent
-    // TOML so spawn_agent picks them up automatically — the old text said
-    // "Codex uses per-role config, not inline model selection" which left
-    // users thinking their model_overrides were silently ignored.
     assert.match(header, /model_overrides/);
+  });
+});
+
+describe('bug #4270 — Codex adapter forwards resolved spawn routing', () => {
+  test('forwards model and reasoning_effort when spawn_agent advertises each field', () => {
+    const header = getCodexSkillAdapterHeader('gsd-plan-phase');
+
+    assert.match(header, /Task\(model="\{resolved_model\}"\).*pass `model="\{resolved_model\}"`/s);
+    assert.match(header, /This is how `model_profile`.*including `adaptive`.*reaches the child agent/s);
+    assert.match(header, /query resolve-model <subagent_type> --pick effort/);
+    assert.match(header, /unified `effort`.*spawn argument\s+`reasoning_effort`/s);
+  });
+
+  test('keeps inheritance fallback for absent fields and sentinel values', () => {
+    const header = getCodexSkillAdapterHeader('gsd-plan-phase');
+
+    assert.match(header, /Omit `model` only when.*does not advertise `model`.*empty.*`"inherit"`/s);
+    assert.match(header, /Detect optional fields independently/s);
+    assert.doesNotMatch(header, /spawn_agent` has no inline `model` parameter/);
   });
 });
   });

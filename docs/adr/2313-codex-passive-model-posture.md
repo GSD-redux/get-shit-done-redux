@@ -334,3 +334,18 @@ is silently no-pin, matching how `""` already behaved.
 
 This ADR's D2 ("embed a `model` only for an explicit real-Codex pin") always implied this. The
 implementation simply did not enforce it, and no test covered the case.
+
+## Amendment (2026-09-04): capability-gated invocation-time routing (#4270)
+
+Codex now exposes `model` and `reasoning_effort` on some `spawn_agent` schemas. This is the
+invocation-time capability signal that did not exist when this ADR adopted a session-only posture.
+GSD therefore passes a workflow's resolved values on an individual spawn when — and only when —
+the visible schema advertises each field. The fields are detected independently from each other
+and from `agent_type`; absent fields, empty values, and `"inherit"` continue to degrade to session
+or static agent configuration.
+
+This amendment does not reverse D1–D4 for the static/install-time channel. Profile-resolved values
+remain absent from generated TOML, explicit `model_overrides` pins remain the only static model
+transport, and effort remains coupled to a static pin there. It supersedes only the broader claim
+that Codex has no tier routing: capable schemas now route at invocation time, while older schemas
+retain the passive fallback.
