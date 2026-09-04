@@ -1483,6 +1483,30 @@ describe('#4155: computeCoveredDigest — direct unit coverage', () => {
     assert.match(d1, /^v1:sha256:[0-9a-f]{64}$/);
   });
 
+  test('a "./"-prefixed path and its bare equivalent → identical digest (canonicalized, not double-counted)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-dotslash-'));
+    t.after(() => cleanup(root));
+    fs.writeFileSync(path.join(root, 'impl.txt'), 'content');
+
+    const bare = computeCoveredDigest(root, ['impl.txt']);
+    const dotSlash = computeCoveredDigest(root, ['./impl.txt']);
+    assert.equal(dotSlash, bare, '"./impl.txt" must canonicalize to the same key as "impl.txt"');
+
+    // Both spellings together must not double-hash the same file into the digest.
+    const combined = computeCoveredDigest(root, ['impl.txt', './impl.txt']);
+    assert.equal(combined, bare);
+  });
+
+  test('an internal ".." segment disguising an escape (not just a leading one) → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-internal-dotdot-'));
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'a'));
+    fs.writeFileSync(path.join(path.dirname(root), 'outside.txt'), 'secret');
+    // 'a/../../outside.txt' does not start with '../' as written, but
+    // normalizes to '../outside.txt' — an escape a purely-prefix check misses.
+    assert.equal(computeCoveredDigest(root, ['a/../../outside.txt']), null);
+  });
+
   test('a covered file whose content changes → digest changes', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-changed-'));
     t.after(() => cleanup(root));
@@ -1539,6 +1563,41 @@ describe('#4155: computeCoveredDigest — direct unit coverage', () => {
     fs.symlinkSync(outsideFile, linkPath);
 
     assert.equal(computeCoveredDigest(root, ['impl.txt']), null);
+  });
+
+  test('an injected fsImpl is actually consulted, not bypassed with raw node:fs (GAP 2 seam, #2790 follow-up)', (t) => {
+    // Mirrors src/planning-inspect.cts's containmentEnforcingVerificationFs:
+    // a caller-supplied fs seam that confines reads to a subdirectory. A file
+    // that exists on real disk, is inside `root`, and would digest cleanly
+    // through raw fs must still be rejected here — proving computeCoveredDigest
+    // reads through the INJECTED fsImpl, not a hidden direct node:fs call.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-seam-'));
+    t.after(() => cleanup(root));
+    const confinedDir = path.join(root, 'confined');
+    fs.mkdirSync(confinedDir);
+    fs.writeFileSync(path.join(root, 'outside-confinement.txt'), 'reachable via real fs');
+    fs.writeFileSync(path.join(confinedDir, 'inside.txt'), 'reachable via real fs');
+
+    function assertConfined(target) {
+      const rel = path.relative(confinedDir, target);
+      if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
+        throw new Error(`escapes confined dir: ${target}`);
+      }
+    }
+    const confinedFs = {
+      readdirSync: (d) => fs.readdirSync(d),
+      readFileSync: (p, enc) => fs.readFileSync(p, enc),
+      readFileBytes: (p) => { assertConfined(p); return fs.readFileSync(p); },
+      statSync: (p) => { assertConfined(p); return fs.statSync(p); },
+      realpathSync: (p) => { const real = fs.realpathSync(p); assertConfined(real); return real; },
+    };
+
+    // A file inside the confined subdir digests fine through the seam.
+    assert.notEqual(computeCoveredDigest(root, ['confined/inside.txt'], confinedFs), null);
+    // A file inside `root` but OUTSIDE the confined subdir must fail closed —
+    // if computeCoveredDigest silently used raw fs instead of confinedFs, this
+    // would wrongly succeed.
+    assert.equal(computeCoveredDigest(root, ['outside-confinement.txt'], confinedFs), null);
   });
 });
 

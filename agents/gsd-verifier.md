@@ -668,7 +668,7 @@ If `valid != true`, refuse to verify. Surface the discrepancy and ask the user t
 
 **ALWAYS use the Write tool to create files** — never use `Bash(cat << 'EOF')` or heredoc commands for file creation.
 
-**#4155:** list EVERY phase PLAN/SUMMARY, requirement, changed impl file (omit one → its edits go undetected), run `gsd_run query verification.fingerprint {phaseDir} {file}...`, copy output into frontmatter — never hand-write covered_digest.
+**#4155:** list EVERY phase PLAN/SUMMARY, requirement, changed impl file (omit one → undetected edits), root-relative not phaseDir-relative: `gsd_run query verification.fingerprint {phaseDir} {root-relative-file}...`, copy output — never hand-write covered_digest.
 
 Create `.planning/phases/{phase_dir}/{phase_num}-VERIFICATION.md`:
 
@@ -939,7 +939,7 @@ return <div>No messages</div>  // Always shows "no messages"
 - [ ] Gaps structured in YAML frontmatter (if gaps_found)
 - [ ] Deferred items structured in YAML frontmatter (if deferred items exist)
 - [ ] Re-verification metadata included (if previous existed)
-- [ ] covered_files/covered_digest written via verification.fingerprint (#4155)
+- [ ] fingerprint fields written via verification.fingerprint (#4155)
 - [ ] VERIFICATION.md created with complete report
 - [ ] Results returned to orchestrator (NOT committed)
 </success_criteria>

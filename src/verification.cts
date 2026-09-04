@@ -149,8 +149,32 @@ function projectNextCommand(bare: string, runtime: string, tail = ''): string {
 interface FsLike {
   readdirSync(dir: string): string[];
   readFileSync(filePath: string, encoding: 'utf-8'): string;
-  statSync(filePath: string): { mtimeMs: number };
+  /** #4155: computeCoveredDigest hashes raw file bytes — a distinct method rather
+   *  than overloading readFileSync, which every other caller in this module uses
+   *  utf-8-only and an object-literal implementation cannot satisfy as overloads. */
+  readFileBytes(filePath: string): Buffer;
+  statSync(filePath: string): { mtimeMs: number; isFile(): boolean };
+  /** #4155: resolves symlinks to their real target — closes the confinement gap a
+   *  lexical (string-only) check leaves open for an in-root symlink pointing outside it. */
+  realpathSync(filePath: string): string;
 }
+
+/**
+ * Real `node:fs`-backed default satisfying FsLike (#4155: `fs` alone lacks
+ * `readFileBytes`, which has no direct `node:fs` equivalent — it is
+ * `readFileSync` called without an encoding). Every method wraps a call to
+ * `fs.<method>` rather than capturing the function reference — existing
+ * tests mock individual `fs` methods in place (`t.mock.method(fs, 'statSync', …)`),
+ * and a captured reference taken at module-load time would be invisible to
+ * that late mock, silently un-mocking this seam's "default" path.
+ */
+const defaultFsImpl: FsLike = {
+  readdirSync: (dir: string) => fs.readdirSync(dir),
+  readFileSync: (filePath: string, encoding: 'utf-8') => fs.readFileSync(filePath, encoding),
+  readFileBytes: (filePath: string) => fs.readFileSync(filePath),
+  statSync: (filePath: string) => fs.statSync(filePath),
+  realpathSync: (filePath: string) => fs.realpathSync(filePath),
+};
 
 /**
  * Outcome of a staleness check. `determined:false` means the check could NOT
@@ -177,6 +201,20 @@ type PhaseCleanCommitTimesFn = (phaseDir: string, files: string[]) => Map<string
 /** Normalize separators to posix (git emits `/`; callers may pass `\` on Windows). */
 function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
+}
+
+/**
+ * #4155: canonicalize a covered-input path before it becomes either a
+ * dedup/sort/hash key or a confinement-check subject. `path.posix.normalize`
+ * collapses `./`, redundant slashes, and internal `..` segments (`a/../../b`
+ * → `../b`) — without this, two spellings of the SAME file (`src/x.cts` vs
+ * `./src/x.cts`) hash as different covered inputs (spurious `stale`, or a
+ * file double-counted into the digest under two keys), and an escape
+ * disguised by an internal `..` segment slips past a check that only looks
+ * at the string's start.
+ */
+function normalizeRel(p: string): string {
+  return path.posix.normalize(toPosix(p));
 }
 
 // ─── #4155: covered-input fingerprint ──────────────────────────────────────────
@@ -206,12 +244,22 @@ const FINGERPRINT_VERSION = 1;
  * as stale (#4155), the same fail-closed shape #3057 B3 established for the
  * legacy mtime staleness check.
  */
-function computeCoveredDigest(projectRoot: string, coveredFiles: readonly string[]): string | null {
-  const uniqueSorted = Array.from(new Set(coveredFiles.map(toPosix))).sort();
+function computeCoveredDigest(
+  projectRoot: string,
+  coveredFiles: readonly string[],
+  fsImpl: FsLike = defaultFsImpl,
+): string | null {
+  const uniqueSorted = Array.from(new Set(coveredFiles.map(normalizeRel))).sort();
   if (uniqueSorted.length === 0) return null;
 
   // Canonicalize the root ONCE — every candidate's realpath is checked against
-  // this, not the possibly-symlinked `projectRoot` argument itself.
+  // this, not the possibly-symlinked `projectRoot` argument itself. Always via
+  // the REAL fs, never fsImpl: `projectRoot` is a trusted anchor the CALLER
+  // derived (findProjectRoot), not attacker-influenced covered-input data —
+  // routing it through a caller-scoped containment seam (e.g. #4155's
+  // containmentEnforcingVerificationFs, confined to `.planning/`, a proper
+  // SUBSET of `projectRoot`) would reject the root itself and fail every
+  // lookup regardless of whether the covered files are legitimate.
   let realRoot: string;
   try {
     realRoot = fs.realpathSync(projectRoot);
@@ -235,14 +283,14 @@ function computeCoveredDigest(projectRoot: string, coveredFiles: readonly string
       // escapes it — statSync/readFileSync follow symlinks, so the lexical
       // confinement check above is not enough. realpathSync resolves the
       // actual target; re-confining against realRoot closes that gap.
-      const real = fs.realpathSync(resolved);
+      const real = fsImpl.realpathSync(resolved);
       const realRel = path.relative(realRoot, real);
       if (realRel === '' || realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
         return null;
       }
-      const st = fs.statSync(real);
+      const st = fsImpl.statSync(real);
       if (!st.isFile()) return null;
-      bytes = fs.readFileSync(real);
+      bytes = fsImpl.readFileBytes(real);
     } catch {
       return null;
     }
@@ -606,7 +654,7 @@ interface VerificationStatusResult {
 
 function findStaleVerificationSummary(
   phaseDir: string,
-  fsImpl: FsLike = fs,
+  fsImpl: FsLike = defaultFsImpl,
   phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn = defaultPhaseCleanCommitTimesMs,
 ): StaleCheckResult {
   // FS errors (TOCTOU: a SUMMARY listed by scanPhasePlans then removed before statSync;
@@ -691,7 +739,7 @@ function readVerificationStatus(
   phaseDir: string,
   opts: ReadVerificationStatusOptions = {},
 ): VerificationStatusResult {
-  const fsImpl: FsLike = opts.fs ?? fs;
+  const fsImpl: FsLike = opts.fs ?? defaultFsImpl;
   const phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn =
     opts.phaseCleanCommitTimesMs ?? defaultPhaseCleanCommitTimesMs;
   const runtime = opts.runtime ?? 'claude';
@@ -796,7 +844,7 @@ function readVerificationStatus(
   let staleCheckIndeterminate = false;
   if (declaresFingerprint) {
     const recomputed = hasWellFormedFingerprint
-      ? computeCoveredDigest(findProjectRoot(phaseDir), coveredFilesVal)
+      ? computeCoveredDigest(findProjectRoot(phaseDir), coveredFilesVal, fsImpl)
       : null;
     if (recomputed === null || recomputed !== coveredDigestVal) {
       const entry = VERIFICATION_ROUTING_TABLE['stale'];
@@ -900,7 +948,7 @@ function isPhaseComplete(
   phaseDir: string,
   deps: IsPhaseCompleteDeps = {},
 ): { value: PhaseCompletionValue; scope: Scope } {
-  const fsImpl: FsLike = deps.fs ?? fs;
+  const fsImpl: FsLike = deps.fs ?? defaultFsImpl;
   let readable = true;
   try {
     fsImpl.readdirSync(phaseDir);
@@ -1016,7 +1064,7 @@ function cmdVerificationFingerprint(
   }
   const phaseDir = path.resolve(cwd, phaseDirArg);
   const projectRoot = findProjectRoot(phaseDir);
-  const uniqueSorted = Array.from(new Set(files.map(toPosix))).sort();
+  const uniqueSorted = Array.from(new Set(files.map(normalizeRel))).sort();
   const digest = computeCoveredDigest(projectRoot, uniqueSorted);
   if (digest === null) {
     error('could not compute fingerprint — a covered file is missing, unreadable, or escapes the project root');
