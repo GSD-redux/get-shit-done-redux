@@ -4848,12 +4848,15 @@ function makeCriteriaPlan(criteriaBody, taskVerify) {
 describe('#4024: scanQuantitativeCriteria — pure unit tests', () => {
   let scanQuantitativeCriteria;
 
-  // This block sits below the fold-point whose top-level destructure omits
-  // `before`, so bind it locally rather than relying on file position.
+  // Self-contained bindings: this block sits below the file's fold-points,
+  // whose nested scopes own the earlier VERIFY_CJS consts and omit `before`
+  // from the top-level destructure. Bind both locally rather than relying
+  // on file position.
   const before = require('node:test').before;
+  const VERIFY_CJS_LOCAL = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'verify.cjs');
 
   before(() => {
-    const verify = require(VERIFY_CJS);
+    const verify = require(VERIFY_CJS_LOCAL);
     scanQuantitativeCriteria = verify.scanQuantitativeCriteria;
   });
 
