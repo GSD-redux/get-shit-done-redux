@@ -13042,15 +13042,22 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       ? buildHookCommand(targetDir, 'gsd-update-banner.js', hookOpts)
       : localCmd('gsd-update-banner.js'));
 
-  const emittedHookCommands = new Set(
-    Object.values(settings.hooks || {})
-      .flatMap(groups => Array.isArray(groups) ? groups : [])
-      .flatMap(group => Array.isArray(group && group.hooks) ? group.hooks : [])
-      .map(hook => hook && hook.command)
-      .filter(command => typeof command === 'string'),
-  );
+  const registeredHookCommands = Object.values(settings.hooks || {})
+    .flatMap(groups => Array.isArray(groups) ? groups : [])
+    .flatMap(group => Array.isArray(group && group.hooks) ? group.hooks : [])
+    .map(hook => hook && hook.command)
+    .filter(command => typeof command === 'string');
+  // #4249: match by the managed script's basename, not by exact command-string
+  // equality. The blocking-guard hooks above register only-if-absent, so a hook
+  // already present from a prior install keeps its OLD command untouched — but
+  // `track()` always records the FRESHLY computed command for it, which never
+  // equals what's actually persisted. Matching on the basename (present in the
+  // persisted command either way) keeps an already-registered, still-active
+  // hook in the validated set instead of silently dropping it (#4154 Blocker).
   configuredEntrypoints.push(
-    ...settingsEntrypoints.filter(entry => emittedHookCommands.has(entry.command)),
+    ...settingsEntrypoints.filter(entry =>
+      registeredHookCommands.some(command => command.includes(path.basename(entry.scriptPath)))
+    ),
   );
   const statuslineEntrypoints = settingsEntrypoints.filter(entry => entry.command === statuslineCommand);
   const updateBannerEntrypoints = settingsEntrypoints.filter(entry => entry.command === updateBannerCommand);
@@ -13159,6 +13166,14 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
   const { isOpencode, isCodex, isCursor, isAugment, isQwen, isHermes, isCline } = runtimeFlags(runtime);
   const plan = resolveInstallPlan(runtime);
 
+  // #4249 Major: validate BEFORE this function's own settings.json write (and
+  // before writeNonClaudeDefaults) instead of after. Codex/Cursor/Windsurf/Kimi
+  // already persisted their config inside install() by this point (no rollback
+  // path covers those writes — see docs/how-to/update-gsd.md), but for the
+  // settings-json surface this ordering means a failing validation never
+  // reaches this function's own write at all.
+  assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
+
   if (shouldInstallStatusline && plan.writesSharedSettings && !_hostBehaviors(runtime).skipSettingsUi) {
     if (!isGlobal && !forceStatusline) {
       // Local installs skip statusLine by default: repo settings.json takes precedence over
@@ -13259,8 +13274,6 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
   // function so it can run at the right point in the flow (before agent TOML
   // generation reads it). This call is idempotent (preserves existing values).
   writeNonClaudeDefaults(runtime);
-
-  assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
 
   // program + command are now single-source lookups (ADR-1239 Phase B / #1679):
   // program is the runtime display label; command is the per-host /gsd-new-project

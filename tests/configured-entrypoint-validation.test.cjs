@@ -9,7 +9,7 @@ const test = require('node:test');
 const helpers = require('./helpers.cjs');
 
 const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
-const { finishInstall } = require('../bin/install.js');
+const { install, finishInstall } = require('../bin/install.js');
 
 test('configured entrypoint validation exposes an aggregate typed boundary', () => {
   assert.equal(
@@ -25,10 +25,10 @@ test('finishInstall rejects an invalid configured entrypoint before Done output'
   const logs = [];
   const originalLog = console.log;
   console.log = (...args) => logs.push(args.join(' '));
-  // #2665: finishInstall calls writeNonClaudeDefaults(runtime) in-process before
-  // the entrypoint assertion throws; sandbox HOME (+ USERPROFILE for os.homedir()
-  // on Windows) and config-location env so that an ambient CLAUDE_CONFIG_DIR/etc
-  // cannot redirect the write to a live config dir.
+  // #2665/#4249: finishInstall asserts configured entrypoints before any of its
+  // own writes now, but still sandbox HOME (+ USERPROFILE for os.homedir() on
+  // Windows) and config-location env defensively, so a future reordering that
+  // reintroduces a pre-assertion write can never redirect it to a live config dir.
   const savedHome = process.env.HOME;
   const savedUserProfile = process.env.USERPROFILE;
   process.env.HOME = root;
@@ -47,6 +47,53 @@ test('finishInstall rejects an invalid configured entrypoint before Done output'
     else process.env.USERPROFILE = savedUserProfile;
   }
   assert.equal(logs.some(line => line.includes('Done!')), false);
+});
+
+test('a hook already registered under a stale command is still tracked for validation on re-install (#4154 Blocker)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-stale-'));
+  t.after(() => helpers.cleanup(root));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    const first = install(true, 'claude');
+    assert.ok(first.settingsPath, 'a fresh global install must produce a settings path');
+    finishInstall(first.settingsPath, first.settings, first.statuslineCommand, false, 'claude', true, first.configDir, {
+      configuredEntrypoints: first.configuredEntrypoints,
+    });
+
+    // Simulate an entry registered by an older installer: rewrite the
+    // check-update hook's persisted command to something the current
+    // installer would never emit, while keeping the hook NAME referenced so
+    // `hasGsdUpdateHook` still finds it and applySettingsJsonHooks takes its
+    // register-only-if-absent branch on the next install (never rewriting it).
+    const onDisk = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8'));
+    const staleEntry = (onDisk.hooks.SessionStart || []).find(entry =>
+      entry.hooks && entry.hooks.some(h => h.command && h.command.includes('gsd-check-update.js'))
+    );
+    assert.ok(staleEntry, 'a fresh install must register the check-update hook');
+    for (const h of staleEntry.hooks) {
+      if (h.command && h.command.includes('gsd-check-update.js')) {
+        h.command = 'node /stale/path/from/an/older/install/gsd-check-update.js';
+      }
+    }
+    fs.writeFileSync(first.settingsPath, JSON.stringify(onDisk, null, 2));
+
+    const second = install(true, 'claude');
+    const trackedNames = (second.configuredEntrypoints || []).map(entry => path.basename(entry.scriptPath));
+    assert.ok(
+      trackedNames.includes('gsd-check-update.js'),
+      `a hook already registered under a stale command must still be tracked for validation, got: ${trackedNames.join(', ')}`,
+    );
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    restoreConfigLocationEnv();
+  }
 });
 
 test('configured entrypoint validation aggregates file and interpreter failures without execution', (t) => {
