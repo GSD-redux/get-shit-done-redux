@@ -32,8 +32,9 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
+
+const { readFileNormalized } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLAN_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
@@ -42,17 +43,13 @@ const STALL_HELPERS_PATH = path.join(
 );
 const MANAGER_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'manager.md');
 
-function readNormalized(p) {
-  return fs.readFileSync(p, 'utf-8').replace(/\r\n/g, '\n');
-}
-
 // The phase6 shrink-only line for plan-phase.md (tests/phase6-capstone-
 // conformance.test.cjs PRE_PHASE6) — mirrored here so a guard sentence can
 // never quietly push the file past it.
 const PLAN_PHASE_PHASE6_LINE = 94519;
 
 function lfByteCount(p) {
-  return Buffer.byteLength(readNormalized(p), 'utf-8');
+  return Buffer.byteLength(readFileNormalized(p), 'utf-8');
 }
 
 /** Split plan-phase.md into its ORCHESTRATOR RULE blocks. */
@@ -64,7 +61,7 @@ function orchestratorRules(content) {
 
 describe('#4079 background-wait wake-tool guard', () => {
   test('every synchronous stop-and-wait ORCHESTRATOR RULE in plan-phase.md forbids ScheduleWakeup (#4079)', () => {
-    const content = readNormalized(PLAN_PHASE_PATH);
+    const content = readFileNormalized(PLAN_PHASE_PATH);
     const stopAndWaitRules = orchestratorRules(content).filter(
       (rule) => /stop working on this task immediately/.test(rule)
     );
@@ -82,7 +79,7 @@ describe('#4079 background-wait wake-tool guard', () => {
   });
 
   test('stall-detection-helpers.md forbids ScheduleWakeup between gsd_stall_watch cycles (#4079)', () => {
-    const content = readNormalized(STALL_HELPERS_PATH);
+    const content = readFileNormalized(STALL_HELPERS_PATH);
     assert.match(
       content,
       /ScheduleWakeup/,
@@ -102,7 +99,7 @@ describe('#4079 background-wait wake-tool guard', () => {
   });
 
   test('manager.md background-dispatch wait rules forbid ScheduleWakeup (#4079)', () => {
-    const content = readNormalized(MANAGER_PATH);
+    const content = readFileNormalized(MANAGER_PATH);
     const dispatchRules = content.split('\n')
       .filter((line) => line.includes('ORCHESTRATOR RULE — BACKGROUND DISPATCH'))
       .map((line) => line.trim());
@@ -120,7 +117,7 @@ describe('#4079 background-wait wake-tool guard', () => {
   });
 
   test('plan-phase.md still uses gsd_stall_watch at all three stall-watch sites (negative space)', () => {
-    const content = readNormalized(PLAN_PHASE_PATH);
+    const content = readFileNormalized(PLAN_PHASE_PATH);
     const stallWatchRules = orchestratorRules(content).filter(
       (rule) => rule.includes('gsd_stall_watch')
     );
@@ -143,7 +140,7 @@ describe('#4079 background-wait wake-tool guard', () => {
   });
 
   test('manager.md background-dispatch semantics unchanged (FLATTEN gate preserved)', () => {
-    const content = readNormalized(MANAGER_PATH);
+    const content = readFileNormalized(MANAGER_PATH);
     assert.match(content, /dispatch-should-flatten/, 'FLATTEN resolution must be preserved');
     assert.match(
       content,
