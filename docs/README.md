@@ -51,6 +51,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Catch complexity before it compounds](how-to/act-on-a-refactor-proposal.md) — enable the post-execute refactor hook, read a proposal's score vs. anchor delta, and accept or decline it
 - [Run phases autonomously](how-to/run-phases-autonomously.md) — use autonomous mode for unattended phase execution
 - [Handle quick and fast tasks](how-to/handle-quick-and-fast-tasks.md) — use `/gsd-quick` and `/gsd-fast` for ad-hoc work outside the phase loop
+- [Batch quick tasks](how-to/batch-quick-tasks.md) — run several `/gsd-quick`-shaped tasks together with `/gsd-quick-batch`, understand capacity/isolation, and recover a failed or interrupted batch
 - [Configure model profiles](how-to/configure-model-profiles.md) — switch between quality, balanced, and budget model tiers
 - [Control which host runtime GSD reports](how-to/control-the-reported-host-runtime.md) — read the `agent_runtime` ladder, understand what host detection looks at, and pin the runtime when detection is not what you want
 - [Set up cross-AI review](how-to/set-up-cross-ai-review.md) — configure a second AI to review code produced by the primary agent

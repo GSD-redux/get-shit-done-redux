@@ -757,7 +757,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        - `~/.claude/gsd-core/workflows/execute-plan.md`
        - `~/.claude/gsd-core/templates/summary.md`
        - `~/.claude/gsd-core/references/checkpoints.md`
-       - `~/.claude/gsd-core/references/tdd.md`
+       ${TDD_APPLICABLE ? '- `~/.claude/gsd-core/references/tdd.md`' : ''}  # #3990: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or TDD_MODE=true)
        - `~/.claude/gsd-core/references/worktree-path-safety.md`
        ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>

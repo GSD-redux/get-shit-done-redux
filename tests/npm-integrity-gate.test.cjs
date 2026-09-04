@@ -179,14 +179,18 @@ describe('#114: npm integrity gate — --help output', () => {
  * high or moderate npm-audit advisories.
  *
  * Strategy: run `npm audit --omit=dev --json` against both the root
- * workspace and the embedded SDK package and assert that the metadata
- * vulnerability counts are zero across info/low/moderate/high/critical.
+ * workspace and the embedded SDK package, then diff the resulting
+ * vulnerable-package set against a baseline tree (see #4196 and
+ * scripts/npm-audit-baseline.cjs) so the gate only fails on advisories
+ * this PR/push actually introduces — not on pre-existing advisories in
+ * an untouched transitive dependency. When no baseline can be resolved,
+ * falls back to the original zero-tolerance check across
+ * info/low/moderate/high/critical.
  *
- * The test is intentionally strict — any advisory of any severity (other
- * than 'low' if the maintainer accepts it; that branch is left explicit
- * here) blocks CI. If a future advisory lands without an upstream patch,
- * either bump the patched transitive (preferred), or annotate the
- * acceptance below with a justification AND a link to the upstream tracker.
+ * If a future advisory lands without an upstream patch on a package this
+ * PR touches, either bump the patched transitive (preferred), or annotate
+ * the acceptance below with a justification AND a link to the upstream
+ * tracker.
  *
  * Skips automatically when `node_modules/` is absent (a fresh checkout
  * before `npm install`) so the test does not falsely report on developer
@@ -197,89 +201,150 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const {
+  evaluateAuditDiff,
+  runPackageLockAudit,
+  runInstalledTreeAudit,
+  extractBaselineTree,
+  resolveBaselineRef,
+  AUDIT_ATTEMPT_TIMEOUT_MS,
+  AUDIT_MAX_ATTEMPTS,
+  AUDIT_BACKOFF_BASE_MS,
+} = require('../scripts/npm-audit-baseline.cjs');
+const { cleanup, createTempDir } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SDK = path.join(ROOT, 'sdk');
-const AUDIT_TIMEOUT_MS = 180_000;
-const TEST_TIMEOUT_MS = AUDIT_TIMEOUT_MS + 30_000;
 
-function auditProductionVulns(cwd) {
-  if (!fs.existsSync(path.join(cwd, 'package.json'))) {
-    return null; // signal "skip" to caller
-  }
-  if (!fs.existsSync(path.join(cwd, 'node_modules'))) {
-    return null; // signal "skip" to caller
-  }
-  const isWindows = process.platform === 'win32';
-  const npmCandidates = isWindows ? ['npm.cmd', 'npm'] : ['npm'];
-  const args = ['audit', '--omit=dev', '--json'];
-  let out;
-  let lastErr = null;
-  for (const npmCmd of npmCandidates) {
-    try {
-      out = execFileSync(
-        npmCmd,
-        args,
-        {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: AUDIT_TIMEOUT_MS,
-          shell: isWindows,
-        }
-      );
-      lastErr = null;
-      break;
-    } catch (e) {
-      // `npm audit` exits non-zero when advisories are present; the JSON is
-      // still on stdout in that case. Recover and let the assertion classify.
-      if (e && typeof e.stdout !== 'undefined' && e.stdout !== undefined && e.stdout !== null) {
-        out = Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout);
-        lastErr = null;
-        break;
-      }
-      lastErr = e;
-    }
-  }
-  if (lastErr) throw lastErr;
-  const parsed = JSON.parse(out);
-  // `null` is reserved for the "node_modules missing → skip" signal above.
-  // Any other unexpected JSON shape is a real failure of the audit harness
-  // (npm changed its output format, audit aborted before metadata, etc.) —
-  // throw so the test fails loudly instead of skipping silently.
-  if (parsed && parsed.metadata && parsed.metadata.vulnerabilities) {
-    return parsed.metadata.vulnerabilities;
-  }
-  throw new Error(`Unexpected npm audit JSON shape in ${cwd}: missing metadata.vulnerabilities`);
+// Worst case for ONE retry-audit call: every attempt times out, with
+// exponential backoff between each (AUDIT_MAX_ATTEMPTS - 1 gaps) -- computed
+// with the SAME formula scripts/npm-audit-baseline.cjs uses internally, so
+// this can't independently drift from the real backoff schedule.
+let totalBackoffMs = 0;
+for (let attempt = 1; attempt < AUDIT_MAX_ATTEMPTS; attempt += 1) {
+  totalBackoffMs += AUDIT_BACKOFF_BASE_MS * (2 ** (attempt - 1));
+}
+const SINGLE_AUDIT_WORST_CASE_MS = (AUDIT_ATTEMPT_TIMEOUT_MS * AUDIT_MAX_ATTEMPTS) + totalBackoffMs;
+// checkTreeAgainstBaseline makes up to TWO sequential retry-audit calls
+// (auditProductionVulns for HEAD, runPackageLockAudit for the baseline) --
+// budget for both exhausting retries simultaneously, or node:test's own
+// timeout fires first and masks buildTimeoutKillError's clear message.
+const TEST_TIMEOUT_MS = (SINGLE_AUDIT_WORST_CASE_MS * 2) + 30_000;
+
+function auditProductionVulns(cwd, opts = {}) {
+  return runInstalledTreeAudit(cwd, opts);
 }
 
-describe('#3588: npm audit --omit=dev reports zero advisories', () => {
-  test('root workspace production tree has no advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
-    const vulns = auditProductionVulns(ROOT);
-    if (vulns === null) {
-      t.skip('auditable npm package not present or node_modules/ missing');
+describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (#4196)', () => {
+  // #4196: a pre-existing advisory in an untouched transitive dependency
+  // must not block this PR/push -- only an advisory THIS change actually
+  // introduces should fail the gate. When no baseline can be resolved
+  // (e.g. a bare local run with no git history), fall back to the
+  // original #3588 zero-tolerance behavior rather than silently skipping.
+  function checkTreeAgainstBaseline(t, cwd, subdir, skipMessage) {
+    const audit = auditProductionVulns(cwd);
+    if (audit === null) {
+      t.skip(skipMessage);
       return;
     }
-    assert.strictEqual(vulns.critical, 0, `expected 0 critical; got ${vulns.critical}`);
-    assert.strictEqual(vulns.high, 0, `expected 0 high; got ${vulns.high}`);
-    assert.strictEqual(vulns.moderate, 0, `expected 0 moderate; got ${vulns.moderate}`);
-    // Low advisories are not explicitly forbidden by the #3588 acceptance
-    // criterion but the issue listed only high/moderate as actual findings —
-    // tighten if any future low advisory is introduced.
-    assert.strictEqual(vulns.low, 0, `expected 0 low; got ${vulns.low}`);
+    const baselineRef = resolveBaselineRef(ROOT);
+    const baselineDir = baselineRef ? extractBaselineTree(baselineRef, ROOT, subdir) : null;
+    if (baselineDir === null) {
+      const vulns = audit.metadata.vulnerabilities;
+      assert.strictEqual(vulns.critical, 0, `no baseline available; falling back to zero-tolerance -- expected 0 critical; got ${vulns.critical}`);
+      assert.strictEqual(vulns.high, 0, `no baseline available; falling back to zero-tolerance -- expected 0 high; got ${vulns.high}`);
+      assert.strictEqual(vulns.moderate, 0, `no baseline available; falling back to zero-tolerance -- expected 0 moderate; got ${vulns.moderate}`);
+      assert.strictEqual(vulns.low, 0, `no baseline available; falling back to zero-tolerance -- expected 0 low; got ${vulns.low}`);
+      return;
+    }
+    t.after(() => cleanup(baselineDir));
+    const baselineAudit = runPackageLockAudit(baselineDir);
+    const baselineVulns = (baselineAudit && baselineAudit.vulnerabilities) || {};
+    const result = evaluateAuditDiff({
+      baselineVulnerabilities: baselineVulns,
+      headVulnerabilities: audit.vulnerabilities || {},
+    });
+    assert.strictEqual(
+      result.ok,
+      true,
+      result.ok
+        ? ''
+        : `new advisory introduced vs baseline (${baselineRef}): ${result.newlyIntroduced.join(', ')}. Pre-existing advisories are tracked separately (see #4196) and do not block this change.`,
+    );
+  }
+
+  test('root workspace production tree introduces no new advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
+    checkTreeAgainstBaseline(t, ROOT, '', 'auditable npm package not present or node_modules/ missing');
   });
 
-  test('sdk/ production tree has no advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
-    const vulns = auditProductionVulns(SDK);
-    if (vulns === null) {
-      t.skip('sdk/ is not an auditable npm package or sdk/node_modules/ is missing');
-      return;
-    }
-    assert.strictEqual(vulns.critical, 0, `expected 0 critical; got ${vulns.critical}`);
-    assert.strictEqual(vulns.high, 0, `expected 0 high; got ${vulns.high}`);
-    assert.strictEqual(vulns.moderate, 0, `expected 0 moderate; got ${vulns.moderate}`);
-    assert.strictEqual(vulns.low, 0, `expected 0 low; got ${vulns.low}`);
+  test('sdk/ production tree introduces no new advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
+    checkTreeAgainstBaseline(t, SDK, 'sdk', 'sdk/ is not an auditable npm package or sdk/node_modules/ is missing');
+  });
+});
+
+describe('auditProductionVulns — timeout-kill retry classification (#4250, #4260)', () => {
+  function makeFixtureDir(t) {
+    const dir = createTempDir('gsd-audit-baseline-timeout-');
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"fixture"}');
+    return dir;
+  }
+
+  function makeKilledError() {
+    return Object.assign(new Error('command timed out'), {
+      killed: true,
+      signal: 'SIGTERM',
+      stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
+      stderr: 'npm http fetch GET 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk (attempt 1) 178234ms',
+    });
+  }
+
+  test('a timeout-killed execFileSync call on every attempt throws a clear timeout error after exhausting retries, not a JSON parse error', (t) => {
+    const dir = makeFixtureDir(t);
+    const execFileSyncImpl = () => { throw makeKilledError(); };
+    const sleepImpl = () => {};
+
+    assert.throws(
+      () => auditProductionVulns(dir, { execFileSyncImpl, sleepImpl }),
+      (err) => {
+        assert.match(err.message, /npm audit timed out after \d+ attempts/);
+        assert.match(err.message, /status\.npmjs\.org/);
+        assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
+        assert.match(err.message, /Captured stderr before the last kill/);
+        assert.match(err.message, /npm http fetch GET/);
+        return true;
+      },
+    );
+  });
+
+  test('retry recovers: timeouts on the first attempts followed by a successful final attempt succeeds', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 0 } }, vulnerabilities: {} });
+    let calls = 0;
+    const execFileSyncImpl = () => {
+      calls += 1;
+      if (calls < 3) throw makeKilledError();
+      return completeJson;
+    };
+    const sleepImpl = () => {};
+
+    const result = auditProductionVulns(dir, { execFileSyncImpl, sleepImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 0 });
+    assert.strictEqual(calls, 3);
+  });
+
+  test('a normal non-zero exit with complete stdout JSON still recovers correctly (no regression)', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 1 } }, vulnerabilities: { foo: {} } });
+    const nonZeroExitError = Object.assign(new Error('npm audit found vulnerabilities'), {
+      status: 1,
+      stdout: completeJson,
+    });
+    const execFileSyncImpl = () => { throw nonZeroExitError; };
+
+    const result = auditProductionVulns(dir, { execFileSyncImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 1 });
   });
 });
   });

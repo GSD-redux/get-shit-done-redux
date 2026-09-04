@@ -399,13 +399,10 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run (MUST fail), commit: `test({phase}-{plan}): add failing test for [feature]`
-
-**3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
-
-**4. REFACTOR (if needed):** Clean up, run tests (MUST still pass), commit only if changes: `refactor({phase}-{plan}): clean up [feature]`
-
-**Error handling:** RED doesn't fail ��� investigate. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
+**2-4. RED → GREEN → REFACTOR (#3990: stated ONCE):** execute the cycle exactly as the
+canonical `gsd-core/references/tdd.md` "Red-Green-Refactor Cycle" section specifies (embedded
+when TDD applies) — its commit-scope contract, fail-fast rule, and error handling. The
+reference is the single source; do not improvise a variant.
 
 ## Plan-Level TDD Gate Enforcement (type: tdd plans)
 
@@ -537,6 +534,18 @@ git add src/types/user.ts
 ```bash
 gsd_run query commit-to-subrepo "{type}({phase}-{plan}): {concise task description}" --files file1 file2 ...
 ```
+**0c. Plan commit ledger (#3968, single-repo — before the first commit):**
+Each Bash call is a FRESH shell, so the ledger persists on disk like the #3097 sentinel above
+(a variable would be unset at SUMMARY time and `rev-list ..HEAD` would measure zero).
+Per-plan filename, so sequential plans cannot contaminate each other:
+```bash
+_GSD_LEDGER="$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}"
+[ -f "$_GSD_LEDGER" ] || git rev-parse HEAD > "$_GSD_LEDGER"
+```
+The SUMMARY's `commits:` is MEASURED from this ledger, the base recorded as
+`plan_head_before:` for `/gsd:verify-work`'s same-instrument check. Multi-repo keeps commit-to-subrepo
+JSON hashes instead.
+
 Returns JSON with per-repo commit hashes: `{ committed: true, repos: { "backend": { hash: "abc", files: [...] }, ... } }`. Record all hashes for SUMMARY.
 
 **Otherwise (standard single-repo):**
@@ -649,9 +658,21 @@ This file is the canonical output of this step. The orchestrator reads `.plannin
 actuals:
   tokens: 74000    # chars/4 over the files you actually changed
   tasks: 5         # tasks completed
-  commits: 7       # commits made
+  commits: 7       # MEASURED: git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD (#3968)
 ```
 These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
+
+**`commits:` is measured, never narrated (#3968).** At SUMMARY write, read the persisted
+ledger (protocol 0c — a fresh shell per Bash call; the base comes from disk):
+```bash
+PLAN_HEAD_BEFORE=$(cat "$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}")
+COMMITS_ACTUAL=$(git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD)
+```
+Write BOTH into the frontmatter — `commits: ${COMMITS_ACTUAL}`,
+`plan_head_before: ${PLAN_HEAD_BEFORE}` — including when the count is `0`.
+A `0` with code changes means the changes sit UNCOMMITTED: **HALT — do not write the
+SUMMARY with a narrated count**; surface `git status --short` in your return. A `0` with no
+code changes (docs-only) is legitimate. `/gsd:verify-work` flags mismatches as BLOCKER.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 
