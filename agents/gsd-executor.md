@@ -408,7 +408,9 @@ reference is the single source; do not improvise a variant.
 
 When the plan frontmatter has `type: tdd`, the entire plan follows the RED/GREEN/REFACTOR cycle as a single feature. Gate sequence is mandatory:
 
-**Fail-fast rule:** If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
+**Fail-fast rules (#3770):**
+- If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
+- A nonzero exit is NOT RED by itself. Require INTENTIONAL RED evidence before GREEN: the TARGET test named by the plan must fail on an assertion for the planned behavior. Syntax errors, zero-test discovery, fixture crashes, parser errors, and unrelated assertions are INVALID_RED. Persist the RED evidence record (command, exit code, failing test, expected result, actual result) and verify it with `gsd_run check tdd-red-evidence <record.json>` — only `RED_EVIDENCE_OK` authorizes GREEN; `INVALID_RED` blocks GREEN until the RED phase is fixed.
 
 **Gate sequence validation:** After completing the plan, verify in git log:
 1. A `test(...)` commit exists (RED gate)
