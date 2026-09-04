@@ -26,6 +26,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const {
   parsePhaseFromProse,
   PHASE_NUMBER_TOKEN_SOURCE,
+  matchPhaseDirs,
   phaseKeyFromToken,
   phaseKeyFromDir,
   phaseHeadingPrefixSrcFor,
@@ -61,6 +62,10 @@ function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean 
 }
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import coreUtilsMod = require('./core-utils.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
 const { isPhaseComplete } = verificationMod;
@@ -890,6 +895,66 @@ function stateReplaceFieldWithFallback(content: string, primary: string, fallbac
   return content;
 }
 
+/**
+ * #4067: disk-derived plan-completion answer for advance-plan's phase-complete
+ * guard.
+ *
+ * `advancePlanCore` decides "phase complete" purely from STATE.md's scalar plan
+ * counter (`currentPlan >= totalPlans`). That counter cannot represent
+ * wave-parallel execution — a stale counter carried over from the prior phase
+ * (the reported trigger: `Plan: 7 of 7` surviving into a 10-plan phase) or a
+ * counter raced by N concurrent executors both let the phase-complete branch
+ * fire while sibling plans are mid-flight. This helper answers the completion
+ * question from disk instead, exactly the way `state update-progress`
+ * recalculates it: every plan in the Current Position phase's directory has a
+ * SUMMARY.md.
+ *
+ * Single-derivation discipline: plan/summary counting is owned by
+ * `scanPhasePlans` (src/plan-scan.cts, ADR-3180 §7.5) — this helper consumes
+ * it, never re-derives. It deliberately does NOT consult `isPhaseComplete`
+ * (§7.4): that owner answers the *verification* question (passing
+ * `*-VERIFICATION.md`), a different question from "are all plans executed?".
+ * Blocked summaries (#3345) are filtered from the pairing set with the same
+ * shared predicate `scanPhasePlans` uses, so the named outstanding list can
+ * never disagree with the count-based decision.
+ *
+ * FAIL-OPEN contract: returns `null` when the disk answer is UNAVAILABLE — no
+ * readable phases dir, no directory matching the position phase, or a scan
+ * whose scope is not COMPLETE (the scan may be blind to plans it knows exist).
+ * `null` means "the caller must fall back to the counter-derived decision",
+ * NOT "plans are outstanding"; worlds the seam cannot see (STATE.md with no
+ * Current Position `Phase:` line, milestone-archived layouts) keep today's
+ * behavior rather than being newly refused.
+ *
+ * Returns `{ dir, outstanding }` where `outstanding` is empty when every plan
+ * on disk is summarized (vacuously so for a zero-plan phase — #3168's
+ * zero-plan-phase posture).
+ */
+function unsummarizedPlansForPositionPhase(
+  cwd: string,
+  positionPhase: string,
+): { dir: string; outstanding: string[] } | null {
+  const phasesDir = planningPaths(cwd).phases;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  // Canonical phase-token → directory matching (phase-id owner, #2562): both
+  // sides of the comparison derived by the same function, never a local regex.
+  const { matches } = matchPhaseDirs(dirs, positionPhase, resolvePhaseIdConvention(cwd));
+  if (matches.length === 0) return null;
+  const scan = scanPhasePlans(path.join(phasesDir, matches[0]));
+  if (scan.scope !== SCOPE.COMPLETE) return null;
+  const countableSummaries = scan.summaryFiles.filter(
+    (f) => !planDependencyGraphMod.isSummaryFileBlocked(path.join(phasesDir, matches[0], f)),
+  );
+  const outstanding = coreUtilsMod.findUnsummarizedPlans(scan.planFiles, countableSummaries);
+  return { dir: matches[0], outstanding };
+}
+
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -915,6 +980,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // STATE.md lock, so the position read and the claim read cannot interleave
   // with another session's Current Position write.
   let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+  // #4067: set when the disk-derived guard declines the phase-complete branch —
+  // named here so the post-lock output path can report it without re-deriving.
+  // Holder (not a bare let) so TypeScript's closure-unaware narrowing cannot
+  // collapse the post-lock read to `never` — the callback assigns it.
+  const outstandingRef: { value: { dir: string; outstanding: string[] } | null } = { value: null };
   const wrote = readModifyWriteStateMd(statePath, (content) => {
     // advance-plan has no phase argument of its own — the phase it advances is
     // whatever ## Current Position names. Compare that against the milestone
@@ -931,10 +1001,58 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }
     }
     const result = transitionCore(content, intent, deps);
-    resultData = result.data;
+    const resultDataNow = result.data ?? {};
+    // #4067: the transform's phase-complete branch is decided by STATE.md's
+    // scalar plan counter, which can neither carry a stale value across phases
+    // nor represent wave-parallel execution. Before letting that branch write
+    // "Phase complete — ready for verification", re-decide from disk (the same
+    // source state.update-progress recalculates from): every plan in the
+    // position phase's directory must have a SUMMARY.md. A non-empty
+    // outstanding list declines the ENTIRE write — STATE.md is returned
+    // byte-identical, so the decline is idempotent and safe for any number of
+    // concurrent callers (the disk answer is re-read under the STATE.md lock
+    // each call; the counter stays display-only). `null` (disk answer
+    // unavailable) fails open to the counter-derived decision, so every
+    // world this seam cannot see keeps today's behavior.
+    if (
+      resultDataNow['advanced'] === false
+      && resultDataNow['reason'] === 'last_plan'
+      && positionPhase !== null
+    ) {
+      const diskAnswer = unsummarizedPlansForPositionPhase(cwd, positionPhase);
+      if (diskAnswer !== null && diskAnswer.outstanding.length > 0) {
+        outstandingRef.value = diskAnswer;
+        resultData = resultDataNow;
+        precomputedUpdated = [];
+        return content;
+      }
+    }
+    resultData = resultDataNow;
     precomputedUpdated = result.updated;
     return result.content;
   }, cwd, { divergedFields, preWriteState });
+
+  // #4067 decline path: plans remain unexecuted on disk. Shaped like the
+  // existing `last_plan` decline (advanced:false + machine-readable reason,
+  // exit 0) rather than a hard error — the caller did nothing wrong and
+  // STATE.md needs no repair; the remaining plans' executors will re-run this
+  // command, and the final one finds a fully-summarized phase and completes it.
+  const plansOutstanding = outstandingRef.value;
+  if (plansOutstanding !== null) {
+    declineNoOp(
+      raw,
+      'advanced',
+      'plans_outstanding',
+      `state advance-plan skipped — phase-complete declined: ${plansOutstanding.outstanding.length} plan(s) in .planning/phases/${plansOutstanding.dir} have no SUMMARY.md (${plansOutstanding.outstanding.join(', ')}). STATE.md was left unchanged; re-run once every plan has executed and written its summary.`,
+      {
+        advanced: false,
+        phase_dir: plansOutstanding.dir,
+        outstanding_plans: plansOutstanding.outstanding,
+        milestone_conflict: milestoneConflict,
+      },
+    );
+    return;
+  }
 
   // `!resultData` is a type guard, not a second failure mode: the callback
   // above assigns it unconditionally and only runs once STATE.md is known to
