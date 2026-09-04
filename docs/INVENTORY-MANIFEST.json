@@ -526,6 +526,7 @@
       "surface.cjs",
       "task-command-router.cjs",
       "task-content-resolution.cjs",
+      "tdd-red-evidence.cjs",
       "teams-status.cjs",
       "template.cjs",
       "text-lines.cjs",
