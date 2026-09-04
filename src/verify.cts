@@ -940,7 +940,10 @@ function scanQuantitativeCriteria(content: string): { errors: string[]; warnings
           seenErr,
         );
       } else {
-        const bareDiff = /\bgit\s+diff\b([^\n|;&]*)/.exec(seg);
+        // The argument span ends at the closing backtick of an inline-code
+        // span ("`git diff` shows ..."), at a redirection, or at a chain
+        // operator — trailing prose must never read as diff arguments.
+        const bareDiff = /\bgit\s+diff\b([^`\n|;&<>]*)/.exec(seg);
         if (bareDiff) {
           const rest = bareDiff[1].trim();
           // Bare or flags-only (no rev, range, or path): ambiguous between an
