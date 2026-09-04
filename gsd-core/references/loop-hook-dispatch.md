@@ -58,17 +58,20 @@ Dispatch the referenced unit. Exactly one of `ref.skill`, `ref.agent`, or `ref.c
 Wait for the result before continuing to the next hook or the next step.
 
 **`supportsReviewerLanes` (optional, boolean).** A `step` entry may carry
-`supportsReviewerLanes: true` alongside `ref` (#4209). A workflow that wants to opt a step into
-external reviewer-lane dispatch resolves its own active hook (`gsd_run loop render-hooks
-<point> --raw`) and checks this field before proceeding — when it reads exactly `true`, the
-workflow may additionally route through `gsd_run review-lane dispatch-step`, the one
-interpreter in `src/reviewer-step-dispatch.cts` that reuses the existing reviewer-lane
-selection, planning, and invocation machinery, so any explicitly selected reviewer lane also
-reviews the same scope. Absent, `false`, or any non-boolean value is inert: the step's own
-workflow logic must not attempt reviewer-lane dispatch. This is the only place a step opts into
-reviewer-lane support; do not hand-roll selection/plan/invoke logic inside a workflow body —
-any capability beyond `code-review` wanting the same behavior declares the same trait on its
-own step rather than each workflow.md re-implementing the call.
+`supportsReviewerLanes: true` alongside `ref` (#4209). A workflow opts a step into external
+reviewer-lane dispatch by calling `gsd_run review-lane dispatch-step --cap-id <capId> --point
+<point> --explicit <slugs> ...` — `dispatch-step` resolves its OWN active hook for `<point>`
+(self-invoking `loop render-hooks`) and checks whether `<capId>`'s hook carries this field
+before proceeding; the workflow does not resolve or gate on the trait itself, only passes the
+two flags naming which step it is. When the trait reads exactly `true`, `dispatch-step` routes
+through `dispatchReviewerLanes`, the one interpreter in `src/reviewer-step-dispatch.cts` that
+reuses the existing reviewer-lane selection, planning, and invocation machinery, so any
+explicitly selected reviewer lane also reviews the same scope. Absent, `false`, or any
+non-boolean value is inert: `dispatch-step` itself returns a no-op, no plan/invoke calls. This
+is the only place a step opts into reviewer-lane support; do not hand-roll selection/plan/invoke
+logic OR trait resolution inside a workflow body — any capability beyond `code-review` wanting
+the same behavior declares the same trait on its own step and passes `--cap-id`/`--point` to the
+same `dispatch-step` call, with zero bespoke code of its own.
 
 A `step` is **advisory by construction**: it never blocks or redirects the host workflow —
 that is what a `gate` is for. Each dispatch is best-effort; on error record a warning and

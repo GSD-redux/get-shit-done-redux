@@ -2,14 +2,15 @@
  * Reviewer Step Dispatch (#4209 Phase 1 Plan 2, ADR-2782 seam).
  *
  * ONE interpreter for "a step declares `supportsReviewerLanes: true`" (the trait plan 01-01
- * projects onto `activeHooks` — see `src/loop-resolver.cts`). `gsd-core/workflows/code-review.md`
- * resolves its own active hook for the configured loop point (`gsd_run loop render-hooks`) and
- * only proceeds to explicit-CLI-flag matching when that trait reads `true`; the sole production
- * caller of this module, `gsd-core/bin/gsd-tools.cjs`'s `review-lane dispatch-step`, is therefore
- * only ever reached once the workflow layer has already confirmed the trait, and passes `true`
- * here as a defensive re-statement, not the opt-in decision itself. Every direct or lifecycle
- * caller routes through `dispatchReviewerLanes` so selection/plan/invoke logic is owned once,
- * not re-derived per feature. This module owns NONE of those primitives — it wires
+ * projects onto `activeHooks` — see `src/loop-resolver.cts`). This module trusts `trait` exactly
+ * as given: it is the CALLER's job to have derived it correctly. `gsd-core/bin/gsd-tools.cjs`'s
+ * `review-lane dispatch-step` is the one production caller, and it re-derives `trait` itself —
+ * given `--cap-id`/`--point`, it self-invokes `loop render-hooks <point>` and checks whether that
+ * capId's active hook carries `supportsReviewerLanes: true` — rather than trusting a caller-passed
+ * boolean, so ANY workflow can reuse this same seam by declaring the trait on its own capability
+ * step and passing `--cap-id`/`--point`, with zero bespoke trait-resolution code of its own. Every
+ * direct or lifecycle caller routes through `dispatchReviewerLanes` so selection/plan/invoke logic
+ * is owned once, not re-derived per feature. This module owns NONE of those primitives — it wires
  * `resolveReviewerSelection` (selection) and `resolveLanePlan` (planning), the same building
  * blocks `gsd-core/bin/gsd-tools.cjs`'s `review-lane plan` subcommand uses. Invocation
  * (`runLane`) needs OS-aware spawn/probe plumbing this module does not own, so `deps.invoke`
@@ -173,7 +174,7 @@ function validatePaths(
   // below (buildSourceReviewPrompt) — reject it here, at the shared trust boundary, rather than
   // relying on the incidental quoting `git diff --name-only` happens to apply upstream.
   // eslint-disable-next-line no-control-regex
-  const CONTROL_CHAR = /[\x00-\x1f]/;
+  const CONTROL_CHAR = /[\x00-\x1f\x7f\u2028\u2029]/;
   for (const p of paths) {
     if (typeof p !== 'string' || p.length === 0 || CONTROL_CHAR.test(p)) {
       return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
@@ -262,7 +263,6 @@ export async function dispatchReviewerLanes(
 
   const prompt = buildSourceReviewPrompt(input);
   const estimatedTokens = estimateTokens(prompt);
-  let promptWritten = false;
 
   const results: ReviewerLaneDispatchResult[] = [];
   // Never narrow the requested set: an explicit reviewer the selector could not resolve is
@@ -313,10 +313,11 @@ export async function dispatchReviewerLanes(
 
     let invokeOutcome: InvokeOutcome;
     try {
-      if (!promptWritten) {
-        writePromptFile(planOutcome.plan.promptPath, prompt);
-        promptWritten = true;
-      }
+      // Idempotent: `prompt` is loop-invariant, so writing it again per lane is harmless and
+      // avoids coupling this lane's write to whatever another lane's `plan()` happened to
+      // resolve as `promptPath` (#4209 R1 — a `deps.plan` override that ever varies promptPath
+      // per lane would otherwise silently invoke a later lane against a file no one wrote).
+      writePromptFile(planOutcome.plan.promptPath, prompt);
       invokeOutcome = await deps.invoke(lane, planOutcome.plan, slug);
     } catch (e) {
       results.push({ slug, ok: false, reason: 'invoke_failed', detail: e instanceof Error ? e.message : String(e) });

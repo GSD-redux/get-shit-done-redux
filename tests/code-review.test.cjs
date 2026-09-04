@@ -677,52 +677,80 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
       'code-review.md workflow missing dispatch_reviewer_lanes step');
   });
 
-  test('dispatch_reviewer_lanes resolves its own supportsReviewerLanes trait via loop render-hooks before matching flags', () => {
+  test('dispatch_reviewer_lanes passes --cap-id/--point to dispatch-step instead of resolving the trait itself', () => {
     // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
     const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
     const stepContent = stepMatch[1];
-    assert.match(stepContent, /gsd_run loop render-hooks "\$CODE_REVIEW_POINT" --raw/,
-      'must resolve its own active hook via the real loop render-hooks mechanism, not hand-roll a trait check');
-    assert.match(stepContent, /hook\.supportsReviewerLanes === true/,
-      'must gate on the literal supportsReviewerLanes trait value, not any other field');
+    assert.match(stepContent, /--cap-id code-review --point "\$CODE_REVIEW_POINT"/,
+      'must delegate trait resolution to dispatch-step via --cap-id/--point, not scrape loop render-hooks itself (#4209 maintainer redirect: no per-workflow hand-wiring of the gate)');
+    assert.ok(!/loop render-hooks/.test(stepContent),
+      'the workflow must not call loop render-hooks itself — that belongs to dispatch-step, the reusable seam');
   });
 
-  // #4209 (maintainer redirect on issue #4209): the trait must actually gate the dispatch, not
-  // just exist declaratively — extract the real flag-matching fence from the live workflow and
-  // execute it, proving a matching CLI flag is ignored when the trait reads false.
-  function extractFlagMatchFence() {
-    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
-    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
-    const stepContent = stepMatch[1];
-    const start = stepContent.indexOf('EXPLICIT_JOINED=""');
-    assert.ok(start !== -1, 'expected the flag-matching fence in dispatch_reviewer_lanes');
-    const end = stepContent.indexOf('\nfi\n```', start);
-    assert.ok(end !== -1, 'unterminated flag-matching fence');
-    return stepContent.slice(start, end + '\nfi'.length);
-  }
-
-  function runFlagMatch(supportsReviewerLanes, cliArgs) {
-    const script = [
-      `GSD_TOOLS=${JSON.stringify(GSD_TOOLS_BIN)}`,
-      `SUPPORTS_REVIEWER_LANES=${JSON.stringify(supportsReviewerLanes)}`,
-      extractFlagMatchFence(),
-      'echo "SLUGS=${EXPLICIT_REVIEWER_SLUGS[*]}"',
-    ].join('\n');
-    const result = require('node:child_process').spawnSync(
-      'bash', ['-c', script, 'bash', ...cliArgs],
-      { encoding: 'utf8', timeout: 15000, cwd: REPO_ROOT },
-    );
-    return { stdout: result.stdout, stderr: result.stderr };
-  }
-
-  test('trait gate: a matching CLI flag resolves zero slugs when supportsReviewerLanes is false', () => {
-    const { stdout } = runFlagMatch('false', ['--codex']);
-    assert.match(stdout, /^SLUGS=\s*$/m, `expected zero slugs with the trait off, got: ${stdout}`);
+  // #4209 (maintainer redirect): the trait must be enforced by the shared `dispatch-step` CLI
+  // itself, not trusted from a caller-passed boolean — otherwise a second capability reusing this
+  // seam gets zero enforcement from declaring the trait alone. These run the REAL command against
+  // the REAL first-party capability registry (capabilities/code-review/capability.json), not a
+  // stubbed value.
+  test('review-lane dispatch-step: --cap-id code-review --point execute:post resolves the real trait as true', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const result = runNode(
+        [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
+          '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'not-a-real-reviewer-xyz',
+          '--cap-id', 'code-review', '--point', 'execute:post', '--raw'],
+        { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
+      );
+      assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+      const parsed = JSON.parse(result.stdout.trim());
+      // An unresolvable slug still proves the trait gate was passed: TRAIT_NOT_ENABLED short-
+      // circuits before selection is ever attempted (dispatched:false, ok:true), whereas a real
+      // selection failure on a resolved (trait-enabled) dispatch is ok:false with selection.errors.
+      assert.notStrictEqual(parsed.reason, 'trait_not_enabled',
+        `expected the real code-review capability step's trait to be enabled, got: ${JSON.stringify(parsed)}`);
+      assert.strictEqual(parsed.ok, false, 'an unresolvable explicit lane past a passed trait gate must still be a reported failure');
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 
-  test('trait gate: the same matching CLI flag resolves the slug when supportsReviewerLanes is true', () => {
-    const { stdout } = runFlagMatch('true', ['--codex']);
-    assert.match(stdout, /^SLUGS=codex\s*$/m, `expected the codex slug with the trait on, got: ${stdout}`);
+  test('review-lane dispatch-step: an unknown --cap-id resolves the trait as false (fails closed, not open)', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const result = runNode(
+        [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
+          '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'codex',
+          '--cap-id', 'no-such-capability-xyz', '--point', 'execute:post', '--raw'],
+        { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
+      );
+      assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.strictEqual(parsed.dispatched, false, 'a capId whose trait is not enabled must dispatch nothing');
+      assert.strictEqual(parsed.reason, 'trait_not_enabled');
+      assert.deepStrictEqual(parsed.results, [], 'no lane may run when the trait is not enabled');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('review-lane dispatch-step: omitting --cap-id/--point resolves the trait as false (no context means no opt-in)', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const result = runNode(
+        [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
+          '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'codex', '--raw'],
+        { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
+      );
+      assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.strictEqual(parsed.reason, 'trait_not_enabled',
+        `a caller with no --cap-id/--point context must not be silently opted in, got: ${JSON.stringify(parsed)}`);
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 
   test('dispatch_reviewer_lanes step derives explicit flags from the roster, not a hand-maintained list', () => {
@@ -794,7 +822,8 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
       const result = runNode(
         [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
           '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
-          '--run-dir', tmpDir, '--cwd', tmpDir, '--raw'],
+          '--run-dir', tmpDir, '--cwd', tmpDir,
+          '--cap-id', 'code-review', '--point', 'execute:post', '--raw'],
         { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
       );
       assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
@@ -812,7 +841,8 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
       const result = runNode(
         [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
           '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
-          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'not-a-real-reviewer-xyz', '--raw'],
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'not-a-real-reviewer-xyz',
+          '--cap-id', 'code-review', '--point', 'execute:post', '--raw'],
         { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
       );
       assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);

@@ -1559,6 +1559,31 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       const explicitFlags = (flag('--explicit') || '').split(',').map((s) => s.trim()).filter(Boolean);
       const depth = flag('--depth') || '';
       const baseSha = flag('--base-sha') || '';
+      // #4209 (maintainer redirect): this command IS the reusable capability/step-dispatch
+      // trait check — a workflow declares `supportsReviewerLanes: true` on its own capability
+      // step and passes --cap-id/--point here; NOTHING else about opting in is hand-wired per
+      // workflow. Self-invokes the SAME `loop render-hooks` command a workflow would otherwise
+      // have to shell out to itself (relocating that one subprocess here, not adding a new one),
+      // reusing its full config/registry/capability-state resolution rather than duplicating it.
+      // Absent --cap-id/--point (a caller that has no capability-step context at all) is a hard
+      // no-op, same as an absent trait — this command never assumes it is wanted.
+      const capId = flag('--cap-id') || '';
+      const point = flag('--point') || '';
+      let trait = false;
+      if (capId && point) {
+        try {
+          const r = cp.spawnSync(
+            process.execPath,
+            [__filename, 'loop', 'render-hooks', point, '--raw'],
+            { cwd, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
+          );
+          if (r.status === 0) {
+            const parsed = JSON.parse(String(r.stdout || ''));
+            const hooks = Array.isArray(parsed && parsed.activeHooks) ? parsed.activeHooks : [];
+            trait = hooks.some((h) => h && h.capId === capId && h.supportsReviewerLanes === true);
+          }
+        } catch { trait = false; }
+      }
       // No piped stdin (interactive TTY): fail closed to empty paths instead of blocking
       // indefinitely on a TTY EOF the caller never sends.
       let stdinPaths = '';
@@ -1620,7 +1645,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
       const dispatchResult = await dispatchReviewerLanes(
         {
-          trait: true,
+          trait,
           selection: { explicitFlags, detected: rosterSlugs },
           repoRoot,
           paths,

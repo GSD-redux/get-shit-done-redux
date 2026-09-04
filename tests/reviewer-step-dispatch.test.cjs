@@ -194,7 +194,11 @@ describe('dispatchReviewerLanes — bounded source-review prompt', () => {
     assert.equal(SOURCE_REVIEW_PROHIBITIONS.length, 4);
   });
 
-  test('the shared prompt file is written exactly once even across multiple selected lanes', async () => {
+  test('the shared prompt file write is idempotent — identical content on every selected lane (#4209 R1)', async () => {
+    // #4209 R1: writePromptFile is called once PER lane rather than gated on a "first lane wins"
+    // flag, deliberately — the content is loop-invariant, so a redundant write is harmless, and
+    // this avoids coupling one lane's write to whatever another lane's plan() resolved as its own
+    // promptPath (a latent bug if a future deps.plan override ever varies promptPath per lane).
     const lanes = new Map([
       ['claude', fakeLane('claude')],
       ['codex', fakeLane('codex')],
@@ -208,10 +212,11 @@ describe('dispatchReviewerLanes — bounded source-review prompt', () => {
       { getLane: (slug) => lanes.get(slug), plan, invoke, writePromptFile },
     );
 
-    assert.equal(writePromptFile.calls.length, 1);
-    const [writtenPath, writtenContent] = writePromptFile.calls[0];
-    assert.equal(writtenPath, `${RUN_DIR}/gsd-review-prompt.md`);
-    assert.match(writtenContent, /Repository root: \/repo/);
+    assert.equal(writePromptFile.calls.length, 2, 'expected one write per selected lane');
+    for (const [writtenPath, writtenContent] of writePromptFile.calls) {
+      assert.equal(writtenPath, `${RUN_DIR}/gsd-review-prompt.md`);
+      assert.match(writtenContent, /Repository root: \/repo/);
+    }
   });
 });
 
