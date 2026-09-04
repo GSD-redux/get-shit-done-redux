@@ -2877,6 +2877,12 @@ describe('#3830: state advance-plan checks its prose position against the plans 
         `${planLine}: the divergence must be announced even when #4067 declines; got ${JSON.stringify(held.stderr)}`);
       assert.ok(!held.stderr.includes('REFUSED to advance'),
         'the completion branch does not refuse, so the refusal verb must not appear');
+      // RV6.5 review of the round that added the yield: the warning must not tell the
+      // operator to stop when the caller contract beside it says to proceed.
+      assert.ok(!held.stderr.includes('before continuing'),
+        `a yield does not stop the workflow, so its warning must not say "before continuing"; got ${JSON.stringify(held.stderr)}`);
+      assert.match(held.stderr, /did not stop the workflow/,
+        'the yielded warning must say the call did not stop anything');
     }
   });
 
@@ -3023,6 +3029,8 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.ok(stateText().includes('Phase complete'), 'Status moves: the phase is complete on disk');
     assert.match(result.stderr, /did NOT trust the plan counter/);
     assert.match(result.stderr, /matches neither count/, 'and it names which half of the line is wrong');
+    assert.match(result.stderr, /did not stop the workflow/);
+    assert.ok(!result.stderr.includes('before continuing'), 'a completed phase must not be told to stop');
   });
 });
 

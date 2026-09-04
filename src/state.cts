@@ -1246,15 +1246,21 @@ function warnPositionDiverged(data: Record<string, unknown>, outcome: 'refused' 
   const verb = outcome === 'refused'
     ? `REFUSED to advance (#3830)`
     : `did NOT trust the plan counter (#3830)`;
+  // The two outcomes give OPPOSITE instructions on purpose, and the RV6.5 review
+  // of the round that added the second is why: a refusal stops the caller's step,
+  // so "before continuing" is right; a yield does NOT stop anything — both
+  // first-party callers proceed on the answer that follows it — so a warning that
+  // says "before continuing" contradicts the caller contract the operator is
+  // reading it beside. The stale line still wants fixing; it is not a blocker.
   const consequence = outcome === 'refused'
-    ? `nothing was written and the plan counter did NOT advance. `
-    : `the phase-complete decision was taken from the plans on disk instead (#4067) and the counter was left as it is. `;
+    ? `nothing was written and the plan counter did NOT advance. Reconcile STATE.md before continuing — `
+    : `the phase-complete decision was taken from the plans on disk instead (#4067) and the counter was left as it is; ` +
+      `this call did not stop the workflow. Reconcile the stale line when convenient — `;
   process.stderr.write(
     `[gsd-tools] WARNING: state.advance-plan ${verb}: ` +
       `## Current Position says plan ${scalar(prose['current_plan'])} of ${scalar(prose['total_plans'])} ` +
       `for ${phase}, but the plans on disk number ${scalar(disk['plan_count'])} ` +
-      `(${scalar(disk['plan_count_all'])} including superseded). ${because}` +
-      `${consequence}Reconcile STATE.md before continuing — ` +
+      `(${scalar(disk['plan_count_all'])} including superseded). ${because}${consequence}` +
       `\`gsd-tools query phase-plan-index\` shows the real plan set; \`state rebuild\`, \`state sync\` or ` +
       `\`state patch\` are the repair paths.\n`,
   );

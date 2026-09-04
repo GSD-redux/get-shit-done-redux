@@ -803,7 +803,7 @@ gsd_run query roadmap.update-plan-progress "${PHASE_NUMBER}"
 gsd_run query requirements.mark-complete ${REQ_IDS}
 ```
 
-**State command behaviors:** documented in `docs/CLI-TOOLS.md` (`state advance-plan` — the refusal contract).
+**State command behaviors:** documented in the gsd-core repository's `docs/CLI-TOOLS.md` (not shipped in the package; `state advance-plan` — the refusal contract).
 
 **For blockers found during execution:**
 ```bash

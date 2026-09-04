@@ -129,8 +129,9 @@ node gsd-tools.cjs state signal-resume
 
 Before advancing, the verb resolves the phase's real plan set from disk the same
 way `query phase-plan-index` does and compares it against the `## Current
-Position` prose. It **refuses to advance** when the two disagree, rather than
-incrementing a position it cannot trust (#3830).
+Position` prose. It **refuses to move the counter** when the two disagree, rather
+than incrementing a position it cannot trust (#3830); on the phase-complete
+branch the disagreement is reported and the plans on disk decide — see below.
 
 "The same way" is literal, and it is a property of the directory listing as much
 as of the matcher: both read the phases directory raw — no milestone window and
