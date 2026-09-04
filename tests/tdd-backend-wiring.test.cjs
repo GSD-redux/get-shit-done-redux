@@ -32,7 +32,19 @@ const HARNESS_PATH = 'gsd-core/workflows/execute-phase.md';
 const WORKTREE_PATH = 'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md';
 const TDD_STEP_FRAGMENT_PATH = 'gsd-core/workflows/execute-phase/steps/tdd-applicability-resolution.md';
 
-const BACKENDS = [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]];
+// #4272-phase-6 byte-ceiling extraction (two commits ago): the harness
+// backend's TDD_APPLICABLE assignment + phase.tdd-applicable call moved OUT
+// of execute-phase.md and into the tdd-applicability-resolution.md step
+// fragment; execute-phase.md itself now carries only a one-line REFERENCE to
+// that fragment. The worktree backend was not affected — it still carries
+// everything inline in executor-isolation-dispatch.md. `referenceFile` is
+// where the reader/orchestrator encounters the backend (and, for the
+// harness, where the one-line pointer + the ${TDD_APPLICABLE...} USE live);
+// `assignmentFile` is where TDD_APPLICABLE is actually ASSIGNED.
+const BACKENDS = {
+  'execute-phase.md': { referenceFile: HARNESS_PATH, assignmentFile: TDD_STEP_FRAGMENT_PATH },
+  'executor-isolation-dispatch.md': { referenceFile: WORKTREE_PATH, assignmentFile: WORKTREE_PATH },
+};
 
 describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () => {
   // A backend may assign TDD_APPLICABLE directly from the `gsd_run query
@@ -57,16 +69,18 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   }
 
   test('harness backend (execute-phase.md) assigns TDD_APPLICABLE via phase.tdd-applicable', () => {
-    assertTddApplicableIsComputed('execute-phase.md', HARNESS_PATH);
+    // Assignment now lives in the extracted tdd-applicability-resolution.md
+    // step fragment, not in execute-phase.md itself (#4272-phase-6).
+    assertTddApplicableIsComputed('execute-phase.md', BACKENDS['execute-phase.md'].assignmentFile);
   });
 
   test('worktree backend (executor-isolation-dispatch.md) assigns TDD_APPLICABLE via phase.tdd-applicable', () => {
-    assertTddApplicableIsComputed('executor-isolation-dispatch.md', WORKTREE_PATH);
+    assertTddApplicableIsComputed('executor-isolation-dispatch.md', BACKENDS['executor-isolation-dispatch.md'].assignmentFile);
   });
 
-  for (const [name, filePath] of BACKENDS) {
+  for (const [name, cfg] of Object.entries(BACKENDS)) {
     test(`${name}'s phase.tdd-applicable call is plan-scoped, not phase-scoped`, () => {
-      const text = read(filePath);
+      const text = read(cfg.assignmentFile);
       const callLine = text.split('\n').find((l) => l.includes('phase.tdd-applicable') && l.includes('gsd_run query'));
       assert.ok(callLine, `${name} must carry a gsd_run query phase.tdd-applicable call`);
       assert.ok(
@@ -77,28 +91,62 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   }
 
   test('both backends assign TDD_APPLICABLE before every ${TDD_APPLICABLE...} use (document order)', () => {
-    for (const [name, filePath] of BACKENDS) {
-      const text = read(filePath);
+    // Worktree backend: assignment and every ${TDD_APPLICABLE...} use live
+    // in the same file — same-file ordering check.
+    {
+      const text = read(BACKENDS['executor-isolation-dispatch.md'].assignmentFile);
       const lines = text.split('\n');
       const assignIdx = lines.findIndex((l) => /^\s*TDD_APPLICABLE=/.test(l));
-      assert.ok(assignIdx !== -1, `${name} has no TDD_APPLICABLE assignment`);
+      assert.ok(assignIdx !== -1, 'executor-isolation-dispatch.md has no TDD_APPLICABLE assignment');
       const useIndices = [];
       lines.forEach((l, i) => {
         if (/\$\{TDD_APPLICABLE\b/.test(l)) useIndices.push(i);
       });
-      assert.ok(useIndices.length > 0, `${name} has no \${TDD_APPLICABLE...} use to check ordering against`);
+      assert.ok(useIndices.length > 0, 'executor-isolation-dispatch.md has no ${TDD_APPLICABLE...} use to check ordering against');
       for (const useIdx of useIndices) {
         assert.ok(
           assignIdx < useIdx,
-          `${name}: TDD_APPLICABLE is used at line ${useIdx + 1} before it is assigned at line ${assignIdx + 1}`,
+          `executor-isolation-dispatch.md: TDD_APPLICABLE is used at line ${useIdx + 1} before it is assigned at line ${assignIdx + 1}`,
+        );
+      }
+    }
+
+    // Harness backend: the assignment was extracted into
+    // tdd-applicability-resolution.md (#4272-phase-6); execute-phase.md no
+    // longer contains the assignment at all, only a one-line REFERENCE to
+    // where it's resolved followed (later) by the ${TDD_APPLICABLE...} USE.
+    // Confirm the fragment does assign it, and that in execute-phase.md the
+    // reference precedes every use.
+    {
+      const fragmentText = read(BACKENDS['execute-phase.md'].assignmentFile);
+      assert.ok(
+        /^\s*TDD_APPLICABLE=/m.test(fragmentText),
+        'tdd-applicability-resolution.md has no TDD_APPLICABLE assignment',
+      );
+
+      const text = read(BACKENDS['execute-phase.md'].referenceFile);
+      const lines = text.split('\n');
+      const refIdx = lines.findIndex(
+        (l) => l.includes('tdd-applicability-resolution.md') && l.includes('TDD-applicability resolution'),
+      );
+      assert.ok(refIdx !== -1, 'execute-phase.md must carry a one-line reference to tdd-applicability-resolution.md');
+      const useIndices = [];
+      lines.forEach((l, i) => {
+        if (/\$\{TDD_APPLICABLE\b/.test(l)) useIndices.push(i);
+      });
+      assert.ok(useIndices.length > 0, 'execute-phase.md has no ${TDD_APPLICABLE...} use to check ordering against');
+      for (const useIdx of useIndices) {
+        assert.ok(
+          refIdx < useIdx,
+          `execute-phase.md: TDD_APPLICABLE is used at line ${useIdx + 1} before the reference to its resolution at line ${refIdx + 1}`,
         );
       }
     }
   });
 
   test('both tdd.md embed-line comments describe the same three real sources (#4265)', () => {
-    for (const [name, filePath] of BACKENDS) {
-      const text = read(filePath);
+    for (const [name, cfg] of Object.entries(BACKENDS)) {
+      const text = read(cfg.referenceFile);
       const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE \?/.test(l));
       assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
       assert.ok(line.includes('type: tdd'), `${name}'s tdd.md comment must mention plan type: tdd, got: ${line.trim()}`);
@@ -153,8 +201,8 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   });
 
   test('regression: tdd-single-statement.test.cjs assertions still hold by inspection', () => {
-    for (const [name, filePath] of BACKENDS) {
-      const text = read(filePath);
+    for (const [name, cfg] of Object.entries(BACKENDS)) {
+      const text = read(cfg.referenceFile);
       const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE/.test(l));
       assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
       assert.ok(/TDD_APPLICABLE \?/.test(line), `${name}'s tdd.md entry must stay conditional on TDD_APPLICABLE (#3990)`);
