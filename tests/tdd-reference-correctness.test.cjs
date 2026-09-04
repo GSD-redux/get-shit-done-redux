@@ -115,7 +115,7 @@ describe('#4269 — plan-level gate rules are owned once, by tdd.md', () => {
     // old fail-fast prose — only a pointer.
     assert.ok(!/git log --oneline -E --grep/.test(executor),
       'gsd-executor.md must not restate the git-log gate validation script — that lives only in tdd.md');
-    assert.ok(!/If a test passes unexpectedly during the RED phase/.test(executor),
+    assert.ok(!/If a test passes unexpectedly during RED, STOP/.test(executor),
       'gsd-executor.md must not restate the fail-fast rule prose — that lives only in tdd.md');
   });
 });
