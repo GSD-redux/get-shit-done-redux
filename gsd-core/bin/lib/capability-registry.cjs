@@ -233,6 +233,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "antigravity"
     },
     "config": {
@@ -650,6 +652,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
+      "effortConfigKey": "review.effort.claude",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -667,6 +671,11 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -1093,6 +1102,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -1252,6 +1263,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
+      "effortConfigKey": "review.effort.codex",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -1269,6 +1282,11 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -1524,6 +1542,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": "review.models.cursor",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -1805,6 +1825,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
       "modelConfigKey": "review.models.gemini",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -2408,6 +2430,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -2520,6 +2544,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
       "modelConfigKey": "review.models.llama_cpp",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2584,6 +2610,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
       "modelConfigKey": "review.models.lm_studio",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2872,6 +2900,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
       "modelConfigKey": "review.models.ollama",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -3065,6 +3095,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
+      "effortConfigKey": "review.effort.opencode",
+      "defaultEffort": "high",
       "handler": "opencode"
     },
     "config": {
@@ -3082,6 +3114,11 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -3424,6 +3461,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -4868,6 +4907,7 @@ const configKeys = {
   "review.models.claude": "claude",
   "review.max_prompt_tokens_per_reviewer.claude": "claude",
   "review.timeouts.claude": "claude",
+  "review.effort.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
@@ -4878,6 +4918,7 @@ const configKeys = {
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
   "review.timeouts.codex": "codex",
+  "review.effort.codex": "codex",
   "review.models.cursor": "cursor",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
@@ -4927,6 +4968,7 @@ const configKeys = {
   "review.models.opencode": "opencode",
   "review.max_prompt_tokens_per_reviewer.opencode": "opencode",
   "review.timeouts.opencode": "opencode",
+  "review.effort.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
   "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
@@ -5006,6 +5048,12 @@ const configSchema = {
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
+  "review.effort.claude": {
+    "owner": "claude",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
+  },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
     "type": "boolean",
@@ -5079,6 +5127,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.effort.codex": {
+    "owner": "codex",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
   },
   "review.models.cursor": {
     "owner": "cursor",
@@ -5390,6 +5444,12 @@ const configSchema = {
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
+  "review.effort.opencode": {
+    "owner": "opencode",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
+  },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
     "type": "boolean",
@@ -5637,6 +5697,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "antigravity"
     },
     "config": {
@@ -5925,6 +5987,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
+      "effortConfigKey": "review.effort.claude",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -5942,6 +6006,11 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -6305,6 +6374,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
+      "effortConfigKey": "review.effort.codex",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -6322,6 +6393,11 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -6577,6 +6653,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": "review.models.cursor",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -7082,6 +7160,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -7270,6 +7350,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
+      "effortConfigKey": "review.effort.opencode",
+      "defaultEffort": "high",
       "handler": "opencode"
     },
     "config": {
@@ -7287,6 +7369,11 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -7498,6 +7585,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {

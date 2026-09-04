@@ -295,6 +295,41 @@ timeout key either, matching the same narrow key-ownership invariant their `revi
 keys already follow (each owns only its own prompt-budget key). `cursor` gained a model flag
 (`review.models.cursor`, #3653) but still owns no federated timeout key of its own.
 
+### Reviewer lane reasoning effort (`review.effort.*`, #4255)
+
+The three lanes that can carry a reasoning level on their command line — `codex`, `claude`,
+`opencode` — federate a `review.effort.<slug>` key, owned by that lane's capability manifest like
+its model and timeout keys. Accepted values are the usual effort levels (`minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`) plus `inherit`.
+
+**Resolution order for a lane's effort, highest first:**
+
+| # | Source | Result |
+|---|---|---|
+| 1 | `review.effort.<slug>` | the level you set, rendered in the host's own effort syntax and clamped to what that host supports |
+| 2 | the lane's declared review default | `high` on all three lanes today |
+| 3 | nothing declared | **no effort argument is emitted** — the reviewer CLI's own configuration decides |
+
+Row 1 is the level you asked for, not always the level that runs: each host clamps to its own
+supported set. Verified against the shipped catalog, `minimal` reaches Codex and Claude as `low`
+while OpenCode takes it as-is; every other level passes through on all three. `REVIEWS.md` records
+the level that actually ran, not the one requested.
+
+`inherit` selects row 3 explicitly: use it when you want your own `~/.codex/config.toml` (or the
+equivalent for another CLI) to be the authority, because the argument GSD renders is a
+command-line config override and beats that file for the invocation. A value that is not a
+recognized level falls back to row 2 rather than being forwarded, since an argument the CLI
+rejects kills the lane outright.
+
+Before #4255 there was no review-specific source at all: every lane's level came from the
+`gsd-plan-checker` agent's installed frontmatter — `low` under every shipped model profile — so a
+prompt-fed, source-grounded review ran at the level chosen for a fast structural verifier, and a
+large plan set could come back as an empty lane. Effort is now a property of the review.
+
+The lanes with no effort channel (`gemini`, `cursor`, `antigravity`, `qwen`, `coderabbit`,
+`kimi-code`, `ollama`, `lm_studio`, `llama_cpp`) federate no key and emit no argument, matching the
+same narrow key-ownership invariant their model and timeout keys already follow.
+
 ### Reviewer defaults for `/gsd-review`
 
 Use `review.default_reviewers` to scope the no-flag `/gsd-review` run to a subset of detected reviewers.
