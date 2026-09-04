@@ -668,7 +668,7 @@ If `valid != true`, refuse to verify. Surface the discrepancy and ask the user t
 
 **ALWAYS use the Write tool to create files** — never use `Bash(cat << 'EOF')` or heredoc commands for file creation.
 
-**#4155:** `covered_files` must list EVERY phase PLAN/SUMMARY — including superseded plans and files nested under `plans/` — every mapped requirement, and every changed implementation file, as ROOT-relative paths (`src/verification.cts`, not `01-VERIFICATION.md`). Compute via `gsd_run query verification.fingerprint {phaseDir} {root-relative-file}...` and copy its output — never hand-write `covered_digest`.
+**#4155:** `covered_files`: every phase PLAN/SUMMARY (+superseded, nested `plans/`), mapped requirement, changed impl file — ROOT-relative. `gsd_run query verification.fingerprint {phaseDir} {file}...`, copy output — never hand-write `covered_digest`.
 
 Create `.planning/phases/{phase_dir}/{phase_num}-VERIFICATION.md`:
 
@@ -678,7 +678,7 @@ phase: XX-name
 verified: YYYY-MM-DDTHH:MM:SSZ
 status: passed | gaps_found | human_needed
 score: N/M must-haves verified
-covered_files: [...] # #4155
+covered_files: [...]
 covered_digest: "v1:sha256:..."
 behavior_unverified: 0 # Count of ⚠️ PRESENT_BEHAVIOR_UNVERIFIED truths (present + wired, behavior not exercised); each is detailed in behavior_unverified_items below (and in human_verification when status is human_needed)
 overrides_applied: 0 # Count of PASSED (override) items included in score
