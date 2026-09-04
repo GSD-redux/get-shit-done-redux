@@ -3347,7 +3347,7 @@ function referencesHook(h: Record<string, unknown>, hookName: string): boolean {
     (typeof url === 'string' && url.includes(hookName));
 }
 
-type ConfiguredEntrypointFailureReason = 'missing' | 'wrong-file-type' | 'unresolved-interpreter';
+type ConfiguredEntrypointFailureReason = 'missing' | 'unreadable' | 'wrong-file-type' | 'unresolved-interpreter';
 
 interface ConfiguredEntrypoint {
   runtime: string;
@@ -3383,8 +3383,11 @@ function validateConfiguredEntrypoints(
       if (!statSync(entry.scriptPath).isFile()) {
         invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'wrong-file-type' });
       }
-    } catch {
-      invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'missing' });
+    } catch (statErr) {
+      // #4249 Nit: EACCES means the file exists but couldn't be inspected —
+      // a real (if rare) permission problem, distinct from ENOENT's "missing".
+      const reason = (statErr as NodeJS.ErrnoException)?.code === 'EACCES' ? 'unreadable' : 'missing';
+      invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
     }
     if (entry.interpreterCandidates && !entry.interpreterCandidates.some(candidate =>
       resolve(candidate, { platform: entry.platform, requireExecutable: true }) !== null,
