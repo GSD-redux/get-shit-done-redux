@@ -186,8 +186,11 @@ describe('dispatchReviewerLanes — bounded source-review prompt', () => {
     assert.match(prompt, /Repository root: \/repo/);
     assert.match(prompt, /Review depth: deep/);
     assert.match(prompt, /Base SHA: deadbeef/);
-    assert.match(prompt, /- src\/a\.ts \(base SHA deadbeef\)/);
-    assert.match(prompt, /- src\/b\.ts \(base SHA deadbeef\)/);
+    assert.match(prompt, /- src\/a\.ts$/m);
+    assert.match(prompt, /- src\/b\.ts$/m);
+    // #4209 token-efficiency: base SHA is identical for every file and already stated once
+    // above — must not be repeated on every file line.
+    assert.ok(!/- src\/a\.ts.*SHA/i.test(prompt), 'base SHA must not be repeated on individual file lines');
     for (const rule of SOURCE_REVIEW_PROHIBITIONS) {
       assert.ok(prompt.includes(rule), `prompt missing prohibition: ${rule}`);
     }

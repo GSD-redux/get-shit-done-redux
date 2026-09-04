@@ -201,7 +201,10 @@ export function buildSourceReviewPrompt(input: {
   depth: string;
   baseSha: string;
 }): string {
-  const fileLines = input.paths.map((p) => `- ${p} (base SHA ${input.baseSha})`).join('\n');
+  // Base SHA is identical for every file and already stated once above — repeating it per line
+  // (as an earlier version of this prompt did) wastes real tokens at O(files), for zero
+  // information gain, on every dispatched lane.
+  const fileLines = input.paths.map((p) => `- ${p}`).join('\n');
   const ruleLines = SOURCE_REVIEW_PROHIBITIONS.map((r, i) => `${i + 1}. ${r}`).join('\n');
   return [
     '## Source Review Request',
