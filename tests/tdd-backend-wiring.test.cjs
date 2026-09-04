@@ -1,0 +1,151 @@
+'use strict';
+
+/**
+ * #4264/#4265/#4266 (epic #4272 Phase 2) — TDD_APPLICABLE is USED (as a
+ * `${TDD_APPLICABLE ? ... : ...}` ternary, per #3990) in both executor
+ * dispatch backends but was never ASSIGNED anywhere: `phase.tdd-applicable`
+ * (Phase 1, #4273) computed the predicate, but no workflow ever called it.
+ * That is a silent "absence resolves to false" defect (ADR-3473 §8.4) — an
+ * un-substituted `${TDD_APPLICABLE ...}` marker is JS-truthy as literal text,
+ * so a real TDD plan would have silently dropped its RED/GREEN/REFACTOR
+ * procedure while never producing an error.
+ *
+ * These are shape assertions on the raw workflow-markdown TEXT: the deployed
+ * text IS the runtime-loaded product (an LLM orchestrator reads it top to
+ * bottom and composes/executes it) — same rationale as
+ * tdd-single-statement.test.cjs's header comment. `readFileSync` here targets
+ * `.md` files only, never a `.cjs`/`.js`/`.ts` source path, so
+ * `local/no-source-grep` does not apply and no `allow-test-rule` marker is
+ * needed (confirmed against tdd-single-statement.test.cjs, which reads the
+ * same two files with no such marker).
+ */
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+
+const HARNESS_PATH = 'gsd-core/workflows/execute-phase.md';
+const WORKTREE_PATH = 'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md';
+
+describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () => {
+  // A backend may assign TDD_APPLICABLE directly from the `gsd_run query
+  // phase.tdd-applicable` call (harness: `TDD_APPLICABLE=$(gsd_run query
+  // phase.tdd-applicable ...)`) or via an intermediate raw/rc pair mirroring
+  // the existing ISOLATION resolution pattern (worktree: `_TDD_APPLICABLE_RAW
+  // =$(gsd_run query phase.tdd-applicable ...)` ... `TDD_APPLICABLE=
+  // "$_TDD_APPLICABLE_RAW"`) — either shape is fine as long as the assignment
+  // exists AND is fed by a real phase.tdd-applicable call within a small
+  // preceding window, not a bare/silent default.
+  function assertTddApplicableIsComputed(name, filePath) {
+    const text = read(filePath);
+    const lines = text.split('\n');
+    const assignIdx = lines.findIndex((l) => /^\s*TDD_APPLICABLE=/.test(l));
+    assert.ok(assignIdx !== -1, `${name} must assign TDD_APPLICABLE, not just reference it`);
+    const windowStart = Math.max(0, assignIdx - 8);
+    const window = lines.slice(windowStart, assignIdx + 1).join('\n');
+    assert.ok(
+      window.includes('phase.tdd-applicable'),
+      `${name}'s TDD_APPLICABLE assignment must be fed by a phase.tdd-applicable call within a few lines above it, got window: ${window}`,
+    );
+  }
+
+  test('harness backend (execute-phase.md) assigns TDD_APPLICABLE via phase.tdd-applicable', () => {
+    assertTddApplicableIsComputed('execute-phase.md', HARNESS_PATH);
+  });
+
+  test('worktree backend (executor-isolation-dispatch.md) assigns TDD_APPLICABLE via phase.tdd-applicable', () => {
+    assertTddApplicableIsComputed('executor-isolation-dispatch.md', WORKTREE_PATH);
+  });
+
+  for (const [name, filePath] of [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]]) {
+    test(`${name}'s phase.tdd-applicable call is plan-scoped, not phase-scoped`, () => {
+      const text = read(filePath);
+      const callLine = text.split('\n').find((l) => l.includes('phase.tdd-applicable') && l.includes('gsd_run query'));
+      assert.ok(callLine, `${name} must carry a gsd_run query phase.tdd-applicable call`);
+      assert.ok(
+        callLine.includes('{phase_dir}') && callLine.includes('{plan_file}'),
+        `${name}'s phase.tdd-applicable call must pass the per-plan {phase_dir}/{plan_file} path, got: ${callLine.trim()}`,
+      );
+    });
+  }
+
+  test('both backends assign TDD_APPLICABLE before every ${TDD_APPLICABLE...} use (document order)', () => {
+    for (const [name, filePath] of [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]]) {
+      const text = read(filePath);
+      const lines = text.split('\n');
+      const assignIdx = lines.findIndex((l) => /^\s*TDD_APPLICABLE=/.test(l));
+      assert.ok(assignIdx !== -1, `${name} has no TDD_APPLICABLE assignment`);
+      const useIndices = [];
+      lines.forEach((l, i) => {
+        if (/\$\{TDD_APPLICABLE\b/.test(l)) useIndices.push(i);
+      });
+      assert.ok(useIndices.length > 0, `${name} has no \${TDD_APPLICABLE...} use to check ordering against`);
+      for (const useIdx of useIndices) {
+        assert.ok(
+          assignIdx < useIdx,
+          `${name}: TDD_APPLICABLE is used at line ${useIdx + 1} before it is assigned at line ${assignIdx + 1}`,
+        );
+      }
+    }
+  });
+
+  test('both tdd.md embed-line comments describe the same three real sources (#4265)', () => {
+    for (const [name, filePath] of [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]]) {
+      const text = read(filePath);
+      const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE \?/.test(l));
+      assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
+      assert.ok(line.includes('type: tdd'), `${name}'s tdd.md comment must mention plan type: tdd, got: ${line.trim()}`);
+      assert.ok(line.includes('tdd="true"'), `${name}'s tdd.md comment must mention the tdd="true" task attribute (#4265), got: ${line.trim()}`);
+      assert.ok(
+        line.includes('workflow.tdd_mode') || line.includes('config'),
+        `${name}'s tdd.md comment must mention the workflow.tdd_mode config default, got: ${line.trim()}`,
+      );
+    }
+  });
+
+  test('worktree backend fail-closes on an un-substituted ${TDD_APPLICABLE marker, matching the ${AGENT_SKILLS} check shape', () => {
+    const text = read(WORKTREE_PATH);
+    const lines = text.split('\n');
+    const skillsIdx = lines.findIndex((l) => l.includes("grep -q '\\${AGENT_SKILLS}'"));
+    assert.ok(skillsIdx !== -1, 'worktree backend must still carry the existing ${AGENT_SKILLS} fail-closed check');
+    const tddCheckIdx = lines.findIndex((l) => l.includes("grep -q '\\${TDD_APPLICABLE"));
+    assert.ok(tddCheckIdx !== -1, 'worktree backend must carry a fail-closed grep check for an unresolved ${TDD_APPLICABLE marker');
+    // Same shape: FATAL message + exit 1 within the following couple of lines.
+    const block = lines.slice(tddCheckIdx, tddCheckIdx + 4).join('\n');
+    assert.ok(/FATAL:/.test(block), 'the ${TDD_APPLICABLE check must emit a FATAL message like the ${AGENT_SKILLS} check');
+    assert.ok(/exit 1/.test(block), 'the ${TDD_APPLICABLE check must exit 1 like the ${AGENT_SKILLS} check');
+  });
+
+  test('harness backend states a fail-closed halt instruction covering TDD_APPLICABLE, CONTEXT_WINDOW, and AGENT_SKILLS before Agent() is called', () => {
+    const text = read(HARNESS_PATH);
+    const lines = text.split('\n');
+    // The literal executor dispatch call sits alone on its own line
+    // (`   Agent(`), inside the per-plan spawn section (step 3) — distinct
+    // from the many inline `` `Agent(...)` `` prose mentions elsewhere in
+    // this file (e.g. the runtime-compatibility table at line ~22).
+    const agentCallIdx = lines.findIndex((l) => /^\s*Agent\($/.test(l));
+    assert.ok(agentCallIdx !== -1, 'execute-phase.md must contain the literal Agent( dispatch-call line');
+    const before = lines.slice(0, agentCallIdx).join('\n');
+    const checkIdx = before.lastIndexOf('MANDATORY pre-dispatch check');
+    assert.ok(checkIdx !== -1, 'execute-phase.md must state a MANDATORY pre-dispatch check before the Agent() call');
+    const checkText = before.slice(checkIdx);
+    for (const marker of ['TDD_APPLICABLE', 'CONTEXT_WINDOW', 'AGENT_SKILLS']) {
+      assert.ok(checkText.includes(marker), `pre-dispatch check must name ${marker}`);
+    }
+    assert.ok(/HALT/i.test(checkText), 'pre-dispatch check must instruct an explicit halt, not a soft warning');
+  });
+
+  test('regression: tdd-single-statement.test.cjs assertions still hold by inspection', () => {
+    const main = read(HARNESS_PATH);
+    const wt = read(WORKTREE_PATH);
+    for (const [name, text] of [['execute-phase.md', main], ['executor-isolation-dispatch.md', wt]]) {
+      const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE/.test(l));
+      assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
+      assert.ok(/TDD_APPLICABLE \?/.test(line), `${name}'s tdd.md entry must stay conditional on TDD_APPLICABLE (#3990)`);
+    }
+  });
+});

@@ -677,6 +677,15 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Executor routing (#1689/#3370).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
 
+   **TDD-applicability resolution (#4266/#4272).** Per plan, resolve whether this dispatch is TDD before composing the prompt below — fail closed, do not guess:
+   ```bash
+   TDD_APPLICABLE=$(gsd_run query phase.tdd-applicable "{phase_dir}/{plan_file}" --pick applicable 2>/dev/null)
+   if [ $? -ne 0 ]; then
+     echo "FATAL: could not resolve TDD-applicability for plan {plan_number} — 'gsd_run query phase.tdd-applicable' failed. Refusing to guess whether this dispatch needs the TDD procedure. Halting." >&2
+     exit 1
+   fi
+   ```
+
    **Worktree mode** (`USE_WORKTREES` and `USE_WORKTREES_FOR_PLAN` not `false`):
 
    Before spawning, capture the current HEAD:
@@ -707,6 +716,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
    # CORRECT: one Agent() per message with run_in_background: true
    # WRONG: multiple Agent() calls in one message -> .git/config.lock contention
    ```
+
+   **MANDATORY pre-dispatch check.** Before calling Agent(), confirm every `${...}` conditional in the prompt below (`TDD_APPLICABLE`, `CONTEXT_WINDOW`, `AGENT_SKILLS`) was resolved to concrete text for THIS plan. If any marker's value was not computed, HALT — do not dispatch a prompt containing literal `${...}` template syntax (#4266).
 
    ```text
    Agent(
@@ -757,7 +768,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        - `~/.claude/gsd-core/workflows/execute-plan.md`
        - `~/.claude/gsd-core/templates/summary.md`
        - `~/.claude/gsd-core/references/checkpoints.md`
-       ${TDD_APPLICABLE ? '- `~/.claude/gsd-core/references/tdd.md`' : ''}  # #3990: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or TDD_MODE=true)
+       ${TDD_APPLICABLE ? '- `~/.claude/gsd-core/references/tdd.md`' : ''}  # #3990/#4265: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or workflow.tdd_mode config)
        - `~/.claude/gsd-core/references/worktree-path-safety.md`
        ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>

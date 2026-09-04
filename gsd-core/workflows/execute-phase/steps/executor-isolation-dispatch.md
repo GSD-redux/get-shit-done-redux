@@ -161,6 +161,18 @@ Assign the composed prompt to a shell variable so it can be passed as one argume
 #      no host subagent machinery, so the role definition must ride the prompt
 #      (#3637 acceptance: resolved agent instructions as launch-level
 #      instructions + provenance of which role definition was used).
+# Resolve TDD-applicability for THIS plan (#4266/#4272) — fail closed on
+# command failure, mirroring the ISOLATION resolution above: an absent
+# verdict must never silently resolve to "not TDD" (ADR-3473 §8.4), since
+# that would silently drop a real TDD plan's RED/GREEN/REFACTOR procedure.
+_TDD_APPLICABLE_RAW=$(gsd_run query phase.tdd-applicable "{phase_dir}/{plan_file}" --pick applicable 2>/dev/null)
+_TDD_APPLICABLE_RC=$?
+if [ $_TDD_APPLICABLE_RC -ne 0 ]; then
+  echo "FATAL: could not resolve TDD-applicability for plan {plan_number} — 'gsd_run query phase.tdd-applicable' failed. Refusing to guess whether this dispatch needs the TDD procedure. Halting." >&2
+  exit 1
+fi
+TDD_APPLICABLE="$_TDD_APPLICABLE_RAW"
+
 EXECUTOR_PROMPT='<objective>
 Execute plan {plan_number} of phase {phase_number}-{phase_name}.
 Commit each task atomically. Create SUMMARY.md.
@@ -181,7 +193,7 @@ the executor workflow from repository search.
   SUMMARY commit semantics and the gitignored-planning skip contract)
 - summary.md template
 - checkpoints.md
-${TDD_APPLICABLE ? "- tdd.md" : ""}  # #3990: only when this dispatch is TDD (plan type: tdd, or TDD_MODE=true)
+${TDD_APPLICABLE ? "- tdd.md" : ""}  # #3990/#4265: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or workflow.tdd_mode config)
 - worktree-path-safety.md
 - agents/gsd-executor.md (the ROLE DEFINITION you are executing — its steps
   0/0a/0b per-commit HEAD/cwd-drift/path-guard discipline applies to every
@@ -255,6 +267,10 @@ printf '%s' "$EXECUTOR_PROMPT" | grep -q 'Inline the actual contents' && {
 }
 printf '%s' "$EXECUTOR_PROMPT" | grep -q '\${AGENT_SKILLS}' && {
   echo "FATAL: executor prompt for plan {plan_number} still contains the un-substituted \${AGENT_SKILLS} marker — the role definition was not spliced in (#3637). Halting." >&2
+  exit 1
+}
+printf '%s' "$EXECUTOR_PROMPT" | grep -q '\${TDD_APPLICABLE' && {
+  echo "FATAL: executor prompt for plan {plan_number} still contains the un-substituted \${TDD_APPLICABLE marker — the TDD-applicability decision was not resolved into the prompt (#4266). Halting." >&2
   exit 1
 }
 ```
