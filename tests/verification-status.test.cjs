@@ -1811,6 +1811,48 @@ describe('#4155: verification.fingerprint CLI', () => {
       cleanup(projectDir);
     }
   });
+
+  test('end-to-end through a real nested .planning/ project: a project-root-relative src/ file is covered, resolved, and hashed correctly', () => {
+    // #4155 review finding: unit fixtures elsewhere in this file put phaseDir
+    // directly under an ownerless tmpdir, so findProjectRoot(phaseDir) falls
+    // back to phaseDir itself and never exercises real multi-level
+    // resolution. This test uses a genuine `.planning/phases/NN-x/` tree
+    // under a real project root, and covers an implementation file OUTSIDE
+    // `.planning/` entirely — the exact shape a live verifier agent produces.
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+      fs.mkdirSync(path.join(projectDir, 'src'));
+      fs.writeFileSync(path.join(projectDir, 'src', 'thing.cts'), 'export const x = 1;\n');
+
+      const coveredFiles = [
+        '.planning/phases/01-example/01-01-PLAN.md',
+        '.planning/phases/01-example/01-01-SUMMARY.md',
+        'src/thing.cts',
+      ];
+      const fpRes = runGsdTools(['verification', 'fingerprint', phaseDir, ...coveredFiles], projectDir);
+      assert.equal(fpRes.success, true, `expected success, got: ${fpRes.output}${fpRes.error}`);
+      const { covered_files: sortedCovered, covered_digest: digest } = JSON.parse(fpRes.output);
+
+      fs.writeFileSync(
+        path.join(phaseDir, '01-VERIFICATION.md'),
+        `---\nstatus: passed\ncovered_files:\n${sortedCovered.map((f) => `  - ${f}`).join('\n')}\ncovered_digest: "${digest}"\n---\n`,
+      );
+
+      const passing = readVerificationStatus(phaseDir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(passing.status, 'passed');
+
+      // Now edit the implementation file OUTSIDE .planning/ — must go stale.
+      fs.writeFileSync(path.join(projectDir, 'src', 'thing.cts'), 'export const x = 2;\n');
+      const afterEdit = readVerificationStatus(phaseDir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(afterEdit.status, 'stale');
+    } finally {
+      cleanup(projectDir);
+    }
+  });
 });
 
 // ─── #2617: next_command runtime projection ──────────────────────────────────

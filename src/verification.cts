@@ -217,6 +217,13 @@ function normalizeRel(p: string): string {
   return path.posix.normalize(toPosix(p));
 }
 
+/** Canonicalize a covered-files list: normalize, de-duplicate, sort — the SAME
+ *  transform computeCoveredDigest and cmdVerificationFingerprint both need
+ *  (the digest's own key order; the CLI's own `covered_files` JSON output). */
+function canonicalizeCoveredFiles(files: readonly string[]): string[] {
+  return Array.from(new Set(files.map(normalizeRel))).sort();
+}
+
 // ─── #4155: covered-input fingerprint ──────────────────────────────────────────
 
 /**
@@ -249,7 +256,7 @@ function computeCoveredDigest(
   coveredFiles: readonly string[],
   fsImpl: FsLike = defaultFsImpl,
 ): string | null {
-  const uniqueSorted = Array.from(new Set(coveredFiles.map(normalizeRel))).sort();
+  const uniqueSorted = canonicalizeCoveredFiles(coveredFiles);
   if (uniqueSorted.length === 0) return null;
 
   // Canonicalize the root ONCE — every candidate's realpath is checked against
@@ -1103,7 +1110,7 @@ function cmdVerificationFingerprint(
   }
   const phaseDir = path.resolve(cwd, phaseDirArg);
   const projectRoot = findProjectRoot(phaseDir);
-  const uniqueSorted = Array.from(new Set(files.map(normalizeRel))).sort();
+  const uniqueSorted = canonicalizeCoveredFiles(files);
   const digest = computeCoveredDigest(projectRoot, uniqueSorted);
   if (digest === null) {
     error('could not compute fingerprint — a covered file is missing, unreadable, or escapes the project root');
