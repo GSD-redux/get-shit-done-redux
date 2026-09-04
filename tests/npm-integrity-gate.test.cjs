@@ -201,68 +201,38 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
 const {
   evaluateAuditDiff,
   runPackageLockAudit,
+  runInstalledTreeAudit,
   extractBaselineTree,
   resolveBaselineRef,
+  AUDIT_ATTEMPT_TIMEOUT_MS,
+  AUDIT_MAX_ATTEMPTS,
+  AUDIT_BACKOFF_BASE_MS,
 } = require('../scripts/npm-audit-baseline.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SDK = path.join(ROOT, 'sdk');
-const AUDIT_TIMEOUT_MS = 180_000;
-const TEST_TIMEOUT_MS = AUDIT_TIMEOUT_MS + 30_000;
 
-function auditProductionVulns(cwd) {
-  if (!fs.existsSync(path.join(cwd, 'package.json'))) {
-    return null; // signal "skip" to caller
-  }
-  if (!fs.existsSync(path.join(cwd, 'node_modules'))) {
-    return null; // signal "skip" to caller
-  }
-  const isWindows = process.platform === 'win32';
-  const npmCandidates = isWindows ? ['npm.cmd', 'npm'] : ['npm'];
-  const args = ['audit', '--omit=dev', '--json'];
-  let out;
-  let lastErr = null;
-  for (const npmCmd of npmCandidates) {
-    try {
-      out = execFileSync(
-        npmCmd,
-        args,
-        {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: AUDIT_TIMEOUT_MS,
-          shell: isWindows,
-        }
-      );
-      lastErr = null;
-      break;
-    } catch (e) {
-      // `npm audit` exits non-zero when advisories are present; the JSON is
-      // still on stdout in that case. Recover and let the assertion classify.
-      if (e && typeof e.stdout !== 'undefined' && e.stdout !== undefined && e.stdout !== null) {
-        out = Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout);
-        lastErr = null;
-        break;
-      }
-      lastErr = e;
-    }
-  }
-  if (lastErr) throw lastErr;
-  const parsed = JSON.parse(out);
-  // `null` is reserved for the "node_modules missing → skip" signal above.
-  // Any other unexpected JSON shape is a real failure of the audit harness
-  // (npm changed its output format, audit aborted before metadata, etc.) —
-  // throw so the test fails loudly instead of skipping silently.
-  if (parsed && parsed.metadata && parsed.metadata.vulnerabilities) {
-    return parsed;
-  }
-  throw new Error(`Unexpected npm audit JSON shape in ${cwd}: missing metadata.vulnerabilities`);
+// Worst case for ONE retry-audit call: every attempt times out, with
+// exponential backoff between each (AUDIT_MAX_ATTEMPTS - 1 gaps) -- computed
+// with the SAME formula scripts/npm-audit-baseline.cjs uses internally, so
+// this can't independently drift from the real backoff schedule.
+let totalBackoffMs = 0;
+for (let attempt = 1; attempt < AUDIT_MAX_ATTEMPTS; attempt += 1) {
+  totalBackoffMs += AUDIT_BACKOFF_BASE_MS * (2 ** (attempt - 1));
+}
+const SINGLE_AUDIT_WORST_CASE_MS = (AUDIT_ATTEMPT_TIMEOUT_MS * AUDIT_MAX_ATTEMPTS) + totalBackoffMs;
+// checkTreeAgainstBaseline makes up to TWO sequential retry-audit calls
+// (auditProductionVulns for HEAD, runPackageLockAudit for the baseline) --
+// budget for both exhausting retries simultaneously, or node:test's own
+// timeout fires first and masks buildTimeoutKillError's clear message.
+const TEST_TIMEOUT_MS = (SINGLE_AUDIT_WORST_CASE_MS * 2) + 30_000;
+
+function auditProductionVulns(cwd, opts = {}) {
+  return runInstalledTreeAudit(cwd, opts);
 }
 
 describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (#4196)', () => {
@@ -309,6 +279,72 @@ describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (
 
   test('sdk/ production tree introduces no new advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
     checkTreeAgainstBaseline(t, SDK, 'sdk', 'sdk/ is not an auditable npm package or sdk/node_modules/ is missing');
+  });
+});
+
+describe('auditProductionVulns — timeout-kill retry classification (#4250, #4260)', () => {
+  function makeFixtureDir(t) {
+    const dir = createTempDir('gsd-audit-baseline-timeout-');
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"fixture"}');
+    return dir;
+  }
+
+  function makeKilledError() {
+    return Object.assign(new Error('command timed out'), {
+      killed: true,
+      signal: 'SIGTERM',
+      stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
+      stderr: 'npm http fetch GET 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk (attempt 1) 178234ms',
+    });
+  }
+
+  test('a timeout-killed execFileSync call on every attempt throws a clear timeout error after exhausting retries, not a JSON parse error', (t) => {
+    const dir = makeFixtureDir(t);
+    const execFileSyncImpl = () => { throw makeKilledError(); };
+    const sleepImpl = () => {};
+
+    assert.throws(
+      () => auditProductionVulns(dir, { execFileSyncImpl, sleepImpl }),
+      (err) => {
+        assert.match(err.message, /npm audit timed out after \d+ attempts/);
+        assert.match(err.message, /status\.npmjs\.org/);
+        assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
+        assert.match(err.message, /Captured stderr before the last kill/);
+        assert.match(err.message, /npm http fetch GET/);
+        return true;
+      },
+    );
+  });
+
+  test('retry recovers: timeouts on the first attempts followed by a successful final attempt succeeds', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 0 } }, vulnerabilities: {} });
+    let calls = 0;
+    const execFileSyncImpl = () => {
+      calls += 1;
+      if (calls < 3) throw makeKilledError();
+      return completeJson;
+    };
+    const sleepImpl = () => {};
+
+    const result = auditProductionVulns(dir, { execFileSyncImpl, sleepImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 0 });
+    assert.strictEqual(calls, 3);
+  });
+
+  test('a normal non-zero exit with complete stdout JSON still recovers correctly (no regression)', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 1 } }, vulnerabilities: { foo: {} } });
+    const nonZeroExitError = Object.assign(new Error('npm audit found vulnerabilities'), {
+      status: 1,
+      stdout: completeJson,
+    });
+    const execFileSyncImpl = () => { throw nonZeroExitError; };
+
+    const result = auditProductionVulns(dir, { execFileSyncImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 1 });
   });
 });
   });
