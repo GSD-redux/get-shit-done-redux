@@ -208,15 +208,16 @@ const {
   extractBaselineTree,
   resolveBaselineRef,
   isTimeoutKill,
+  buildTimeoutKillError,
 } = require('../scripts/npm-audit-baseline.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SDK = path.join(ROOT, 'sdk');
 const AUDIT_TIMEOUT_MS = 180_000;
 const TEST_TIMEOUT_MS = AUDIT_TIMEOUT_MS + 30_000;
 
-function auditProductionVulns(cwd) {
+function auditProductionVulns(cwd, { execFileSyncImpl = execFileSync } = {}) {
   if (!fs.existsSync(path.join(cwd, 'package.json'))) {
     return null; // signal "skip" to caller
   }
@@ -230,7 +231,7 @@ function auditProductionVulns(cwd) {
   let lastErr = null;
   for (const npmCmd of npmCandidates) {
     try {
-      out = execFileSync(
+      out = execFileSyncImpl(
         npmCmd,
         args,
         {
@@ -245,11 +246,7 @@ function auditProductionVulns(cwd) {
       break;
     } catch (e) {
       if (isTimeoutKill(e)) {
-        lastErr = new Error(
-          `npm audit timed out after ${AUDIT_TIMEOUT_MS}ms in ${cwd} -- this is not a JSON ` +
-          `parse failure, npm audit did not finish. The npm registry's advisories endpoint ` +
-          `may be degraded; check https://status.npmjs.org before assuming a code regression.`,
-        );
+        lastErr = buildTimeoutKillError(cwd);
         break;
       }
       // `npm audit` exits non-zero when advisories are present; the JSON is
@@ -318,6 +315,49 @@ describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (
 
   test('sdk/ production tree introduces no new advisories', { timeout: TEST_TIMEOUT_MS }, (t) => {
     checkTreeAgainstBaseline(t, SDK, 'sdk', 'sdk/ is not an auditable npm package or sdk/node_modules/ is missing');
+  });
+});
+
+describe('auditProductionVulns — timeout-kill classification (#4250)', () => {
+  function makeFixtureDir(t) {
+    const dir = createTempDir('gsd-audit-baseline-timeout-');
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"fixture"}');
+    return dir;
+  }
+
+  test('a timeout-killed execFileSync call throws a clear timeout error, not a JSON parse error', (t) => {
+    const dir = makeFixtureDir(t);
+    const killedError = Object.assign(new Error('command timed out'), {
+      killed: true,
+      signal: 'SIGTERM',
+      stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
+    });
+    const execFileSyncImpl = () => { throw killedError; };
+
+    assert.throws(
+      () => auditProductionVulns(dir, { execFileSyncImpl }),
+      (err) => {
+        assert.match(err.message, /npm audit timed out after \d+ms/);
+        assert.match(err.message, /status\.npmjs\.org/);
+        assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
+        return true;
+      },
+    );
+  });
+
+  test('a normal non-zero exit with complete stdout JSON still recovers correctly (no regression)', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 1 } }, vulnerabilities: { foo: {} } });
+    const nonZeroExitError = Object.assign(new Error('npm audit found vulnerabilities'), {
+      status: 1,
+      stdout: completeJson,
+    });
+    const execFileSyncImpl = () => { throw nonZeroExitError; };
+
+    const result = auditProductionVulns(dir, { execFileSyncImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 1 });
   });
 });
   });

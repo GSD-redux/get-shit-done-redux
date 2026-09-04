@@ -41,6 +41,20 @@ function isTimeoutKill(error) {
   return Boolean(error && (error.killed === true || error.signal));
 }
 
+/**
+ * Builds the standard timeout-kill error message, shared by every caller
+ * that classifies a killed npm audit process (see isTimeoutKill) -- kept in
+ * one place so the message can't independently drift between callers, per
+ * this repo's Generative Fix Divergence anti-pattern.
+ */
+function buildTimeoutKillError(cwd) {
+  return new Error(
+    `npm audit timed out after ${AUDIT_TIMEOUT_MS}ms in ${cwd} -- this is not a JSON ` +
+    `parse failure, npm audit did not finish. The npm registry's advisories endpoint ` +
+    `may be degraded; check https://status.npmjs.org before assuming a code regression.`,
+  );
+}
+
 const AUDIT_DIFF_REASON = Object.freeze({
   OK_NO_NEW_VULNERABILITIES: 'ok_no_new_vulnerabilities',
   FAIL_NEW_VULNERABLE_PACKAGE: 'fail_new_vulnerable_package',
@@ -120,11 +134,7 @@ function runPackageLockAudit(cwd, { execFileSyncImpl = execFileSync } = {}) {
       break;
     } catch (e) {
       if (isTimeoutKill(e)) {
-        lastErr = new Error(
-          `npm audit timed out after ${AUDIT_TIMEOUT_MS}ms in ${cwd} -- this is not a JSON ` +
-          `parse failure, npm audit did not finish. The npm registry's advisories endpoint ` +
-          `may be degraded; check https://status.npmjs.org before assuming a code regression.`,
-        );
+        lastErr = buildTimeoutKillError(cwd);
         break;
       }
       // `npm audit` exits non-zero when advisories are present; the JSON is
@@ -258,5 +268,6 @@ module.exports = {
   extractBaselineTree,
   resolveBaselineRef,
   isTimeoutKill,
+  buildTimeoutKillError,
   NULL_SHA,
 };
