@@ -4181,8 +4181,11 @@ const HOST_COMMAND_ROUTERS = {
   // >=3 verbs, and this is one.
   'stamp-codebase-map': ({ args, cwd, raw, error }) => {
     const { files } = parseNamedArgsOrExit(args, { valueFlags: ['files'], positionals: 1 }, error);
-    const only = typeof files === 'string'
-      ? files.split(',').map((f) => f.trim()).filter(Boolean)
+    // A value flag with no value parses to `null`, same as an absent one, so
+    // presence is read off `args`: a bare `--files` (an unquoted empty shell
+    // variable) must hit the empty-filter refusal, not widen to all seven.
+    const only = args.includes('--files')
+      ? String(files ?? '').split(',').map((f) => f.trim()).filter(Boolean)
       : undefined;
     verify.cmdStampCodebaseMap(cwd, raw, only);
   },

@@ -1174,6 +1174,19 @@ describe('stamp-codebase-map CLI (#3418)', () => {
       'a caller narrowing the scope must not have it silently widened to the whole map');
   });
 
+  test('a bare --files stamps nothing rather than all seven (#4124 review)', () => {
+    writeMap();
+
+    const r = runGsdTools(['stamp-codebase-map', '--files'], tmp);
+    assert.strictEqual(r.success, true, 'must stay non-blocking');
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.reason, 'empty-codebase-map-file-filter');
+    assert.strictEqual(readMappedCommit(path.join(codebaseDir, 'STRUCTURE.md')), null,
+      'an unquoted empty shell variable drops the token, and must not widen the scope');
+  });
+
   test('--files with an unknown name stamps nothing and reports why (#3418)', () => {
     writeMap();
 

@@ -104,8 +104,20 @@ What's next?
 Wait for user response.
 
 If "Refresh": Delete .planning/codebase/, continue to create_structure
-If "Update": Ask which documents to update, continue to spawn_agents (filtered)
+If "Update": Ask which documents to update, then record the selection for the
+stamp step below and continue to spawn_agents (filtered):
+
+```bash
+# Comma-separated filenames the user selected, e.g. "STACK.md,CONCERNS.md":
+UPDATED_DOCS="<selected documents>"
+```
+
 If "Skip": Exit workflow
+
+`UPDATED_DOCS` narrows `stamp_codebase_map`. Leave it empty on every other
+path (Refresh, first run, `--paths`), which regenerate all seven documents.
+An Update run does not touch the documents the user did not select, so
+stamping those at HEAD would claim a freshness they do not have.
 
 **If doesn't exist:**
 Continue to create_structure.
@@ -355,12 +367,14 @@ Continue to stamp_codebase_map.
 Stamp the drift baseline into every document that was just written:
 
 ```bash
-gsd_run stamp-codebase-map
+gsd_run stamp-codebase-map ${UPDATED_DOCS:+--files "$UPDATED_DOCS"}
 ```
 
 This writes `last_mapped_commit: <HEAD sha>` and `last_mapped_at: <date>` into
 the YAML frontmatter of each `.planning/codebase/*.md` that exists. It runs on
-every mapping run, incremental (`--paths`) and full alike.
+every mapping run, incremental (`--paths`) and full alike. `--files` narrows it
+to the documents an Update run actually refreshed; `--paths` needs no narrowing
+because all seven are regenerated, just scoped in content.
 
 **Why this is a shell step and not an instruction to the mapper.** The stamp is
 the only machine-readable freshness marker: the `verify codebase-drift` gate
