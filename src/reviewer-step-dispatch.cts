@@ -5,8 +5,9 @@
  * projects onto `activeHooks` — see `src/loop-resolver.cts`). This module trusts `trait` exactly
  * as given: it is the CALLER's job to have derived it correctly. `gsd-core/bin/gsd-tools.cjs`'s
  * `review-lane dispatch-step` is the one production caller, and it re-derives `trait` itself —
- * given `--cap-id`/`--point`, it self-invokes `loop render-hooks <point>` and checks whether that
- * capId's active hook carries `supportsReviewerLanes: true` — rather than trusting a caller-passed
+ * given `--cap-id`/`--point`, it calls `resolveActiveHooksForPoint` (`src/loop-resolver.cts`,
+ * the same in-process resolver `loop render-hooks` itself uses) and checks whether that capId's
+ * active hook carries `supportsReviewerLanes: true` — rather than trusting a caller-passed
  * boolean, so ANY workflow can reuse this same seam by declaring the trait on its own capability
  * step and passing `--cap-id`/`--point`, with zero bespoke trait-resolution code of its own. Every
  * direct or lifecycle caller routes through `dispatchReviewerLanes` so selection/plan/invoke logic
@@ -173,7 +174,6 @@ function validatePaths(
   // named repo file inject a fabricated section into the markdown prompt built from `paths`
   // below (buildSourceReviewPrompt) — reject it here, at the shared trust boundary, rather than
   // relying on the incidental quoting `git diff --name-only` happens to apply upstream.
-  // eslint-disable-next-line no-control-regex
   const CONTROL_CHAR = /[\x00-\x1f\x7f\u2028\u2029]/;
   for (const p of paths) {
     if (typeof p !== 'string' || p.length === 0 || CONTROL_CHAR.test(p)) {

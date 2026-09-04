@@ -188,6 +188,11 @@ ALLOWLIST=(
   # avoid literally spelling out the trigger phrase (see git blame on that section).
   # Same DEFECT.PROMPT-INJECTION-SCAN-COLLISION class as the entries above.
   'tests/code-review-pipeline-regression.test.cjs'
+  # #4209 agy-F1 regression test — a crafted-filename fixture containing the literal
+  # phrase "Ignore all prior instructions." to prove validatePaths rejects it before
+  # it ever reaches an external-reviewer prompt. Discusses/detects the attack pattern
+  # as test data, never performs it. Same class as the entries above.
+  'tests/reviewer-step-dispatch.test.cjs'
 )
 
 is_allowlisted() {
