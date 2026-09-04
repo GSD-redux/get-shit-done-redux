@@ -762,36 +762,27 @@ Do NOT skip. Do NOT proceed to state updates if self-check fails.
 After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named flags):
 
 ```bash
-# Advance the plan counter, then READ the answer: the steps below assume it moved.
-# advance-plan refuses when `## Current Position` disagrees with the plans on disk
-# (stdout, exit 0; #3830). ALLOW-LIST: only a real advance, the ordinary last plan
-# (`advanced: false` WITH `reason: last_plan`) and #4067's `plans_outstanding` (THIS
-# plan is done; siblings are still writing theirs) owe the recording below; any
-# other answer stops — a refusal, an exit-0 `{"error": ...}`, an empty capture.
+# Advance the plan counter, then READ the answer — the steps below assume it moved.
+# ALLOW-LIST (#3830, #4067): only the first arm owes the recording (a real advance, the
+# last plan, or `plans_outstanding` — this plan is done, siblings still writing). Any
+# other answer stops: a refusal, an exit-0 `{"error": ...}`, an empty capture.
 ADVANCE_OUT=$(gsd_run query state.advance-plan)
 ADVANCE_RC=$?
 case "${ADVANCE_OUT}" in
   *'"advanced": true'*|*'"reason": "last_plan"'*|*'"reason": "plans_outstanding"'*)
-    # Recalculate progress bar from disk state
     gsd_run query state.update-progress
-
-    # Record execution metrics (phase, plan, duration, tasks, files)
     gsd_run query state.record-metric \
       --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
       --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
-
-    # Add decisions (extract from SUMMARY.md key-decisions)
+    # DECISIONS: SUMMARY.md key-decisions (frontmatter or "Decisions Made")
     for decision in "${DECISIONS[@]}"; do
       gsd_run query state.add-decision --summary "${decision}"
     done
-
-    # Update session info (stopped-at, resume-file; timestamp set automatically)
     gsd_run query state.record-session \
       --stopped-at "Completed ${PHASE}-${PLAN}-PLAN.md" --resume-file "None"
     ;;
   *'"reason": "position_diverged"'*)
-    echo "STOP: state.advance-plan refused — ## Current Position disagrees with the plans" >&2
-    echo "on disk (see the WARNING; phase-plan-index shows the real set). Record nothing." >&2
+    echo "STOP: advance-plan refused — Current Position disagrees with disk (see WARNING). Record nothing." >&2
     ;;
   *)
     echo "STOP: no advance reported (exit ${ADVANCE_RC}) — the counter did NOT move. Record nothing." >&2
@@ -800,31 +791,19 @@ case "${ADVANCE_OUT}" in
 esac
 ```
 
-**If the block above printed `STOP:`, do not run the ROADMAP/requirements block that follows.** The
-counter did not move, so recording against it writes state to a wrong position. Reconcile STATE.md,
-then re-run. A `case` arm suppresses only its own block, never a later fenced one — this one is yours.
+**If the block printed `STOP:`, do not run the ROADMAP/requirements block below** — a `case` arm
+suppresses only its own block, never a later fenced one, and recording against an unmoved counter
+writes a wrong position. Reconcile STATE.md, then re-run.
 
 ```bash
 # Update ROADMAP.md progress for this phase (plan counts, status)
 gsd_run query roadmap.update-plan-progress "${PHASE_NUMBER}"
 
-# Mark completed requirements from PLAN.md frontmatter
-# Extract the `requirements` array from the plan's frontmatter, then mark each complete
+# REQ_IDS: the plan's frontmatter `requirements:` list (e.g. [AUTH-01, AUTH-02]); skip when absent
 gsd_run query requirements.mark-complete ${REQ_IDS}
 ```
 
-**Requirement IDs:** Extract from the PLAN.md frontmatter `requirements:` field (e.g., `requirements: [AUTH-01, AUTH-02]`). Pass all IDs to `requirements mark-complete`. If the plan has no requirements field, skip this step.
-
-**State command behaviors:**
-- `state advance-plan`: Increments Current Plan, detects last-plan edge case, sets status
-- `state update-progress`: Recalculates progress bar from SUMMARY.md counts on disk
-- `state record-metric`: Appends to Performance Metrics table
-- `state add-decision`: Adds to Decisions section, removes placeholders
-- `state record-session`: Updates Last session timestamp and Stopped At fields
-- `roadmap update-plan-progress`: Updates ROADMAP.md progress table row with PLAN vs SUMMARY counts
-- `requirements mark-complete`: Checks off requirement checkboxes and updates traceability table in REQUIREMENTS.md
-
-**Extract decisions from SUMMARY.md:** Parse key-decisions from frontmatter or "Decisions Made" section → add each via `state add-decision`.
+**State command behaviors:** documented in `docs/CLI-TOOLS.md` (`state advance-plan` — the refusal contract).
 
 **For blockers found during execution:**
 ```bash
