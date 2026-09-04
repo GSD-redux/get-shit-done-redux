@@ -440,13 +440,10 @@ IS_WORKTREE=$([ -f .git ] && echo "true" || echo "false")
 
 # Skip in parallel mode — orchestrator handles STATE.md centrally
 if [ "$IS_WORKTREE" != "true" ]; then
-  # Advance plan counter (handles last-plan edge case).
-  #
-  # #3830/#3862: advance-plan can REFUSE at exit 0 — read its answer. ALLOW-LIST:
-  # only the shapes on the first arm owe the recording below — a real advance, the
-  # ordinary last plan, and #4067's `plans_outstanding` (THIS plan is done; sibling
-  # executors are still writing theirs). A refusal, an exit-0 {"error": ...}, a
-  # reason added later, or an empty capture all stop. Enforced by tests/state.test.cjs.
+  # Advance the plan counter, then READ the answer (#3830: it can REFUSE at exit 0).
+  # ALLOW-LIST: only the first arm owes the recording — a real advance, the last plan,
+  # or #4067's `plans_outstanding` (this plan done, siblings still writing). A refusal,
+  # an exit-0 {"error": ...}, a later reason, or an empty capture all stop.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
   ADVANCE_RC=$?
   case "${ADVANCE_OUT}" in
@@ -460,8 +457,7 @@ if [ "$IS_WORKTREE" != "true" ]; then
         --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
       ;;
     *'"reason": "position_diverged"'*)
-      echo "STOP: advance-plan refused — ## Current Position disagrees with the plans" >&2
-      echo "on disk (see the [gsd-tools] WARNING). Reconcile STATE.md; do NOT record." >&2
+      echo "STOP: advance-plan refused — Current Position disagrees with disk (see WARNING); do NOT record." >&2
       ;;
     *)
       echo "STOP: no advance reported (exit ${ADVANCE_RC}) — counter did NOT move; do NOT record." >&2
