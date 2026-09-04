@@ -888,7 +888,11 @@ function scanQuantitativeCriteria(content: string): { errors: string[]; warnings
 
       // R3 — unquoted $VAR in command position (zsh does not word-split; the
       // command exits 127 and any arm reading its status passes vacuously).
-      if (/^\$[A-Z_][A-Z0-9_]*\s/.test(seg)) {
+      // The anchor tolerates a markdown list bullet and/or an inline-code
+      // backtick before the command — criteria are prose lines like
+      // "- `$NOKEY npx tsx x.ts` exits 0" — but nothing else: the expansion
+      // must still be the FIRST token of the command itself.
+      if (/^(?:[-*]\s*)?`?\$[A-Z_][A-Z0-9_]*\s/.test(seg)) {
         record(
           errors,
           'R3',
