@@ -930,29 +930,47 @@ function stateReplaceFieldWithFallback(content: string, primary: string, fallbac
  * on disk is summarized (vacuously so for a zero-plan phase — #3168's
  * zero-plan-phase posture).
  */
+function scanOutstanding(phasesDir: string, dir: string): { dir: string; outstanding: string[] } | null {
+  const phaseDirPath = path.join(phasesDir, dir);
+  const scan = scanPhasePlans(phaseDirPath);
+  if (scan.scope !== SCOPE.COMPLETE) return null;
+  // Blocked summaries (#3345) are filtered with the same shared predicate
+  // scanPhasePlans uses for its own count, so the named outstanding list can
+  // never disagree with a count-based decision.
+  const countableSummaries = scan.summaryFiles.filter(
+    (f) => !planDependencyGraphMod.isSummaryFileBlocked(path.join(phaseDirPath, f)),
+  );
+  const outstanding = coreUtilsMod.findUnsummarizedPlans(scan.planFiles, countableSummaries);
+  return { dir, outstanding };
+}
+
 function unsummarizedPlansForPositionPhase(
   cwd: string,
   positionPhase: string,
 ): { dir: string; outstanding: string[] } | null {
   const phasesDir = planningPaths(cwd).phases;
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  // #3185 (ADR-3180 Decision 1): "which phase directories exist" is owned by
+  // listMilestonePhaseDirs — no hand-rolled readdirSync here. The owner
+  // handles an absent phasesDir as a real empty and refuses sentinels.
+  //
+  // Two passes, narrowest first: the CURRENT-MILESTONE window (so an archived
+  // milestone's stale `01-*` directory cannot shadow the live one), then —
+  // only when the window cannot answer (no bounded ROADMAP, or the position
+  // phase is simply not in it) — an unscoped read, which the owner documents
+  // as a real answer. This is a lookup of ONE phase token STATE.md names, not
+  // a milestone enumeration, so the unscoped retry is in-contract.
+  const convention = resolvePhaseIdConvention(cwd);
+  const windowed = listMilestonePhaseDirs(phasesDir, { cwd, phaseIdConvention: convention });
+  const candidateDirs = windowed.scope === SCOPE.COMPLETE ? windowed.value : [];
   // Canonical phase-token → directory matching (phase-id owner, #2562): both
   // sides of the comparison derived by the same function, never a local regex.
-  const { matches } = matchPhaseDirs(dirs, positionPhase, resolvePhaseIdConvention(cwd));
-  if (matches.length === 0) return null;
-  const scan = scanPhasePlans(path.join(phasesDir, matches[0]));
-  if (scan.scope !== SCOPE.COMPLETE) return null;
-  const countableSummaries = scan.summaryFiles.filter(
-    (f) => !planDependencyGraphMod.isSummaryFileBlocked(path.join(phasesDir, matches[0], f)),
-  );
-  const outstanding = coreUtilsMod.findUnsummarizedPlans(scan.planFiles, countableSummaries);
-  return { dir: matches[0], outstanding };
+  const { matches } = matchPhaseDirs(candidateDirs, positionPhase, convention);
+  if (matches.length > 0) return scanOutstanding(phasesDir, matches[0]);
+  const unscoped = listMilestonePhaseDirs(phasesDir);
+  if (unscoped.scope !== SCOPE.COMPLETE) return null;
+  const retry = matchPhaseDirs(unscoped.value, positionPhase, convention);
+  if (retry.matches.length === 0) return null;
+  return scanOutstanding(phasesDir, retry.matches[0]);
 }
 
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
@@ -1001,7 +1019,6 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }
     }
     const result = transitionCore(content, intent, deps);
-    const resultDataNow = result.data ?? {};
     // #4067: the transform's phase-complete branch is decided by STATE.md's
     // scalar plan counter, which can neither carry a stale value across phases
     // nor represent wave-parallel execution. Before letting that branch write
@@ -1015,19 +1032,19 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     // unavailable) fails open to the counter-derived decision, so every
     // world this seam cannot see keeps today's behavior.
     if (
-      resultDataNow['advanced'] === false
-      && resultDataNow['reason'] === 'last_plan'
+      result.data?.['advanced'] === false
+      && result.data?.['reason'] === 'last_plan'
       && positionPhase !== null
     ) {
       const diskAnswer = unsummarizedPlansForPositionPhase(cwd, positionPhase);
       if (diskAnswer !== null && diskAnswer.outstanding.length > 0) {
         outstandingRef.value = diskAnswer;
-        resultData = resultDataNow;
+        resultData = result.data;
         precomputedUpdated = [];
         return content;
       }
     }
-    resultData = resultDataNow;
+    resultData = result.data;
     precomputedUpdated = result.updated;
     return result.content;
   }, cwd, { divergedFields, preWriteState });
