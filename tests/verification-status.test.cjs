@@ -1602,20 +1602,22 @@ describe('#4155: computeCoveredDigest — direct unit coverage', () => {
 });
 
 describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime staleness', () => {
-  test('unchanged covered inputs → status stays passed even though a SUMMARY is newer (legacy check bypassed)', (t) => {
+  test('unchanged covered inputs → status stays passed even though a SUMMARY is newer (legacy mtime check bypassed)', (t) => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-unchanged-'));
     t.after(() => cleanup(baseDir));
     const dir = path.join(baseDir, '01-foo');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'impl.txt'), 'implementation content');
-    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# Summary');
+    // The SUMMARY is a covered artifact too — isolates this test to the mtime
+    // vs. content-digest distinction, not the #4155 completeness check below.
+    const digest = computeCoveredDigest(dir, ['impl.txt', '01-01-SUMMARY.md']);
 
     fs.writeFileSync(
       path.join(dir, '01-VERIFICATION.md'),
-      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\n  - 01-01-SUMMARY.md\ncovered_digest: "${digest}"\n---\n`,
     );
-    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
-    fs.writeFileSync(summaryPath, '# Summary');
     // SUMMARY newer than VERIFICATION — the LEGACY check would call this
     // stale. The fingerprint check must be the one that actually runs.
     setMtime(path.join(dir, '01-VERIFICATION.md'), '2026-01-01T00:00:00.000Z');
@@ -1623,6 +1625,26 @@ describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime 
 
     const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
     assert.equal(result.status, 'passed');
+  });
+
+  test('a plan or summary added to the phase dir after verification, never declared in covered_files → stale (#4155 completeness check)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-uncovered-artifact-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    // A SUMMARY appears after verification — never declared, so the recomputed
+    // digest over the ORIGINAL covered set still matches. Only the live
+    // directory re-scan can catch this.
+    fs.writeFileSync(path.join(dir, '01-01-SUMMARY.md'), '# Summary\n');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
   });
 
   test('a covered file that changed after verification → status is stale', (t) => {

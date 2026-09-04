@@ -306,6 +306,41 @@ function computeCoveredDigest(
 }
 
 /**
+ * #4155: the content fingerprint only recomputes digests for paths the
+ * verifier actually DECLARED in `covered_files` — it has no way to notice a
+ * plan or summary added to the phase directory AFTER verification if that
+ * new file was never declared. This closes that gap the same way the
+ * legacy mtime check always did: by re-scanning the LIVE directory (not the
+ * declared list) for every current `*-PLAN.md`/`*-SUMMARY.md` and checking
+ * each is represented in `coveredFiles` — matched by suffix (mirrors
+ * `matchRequestedFile`'s convention) since `coveredFiles` holds
+ * project-root-relative paths while the scan returns phase-relative
+ * filenames. Returns the first uncovered artifact's filename, or `null` if
+ * every current plan/summary is covered. A directory scan failure fails
+ * CLOSED (returns a sentinel, never null) — silently skipping this check on
+ * an I/O error would be exactly the fail-open regression #3057 B3 fixed for
+ * the legacy path.
+ */
+function findUncoveredCurrentArtifact(phaseDir: string, coveredFiles: readonly string[]): string | null {
+  let allPlanFiles: string[];
+  let summaryFiles: string[];
+  try {
+    const scan = scanPhasePlans(phaseDir) as { allPlanFiles: string[]; summaryFiles: string[] };
+    allPlanFiles = scan.allPlanFiles;
+    summaryFiles = scan.summaryFiles;
+  } catch {
+    return '(phase directory scan failed)';
+  }
+  const coveredPosix = coveredFiles.map(toPosix);
+  for (const artifact of [...allPlanFiles, ...summaryFiles]) {
+    const artifactPosix = toPosix(artifact);
+    const isCovered = coveredPosix.some((c) => c === artifactPosix || c.endsWith(`/${artifactPosix}`));
+    if (!isCovered) return artifact;
+  }
+  return null;
+}
+
+/**
  * Match a git-emitted (repo-root-relative) path back to the caller's
  * phaseDir-relative request by exact match or `/`-bounded suffix — precise
  * enough that a root file and a nested `plans/` file can never collide (a plain
@@ -846,7 +881,11 @@ function readVerificationStatus(
     const recomputed = hasWellFormedFingerprint
       ? computeCoveredDigest(findProjectRoot(phaseDir), coveredFilesVal, fsImpl)
       : null;
-    if (recomputed === null || recomputed !== coveredDigestVal) {
+    // A plan/summary added to the phase dir AFTER verification, never declared
+    // in covered_files, would otherwise sail through the digest check above
+    // untouched — this re-scans the live directory to catch exactly that.
+    const uncovered = hasWellFormedFingerprint ? findUncoveredCurrentArtifact(phaseDir, coveredFilesVal) : null;
+    if (recomputed === null || recomputed !== coveredDigestVal || uncovered !== null) {
       const entry = VERIFICATION_ROUTING_TABLE['stale'];
       return {
         status: entry.status,
