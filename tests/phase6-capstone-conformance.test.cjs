@@ -211,8 +211,15 @@ describe('ADR-857 Phase 6 capstone conformance (#1139)', () => {
     // — its footprint legitimately raises the host-loop ceiling, same rationale
     // as #1298 above. Landed alongside an independent, unrelated same-file growth
     // (the #4.6 context-drift pre-check) already on `next` when this PR rebased.
+    //
+    // #3916: raised again from 96700 to accommodate turning the REVISION_CONFLICT
+    // writer-side sanitize step from a prose instruction (an LLM applying it by hand,
+    // per a review finding across two rounds) into real, executed shell matching the
+    // reader gate's rigor. Same rationale as the #3771 raise above: fail-closed
+    // conflict-record persistence is core planner control flow, not an un-extracted
+    // optional feature.
     const { lfByteCount } = require('../scripts/workflow-size.cjs');
-    const PRE_PHASE6 = { 'plan-phase.md': 96700, 'execute-phase.md': 93600 };
+    const PRE_PHASE6 = { 'plan-phase.md': 97700, 'execute-phase.md': 93600 };
     const notShrunk = [];
     for (const [file, frozen] of Object.entries(PRE_PHASE6)) {
       const now = lfByteCount(path.join(ROOT, 'gsd-core', 'workflows', file));

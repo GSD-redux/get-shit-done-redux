@@ -128,6 +128,50 @@ function runConflictGate(reviewsFile) {
   }
 }
 
+/**
+ * The writer-side sanitize+insert gate (#3916), extracted from plan-phase.md and RUN —
+ * same rationale as `extractConflictGate` above: this is real shell an orchestrator
+ * executes, not prose an LLM applies by hand, so it is proven against fixtures.
+ * Located by content (the fence assigning `LINE="- [ ] REVISION_CONFLICT`).
+ */
+function extractWriterGate() {
+  const fences = PLAN_PHASE.split(/```/);
+  const block = fences.find((f) => /^bash\r?\n/.test(f) && /LINE="- \[ \] REVISION_CONFLICT/.test(f));
+  assert.ok(block, 'could not find the bash fence containing the writer-side sanitize+insert gate');
+  return block.replace(/^bash\r?\n/, '');
+}
+
+/** Run the writer gate against `reviewsFile` with the five conflict fields as env. Mutates the file. */
+function runWriterGate(reviewsFile, fields) {
+  const dir = createTempDir('gsd-3916-writer-');
+  try {
+    const script = path.join(dir, 'writer.sh');
+    fs.writeFileSync(script, extractWriterGate());
+    try {
+      execFileSync('bash', [script], {
+        env: {
+          ...process.env,
+          CONVERGENCE_ENABLED: 'true',
+          REVIEWS_FILE: reviewsFile,
+          CONFLICT_DIMENSION: fields.dimension ?? '',
+          CONFLICT_PLAN: fields.plan ?? '',
+          CONFLICT_PROPERTY: fields.property ?? '',
+          CONFLICT_CONSTRAINT: fields.constraint ?? '',
+          CONFLICT_ALTERNATIVES: fields.alternatives ?? '',
+        },
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GATE_TIMEOUT_MS,
+      });
+      return { status: 0 };
+    } catch (err) {
+      return { status: err.status, stderr: err.stderr || '' };
+    }
+  } finally {
+    cleanup(dir);
+  }
+}
+
 /** Write a REVIEWS.md fixture and hand its path to `fn`. */
 function withReviews(body, fn, filename = '07-REVIEWS.md') {
   const dir = createTempDir('gsd-3771-reviews-');
@@ -396,8 +440,8 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'the rule must name the exact transform, or it is advice rather than a control');
     assert.match(flat(REVISION_LOOP), /embedded newline can forge an extra conflict-shaped record inside the owned slot/,
       'the contract must state the concrete forgery sanitization prevents');
-    assert.match(flat(PLAN_PHASE), /Sanitize each agent-authored field before appending/,
-      'the workflow that does the appending must carry the rule, not only the reference');
+    assert.match(flat(PLAN_PHASE), /Sanitize-then-insert is real shell, not hand-applied/,
+      'the workflow that does the appending must run the rule, not restate it as prose (#3916)');
     for (const [name, agent] of [['planner-revision', PLANNER_REVISION], ['gsd-ui-researcher', UI_RESEARCHER]]) {
       assert.match(flat(agent), /\*\*Every field is one line of plain text\.\*\*/,
         `${name} must forbid the shapes the writer would otherwise have to strip`);
@@ -876,6 +920,57 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
   test('the command docs include open conflicts in the exit condition', () => {
     const section = COMMANDS.slice(COMMANDS.indexOf('### `/gsd-plan-review-convergence`'));
     assert.match(flat(section), /open `## Plan-Revision Conflicts` entries.*must also be zero/i);
+  });
+
+  // The writer-side sanitize+insert step used to be a prose instruction for the
+  // orchestrator LLM to apply by hand (flagged as Minor across two review rounds).
+  // #3916 makes it real shell; these tests RUN it, composing with the existing
+  // reader gate, so a regression here reds the suite instead of only the prose.
+  test('the writer gate sanitizes hostile fields and the reader counts exactly one',
+    { skip: IS_WINDOWS }, () => {
+    const field = fc.oneof(
+      fc.constantFrom('', 'x', '# heading\nnext', '- item', '| cell', '```fence', 'a\tb\nc'),
+      fc.string({ maxLength: 32 })
+    );
+    fc.assert(fc.property(
+      fc.record({ dimension: field, plan: field, property: field, constraint: field, alternatives: field }),
+      (fields) => withReviews(reviewsArtifact(), (file) => {
+        const before = fs.readFileSync(file, 'utf-8');
+        const result = runWriterGate(file, fields);
+        assert.equal(result.status, 0, `writer gate should succeed: ${result.stderr}`);
+        const after = fs.readFileSync(file, 'utf-8');
+        const added = after.slice(before.lastIndexOf(CONFLICTS_END));
+        assert.doesNotMatch(added.replace(CONFLICTS_END, ''), /\r?\n.*\S/,
+          'exactly one physical line must be inserted before the end delimiter');
+        const reader = runConflictGate(file);
+        assert.equal(reader.status, 0, reader.stderr);
+        assert.equal(reader.stdout, '1', 'the reader must count the sanitized insert as one open conflict');
+      })
+    ));
+  });
+
+  test('the writer gate is idempotent on a repeated identical conflict',
+    { skip: IS_WINDOWS }, () => {
+    withReviews(reviewsArtifact(), (file) => {
+      const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
+      assert.equal(runWriterGate(file, fields).status, 0);
+      assert.equal(runWriterGate(file, fields).status, 0);
+      const reader = runConflictGate(file);
+      assert.equal(reader.status, 0, reader.stderr);
+      assert.equal(reader.stdout, '1', 'the same conflict recorded twice must not duplicate the line');
+    });
+  });
+
+  test('the writer gate fails closed and leaves the file untouched when the owned slot is missing',
+    { skip: IS_WINDOWS }, () => {
+    withReviews('# Cross-AI Plan Review — Phase 7\n\nno owned slot here\n', (file) => {
+      const before = fs.readFileSync(file, 'utf-8');
+      const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
+      const result = runWriterGate(file, fields);
+      assert.notEqual(result.status, 0, 'a missing end delimiter must not silently succeed');
+      assert.equal(fs.readFileSync(file, 'utf-8'), before,
+        'a failed write must never partially mutate REVIEWS.md');
+    });
   });
 
 });
