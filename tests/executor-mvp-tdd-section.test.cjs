@@ -238,3 +238,96 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #4254 — sequential executors must inherit the orchestrator's root pin.
+// The workflow and agent markdown are executable instruction surfaces, so the
+// test exercises the shipped guard against a real linked-worktree fixture.
+// ────────────────────────────────────────────────────────────────────────
+{
+  // allow-test-rule: source-text-is-the-product see #4254
+  const workflow = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8');
+  // allow-test-rule: source-text-is-the-product see #4254
+  const agent = fs.readFileSync(path.join(__dirname, '..', 'agents', 'gsd-executor.md'), 'utf8');
+  const { createTempGitProject, cleanup } = require('./helpers.cjs');
+  const { runHook } = require('./helpers/process-seam.cjs');
+  const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+  const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+  function shellQuote(value) {
+    return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+  }
+
+  function rootGuardScript(suppliedRoot) {
+    const marker = '# gsd:guard=executor-project-root-pin';
+    const fences = agent.split('```');
+    const guard = fences.find((body) => body.includes(marker));
+    assert.ok(guard, 'gsd-executor must ship the mode-agnostic project-root guard (#4254)');
+    const script = guard.replace(/^bash\r?\n/, '');
+    const assignment = /^SUPPLIED_PROJECT_ROOT=.*$/m;
+    assert.match(script, assignment, 'guard must materialize the supplied literal into a shell variable');
+    return script.replace(assignment, `SUPPLIED_PROJECT_ROOT=${shellQuote(suppliedRoot)}`);
+  }
+
+  function runRootGuard(cwd, suppliedRoot, markerPath) {
+    const script = [
+      rootGuardScript(suppliedRoot),
+      `printf 'write reached\\n' > ${shellQuote(markerPath)}`,
+    ].join('\n');
+    return runHook('-c', [script], {
+      interpreter: 'bash',
+      cwd,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+  }
+
+  test('#4254: sequential prompt pins the literal orchestrator root at compose time', () => {
+    const start = workflow.indexOf('**Sequential mode**');
+    const end = workflow.indexOf('4. **Wait for all agents', start);
+    assert.ok(start !== -1 && end !== -1, 'sequential dispatch section must exist');
+    const sequential = workflow.slice(start, end);
+    assert.match(sequential, /<project_root_pin>/, 'sequential prompt must carry an explicit root pin');
+    assert.match(sequential, /ORCHESTRATOR_WT/, 'the pin must come from the already-validated orchestrator root');
+    assert.match(
+      sequential,
+      /replace[^\n]*PROJECT_ROOT=\$\(git rev-parse --show-toplevel[^\n]*literal/i,
+      'sequential composition must replace worker-side root derivation with the literal pin',
+    );
+  });
+
+  test('#4254: isolated prompt keeps its worker-local root derivation and receives no orchestrator pin', () => {
+    const isolated = workflow.slice(
+      workflow.indexOf('**Worktree mode**'),
+      workflow.indexOf('**Sequential mode**'),
+    );
+    assert.match(isolated, /PROJECT_ROOT=\$\(git rev-parse --show-toplevel/, 'isolated executor keeps its own root');
+    assert.doesNotMatch(isolated, /<project_root_pin>/, 'isolated prompt must not inherit the orchestrator root');
+  });
+
+  test('#4254: supplied-root mismatch halts before the first write', () => {
+    const repo = createTempGitProject('gsd-4254-wrong-cwd-');
+    try {
+      const worktree = path.join(repo, 'linked worktree');
+      gitOrThrow(['worktree', 'add', '-q', '-b', 'fix/4254-fixture', worktree], { cwd: repo });
+      const markerPath = path.join(repo, 'write-marker');
+      const result = runRootGuard(repo, worktree, markerPath);
+      assert.equal(result.exitCode, 1, `mismatch must halt: ${result.stderr}`);
+      assert.equal(fs.existsSync(markerPath), false, 'no write may run after a root mismatch');
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  test('#4254: missing pin warns and proceeds for older/isolated dispatch compatibility', () => {
+    const repo = createTempGitProject('gsd-4254-missing-pin-');
+    try {
+      const markerPath = path.join(repo, 'write-marker');
+      const result = runRootGuard(repo, '', markerPath);
+      assert.equal(result.exitCode, 0, `missing pin must remain compatible: ${result.stderr}`);
+      assert.equal(fs.existsSync(markerPath), true, 'missing-pin compatibility path must proceed');
+    } finally {
+      cleanup(repo);
+    }
+  });
+}
