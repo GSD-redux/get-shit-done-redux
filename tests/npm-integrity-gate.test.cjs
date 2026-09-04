@@ -207,6 +207,7 @@ const {
   runPackageLockAudit,
   extractBaselineTree,
   resolveBaselineRef,
+  isTimeoutKill,
 } = require('../scripts/npm-audit-baseline.cjs');
 const { cleanup } = require('./helpers.cjs');
 
@@ -243,6 +244,14 @@ function auditProductionVulns(cwd) {
       lastErr = null;
       break;
     } catch (e) {
+      if (isTimeoutKill(e)) {
+        lastErr = new Error(
+          `npm audit timed out after ${AUDIT_TIMEOUT_MS}ms in ${cwd} -- this is not a JSON ` +
+          `parse failure, npm audit did not finish. The npm registry's advisories endpoint ` +
+          `may be degraded; check https://status.npmjs.org before assuming a code regression.`,
+        );
+        break;
+      }
       // `npm audit` exits non-zero when advisories are present; the JSON is
       // still on stdout in that case. Recover and let the assertion classify.
       if (e && typeof e.stdout !== 'undefined' && e.stdout !== undefined && e.stdout !== null) {

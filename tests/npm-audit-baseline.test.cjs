@@ -22,6 +22,7 @@ const {
   runPackageLockAudit,
   extractBaselineTree,
   resolveBaselineRef,
+  isTimeoutKill,
   NULL_SHA,
 } = require('../scripts/npm-audit-baseline.cjs');
 
@@ -292,5 +293,92 @@ describe('runPackageLockAudit', () => {
     } finally {
       cleanup(dir);
     }
+  });
+});
+
+// ─── isTimeoutKill ───────────────────────────────────────────────────────────
+
+describe('isTimeoutKill', () => {
+  test('killed: true -> true', () => {
+    assert.strictEqual(isTimeoutKill({ killed: true }), true);
+  });
+
+  test('signal set (e.g. SIGTERM) -> true', () => {
+    assert.strictEqual(isTimeoutKill({ signal: 'SIGTERM' }), true);
+  });
+
+  test('both killed and signal set -> true', () => {
+    assert.strictEqual(isTimeoutKill({ killed: true, signal: 'SIGTERM' }), true);
+  });
+
+  test('neither killed nor signal set (normal non-zero exit) -> false', () => {
+    assert.strictEqual(isTimeoutKill({ killed: false, signal: null, status: 1, stdout: '{}' }), false);
+  });
+
+  test('killed: false explicitly -> false', () => {
+    assert.strictEqual(isTimeoutKill({ killed: false }), false);
+  });
+
+  test('null/undefined error -> false, does not throw', () => {
+    assert.strictEqual(isTimeoutKill(null), false);
+    assert.strictEqual(isTimeoutKill(undefined), false);
+  });
+
+  test('plain object with no killed/signal keys at all -> false', () => {
+    assert.strictEqual(isTimeoutKill({}), false);
+  });
+});
+
+// ─── runPackageLockAudit -- timeout-kill classification (#4250) ─────────────
+
+describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
+  function makeFixtureDir(t) {
+    const dir = createTempDir('gsd-audit-baseline-timeout-');
+    t.after(() => cleanup(dir));
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"fixture"}');
+    fs.writeFileSync(path.join(dir, 'package-lock.json'), '{"lockfileVersion":3}');
+    return dir;
+  }
+
+  test('a timeout-killed execFileSync call throws a clear timeout error, not a JSON parse error', (t) => {
+    const dir = makeFixtureDir(t);
+    const killedError = Object.assign(new Error('command timed out'), {
+      killed: true,
+      signal: 'SIGTERM',
+      stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
+    });
+    const execFileSyncImpl = () => { throw killedError; };
+
+    assert.throws(
+      () => runPackageLockAudit(dir, { execFileSyncImpl }),
+      (err) => {
+        assert.match(err.message, /npm audit timed out after \d+ms/);
+        assert.match(err.message, /status\.npmjs\.org/);
+        assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
+        return true;
+      },
+    );
+  });
+
+  test('a normal non-zero exit with complete stdout JSON still recovers correctly (no regression)', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 1 } }, vulnerabilities: { foo: {} } });
+    const nonZeroExitError = Object.assign(new Error('npm audit found vulnerabilities'), {
+      status: 1,
+      stdout: completeJson,
+    });
+    const execFileSyncImpl = () => { throw nonZeroExitError; };
+
+    const result = runPackageLockAudit(dir, { execFileSyncImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 1 });
+  });
+
+  test('a real successful call (no throw) still works via the injected impl', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: {} }, vulnerabilities: {} });
+    const execFileSyncImpl = () => completeJson;
+
+    const result = runPackageLockAudit(dir, { execFileSyncImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, {});
   });
 });

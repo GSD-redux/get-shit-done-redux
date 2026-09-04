@@ -26,6 +26,21 @@ const { execFileSync } = require('node:child_process');
 
 const AUDIT_TIMEOUT_MS = 180_000;
 
+/**
+ * True when `error` represents a child process execFileSync killed via its
+ * `timeout` option (e.g. AUDIT_TIMEOUT_MS firing against a slow/degraded npm
+ * registry) rather than one that exited normally with a non-zero code. Node
+ * sets `killed: true` and `signal` to the kill signal in that case (see the
+ * child_process docs for execFileSync's `timeout` option); a normal "npm
+ * audit found advisories" exit has neither set. The distinction matters
+ * because a killed process's stdout is truncated mid-write, not complete
+ * JSON -- treating it as recoverable JSON produces a misleading `Unexpected
+ * end of JSON input` instead of naming the real cause.
+ */
+function isTimeoutKill(error) {
+  return Boolean(error && (error.killed === true || error.signal));
+}
+
 const AUDIT_DIFF_REASON = Object.freeze({
   OK_NO_NEW_VULNERABILITIES: 'ok_no_new_vulnerabilities',
   FAIL_NEW_VULNERABLE_PACKAGE: 'fail_new_vulnerable_package',
@@ -80,7 +95,7 @@ function evaluateAuditDiff({ baselineVulnerabilities, headVulnerabilities }) {
  * extracted package.json + package-lock.json (see extractBaselineTree),
  * without a second full `npm ci`.
  */
-function runPackageLockAudit(cwd) {
+function runPackageLockAudit(cwd, { execFileSyncImpl = execFileSync } = {}) {
   if (!fs.existsSync(path.join(cwd, 'package.json'))) return null;
   if (!fs.existsSync(path.join(cwd, 'package-lock.json'))) return null;
   const isWindows = process.platform === 'win32';
@@ -90,7 +105,7 @@ function runPackageLockAudit(cwd) {
   let lastErr = null;
   for (const npmCmd of npmCandidates) {
     try {
-      out = execFileSync(
+      out = execFileSyncImpl(
         npmCmd,
         args,
         {
@@ -104,6 +119,14 @@ function runPackageLockAudit(cwd) {
       lastErr = null;
       break;
     } catch (e) {
+      if (isTimeoutKill(e)) {
+        lastErr = new Error(
+          `npm audit timed out after ${AUDIT_TIMEOUT_MS}ms in ${cwd} -- this is not a JSON ` +
+          `parse failure, npm audit did not finish. The npm registry's advisories endpoint ` +
+          `may be degraded; check https://status.npmjs.org before assuming a code regression.`,
+        );
+        break;
+      }
       // `npm audit` exits non-zero when advisories are present; the JSON is
       // still on stdout in that case. Recover and let the caller classify.
       if (e && typeof e.stdout !== 'undefined' && e.stdout !== undefined && e.stdout !== null) {
@@ -234,5 +257,6 @@ module.exports = {
   runPackageLockAudit,
   extractBaselineTree,
   resolveBaselineRef,
+  isTimeoutKill,
   NULL_SHA,
 };
