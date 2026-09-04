@@ -27,8 +27,7 @@ function parseTools(content) {
     .filter(Boolean);
 }
 
-function installClaude(t, { defaults, projectConfig } = {}) {
-  const root = createTempDir('gsd-4032-claude-');
+function installClaude(t, { defaults, projectConfig, root = createTempDir('gsd-4032-claude-') } = {}) {
   t.after(() => cleanup(root));
   if (defaults !== undefined) {
     fs.mkdirSync(path.join(root, '.gsd'), { recursive: true });
@@ -194,9 +193,12 @@ test('inline and block tools forms keep their form after installer augmentation 
 
 test('missing or invalid agent_tools leave installed agent bytes unchanged (#4032)', (t) => {
   const baselineInstall = installClaude(t);
-  const invalidInstall = installClaude(t, { defaults: { agent_tools: { '*': [null, '', '  '] } } });
-  const baseline = baselineInstall.agent('gsd-executor').split(baselineInstall.root).join('<INSTALL_ROOT>');
-  const invalid = invalidInstall.agent('gsd-executor').split(invalidInstall.root).join('<INSTALL_ROOT>');
+  const baseline = baselineInstall.agent('gsd-executor');
+  const invalidInstall = installClaude(t, {
+    root: baselineInstall.root,
+    defaults: { agent_tools: { '*': [null, '', '  '] } },
+  });
+  const invalid = invalidInstall.agent('gsd-executor');
   assert.strictEqual(invalid, baseline);
 });
 
