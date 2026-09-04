@@ -2812,23 +2812,71 @@ describe('#3830: state advance-plan checks its prose position against the plans 
   // the position sits inside it. Each case below has a prose total that MATCHES the
   // twelve plans on disk, so the total test passes and only the range check stands
   // between the input and a write.
-  test('a current_plan outside the plan set is a divergence, even when the TOTAL agrees', () => {
-    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12', 'Plan: 0 of 12']) {
+  test('a current_plan BELOW the plan set is a divergence, even when the TOTAL agrees', () => {
+    // `0 of 12` sits on the increment branch (0 < 12), where a diverged pair is
+    // refused outright. The past-the-total cases (`20 of 12`, `13 of 12`) sit on
+    // the completion branch and are covered two tests down: since #4067 that
+    // branch is decided from disk, not refused on the counter.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 0 of 12');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.advanced, false, 'Plan: 0 of 12 must not advance');
+    assert.strictEqual(output.reason, 'position_diverged',
+      'Plan: 0 of 12 is out of range and must be reported as a divergence');
+    assert.strictEqual(output.status, undefined,
+      'Plan: 0 of 12 must not be allowed to claim ready_for_verification');
+    assert.strictEqual(stateText(), before, 'Plan: 0 of 12 must leave STATE.md byte-identical');
+  });
+
+  // #4067 (on `next` since this PR's round 6) re-decides the phase-complete branch
+  // from the plans on disk — every plan summarized completes the phase, anything
+  // less declines the whole write as `plans_outstanding`. Its own fixture is a stale
+  // `7 of 7` in a 3-plan phase, a total this cross-check calls diverged, so the two
+  // fixes collide on exactly one branch. The reconciliation: on the completion branch
+  // the counter is REPORTED as untrusted and the disk decides; on the increment
+  // branch it is refused as before. These pin the reported half.
+  test('a position past the total is not refused: a phase complete on disk completes (#4067)', () => {
+    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12']) {
+      // Every plan summarized -> the phase really is complete, and it completes.
       seedPhase('01-demo', 12);
       writeState(planLine);
+      const done = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+      assert.strictEqual(done.exitCode, 0, `${planLine}: ${done.stderr}`);
+      const out = JSON.parse(done.stdout);
+      assert.strictEqual(out.reason, 'last_plan', `${planLine} with every plan summarized must complete; got ${done.stdout}`);
+      assert.deepStrictEqual(out.prose_diverged && out.prose_diverged.prose,
+        { current_plan: Number(planLine.match(/\d+/)[0]), total_plans: 12 },
+        `${planLine} must carry the divergence it did not refuse on`);
+      assert.match(done.stderr, /did NOT trust the plan counter/,
+        `${planLine} must still be announced on stderr; got ${JSON.stringify(done.stderr)}`);
+      assert.ok(stateText().includes('Phase complete'), `${planLine}: the phase is complete on disk, so Status moves`);
+    }
+  });
+
+  test('a position past the total is not refused: outstanding plans decline it, byte-identical (#4067)', () => {
+    // Seeded ONCE with seven of twelve summarized and never re-seeded fuller —
+    // seedPhase only adds files, so a fully-summarized seed in the same fixture
+    // would make this case unreachable (the first draft of this test did that).
+    seedPhase('01-demo', 12, 7);
+    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12']) {
+      writeState(planLine);
       const before = stateText();
-
-      const result = runGsdTools('state advance-plan', tmpDir);
-      assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
-      const output = JSON.parse(result.output);
-
-      assert.strictEqual(output.advanced, false, `${planLine} must not advance`);
-      assert.strictEqual(output.reason, 'position_diverged',
-        `${planLine} is out of range and must be reported as a divergence`);
-      assert.strictEqual(output.status, undefined,
-        `${planLine} must not be allowed to claim ready_for_verification`);
-      assert.strictEqual(stateText(), before,
-        `${planLine} must leave STATE.md byte-identical`);
+      const held = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+      assert.strictEqual(held.exitCode, 0, `${planLine}: ${held.stderr}`);
+      const out = JSON.parse(held.stdout);
+      assert.strictEqual(out.reason, 'plans_outstanding', `${planLine} with 5 unsummarized plans must be declined by #4067; got ${held.stdout}`);
+      assert.strictEqual(out.outstanding_plans && out.outstanding_plans.length, 5);
+      assert.strictEqual(stateText(), before, `${planLine}: a declined completion leaves STATE.md byte-identical`);
+      // The divergence is STILL announced: the payload is #4067's, so stderr carries it.
+      assert.match(held.stderr, /did NOT trust the plan counter/,
+        `${planLine}: the divergence must be announced even when #4067 declines; got ${JSON.stringify(held.stderr)}`);
+      assert.ok(!held.stderr.includes('REFUSED to advance'),
+        'the completion branch does not refuse, so the refusal verb must not appear');
     }
   });
 
@@ -2880,17 +2928,23 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     writeState('Plan: 10 of 8');
     const before = stateText();
 
-    const result = runGsdTools('state advance-plan', tmpDir);
-    assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
-    const output = JSON.parse(result.output);
+    // Post-#4067 the completion branch is decided from disk: none of the eight
+    // live plans is summarized, so the write is declined as `plans_outstanding` —
+    // byte-identical, exactly as the refusal was — and the incoherent position is
+    // announced on stderr rather than being the reason itself.
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `must still exit 0: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
 
     assert.strictEqual(output.advanced, false);
-    assert.strictEqual(output.reason, 'position_diverged',
-      'a position past its own total is incoherent whatever disk says');
+    assert.strictEqual(output.reason, 'plans_outstanding',
+      `with no plan summarized the disk must decline the completion; got ${result.stdout}`);
     assert.strictEqual(output.status, undefined,
       'it must NOT be allowed to claim ready_for_verification');
     assert.strictEqual(stateText(), before,
       'and it must not write — this case previously mutated STATE.md');
+    assert.match(result.stderr, /did NOT trust the plan counter/,
+      'a position past its own total is still announced as untrusted');
   });
 
   test('the range check does not fire on an all-superseded phase positioned past the LIVE count', () => {
@@ -2929,18 +2983,46 @@ describe('#3830: state advance-plan checks its prose position against the plans 
       'the last plan is in range — it must reach last_plan, never position_diverged');
   });
 
-  test('divergence is reported instead of a premature phase completion', () => {
-    // Without the check this took the currentPlan >= totalPlans branch and
-    // declared ready_for_verification on a phase holding twelve plans.
+  test('a diverged total does not complete a phase prematurely — the disk decides, and the divergence is announced', () => {
+    // Pre-fix this took the currentPlan >= totalPlans branch and declared
+    // ready_for_verification on a phase holding twelve plans of which seven were
+    // summarized. Post-#4067 that branch is decided from disk: five outstanding ->
+    // declined, byte-identical, and this check's warning still names `8 of 8` vs 12.
+    seedPhase('01-demo', 12, 7);
+    writeState('Plan: 8 of 8');
+    const before = stateText();
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.strictEqual(output.reason, 'plans_outstanding', `got ${result.stdout}`);
+    assert.strictEqual(output.status, undefined, 'must not claim ready_for_verification');
+    assert.strictEqual(stateText(), before, 'the declined write must be byte-identical');
+    assert.ok(!before.includes('Phase complete'), 'Status must not be moved to Phase complete');
+    assert.match(result.stderr, /8 of 8/, 'the warning must name the prose position');
+    assert.match(result.stderr, /12/, 'the warning must name the disk plan count');
+    assert.match(result.stderr, /did NOT trust the plan counter/);
+  });
+
+  test('a diverged total on a phase that IS complete on disk completes it, and says the counter was not trusted', () => {
+    // Same stale `8 of 8` over twelve plans, all twelve summarized. Refusing here
+    // would send the operator to fix a number in order to finish a finished phase;
+    // #4067 completes it and this check announces the stale line.
     seedPhase('01-demo', 12);
     writeState('Plan: 8 of 8');
 
-    const result = runGsdTools('state advance-plan', tmpDir);
-    const output = JSON.parse(result.output);
-    assert.strictEqual(output.reason, 'position_diverged');
-    assert.strictEqual(output.status, undefined, 'must not claim ready_for_verification');
-    const updated = stateText();
-    assert.ok(!updated.includes('Phase complete'), 'Status must not be moved to Phase complete');
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.strictEqual(output.reason, 'last_plan', `got ${result.stdout}`);
+    assert.strictEqual(output.status, 'ready_for_verification');
+    assert.deepStrictEqual(output.prose_diverged, {
+      prose: { current_plan: 8, total_plans: 8 },
+      disk: { phase: '01', plan_count: 12, plan_count_all: 12 },
+    });
+    assert.ok(stateText().includes('Phase complete'), 'Status moves: the phase is complete on disk');
+    assert.match(result.stderr, /did NOT trust the plan counter/);
+    assert.match(result.stderr, /matches neither count/, 'and it names which half of the line is wrong');
   });
 });
 

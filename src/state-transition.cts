@@ -1858,11 +1858,22 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   // wordings were caught by review; the note is kept so the next edit reaches for
   // that property rather than for whichever mechanism is current.)
   //
-  // The gate sits BEFORE both branches deliberately: the phase-completion test
-  // below (`currentPlan >= totalPlans`) reads the same two operands, so drift
-  // mistimes completion in either direction — withholding it from a finished
-  // phase, or declaring it on an unfinished one — and a gate placed after that
-  // test would leave the more expensive of the two failures uncovered.
+  // The gate sits BEFORE both branches, but it REFUSES on only one of them.
+  // On the increment branch (`currentPlan < totalPlans`) a diverged prose pair
+  // is refused outright: moving the counter against a total it disagrees with
+  // is the #3830 write, and nothing downstream re-checks it. On the
+  // phase-completion branch (`currentPlan >= totalPlans`) the divergence is
+  // REPORTED, not refused — #4067 (`cmdStateAdvancePlan`, src/state.cts) landed
+  // on `next` while this fix was in review and re-decides that branch from the
+  // plans on disk: every plan summarized -> the phase completes; otherwise the
+  // whole write is declined as `plans_outstanding`. That disk answer is a
+  // better guard for completion than counter agreement is — it checks whether
+  // the phase IS complete, not whether the counter is self-consistent — and
+  // refusing ahead of it would turn its motivating case (a `7 of 7` carried
+  // into a fresh 3-plan phase, which #4067 tolerates by design) into a hard
+  // stop for every executor in the wave. So the completion branch proceeds and
+  // carries the divergence out as `prose_diverged` for the command layer to
+  // announce on stderr; the counter is never trusted silently on either branch.
   //
   // Deliberately narrow. Divergence is claimed ONLY from a completed scan that
   // found at least one plan file. An absent provider (existing callers and test
@@ -1883,6 +1894,8 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   // matching EITHER count, so an all-superseded phase whose prose tracks the full
   // set still agrees and still advances.
   const planSet = deps.planSetProvider ? deps.planSetProvider() : null;
+  // Set on the completion branch only; the increment branch returns instead.
+  let proseDiverged: { prose: Record<string, number>; disk: Record<string, unknown> } | null = null;
   if (planSet !== null && planSet.ok && (planSet.planCount > 0 || planSet.planCountAll > 0)) {
     // The prose total is accepted if it matches EITHER disk count. The two
     // commands that write it disagree about supersession — execute-phase's
@@ -1934,24 +1947,30 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     const rangeDiverged = currentPlan < 1 || currentPlan > totalPlans;
 
     if (totalDiverged || rangeDiverged) {
-      return {
-        // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
-        // round-trip: a refusal must not mutate, and frontmatter reconstruction
-        // is a normalizing transform. The sibling `error: true` path above
-        // round-trips because it predates this rule; do not copy it here.
-        content,
-        updated: [],
-        data: {
-          advanced: false,
-          reason: 'position_diverged',
-          prose: { current_plan: currentPlan, total_plans: totalPlans },
-          disk: {
-            phase: planSet.phase,
-            plan_count: planSet.planCount,
-            plan_count_all: planSet.planCountAll,
-          },
+      const divergence = {
+        prose: { current_plan: currentPlan, total_plans: totalPlans },
+        disk: {
+          phase: planSet.phase,
+          plan_count: planSet.planCount,
+          plan_count_all: planSet.planCountAll,
         },
       };
+      if (currentPlan < totalPlans) {
+        return {
+          // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
+          // round-trip: a refusal must not mutate, and frontmatter reconstruction
+          // is a normalizing transform. The sibling `error: true` path above
+          // round-trips because it predates this rule; do not copy it here.
+          content,
+          updated: [],
+          data: { advanced: false, reason: 'position_diverged', ...divergence },
+        };
+      }
+      // Completion branch: reported, not refused — see the gate comment above.
+      // `rangeDiverged` lands here too (`20 of 12`): a position past its own
+      // total says nothing true about the phase, and the disk answer #4067
+      // takes next is the only one that does.
+      proseDiverged = divergence;
     }
   }
 
@@ -1973,7 +1992,17 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     return {
       content: reassemble(body),
       updated,
-      data: { advanced: false, reason: 'last_plan', current_plan: currentPlan, total_plans: totalPlans, status: 'ready_for_verification' },
+      data: {
+        advanced: false,
+        reason: 'last_plan',
+        current_plan: currentPlan,
+        total_plans: totalPlans,
+        status: 'ready_for_verification',
+        // #3830 x #4067: the counter disagreed with disk and was not trusted —
+        // the command layer warns on stderr and then decides completion from
+        // the plans on disk. Absent when the counter agreed.
+        ...(proseDiverged !== null ? { prose_diverged: proseDiverged } : {}),
+      },
     };
   }
 

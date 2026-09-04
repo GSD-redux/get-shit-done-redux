@@ -1495,14 +1495,48 @@ describe('#3830: advancePlan cross-checks prose plan position against the plan s
     assert.strictEqual(result.content, LEGACY_STALE);
   });
 
-  test('divergence is caught on the phase-COMPLETION branch too, not only the increment branch', () => {
-    // prose "8 of 8" would otherwise take the currentPlan >= totalPlans path
-    // and declare ready_for_verification on a phase that has twelve plans.
+  // #4067 landed on `next` mid-review and re-decides the phase-complete branch
+  // from disk in cmdStateAdvancePlan (every plan summarized, or decline as
+  // `plans_outstanding`). Its own fixture is a `7 of 7` carried into a 3-plan
+  // phase — a total this check calls diverged — and it expects that branch to be
+  // REACHED. So the core reports the divergence on the completion branch instead
+  // of refusing there, and the command-layer tests in tests/state.test.cjs pin
+  // what the disk then decides. The increment branch is unchanged: see
+  // 'single-plan drift in either direction is still divergence' below.
+  test('a diverged total on the phase-COMPLETION branch is reported, not refused', () => {
     const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 8 of 8');
     const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+    assert.strictEqual(result.data && result.data.status, 'ready_for_verification');
+    assert.deepStrictEqual(result.data && result.data.prose_diverged, {
+      prose: { current_plan: 8, total_plans: 8 },
+      disk: { phase: '01', plan_count: 12, plan_count_all: 12 },
+    }, 'the completion answer must carry the divergence it did not refuse on');
+    assert.notStrictEqual(result.content, input, 'the core still writes the completion; #4067 declines it at the command layer when plans are outstanding');
+  });
+
+  test('an in-range last plan carries no prose_diverged', () => {
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 8 of 8');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(8));
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+    assert.strictEqual(result.data && result.data.prose_diverged, undefined);
+  });
+
+  test('a position past its own total is reported on the completion branch, not refused', () => {
+    // `20 of 12` is `rangeDiverged` with an agreeing total; it satisfies
+    // currentPlan >= totalPlans, so it lands on the completion branch and #4067's
+    // disk answer is the only thing that says anything true about the phase.
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 20 of 12');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+    assert.deepStrictEqual(result.data && result.data.prose_diverged && result.data.prose_diverged.prose,
+      { current_plan: 20, total_plans: 12 });
+  });
+
+  test('a position BELOW the plan set is still refused — that is the increment branch', () => {
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 0 of 12');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(12));
     assert.strictEqual(result.data && result.data.reason, 'position_diverged');
-    assert.notStrictEqual(result.data && result.data.reason, 'last_plan');
-    assert.strictEqual(result.data && result.data.status, undefined);
     assert.strictEqual(result.content, input);
   });
 

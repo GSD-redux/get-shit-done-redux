@@ -1169,7 +1169,12 @@ function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.
  * numbers plus the repair path, because a warning that does not say what to run
  * next just relocates the puzzle.
  */
-function warnPositionDiverged(data: Record<string, unknown>): void {
+// `outcome` selects the verb: `refused` is the increment-branch refusal, where
+// nothing was written; `yielded` is the completion branch, where the counter
+// was not trusted and #4067's disk-derived decision (next in cmdStateAdvancePlan)
+// completes the phase or declines it as `plans_outstanding`. Same numbers, same
+// repair path — the operator still has a stale line to fix — different verb.
+function warnPositionDiverged(data: Record<string, unknown>, outcome: 'refused' | 'yielded' = 'refused'): void {
   // Narrow rather than `String(unknown)`: these fields come off a
   // `Record<string, unknown>` payload, and blind stringification renders an
   // unexpected shape as `[object Object]` inside an operator-facing warning —
@@ -1238,12 +1243,18 @@ function warnPositionDiverged(data: Record<string, unknown>): void {
   const because = totalMatchesDisk
     ? `The total agrees with the plans on disk, but the position is outside it, so `
     : `The prose total matches neither count, so `;
+  const verb = outcome === 'refused'
+    ? `REFUSED to advance (#3830)`
+    : `did NOT trust the plan counter (#3830)`;
+  const consequence = outcome === 'refused'
+    ? `nothing was written and the plan counter did NOT advance. `
+    : `the phase-complete decision was taken from the plans on disk instead (#4067) and the counter was left as it is. `;
   process.stderr.write(
-    `[gsd-tools] WARNING: state.advance-plan REFUSED to advance (#3830): ` +
+    `[gsd-tools] WARNING: state.advance-plan ${verb}: ` +
       `## Current Position says plan ${scalar(prose['current_plan'])} of ${scalar(prose['total_plans'])} ` +
       `for ${phase}, but the plans on disk number ${scalar(disk['plan_count'])} ` +
       `(${scalar(disk['plan_count_all'])} including superseded). ${because}` +
-      `nothing was written and the plan counter did NOT advance. Reconcile STATE.md before continuing — ` +
+      `${consequence}Reconcile STATE.md before continuing — ` +
       `\`gsd-tools query phase-plan-index\` shows the real plan set; \`state rebuild\`, \`state sync\` or ` +
       `\`state patch\` are the repair paths.\n`,
   );
@@ -1323,6 +1334,17 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       planSetProvider:
         positionPhase === null ? undefined : () => resolvePlanSetForPhase(cwd, positionPhase),
     });
+    // #3830 x #4067: on the completion branch the core REPORTS a diverged
+    // counter rather than refusing on it (see advancePlanCore's gate comment),
+    // so that the disk-derived guard below can decide completion from what is
+    // actually on disk. Announce it here, ahead of that guard, so the warning
+    // reaches stderr whichever way the guard then answers — `last_plan` carries
+    // `prose_diverged` on stdout too, `plans_outstanding` is #4067's own
+    // payload and does not.
+    const proseDiverged = result.data?.['prose_diverged'];
+    if (proseDiverged !== null && typeof proseDiverged === 'object') {
+      warnPositionDiverged(proseDiverged as Record<string, unknown>, 'yielded');
+    }
     // #4067: the transform's phase-complete branch is decided by STATE.md's
     // scalar plan counter, which can neither carry a stale value across phases
     // nor represent wave-parallel execution. Before letting that branch write
