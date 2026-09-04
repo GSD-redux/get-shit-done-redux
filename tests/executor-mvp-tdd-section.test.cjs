@@ -249,6 +249,8 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8');
   // allow-test-rule: source-text-is-the-product see #4254
   const agent = fs.readFileSync(path.join(__dirname, '..', 'agents', 'gsd-executor.md'), 'utf8');
+  // allow-test-rule: source-text-is-the-product see #4254
+  const safetyReference = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'references', 'worktree-path-safety.md'), 'utf8');
   const { createTempGitProject, cleanup } = require('./helpers.cjs');
   const { runHook } = require('./helpers/process-seam.cjs');
   const { gitOrThrow } = require('./helpers/git-fixture.cjs');
@@ -258,12 +260,16 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
     return `'${String(value).replace(/'/g, `'"'"'`)}'`;
   }
 
-  function rootGuardScript(suppliedRoot) {
+  function extractRootGuard(source, surface) {
     const marker = '# gsd:guard=executor-project-root-pin';
-    const fences = agent.split('```');
+    const fences = source.split('```');
     const guard = fences.find((body) => body.includes(marker));
-    assert.ok(guard, 'gsd-executor must ship the mode-agnostic project-root guard (#4254)');
-    const script = guard.replace(/^bash\r?\n/, '');
+    assert.ok(guard, `${surface} must ship the mode-agnostic project-root guard (#4254)`);
+    return guard.replace(/^bash\r?\n/, '').trim();
+  }
+
+  function rootGuardScript(suppliedRoot) {
+    const script = extractRootGuard(safetyReference, 'worktree-path-safety reference');
     const assignment = /^SUPPLIED_PROJECT_ROOT=.*$/m;
     assert.match(script, assignment, 'guard must materialize the supplied literal into a shell variable');
     return script.replace(assignment, `SUPPLIED_PROJECT_ROOT=${shellQuote(suppliedRoot)}`);
@@ -303,6 +309,16 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
     );
     assert.match(isolated, /PROJECT_ROOT=\$\(git rev-parse --show-toplevel/, 'isolated executor keeps its own root');
     assert.doesNotMatch(isolated, /<project_root_pin>/, 'isolated prompt must not inherit the orchestrator root');
+  });
+
+  test('#4254: executor loads the mode-agnostic supplied-root guard', () => {
+    const start = agent.indexOf('<project_root_safety>');
+    const end = agent.indexOf('</project_root_safety>', start);
+    assert.ok(start !== -1 && end !== -1, 'executor must define project-root safety');
+    const safety = agent.slice(start, end);
+    assert.match(safety, /worktree-path-safety\.md/, 'executor must load the executable safety reference');
+    assert.match(safety, /every mode.*before the first Edit\/Write and every commit/is);
+    assert.match(safety, /missing pin warns and proceeds/i);
   });
 
   test('#4254: supplied-root mismatch halts before the first write', () => {

@@ -810,7 +810,13 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is `false` — either project-level `USE_WORKTREES=false`, or per-plan submodule intersection forced it false in step 2.5):
 
-   Omit `isolation="worktree"` from the Agent call. Replace the `<parallel_execution>` block with:
+   Omit `isolation="worktree"` from the Agent call. At prompt-construction time, make both
+   substitutions below using the exact literal value already held in `$ORCHESTRATOR_WT`:
+
+   1. Replace the `<parallel_execution>` block with the sequential block and root pin below.
+      Substitute `{ORCHESTRATOR_WT_LITERAL}` with the literal absolute path — do not pass the
+      `$ORCHESTRATOR_WT` token through to the executor.
+   2. In `<required_reading>`, replace `PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)` with `PROJECT_ROOT={ORCHESTRATOR_WT_LITERAL}` so the sequential executor does not derive its root from its own possibly-wrong cwd. Preserve the path as one literal value (including spaces).
 
    ```
        <sequential_execution>
@@ -818,7 +824,15 @@ increases monotonically across waves. `{status}` is `complete` (success),
        Use normal git commits (with hooks). Do NOT use --no-verify.
        REQUIRED ORDER: Write SUMMARY.md → commit → only then any narration. No text between Write and commit (truncation risk; #2070 rescue is not primary defense).
        </sequential_execution>
+
+       <project_root_pin>
+       {ORCHESTRATOR_WT_LITERAL}
+       </project_root_pin>
    ```
+
+   This pin is sequential-only. Do not add `<project_root_pin>` or substitute the
+   orchestrator's root in the worktree-mode prompt: isolated executors intentionally resolve
+   their own distinct worktree roots.
 
    The sequential mode Agent prompt uses the same structure as worktree mode but with these differences in success_criteria — since there is only one agent writing at a time, there are no shared-file conflicts:
 

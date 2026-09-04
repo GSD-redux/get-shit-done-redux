@@ -71,6 +71,13 @@ Before executing, discover project context:
 **CLAUDE.md enforcement:** If `./CLAUDE.md` exists, treat its directives as hard constraints during execution. Before committing each task, verify that code changes do not violate CLAUDE.md rules (forbidden patterns, required conventions, mandated tools). If a task action would contradict a CLAUDE.md directive, apply the CLAUDE.md rule — it takes precedence over plan instructions. Document any CLAUDE.md-driven adjustments as deviations (Rule 2: auto-add missing critical functionality).
 </project_context>
 
+<project_root_safety>
+@~/.claude/gsd-core/references/worktree-path-safety.md
+
+Run its supplied-root guard in every mode before the first Edit/Write and every commit. A
+`<project_root_pin>` is literal; a mismatch halts, while a missing pin warns and proceeds (#4254).
+</project_root_safety>
+
 <execution_flow>
 
 <step name="load_project_state" priority="first">
@@ -442,70 +449,9 @@ The verb owns the canonical predicate (tdd="true" frontmatter AND `<behavior>` b
 <task_commit_protocol>
 After each task completes (verification passed, done criteria met), commit immediately.
 
-**0a. cwd-drift assertion (worktree mode only, MANDATORY before staging — #3097):**
-A prior Bash call may have `cd`'d out of the worktree into the main repo. When that happens
-`[ -f .git ]` is false (main repo's `.git` is a directory), silently skipping all worktree guards.
-Capture the spawn-time toplevel via a sentinel on first commit, then verify on every subsequent commit:
-```bash
-WT_GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
-case "$WT_GIT_DIR" in
-  *.git/worktrees/*)
-      SENTINEL="$WT_GIT_DIR/gsd-spawn-toplevel"
-      [ ! -f "$SENTINEL" ] && git rev-parse --show-toplevel > "$SENTINEL" 2>/dev/null
-      EXPECTED_TL=$(cat "$SENTINEL" 2>/dev/null)
-      ACTUAL_TL=$(git rev-parse --show-toplevel 2>/dev/null)
-      if [ -n "$EXPECTED_TL" ] && [ "$ACTUAL_TL" != "$EXPECTED_TL" ]; then
-        echo "FATAL: cwd drifted from spawn-time worktree root (#3097)" >&2
-        echo "  Spawn-time: $EXPECTED_TL" >&2
-        echo "  Current:    $ACTUAL_TL" >&2
-        echo "RECOVERY: cd \"$EXPECTED_TL\" before staging, then re-run this commit." >&2
-        exit 1
-      fi
-    ;;
-esac
-```
-
-**0b. absolute-path safety (worktree mode only, MANDATORY before Edit/Write — #3099):**
-Before any Edit or Write call that uses an absolute path, verify the path resolves inside the
-current worktree. Absolute paths constructed from prior `pwd` output (orchestrator's cwd) will
-resolve to the **main repo**, not the worktree — silently writing files to the wrong location.
-```bash
-# Obtain the canonical worktree root
-WT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-[ -z "$WT_ROOT" ] && { echo "FATAL: could not determine worktree root" >&2; exit 1; }
-# Verify absolute path containment with boundary safety (not glob prefix which allows siblings)
-if [[ "$ABS_PATH" != "$WT_ROOT" && "$ABS_PATH" != "$WT_ROOT/"* ]]; then
-  echo "FATAL: $ABS_PATH is outside the worktree ($WT_ROOT) — use a relative path or recompute from WT_ROOT" >&2
-  exit 1
-fi
-```
-Prefer **relative paths** for all Edit/Write operations inside a worktree. When an absolute path
-is unavoidable, always derive it from `git rev-parse --show-toplevel` run inside the worktree,
-not from a `pwd` captured in the orchestrator context.
-
-**0. Pre-commit HEAD safety assertion (worktree mode only, MANDATORY before every commit — #2924):**
-When running inside a Claude Code worktree (`.git` is a file, not a directory), assert HEAD is on a per-agent branch BEFORE staging or committing. If HEAD has drifted onto a protected ref, HALT — never self-recover via `git update-ref refs/heads/<protected>`:
-```bash
-if [ -f .git ]; then  # worktree
-  HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
-  ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  # Deny-list: never commit on a protected ref.
-  if [ "$HEAD_REF" = "DETACHED" ] || \
-     echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
-    echo "FATAL: refusing to commit — worktree HEAD is on '$ACTUAL_BRANCH' (expected per-agent branch)." >&2
-    echo "DO NOT use 'git update-ref' to rewind the protected branch — surface as blocker (#2924)." >&2
-    exit 1
-  fi
-  # Positive allow-list: HEAD must be on a per-agent branch (`agent-<id>` or
-  # legacy `worktree-agent-<id>`). This catches feature/* and any other
-  # arbitrary branch that the deny-list would silently allow (#2924, #1995).
-  if ! echo "$ACTUAL_BRANCH" | grep -Eq '^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$'; then
-    echo "FATAL: refusing to commit — worktree HEAD '$ACTUAL_BRANCH' is not in the agent-* / worktree-agent-* / worktree-wf_* namespace." >&2
-    echo "Agent commits must live on per-agent branches; surface as blocker (#2924)." >&2
-    exit 1
-  fi
-fi
-```
+**0. Re-run path safety before staging:** Execute `<project_root_safety>` in order:
+supplied-root (#4254); worktree cwd-drift (`rev-parse --git-dir`, `.git/worktrees/`);
+absolute-path safety; then the **Pre-commit HEAD safety assertion**.
 
 **1. Check modified files:** `git status --short`
 
