@@ -4848,6 +4848,10 @@ function makeCriteriaPlan(criteriaBody, taskVerify) {
 describe('#4024: scanQuantitativeCriteria — pure unit tests', () => {
   let scanQuantitativeCriteria;
 
+  // This block sits below the fold-point whose top-level destructure omits
+  // `before`, so bind it locally rather than relying on file position.
+  const before = require('node:test').before;
+
   before(() => {
     const verify = require(VERIFY_CJS);
     scanQuantitativeCriteria = verify.scanQuantitativeCriteria;
