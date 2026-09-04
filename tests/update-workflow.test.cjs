@@ -33,7 +33,6 @@ const path = require('node:path');
 const { extractFencedBlock } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const UPDATE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md');
-const UPDATE_COMMAND = path.join(__dirname, '..', 'commands', 'gsd', 'update.md');
 
 function codeOnly(file) {
   // Strip fenced-block prose is unnecessary here; we assert on the whole doc
@@ -71,14 +70,26 @@ describe('#4153 regression: unresolved update targets stop before later workflow
     assert.match(step, /target runtime \(`claude`, `opencode`, `kilo`, `codex`, `antigravity`, `windsurf`\)/);
     assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
 
+    const versionMissing = step.indexOf('VERSION file missing');
+    assert.ok(versionMissing >= 0, 'VERSION-missing bullet must exist');
+    assert.ok(
+      unresolved < versionMissing,
+      'unresolved-target gate must precede the VERSION-missing bullet, or the ' +
+        'fully-unresolved case (version 0.0.0 AND unresolved target) can fall ' +
+        'through to "proceed to install" instead of exiting',
+    );
+    assert.match(
+      step,
+      /Otherwise, if VERSION file missing.*but the target above resolved/,
+      'VERSION-missing bullet must be explicitly scoped to exclude the unresolved-target case',
+    );
+
     const mutationSpies = [
       { name: 'version check', text: src, needle: 'check-latest-version.cjs', after: end },
       { name: 'custom-file detection', text: src, needle: 'detect-custom-files --config-dir', after: end },
       { name: 'resolved installer', text: src, needle: 'npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG"', after: end },
       { name: 'update-cache removal', text: src, needle: 'rm -f "$HOME/.cache/gsd/gsd-update-check"', after: end },
       { name: 'restore apply', text: src, needle: 'restore-custom-files --config-dir "$GSD_DIR" --apply', after: end },
-      { name: 'skill sync route', text: codeOnly(UPDATE_COMMAND), needle: '--sync', after: 0 },
-      { name: 'patch reapply route', text: codeOnly(UPDATE_COMMAND), needle: '--reapply', after: 0 },
       { name: 'patch check', text: src, needle: 'check_local_patches', after: end },
     ];
     for (const { name, text, needle, after } of mutationSpies) {

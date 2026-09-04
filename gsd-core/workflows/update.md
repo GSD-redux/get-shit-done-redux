@@ -80,9 +80,7 @@ Parse output:
 
 If multiple runtime installs are detected and the invoking runtime cannot be determined from execution_context, ask the user which runtime to update before running install.
 
-**If VERSION file missing (version resolves to `0.0.0`):** report the installed version as Unknown and proceed to install (treated as `0.0.0` for comparison).
-
-**If `INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty:**
+**If `INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty:** this gate takes precedence over the VERSION-missing case below — a fully-unresolved target also reports version `0.0.0`, and must exit here rather than fall through to "proceed to install".
 
 ```text
 UPDATE_TARGET_UNRESOLVED
@@ -93,6 +91,8 @@ Rerun from a valid installed runtime: `/gsd:update`. For a fresh installation, r
 ```
 
 Exit.
+
+**Otherwise, if VERSION file missing (version resolves to `0.0.0`) but the target above resolved:** report the installed version as Unknown and proceed to install (treated as `0.0.0` for comparison).
 </step>
 
 <step name="parse_update_channel">
