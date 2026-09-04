@@ -923,7 +923,6 @@ const capabilities = {
         "consumes": [
           "SUMMARY.md"
         ],
-        "supportsReviewerLanes": true,
         "when": "workflow.code_review",
         "pointFrom": "workflow.code_review_point",
         "onError": "skip"
@@ -937,7 +936,6 @@ const capabilities = {
           "REVIEW.md"
         ],
         "consumes": [],
-        "supportsReviewerLanes": true,
         "when": "workflow.code_review",
         "pointFrom": "workflow.code_review_point",
         "onError": "skip"
@@ -4631,7 +4629,6 @@ const byLoopPoint = {
           "REVIEW.md"
         ],
         "consumes": [],
-        "supportsReviewerLanes": true,
         "when": "workflow.code_review",
         "pointFrom": "workflow.code_review_point",
         "onError": "skip"
@@ -4735,7 +4732,6 @@ const byLoopPoint = {
         "consumes": [
           "SUMMARY.md"
         ],
-        "supportsReviewerLanes": true,
         "when": "workflow.code_review",
         "pointFrom": "workflow.code_review_point",
         "onError": "skip"

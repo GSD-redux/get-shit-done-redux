@@ -1,10 +1,13 @@
 /**
  * Reviewer Step Dispatch (#4209 Phase 1 Plan 2, ADR-2782 seam).
  *
- * ONE interpreter for "a step declares `supportsReviewerLanes: true`" (the trait plan 01-01
- * projects onto `activeHooks` — see `src/loop-resolver.cts`). Every direct or lifecycle caller
- * routes through `dispatchReviewerLanes` so selection/plan/invoke logic is owned once, not
- * re-derived per feature. This module owns NONE of those primitives — it wires
+ * ONE interpreter for reviewer-lane dispatch. `trait` is a defensive caller-supplied gate
+ * (the sole production caller, `gsd-core/bin/gsd-tools.cjs`'s `review-lane dispatch-step`,
+ * passes `true` unconditionally — the actual opt-in decision already happened one layer up,
+ * in `gsd-core/workflows/code-review.md`'s explicit-CLI-flag match against the reviewer-lane
+ * roster). Every direct or lifecycle caller routes through `dispatchReviewerLanes` so
+ * selection/plan/invoke logic is owned once, not re-derived per feature. This module owns
+ * NONE of those primitives — it wires
  * `resolveReviewerSelection` (selection) and `resolveLanePlan` (planning), the same building
  * blocks `gsd-core/bin/gsd-tools.cjs`'s `review-lane plan` subcommand uses. Invocation
  * (`runLane`) needs OS-aware spawn/probe plumbing this module does not own, so `deps.invoke`
@@ -32,7 +35,7 @@ import path from 'node:path';
 
 import { estimateTokens } from './prompt-budget.cjs';
 import type { LanePlan, ResolveResult } from './review-lane-invocation.cjs';
-import { resolveLanePlan } from './review-lane-invocation.cjs';
+import { resolveLanePlan, resolveLaneBudget } from './review-lane-invocation.cjs';
 import type { ReviewerLane } from './review-lane-descriptor.cjs';
 import { REVIEWER_LANES } from './review-lane-descriptor.cjs';
 import type {
@@ -52,7 +55,7 @@ export const DISPATCH_REASON = Object.freeze({
 } as const);
 export type DispatchReason = (typeof DISPATCH_REASON)[keyof typeof DISPATCH_REASON];
 
-/** Fixed, non-negotiable prompt constraints (SAFE-01..SAFE-07). Order is the display order. */
+/** Fixed, non-negotiable prompt constraints (SAFE-03..SAFE-06). Order is the display order. */
 export const SOURCE_REVIEW_PROHIBITIONS: readonly string[] = Object.freeze([
   'Do not modify any source file.',
   'Do not run tests.',
@@ -62,9 +65,10 @@ export const SOURCE_REVIEW_PROHIBITIONS: readonly string[] = Object.freeze([
 
 export interface ReviewerStepDispatchInput {
   /**
-   * Value of the step's `supportsReviewerLanes` field, read verbatim from `activeHooks`.
-   * Anything other than the literal boolean `true` (absent, `false`, or a malformed non-boolean
-   * that slipped past `capability-validator.cjs`) makes this dispatch a hard no-op.
+   * Defensive caller-supplied gate. Anything other than the literal boolean `true` makes this
+   * dispatch a hard no-op — callers should pass `true` only once they have independently
+   * decided this dispatch should proceed (e.g. an explicit CLI flag matched the reviewer-lane
+   * roster).
    */
   trait: unknown;
   /** Passed through verbatim to `resolveReviewerSelection` — this module invents no selection. */
@@ -163,8 +167,14 @@ function validatePaths(
     return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
   }
   const root = path.resolve(String(repoRoot ?? ''));
+  // #4209 agy-F1: a control character (newline, CR, NUL, ...) in a path lets a maliciously
+  // named repo file inject a fabricated section into the markdown prompt built from `paths`
+  // below (buildSourceReviewPrompt) — reject it here, at the shared trust boundary, rather than
+  // relying on the incidental quoting `git diff --name-only` happens to apply upstream.
+  // eslint-disable-next-line no-control-regex
+  const CONTROL_CHAR = /[\x00-\x1f]/;
   for (const p of paths) {
-    if (typeof p !== 'string' || p.length === 0) {
+    if (typeof p !== 'string' || p.length === 0 || CONTROL_CHAR.test(p)) {
       return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
     }
     const resolved = path.resolve(root, p);
@@ -175,19 +185,9 @@ function validatePaths(
   return { ok: true };
 }
 
-/**
- * Resolved per-lane budget: `null` means unbounded, and so does a resolved `0` — a legitimate
- * configured value meaning "do not restrict this lane" (mirrors `gsd-tools.cjs`'s `budgetFor`,
- * #2797). The caller's overflow check must test both `!== null` and `!== 0`.
- */
-function resolveBudget(lane: ReviewerLane, configGet: (key: string) => unknown): number | null {
-  if (!lane.promptBudgetKey) return null;
-  const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-  const per = configGet(lane.promptBudgetKey);
-  if (isNum(per) && per !== -1) return per;
-  const global = configGet('review.max_prompt_tokens');
-  return isNum(global) ? global : null;
-}
+// `resolveLaneBudget` (review-lane-invocation.cjs) resolves the number; `null` and a resolved
+// `0` both mean unbounded (#2797) — the caller's overflow check must test both `!== null` and
+// `!== 0`. See the call site below.
 
 /**
  * Build the bounded source-review prompt. Metadata only — repoRoot, paths, depth, base SHA, and
@@ -207,6 +207,12 @@ export function buildSourceReviewPrompt(input: {
     `Repository root: ${input.repoRoot}`,
     `Review depth: ${input.depth}`,
     `Base SHA: ${input.baseSha}`,
+    '',
+    'Review the changes introduced in each file below relative to its base SHA, at the requested',
+    'depth. Report every bug, security issue, and code-quality problem you find. For every claim',
+    'you make, cite the exact file path and line number(s) it applies to — a claim with no',
+    'file:line citation cannot be independently re-verified and will be discarded by the',
+    'consolidating reviewer.',
     '',
     '### Files in scope',
     fileLines,
@@ -285,14 +291,14 @@ export async function dispatchReviewerLanes(
       anyFailed = true;
       continue;
     }
-    planned = true;
     if (!planOutcome.ok) {
       results.push({ slug, ok: false, reason: planOutcome.reason, detail: planOutcome.detail });
       anyFailed = true;
       continue;
     }
+    planned = true;
 
-    const budget = resolveBudget(lane, configGet);
+    const budget = resolveLaneBudget(lane, configGet);
     if (budget !== null && budget !== 0 && estimatedTokens > budget) {
       results.push({
         slug,

@@ -1322,7 +1322,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const fsx = require('node:fs');
     const os = require('node:os');
     const { REVIEWER_LANES, mergeReviewerLanes } = require('./lib/review-lane-descriptor.cjs');
-    const { resolveLanePlan, resolveLaneEffort } = require('./lib/review-lane-invocation.cjs');
+    const { resolveLanePlan, resolveLaneEffort, resolveLaneBudget } = require('./lib/review-lane-invocation.cjs');
     const modelCatalog = require('./lib/model-catalog.cjs');
     const runner = require('./lib/review-lane-runner.cjs');
     const cfgLoader = require('./lib/config-loader.cjs');
@@ -1534,26 +1534,11 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     };
     const effortFor = (lane) => resolveLaneEffort(lane, configGet, renderLaneEffort);
 
-    /**
-     * Per-lane prompt budget (#2797 semantics, preserved exactly).
-     *
-     * `-1` is the UNSET sentinel and falls back to the central `review.max_prompt_tokens`, because
-     * `0` is a legitimate value meaning "do not trim this lane". Treating 0 as unset would silently
-     * switch a user who deliberately disabled trimming onto the global budget.
-     *
-     * Only the budget VALUE is resolved here. Assembly and trimming stay in `prompt-budget`, which
-     * already owns that machinery and is already tested; the workflow calls it and hands the
-     * trimmed file back via `--prompt-file`. Re-implementing it inside the runner would fork a
-     * tested surface for no gain.
-     */
-    const budgetFor = (lane) => {
-      if (!lane.promptBudgetKey) return null;
-      const per = configGet(lane.promptBudgetKey);
-      const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
-      if (isNum(per) && per !== -1) return per;
-      const global = configGet('review.max_prompt_tokens');
-      return isNum(global) ? global : null;
-    };
+    // Per-lane prompt budget: `resolveLaneBudget` (review-lane-invocation.cjs) owns the #2797
+    // resolution semantics (shared with src/reviewer-step-dispatch.cts, #4209 R3 — was two
+    // verbatim copies). Only the budget VALUE is resolved here; assembly/trimming stay in
+    // `prompt-budget`, which the workflow calls, handing the trimmed file back via `--prompt-file`.
+    const budgetFor = (lane) => resolveLaneBudget(lane, configGet);
 
     // #4209 (ADR-2782 seam) — the ONE interpreter route for a step that declared
     // `supportsReviewerLanes: true`. Wires `dispatchReviewerLanes` (src/reviewer-step-dispatch.cts)

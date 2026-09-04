@@ -408,6 +408,26 @@ function artifactPaths(runDir: string, slug: string): {
   };
 }
 
+/**
+ * Per-lane prompt budget (#2797 semantics, preserved exactly).
+ *
+ * `-1` is the UNSET sentinel and falls back to the central `review.max_prompt_tokens`, because
+ * `0` is a legitimate value meaning "do not trim this lane". Treating 0 as unset would silently
+ * switch a user who deliberately disabled trimming onto the global budget.
+ *
+ * Single source of truth: `gsd-core/bin/gsd-tools.cjs`'s `review-lane plan`/`invoke` and
+ * `src/reviewer-step-dispatch.cts`'s `dispatchReviewerLanes` both resolve a lane's budget through
+ * this function rather than each carrying their own copy (#4209 R3 — two verbatim copies drift).
+ */
+export function resolveLaneBudget(lane: ReviewerLane, configGet: (key: string) => unknown): number | null {
+  if (!lane.promptBudgetKey) return null;
+  const per = configGet(lane.promptBudgetKey);
+  const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (isNum(per) && per !== -1) return per;
+  const global = configGet('review.max_prompt_tokens');
+  return isNum(global) ? global : null;
+}
+
 /* ------------------------------------------------------------------ *
  * Resolution
  * ------------------------------------------------------------------ */

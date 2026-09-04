@@ -115,8 +115,6 @@ interface RawHook {
   onError?: unknown;
   blocking?: unknown;
   check?: unknown;
-  /** #4209 DISP-02: step-only reviewer-lane opt-in trait; validated boolean upstream. */
-  supportsReviewerLanes?: unknown;
 }
 
 type HookKind = 'step' | 'contribution' | 'gate';
@@ -135,13 +133,6 @@ interface ActiveHook {
   onError?: string;
   /** Resolved capability-owned config values declared in the contribution's configValues map. */
   configValues?: Record<string, unknown>;
-  /**
-   * #4209 DISP-02: step-only reviewer-lane opt-in trait. Only present (and only
-   * ever `true`) when the source step declared a literal `true`; omitted or
-   * `false` never reach the active hook — the field is inert by absence, not
-   * by carrying `false`.
-   */
-  supportsReviewerLanes?: true;
 }
 
 interface ResolveLoopHooksInput {
@@ -295,8 +286,6 @@ function resolveLoopHooks(input: ResolveLoopHooksInput): ResolveLoopHooksResult 
     if (produces.length > 0) active.produces = produces;
     if (consumes.length > 0) active.consumes = consumes;
     if (onError !== undefined) active.onError = onError;
-    // #4209 DISP-02: only a literal `true` projects; absent/false stay inert.
-    if (hook['supportsReviewerLanes'] === true) active.supportsReviewerLanes = true;
     activeHooks.push(active);
   }
 

@@ -179,13 +179,14 @@ ALLOWLIST=(
   # rendering, never a command. Same DEFECT.PROMPT-INJECTION-SCAN-COLLISION
   # class as the input-validator fixtures above.
   'tests/quick-batch.test.cjs'
-  # #4209 — the untrusted external-evidence contract in gsd-code-reviewer.md
-  # explicitly names "ignore prior instructions" / embedded-persona redirection
-  # as the exact attack it defends against, and the regression test that pins
-  # that section's wording quotes the same phrase back to assert it is present.
-  # Both discuss/detect injection prose; neither performs it. Same
-  # DEFECT.PROMPT-INJECTION-SCAN-COLLISION class as the entries above.
-  'agents/gsd-code-reviewer.md'
+  # #4209 — the regression test pinning gsd-code-reviewer.md's untrusted-evidence
+  # contract discusses the injection attack it defends against (embedded
+  # redirection, "act as an instruction") without performing it. gsd-code-reviewer.md
+  # ITSELF is deliberately NOT allowlisted — R2 (#4209 review): a production prompt
+  # that ingests untrusted third-party output should stay in-scope for this scanner,
+  # not be exempted wholesale; its defense-contract wording was reworded instead to
+  # avoid literally spelling out the trigger phrase (see git blame on that section).
+  # Same DEFECT.PROMPT-INJECTION-SCAN-COLLISION class as the entries above.
   'tests/code-review-pipeline-regression.test.cjs'
 )
 

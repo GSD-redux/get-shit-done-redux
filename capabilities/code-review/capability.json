@@ -61,7 +61,6 @@
       "consumes": [
         "SUMMARY.md"
       ],
-      "supportsReviewerLanes": true,
       "when": "workflow.code_review",
       "pointFrom": "workflow.code_review_point",
       "onError": "skip"
@@ -75,7 +74,6 @@
         "REVIEW.md"
       ],
       "consumes": [],
-      "supportsReviewerLanes": true,
       "when": "workflow.code_review",
       "pointFrom": "workflow.code_review_point",
       "onError": "skip"

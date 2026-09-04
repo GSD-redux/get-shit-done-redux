@@ -766,12 +766,15 @@ function extractTier3Derivation() {
   return fence.slice(0, cut);
 }
 
-// spawn_reviewer's whole DIFF_BASE fence.
+// spawn_reviewer no longer derives its own DIFF_BASE (#4209 B3 fix: a second,
+// divergent recomputation there made the external reviewer lane and the
+// internal reviewer diff against different base SHAs on any re-review). It
+// now reuses the value compute_file_scope's Tier-3 derivation already
+// computed, so this is the SAME snippet as extractTier3Derivation() — kept
+// as a distinct name so T2/T5 below still read as testing spawn_reviewer's
+// contract, not just Tier 3's.
 function extractSpawnReviewerDerivation() {
-  const src = readFileNormalized(WORKFLOW_PATH);
-  const spawnIdx = src.indexOf('<step name="spawn_reviewer">');
-  assert.ok(spawnIdx !== -1, 'code-review.md must have a spawn_reviewer step');
-  return fenceContaining(src, 'PHASE_START=$(git log', spawnIdx);
+  return extractTier3Derivation();
 }
 
 // The fallow phase-scope derivation, from the step fragment. The fragment

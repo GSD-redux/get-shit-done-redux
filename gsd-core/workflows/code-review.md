@@ -562,9 +562,17 @@ parsed separately, straight from the merged first-party + installed-overlay rost
 (`review-lane-descriptor.cjs`), so a flag with more than one alias (e.g. antigravity's
 `--antigravity`/`--agy`) resolves to its one canonical slug:
 ```bash
-EXPLICIT_JOINED=$(node -e "
-  const { REVIEWER_LANES, mergeReviewerLanes } = require('./gsd-core/bin/lib/review-lane-descriptor.cjs');
-  const capabilityLoader = require('./gsd-core/bin/lib/capability-loader.cjs');
+# Resolve the lane-descriptor/capability-loader modules against $GSD_TOOLS's OWN directory
+# (already resolved by the `initialize` step across every supported install location — vendored
+# in-repo, ~/.claude, ~/.codex, etc.) rather than a cwd-relative './gsd-core/...' literal, which
+# only resolves when cwd happens to BE the vendored install root.
+GSD_LIB_DIR="${GSD_TOOLS%/*}/lib"
+EXPLICIT_JOINED_STDERR=$(mktemp)
+EXPLICIT_JOINED=$(GSD_LIB_DIR="$GSD_LIB_DIR" node -e "
+  const path = require('node:path');
+  const libDir = process.env.GSD_LIB_DIR;
+  const { REVIEWER_LANES, mergeReviewerLanes } = require(path.join(libDir, 'review-lane-descriptor.cjs'));
+  const capabilityLoader = require(path.join(libDir, 'capability-loader.cjs'));
   let lanes = REVIEWER_LANES;
   try {
     const registry = capabilityLoader.loadRegistry({ includeInstalled: true, cwd: process.cwd() });
@@ -577,7 +585,15 @@ EXPLICIT_JOINED=$(node -e "
     if (flags.some((f) => args.has(f))) slugs.add(lane.slug);
   }
   process.stdout.write([...slugs].sort().join(','));
-" -- "$@" 2>/dev/null)
+" -- "$@" 2>"$EXPLICIT_JOINED_STDERR")
+# A resolution failure (e.g. an install layout `initialize` didn't anticipate) must be visible,
+# not a silent downgrade to "no reviewer-lane flags were passed" — but it also must not hard-fail
+# the whole `/gsd:code-review` run for users who never asked for a reviewer lane in the first
+# place, so this stays a warning, not a halt.
+if [ -s "$EXPLICIT_JOINED_STDERR" ]; then
+  echo "Warning: could not resolve the reviewer-lane roster ($(head -1 "$EXPLICIT_JOINED_STDERR")) — treating this run as if no reviewer-lane flags were passed." >&2
+fi
+rm -f "$EXPLICIT_JOINED_STDERR"
 
 EXPLICIT_REVIEWER_SLUGS=()
 if [ -n "$EXPLICIT_JOINED" ]; then
@@ -601,12 +617,32 @@ if [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ] && [ -z "$DIFF_BASE" ]; then
   # generic rejection stand unexplained.
   echo "Warning: external reviewer lane(s) requested (${EXPLICIT_REVIEWER_SLUGS[*]}) but no diff base could be resolved (no prior review, no phase-start commit) — skipping external dispatch." >&2
 elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
+  # #4209 R5: a dedicated run-scoped temp dir (same `${TMPDIR:-/tmp}/gsd-review-*` convention
+  # review.md's gather_context step uses), not $PHASE_DIR directly — lane artifacts
+  # (gsd-review-prompt.md, gsd-review-<slug>.md/.err) are read-once evidence for THIS run, never
+  # meant to be committed, and a second dispatch on the same phase would otherwise silently
+  # overwrite the prior run's files in place. Removed by commit_review once the reviewer agent
+  # has read every cited evidence path.
+  LANE_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gsd-review-lanes-XXXXXX")
   DISPATCH_JSON=$(printf '%s\n' "${REVIEW_FILES[@]}" | gsd_run review-lane dispatch-step \
     --repo-root "$REPO_ROOT" --depth "$REVIEW_DEPTH" --base-sha "$DIFF_BASE" \
-    --run-dir "$PHASE_DIR" --explicit "$EXPLICIT_JOINED" --raw)
+    --run-dir "$LANE_RUN_DIR" --explicit "$EXPLICIT_JOINED" --raw)
 
-  # Each failed lane and each unresolved selection error is a warning on stderr (SAFE-07: an
-  # explicitly requested unavailable or failed lane is a visible failure, never a silent drop
+  # Unwrap the @file: overflow protocol (io.cjs writes a payload over 50000 chars to a temp
+  # file and returns its path instead) before parsing, exactly like the `INIT` handling above —
+  # otherwise a large multi-lane result (long detail/error strings) fails JSON.parse and every
+  # warning and evidence line below is silently discarded.
+  if [[ "$DISPATCH_JSON" == @file:* ]]; then
+    DISPATCH_JSON=$(cat "${DISPATCH_JSON#@file:}")
+  fi
+
+  # Whole-dispatch rejection (invalid paths, unsafe path escape, missing depth/base SHA, trait
+  # not enabled, nothing selected) returns results:[] and no selection.errors — reading only
+  # those two fields would silently swallow it. Check parsed.ok/parsed.reason FIRST so every
+  # rejection reason is reported, not just the per-lane failures below (SAFE-07).
+  #
+  # Each failed lane and each unresolved selection error is also a warning on stderr (SAFE-07:
+  # an explicitly requested unavailable or failed lane is a visible failure, never a silent drop
   # and never a raw-CLI fallback). Evidence lines (stdout) are only the lanes that actually
   # produced a review file.
   EVIDENCE_LIST=$(echo "$DISPATCH_JSON" | node -e "
@@ -614,7 +650,10 @@ elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
     process.stdin.on('data', (d) => { raw += d; });
     process.stdin.on('end', () => {
       let parsed;
-      try { parsed = JSON.parse(raw); } catch { parsed = { ok: false, results: [] }; }
+      try { parsed = JSON.parse(raw); } catch { parsed = { ok: false, reason: 'unparseable_dispatch_output', results: [] }; }
+      if (parsed.ok === false && parsed.reason && (!parsed.results || parsed.results.length === 0)) {
+        process.stderr.write(\`Warning: external reviewer dispatch rejected (\${parsed.reason}) — no lane ran (SAFE-07).\n\`);
+      }
       const results = parsed.results || [];
       for (const r of results) {
         if (!r.ok) {
@@ -642,32 +681,13 @@ Compute the review output path:
 REVIEW_PATH="${PHASE_DIR}/${PADDED_PHASE}-REVIEW.md"
 ```
 
-Compute DIFF_BASE for agent context (in case agent needs it). #3191/#3995: this
-must be the SAME phase-directory-anchor derivation the Tier-3 scope step uses —
-the reviewer agent consumes `diff_base` exactly
-when `files:` is empty, i.e. the same fail-closed scenario Tier 3 protects, so
-a divergent recomputation here re-arms the mis-scoping one tier down:
-```bash
-# #3995: a phase number is unique within a MILESTONE, not a repository. The
-# former message grep had no milestone bound, and its tail -1 deliberately
-# selected the OLDEST matching subject — dragging in previous milestones'
-# same-numbered phases and taking a 7-file phase to a 3388-file scope (plus
-# the >50 depth downgrade). The phase's own directory is the unique identity:
-# base = the parent of the first commit that added anything under PHASE_DIR
-# (the same anchor class git-base-branch's phaseStartCommit uses for
-# complexity triggering). Message subjects demonstrably do not carry enough
-# information to identify a phase — this was the grep's fifth failure.
-PHASE_START=$(git log --format="%H" --diff-filter=A -- "${PHASE_DIR}" 2>/dev/null | tail -1)
-if [ -n "$PHASE_START" ]; then
-  if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
-    DIFF_BASE="${PHASE_START}^"
-  else
-    DIFF_BASE="${PHASE_START}"
-  fi
-else
-  DIFF_BASE=""
-fi
-```
+`DIFF_BASE` for agent context (in case the agent needs it) is already set by `compute_file_scope`
+above — reuse it verbatim rather than re-deriving it here. #3191/#3995/#3661: this MUST be the
+SAME value the Tier-3 file-scope step and (#4209) the external reviewer-lane dispatch both use —
+the reviewer agent consumes `diff_base` exactly when `files:` is empty, i.e. the same fail-closed
+scenario Tier 3 protects, so a second, divergent recomputation here would silently re-arm the
+mis-scoping one tier down AND make the external lane review a different diff than the internal
+reviewer (a previously-latent bug #4209 made observable — see B3 in `.wolf/buglog.json`).
 
 Build required_reading block for agent:
 ```bash
@@ -764,6 +784,13 @@ Do NOT proceed to commit_review step. Do NOT create a partial or empty REVIEW.md
 After agent completes successfully, verify REVIEW.md was created and has valid structure:
 
 ```bash
+# #4209 R5: remove the reviewer-lane run dir now that the agent has read every evidence path it
+# cited (the agent ran to completion before this step, per `dispatch_reviewer_lanes` above) — a
+# no-op when no reviewer lane was dispatched (LANE_RUN_DIR stays unset).
+if [ -n "${LANE_RUN_DIR:-}" ]; then
+  rm -rf "$LANE_RUN_DIR"
+fi
+
 if [ -f "${REVIEW_PATH}" ]; then
   # Validate REVIEW.md has valid YAML frontmatter with status field
   HAS_STATUS=$(REVIEW_PATH="${REVIEW_PATH}" node -e "

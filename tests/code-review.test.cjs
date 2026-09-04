@@ -780,6 +780,68 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
       cleanup(tmpDir);
     }
   });
+
+  // --- #4209 R4: execute the actual EVIDENCE_LIST reducer extracted from the workflow, not a
+  // reimplementation of it, so a regression in the real markdown fails this test (see B1: the
+  // reducer must warn on parsed.ok===false, not just per-lane results[]/selection.errors). ---
+
+  function extractEvidenceReducer() {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    const startMarker = 'if [[ "$DISPATCH_JSON" == @file:* ]]; then';
+    const start = stepContent.indexOf(startMarker);
+    assert.ok(start !== -1, 'expected the EVIDENCE_LIST reducer in dispatch_reviewer_lanes');
+    const end = stepContent.indexOf('\n  ")', start);
+    assert.ok(end !== -1, 'unterminated EVIDENCE_LIST reducer fence');
+    return stepContent.slice(start, end + '\n  ")'.length);
+  }
+
+  function runReducer(dispatchJson) {
+    const script = `DISPATCH_JSON=${JSON.stringify(dispatchJson)}\n${extractEvidenceReducer()}\necho "$EVIDENCE_LIST"`;
+    const result = require('node:child_process').spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 15000 });
+    return { stdout: result.stdout, stderr: result.stderr, status: result.status };
+  }
+
+  test('EVIDENCE_LIST reducer warns on a whole-dispatch rejection (B1), not just per-lane failures', () => {
+    const { stdout, stderr } = runReducer(JSON.stringify({
+      dispatched: false, ok: false, reason: 'missing_provenance', results: [],
+    }));
+    assert.match(stderr, /external reviewer dispatch rejected \(missing_provenance\)/,
+      `expected a whole-dispatch rejection warning, got stderr: ${stderr}`);
+    assert.strictEqual(stdout.trim(), '', 'a rejected dispatch must produce no evidence lines');
+  });
+
+  test('EVIDENCE_LIST reducer still warns per-lane and still emits evidence for lanes that succeeded', () => {
+    const { stdout, stderr } = runReducer(JSON.stringify({
+      dispatched: true,
+      ok: false,
+      results: [
+        { slug: 'codex', ok: true, reviewPath: '/tmp/gsd-review-codex.md' },
+        { slug: 'agy', ok: false, reason: 'invoke_failed', detail: 'binary not found' },
+      ],
+    }));
+    assert.match(stderr, /external reviewer lane 'agy' failed \(invoke_failed: binary not found\)/,
+      `expected a per-lane failure warning, got stderr: ${stderr}`);
+    assert.strictEqual(stdout.trim(), '- codex: /tmp/gsd-review-codex.md',
+      'the lane that succeeded must still produce an evidence line');
+  });
+
+  test('EVIDENCE_LIST reducer unwraps the @file: overflow protocol (R1)', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const payloadPath = path.join(tmpDir, 'dispatch-result.json');
+      fs.writeFileSync(payloadPath, JSON.stringify({
+        dispatched: true, ok: true,
+        results: [{ slug: 'codex', ok: true, reviewPath: '/tmp/gsd-review-codex.md' }],
+      }));
+      const { stdout, stderr } = runReducer(`@file:${payloadPath}`);
+      assert.strictEqual(stdout.trim(), '- codex: /tmp/gsd-review-codex.md',
+        `expected the @file:-wrapped payload to be unwrapped and parsed, got stdout: ${stdout} stderr: ${stderr}`);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });
 
 // --- CR-INTEGRATION: workflow integration points ---
