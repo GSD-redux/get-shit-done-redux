@@ -105,14 +105,31 @@ function runPackageLockAudit(cwd) {
       break;
     } catch (e) {
       // `npm audit` exits non-zero when advisories are present; the JSON is
-      // still on stdout in that case. Recover and let the caller classify.
-      if (e && typeof e.stdout !== 'undefined' && e.stdout !== undefined && e.stdout !== null) {
-        out = Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout);
+      // still on stdout in that case. Recover and let the caller classify —
+      // but only when stdout actually CARRIES the JSON: an audit that was
+      // killed or aborted can exit non-zero with EMPTY stdout, and accepting
+      // the empty string here surfaces as a bare `SyntaxError: Unexpected
+      // end of JSON input` at the parse below, hiding the captured error
+      // (observed on CI 2026-09-03, both lanes; cause undetermined).
+      const recovered = e && typeof e.stdout !== 'undefined' && e.stdout !== null
+        ? (Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout))
+        : '';
+      if (recovered.trim()) {
+        out = recovered;
         lastErr = null;
         break;
       }
       lastErr = e;
     }
+  }
+  if (!out || !out.trim()) {
+    const detail = lastErr
+      ? [lastErr.stdout, lastErr.stderr, String(lastErr.message)].filter(Boolean).join('\n').slice(0, 500)
+      : '(no error captured)';
+    throw new Error(
+      `npm audit --json produced no output in ${cwd}. ` +
+        `Detail from the failed invocation:\n${detail}`
+    );
   }
   if (lastErr) throw lastErr;
   const parsed = JSON.parse(out);
