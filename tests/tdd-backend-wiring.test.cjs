@@ -241,12 +241,21 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   });
 
   test('both backends\' gsd_run query phase.tdd-applicable command-substitution calls are byte-identical', () => {
+    // #4268 Standards review: both real backend files also carry this exact
+    // substring inside an unrelated FATAL echo message a few lines after the
+    // real assignment line (`echo "FATAL: ... 'gsd_run query
+    // phase.tdd-applicable' failed. ..."`). A bare `.includes()` match
+    // happened to work only because `.find()` hits the assignment line
+    // first in document order. Anchor on `=$(` immediately before the call —
+    // only the real `..._RAW=$(gsd_run query phase.tdd-applicable ...)`
+    // assignment line has that shape; the FATAL message's `'gsd_run query
+    // phase.tdd-applicable' failed` is preceded by a quote, not `=$(`.
     const harnessLine = read(BACKENDS['execute-phase.md'].assignmentFile)
       .split('\n')
-      .find((l) => l.includes('gsd_run query phase.tdd-applicable'));
+      .find((l) => l.includes('=$(gsd_run query phase.tdd-applicable'));
     const worktreeLine = read(BACKENDS['executor-isolation-dispatch.md'].assignmentFile)
       .split('\n')
-      .find((l) => l.includes('gsd_run query phase.tdd-applicable'));
+      .find((l) => l.includes('=$(gsd_run query phase.tdd-applicable'));
     assert.ok(harnessLine, 'execute-phase.md backend must carry a gsd_run query phase.tdd-applicable call');
     assert.ok(worktreeLine, 'executor-isolation-dispatch.md backend must carry a gsd_run query phase.tdd-applicable call');
 
