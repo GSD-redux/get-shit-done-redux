@@ -14523,7 +14523,7 @@ describe('phase complete lowest-outstanding vs positional-last (#4078)', () => {
       2,
       `lowest outstanding phase 2 must be next_phase, not the positionally-last phase 18 (got ${output.next_phase})`,
     );
-    assert.match(String(output.next_phase_name), /python 3\.14 source and ci compatibility/i);
+    assert.match(String(output.next_phase_name), /python[- ]3\.14-source-and-ci-compatibility/i);
   });
 
   test('mixedGrammarStateMovesToPhaseTwo', () => {
@@ -14591,8 +14591,16 @@ describe('phase complete lowest-outstanding vs positional-last (#4078)', () => {
 
   test('dashGrammarLowerOutstandingWins', () => {
     // Row 5 (#2028 through the widened grammar): completing 5 with 3 still
-    // unchecked must fall BACK to the lowest outstanding phase 3.
+    // unchecked must fall BACK to the lowest outstanding phase 3. Phases 1, 2
+    // and 4 are checked so 3 is genuinely the lowest outstanding box.
     writeDashRoadmap();
+    const rp = roadmapPath();
+    let roadmap = fs.readFileSync(rp, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 1 — Bootstrap**', '- [x] **Phase 1 — Bootstrap**')
+      .replace('- [ ] **Phase 2 — Source Compat**', '- [x] **Phase 2 — Source Compat**')
+      .replace('- [ ] **Phase 4 — Release**', '- [x] **Phase 4 — Release**');
+    fs.writeFileSync(rp, roadmap);
     scaffoldPhase('03-packaging', 3);
     scaffoldPhase('05-docs-sweep', 5);
     writeExplicitState(5, 'Docs Sweep');
