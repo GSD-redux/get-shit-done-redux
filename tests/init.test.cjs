@@ -4688,29 +4688,23 @@ describe('init section manifest', () => {
       fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: workflowConfig }));
     }
 
-    test('newMilestoneResearchEnabledDefaultsTrue', () => {
+    test('newMilestoneResearchEnabledDefaultsTrue', (t) => {
       const dir = fs.realpathSync(createFixture());
-      try {
-        const result = runGsdTools('init new-milestone', dir);
-        assert.ok(result.success, `Command failed: ${result.error}`);
-        const body = JSON.parse(result.output);
-        assert.strictEqual(body.research_enabled, true, 'workflow.research defaults to true and must flow through to research_enabled');
-      } finally {
-        cleanup(dir);
-      }
+      t.after(() => cleanup(dir));
+      const result = runGsdTools('init new-milestone', dir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const body = JSON.parse(result.output);
+      assert.strictEqual(body.research_enabled, true, 'workflow.research defaults to true and must flow through to research_enabled');
     });
 
-    test('newMilestoneResearchEnabledReflectsWorkflowConfigFalse', () => {
+    test('newMilestoneResearchEnabledReflectsWorkflowConfigFalse', (t) => {
       const dir = fs.realpathSync(createFixture());
-      try {
-        writeWorkflowConfig(dir, { research: false });
-        const result = runGsdTools('init new-milestone', dir);
-        assert.ok(result.success, `Command failed: ${result.error}`);
-        const body = JSON.parse(result.output);
-        assert.strictEqual(body.research_enabled, false, 'workflow.research: false must flow through to research_enabled');
-      } finally {
-        cleanup(dir);
-      }
+      t.after(() => cleanup(dir));
+      writeWorkflowConfig(dir, { research: false });
+      const result = runGsdTools('init new-milestone', dir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const body = JSON.parse(result.output);
+      assert.strictEqual(body.research_enabled, false, 'workflow.research: false must flow through to research_enabled');
     });
 
     test('planPhaseResearchAndNyquistEnabledReflectWorkflowConfig', (t) => {

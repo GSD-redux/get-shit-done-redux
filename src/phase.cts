@@ -465,7 +465,7 @@ function cmdPhaseTddApplicable(cwd: string, args: string[], raw: boolean): void 
 
   const resolvedPath = path.isAbsolute(planPath) ? planPath : path.join(cwd, planPath);
   if (!fs.existsSync(resolvedPath)) {
-    error(`Plan file not found: ${planPath}`);
+    error(`Plan file not found: ${planPath}`, ERROR_REASON.PHASE_NOT_FOUND);
   }
 
   const cliFlagPresent = args.includes('--cli-flag');
