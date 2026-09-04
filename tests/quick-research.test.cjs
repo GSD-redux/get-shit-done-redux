@@ -117,77 +117,75 @@ describe('quick workflow: research step', () => {
     );
   });
 
-  test('research step spawns gsd-phase-researcher', () => {
+  test('research Agent uses researcher role bindings end to end', () => {
     content = expandWorkflowSections(workflowPath);
-    const researchSection = content.substring(
-      content.indexOf('Step 4.75'),
-      content.indexOf('Step 5:')
-    );
-    assert.ok(
-      researchSection.includes('subagent_type="gsd-phase-researcher"'),
-      'research step should spawn gsd-phase-researcher agent'
+    const researchStart = content.indexOf('Step 4.75');
+    const plannerStart = content.indexOf('Step 5:', researchStart);
+    assert.ok(researchStart !== -1, 'Step 4.75 anchor should exist');
+    assert.ok(plannerStart > researchStart, 'Step 5 should follow Step 4.75');
+
+    const researchSection = content.slice(researchStart, plannerStart);
+    const parseStart = content.indexOf('Parse JSON for:');
+    const parseEnd = content.indexOf('\n\n', parseStart);
+    assert.ok(parseStart !== -1, 'init parse-list anchor should exist');
+    assert.ok(parseEnd > parseStart, 'init parse list should be non-empty');
+    const parseList = content.slice(parseStart, parseEnd);
+
+    const agentStart = researchSection.indexOf('Agent(');
+    const agentEnd = researchSection.indexOf('\n)', agentStart);
+    assert.ok(agentStart !== -1, 'research Agent call should exist');
+    assert.ok(agentEnd > agentStart, 'research Agent payload should be non-empty');
+    const researchAgent = researchSection.slice(agentStart, agentEnd);
+
+    assert.deepStrictEqual(
+      {
+        hostSkillBinding: content.includes(
+          'AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)'
+        ),
+        modelParsed: parseList.includes('researcher_model'),
+        researcherPersona: researchAgent.includes('${AGENT_SKILLS_RESEARCHER}'),
+        researcherSubagent: researchAgent.includes('subagent_type="gsd-phase-researcher"'),
+        researcherModel: researchAgent.includes('model="{researcher_model}"'),
+        plannerPersona: researchAgent.includes('${AGENT_SKILLS_PLANNER}'),
+        plannerModel: researchAgent.includes('model="{planner_model}"'),
+      },
+      {
+        hostSkillBinding: true,
+        modelParsed: true,
+        researcherPersona: true,
+        researcherSubagent: true,
+        researcherModel: true,
+        plannerPersona: false,
+        plannerModel: false,
+      }
     );
   });
 
-  test('research step injects the researcher persona, not the planner persona', () => {
-    // #3936: the dispatch targets gsd-phase-researcher, so the persona riding the
-    // prompt and the model tier must be the researcher's own — not the planner's.
+  test('executor dispatch keeps its own persona', () => {
     content = expandWorkflowSections(workflowPath);
-    const researchSection = content.substring(
-      content.indexOf('Step 4.75'),
-      content.indexOf('Step 5:')
-    );
-    assert.ok(
-      researchSection.includes('${AGENT_SKILLS_RESEARCHER}'),
-      'research step should inject the gsd-phase-researcher persona'
-    );
-    assert.ok(
-      !researchSection.includes('${AGENT_SKILLS_PLANNER}'),
-      'research step must not inject the planner persona into a researcher dispatch'
-    );
-    assert.ok(
-      researchSection.includes('model="{researcher_model}"'),
-      'research step should pin the researcher model tier, not planner_model'
-    );
-  });
+    const executorStart = content.indexOf('Step 6: Spawn executor');
+    const reviewStart = content.indexOf('Step 6.25', executorStart);
+    assert.ok(executorStart !== -1, 'Step 6 executor anchor should exist');
+    assert.ok(reviewStart > executorStart, 'Step 6.25 should follow the executor');
 
-  test('quick workflow resolves the researcher persona', () => {
-    // #3936: AGENT_SKILLS_RESEARCHER must be resolved in quick.md's Step 2 block,
-    // the way plan-phase.md does, or the Step 4.75 interpolation expands empty.
-    const quickMd = fs.readFileSync(path.join(WORKFLOWS_DIR, 'quick.md'), 'utf8');
-    assert.ok(
-      quickMd.includes('AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)'),
-      'quick.md should resolve AGENT_SKILLS_RESEARCHER from agent-skills'
-    );
-  });
+    const executorSection = content.slice(executorStart, reviewStart);
+    const agentStart = executorSection.indexOf('Agent(');
+    const agentEnd = executorSection.indexOf('\n)', agentStart);
+    assert.ok(agentStart !== -1, 'executor Agent call should exist');
+    assert.ok(agentEnd > agentStart, 'executor Agent payload should be non-empty');
+    const executorAgent = executorSection.slice(agentStart, agentEnd);
 
-  test('quick workflow parses researcher_model from init quick', () => {
-    const quickMd = fs.readFileSync(path.join(WORKFLOWS_DIR, 'quick.md'), 'utf8');
-    const parseList = quickMd.substring(
-      quickMd.indexOf('Parse JSON for:'),
-      quickMd.indexOf('```', quickMd.indexOf('Parse JSON for:'))
-    );
-    assert.ok(
-      parseList.includes('researcher_model'),
-      'quick.md parse list should include researcher_model'
-    );
-  });
-
-  test('planner and executor dispatches keep their own personas', () => {
-    // Negative space: #3936 touches only the research dispatch — the planner and
-    // executor spawns must keep their own personas and model tiers.
-    content = expandWorkflowSections(workflowPath);
-    const plannerSection = content.substring(
-      content.indexOf('Step 5: Spawn planner'),
-      content.indexOf('Step 5.5')
-    );
-    assert.ok(
-      plannerSection.includes('${AGENT_SKILLS_PLANNER}'),
-      'planner dispatch should still inject the planner persona'
-    );
-    assert.ok(
-      content.includes('${AGENT_SKILLS_EXECUTOR}'),
-      'executor dispatch should still inject the executor persona'
+    assert.deepStrictEqual(
+      {
+        executorPersona: executorAgent.includes('${AGENT_SKILLS_EXECUTOR}'),
+        plannerPersona: executorAgent.includes('${AGENT_SKILLS_PLANNER}'),
+        researcherPersona: executorAgent.includes('${AGENT_SKILLS_RESEARCHER}'),
+      },
+      {
+        executorPersona: true,
+        plannerPersona: false,
+        researcherPersona: false,
+      }
     );
   });
 
