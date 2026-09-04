@@ -14,8 +14,8 @@
  *   2. Routes existing command families distinctly: code review, docs
  *      update, plan review, audit, UI review, security, SDD phase
  *      execution, and multi-phase (roadmap phase CRUD) management.
- *   3. Confirms the displayed route before dispatch (REQ-DO-03 of
- *      docs/features/freeform-routing.md), with a TEXT_MODE equivalent.
+ *   3. Confirms the displayed route before dispatch (REQ-DO-03 of the
+ *      freeform-routing feature requirements), with a TEXT_MODE equivalent.
  *   4. Forwards only arguments the selected command accepts.
  *
  * Also validates that the command frontmatter descriptions distinguish
