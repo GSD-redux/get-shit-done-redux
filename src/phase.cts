@@ -448,6 +448,62 @@ function cmdPhaseMvpMode(cwd: string, args: string[], raw: boolean): void {
   );
 }
 
+/**
+ * `phase.tdd-applicable <plan-file> [--cli-flag]` (#4273, Phase 1 of epic
+ * #4272) — resolves whether the TDD RED/GREEN/REFACTOR gate applies to a
+ * given plan, in strict precedence order: an explicit `--cli-flag` wins over
+ * the plan's own `type: tdd` frontmatter, which wins over any task in the
+ * plan carrying `tdd="true"` (the #4265 mixed-mode shape), which wins over
+ * the project-wide `workflow.tdd_mode` config default. Mirrors
+ * `cmdPhaseMvpMode`'s precedence-cascade shape immediately above.
+ */
+function cmdPhaseTddApplicable(cwd: string, args: string[], raw: boolean): void {
+  const planPath = args[0];
+  if (!planPath) {
+    error('Usage: phase.tdd-applicable <plan-file> [--cli-flag]', ERROR_REASON.USAGE);
+  }
+
+  const resolvedPath = path.isAbsolute(planPath) ? planPath : path.join(cwd, planPath);
+  if (!fs.existsSync(resolvedPath)) {
+    error(`Plan file not found: ${planPath}`);
+  }
+
+  const cliFlagPresent = args.includes('--cli-flag');
+  const content = fs.readFileSync(resolvedPath, 'utf-8');
+  const doc = parsePlanDocument(content, resolvedPath);
+  const planType = doc.type;
+  const taskTddAttribute = doc.tasks.some((t) => t.tdd === 'true');
+  const config = loadConfig(cwd);
+  const configTddMode = Boolean(config.tdd_mode);
+
+  let applicable = false;
+  let source = 'none';
+  if (cliFlagPresent) {
+    applicable = true;
+    source = 'cli_flag';
+  } else if (planType === 'tdd') {
+    applicable = true;
+    source = 'plan_frontmatter';
+  } else if (taskTddAttribute) {
+    applicable = true;
+    source = 'task_attribute';
+  } else if (configTddMode) {
+    applicable = true;
+    source = 'config';
+  }
+
+  output(
+    {
+      applicable,
+      source,
+      plan_type: planType,
+      config_tdd_mode: configTddMode,
+      cli_flag_present: cliFlagPresent,
+    },
+    raw,
+  );
+}
+
 function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
   if (!phase) {
     error('phase identifier required');
@@ -4520,6 +4576,7 @@ export = {
   cmdPhaseAdd,
   cmdPhaseAddBatch,
   cmdPhaseMvpMode,
+  cmdPhaseTddApplicable,
   cmdPhaseInsert,
   cmdPhaseRemove,
   cmdPhaseComplete,

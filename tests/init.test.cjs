@@ -4612,6 +4612,123 @@ describe('init section manifest', () => {
     });
   });
 
+  describe('init tdd_mode: workflow.tdd_mode config flows through loadConfig (#4273 defect fix)', () => {
+    // Regression test for a pre-existing defect fixed alongside #4273's
+    // `phase.tdd-applicable` work: `loadConfig()` (src/config-loader.cts)
+    // had no flattened `tdd_mode` field, so every `(config.workflow ?? {})`
+    // call site in this file always read `{}` — `workflow.tdd_mode` set in
+    // `.planning/config.json` silently never reached `cmdInitExecutePhase`,
+    // `cmdInitPlanPhase`, or `cmdInitDebug`'s `tdd_mode` output field, despite
+    // `workflow.tdd_mode` being a documented config contract
+    // (gsd-core/references/tdd.md). `loadConfig()` now flattens
+    // `workflow.tdd_mode` onto `config.tdd_mode` — mirroring the existing
+    // `workflow.mvp_mode` -> `config.mvp_mode` pattern — and all three call
+    // sites read `config.tdd_mode` directly instead of the dead `wf['tdd_mode']`
+    // lookup. Before the fix, every assertion below would have failed
+    // (`body.tdd_mode` would read `false` regardless of the config value).
+    function writeWorkflowConfig(dir, workflowConfig) {
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: workflowConfig }));
+    }
+
+    test('executePhaseTddModeReflectsWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-exec-');
+      writeWorkflowConfig(dir, { tdd_mode: true });
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'tdd-exec');
+      assert.equal(body.tdd_mode, true, 'workflow.tdd_mode: true must flow through to the tdd_mode output field');
+    });
+
+    test('executePhaseTddModeFalseWhenConfigAbsent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-exec-absent-');
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'tdd-exec-absent');
+      assert.equal(body.tdd_mode, false);
+    });
+
+    test('planPhaseTddModeReflectsWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-plan-');
+      writeWorkflowConfig(dir, { tdd_mode: true });
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'tdd-plan');
+      assert.equal(body.tdd_mode, true, 'workflow.tdd_mode: true must flow through to the tdd_mode output field');
+    });
+
+    test('planPhaseTddModeFalseWhenConfigAbsent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-plan-absent-');
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'tdd-plan-absent');
+      assert.equal(body.tdd_mode, false);
+    });
+
+    test('debugTddModeReflectsWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-debug-');
+      writeWorkflowConfig(dir, { tdd_mode: true });
+      const body = parseOkJson(runSectionManifestCli(['init.debug'], dir), 'tdd-debug');
+      assert.equal(body.tdd_mode, true, 'workflow.tdd_mode: true must flow through to the tdd_mode output field');
+    });
+
+    test('debugTddModeFalseWhenConfigFalse', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-debug-false-');
+      writeWorkflowConfig(dir, { tdd_mode: false });
+      const body = parseOkJson(runSectionManifestCli(['init.debug'], dir), 'tdd-debug-false');
+      assert.equal(body.tdd_mode, false);
+    });
+  });
+
+  describe('init research_enabled/nyquist_validation_enabled: workflow.research + workflow.nyquist_validation config flow through loadConfig (#4273 defect fix)', () => {
+    // Regression test for the same dead-accessor class as the tdd_mode block
+    // above, found while fixing it: `cmdInitNewMilestone`'s `research_enabled`
+    // and `cmdInitPlanPhase`'s `research_enabled` / `nyquist_validation_enabled`
+    // all read through `(config.workflow ?? {})` (`wf`), which `loadConfig()`
+    // never populates — so all three fields were ALWAYS `undefined`,
+    // regardless of `.planning/config.json`. `loadConfig()` already flattens
+    // `workflow.research` -> `config.research` and `workflow.nyquist_validation`
+    // -> `config.nyquist_validation` (both default `true` when unset — see
+    // gsd-core/bin/shared/config-defaults.manifest.json); these call sites now
+    // read the flattened fields directly instead of the dead `wf[...]` lookup.
+    // Before the fix, every assertion below would have failed (`undefined`
+    // regardless of config, dropped entirely from the JSON output).
+    function writeWorkflowConfig(dir, workflowConfig) {
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: workflowConfig }));
+    }
+
+    test('newMilestoneResearchEnabledDefaultsTrue', () => {
+      const dir = fs.realpathSync(createFixture());
+      try {
+        const result = runGsdTools('init new-milestone', dir);
+        assert.ok(result.success, `Command failed: ${result.error}`);
+        const body = JSON.parse(result.output);
+        assert.strictEqual(body.research_enabled, true, 'workflow.research defaults to true and must flow through to research_enabled');
+      } finally {
+        cleanup(dir);
+      }
+    });
+
+    test('newMilestoneResearchEnabledReflectsWorkflowConfigFalse', () => {
+      const dir = fs.realpathSync(createFixture());
+      try {
+        writeWorkflowConfig(dir, { research: false });
+        const result = runGsdTools('init new-milestone', dir);
+        assert.ok(result.success, `Command failed: ${result.error}`);
+        const body = JSON.parse(result.output);
+        assert.strictEqual(body.research_enabled, false, 'workflow.research: false must flow through to research_enabled');
+      } finally {
+        cleanup(dir);
+      }
+    });
+
+    test('planPhaseResearchAndNyquistEnabledReflectWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-research-plan-');
+      writeWorkflowConfig(dir, { research: false, nyquist_validation: false });
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'research-plan');
+      assert.strictEqual(body.research_enabled, false, 'workflow.research: false must flow through to research_enabled');
+      assert.strictEqual(body.nyquist_validation_enabled, false, 'workflow.nyquist_validation: false must flow through to nyquist_validation_enabled');
+    });
+
+    test('planPhaseResearchAndNyquistEnabledDefaultTrueWhenConfigAbsent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-research-plan-absent-');
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'research-plan-absent');
+      assert.strictEqual(body.research_enabled, true);
+      assert.strictEqual(body.nyquist_validation_enabled, true);
+    });
+  });
+
   // ── Row 62: stub <execution_context> @-refs still resolve (ADR-0002) ────
 
   describe('commands/gsd/execute-phase.md: <execution_context> @-refs resolve (#2932 row 62)', () => {
