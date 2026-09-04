@@ -297,6 +297,14 @@ test('every installable runtime accepts a configured MCP grant without crashing 
   // not `install.configDir`: a nested-home runtime (e.g. antigravity) places
   // agents in a sibling directory outside its own configDir subtree.
   const NO_SUBAGENT_TOOLKIT = new Set(['pi']); // programmatic dispatch, no named-dispatch agent files
+  // Runtimes empirically verified (see PR #4238 remediation) to pass an
+  // arbitrary mcp__ grant through recognizably — either verbatim or via
+  // Kilo's {server}_{tool} transform. Every other runtime filters unknown
+  // tool names through its own built-in vocabulary (a legitimate, unrelated
+  // per-runtime design choice, not an agent_tools omission) and is checked
+  // for a clean, non-crashing install only. This is an allowlist, not a
+  // guess-based omit-list, so it can't silently drift as runtimes are added.
+  const GRANT_SURVIVES_RECOGNIZABLY = new Set(['claude', 'codex', 'copilot', 'hermes', 'kimi-code', 'kilo', 'qwen']);
   for (const runtime of Object.keys(RUNTIME_META)) {
     if (NO_SUBAGENT_TOOLKIT.has(runtime)) continue;
     const install = installRuntime(t, runtime, {
@@ -305,6 +313,9 @@ test('every installable runtime accepts a configured MCP grant without crashing 
     });
     const artifacts = emittedAgentArtifacts(install, 'gsd-executor', install.home);
     assert.ok(artifacts.every((artifact) => artifact.length > 0), `${runtime} must emit non-empty gsd-executor artifact(s)`);
+    if (!GRANT_SURVIVES_RECOGNIZABLY.has(runtime)) continue;
+    assert.ok(artifacts.some((artifact) => artifact.includes('mcp__smoke__probe') || artifact.includes('smoke_probe')),
+      `${runtime} must carry the configured grant (raw or Kilo-style transformed) — this must fail if agent_tools is reverted`);
   }
 });
 
@@ -425,6 +436,52 @@ test('appendAgentTools does not tear a quoted scalar containing a literal comma 
   const once = appendAgentTools(frontmatter, ['Write']);
   assert.match(once, /^tools: Read, "mcp__x, y", Write$/m,
     'the quoted scalar must survive intact and Write must be appended once');
+  const twice = appendAgentTools(once, ['Write']);
+  assert.strictEqual(twice, once, 'reapplying the same grant must be a no-op (Write not duplicated)');
+});
+
+test('appendAgentTools does not corrupt a quoted scalar containing a literal #(#4032)', () => {
+  // Regression found in PR #4238 remediation: the comment-index scan was not
+  // quote-aware, so a `#` inside a quoted scalar (e.g. "mcp__server #1") was
+  // mistaken for the start of a trailing YAML comment, splitting the quote in
+  // half and producing invalid syntax.
+  const frontmatter = '---\ntools: "mcp__server #1", Read\n---\n';
+  const once = appendAgentTools(frontmatter, ['Write']);
+  assert.match(once, /^tools: "mcp__server #1", Read, Write$/m,
+    'the quoted scalar must survive intact and Write must be appended once');
+});
+
+test('appendAgentTools recognizes an existing block item with a trailing comment (no duplicate) (#4032)', () => {
+  // Regression found in PR #4238 remediation: decodeToolScalar did not strip
+  // a trailing ` # note` from a bare block-list item, so `- Read # note`
+  // decoded to `'Read # note'` — `present.has('Read')` then missed, and a
+  // second `- "Read"` item was inserted alongside the original.
+  const frontmatter = '---\ntools:\n  - Read # note\n---\n';
+  const once = appendAgentTools(frontmatter, ['Read', 'Write']);
+  assert.doesNotMatch(once, /- "Read"/, 'Read must not be duplicated as a new quoted item');
+  assert.match(once, /^ {2}- Read # note$/m, 'the original commented item must survive untouched');
+  assert.match(once, /^ {2}- "Write"$/m, 'the genuinely new grant must still be appended');
+});
+
+test('parseFrontmatterTools (Qwen conversion) does not silently drop a block list under a comment-only header (#4032)', () => {
+  // Sibling of the appendAgentTools fix (finding 4): parseFrontmatterTools's
+  // own comment-only-header check (`if (value) {...}` treated `# note` as
+  // truthy content instead of falling through to `collecting = true`) is a
+  // separate parser reached by Kimi and Qwen conversion, downstream of
+  // appendAgentTools's own output.
+  const agent = '---\nname: gsd-executor\ndescription: test\ntools: # note\n  - Read\n  - Write\n---\nbody\n';
+  const qwen = convertClaudeAgentToQwenAgent(agent);
+  assert.match(qwen, /- Read/);
+  assert.match(qwen, /- Write/);
+});
+
+test('parseFrontmatterTools (Qwen conversion) does not tear a quoted scalar containing a literal comma (#4032)', () => {
+  const agent = appendAgentTools(
+    '---\nname: gsd-executor\ndescription: test\ntools: Read, "mcp__x, y"\n---\nbody\n',
+    [],
+  );
+  const qwen = convertClaudeAgentToQwenAgent(agent);
+  assert.match(qwen, /- "mcp__x, y"/, 'the quoted scalar must survive as one tool, not torn on its internal comma');
 });
 
 test('ZCode strips an undecodable mcp__ scalar instead of keeping it (fail-closed) (#4032)', () => {
@@ -438,4 +495,16 @@ test('ZCode strips an undecodable mcp__ scalar instead of keeping it (fail-close
   const block = '---\ntools:\n  - Read\n  - "mcp__server__tool\n---\n';
   assert.doesNotMatch(convertClaudeAgentToZcodeAgent(block), /mcp__/,
     'an undecodable block-list scalar must not survive ZCode conversion');
+});
+
+test('ZCode strips a block-list mcp__ item under a comment-only tools: header (#4032)', () => {
+  // Regression found in PR #4238 remediation: a `tools: # comment` header line
+  // matched the INLINE-value regex (comment text treated as content), so the
+  // block-list scan below it never ran and `mcp__server__tool` leaked through
+  // verbatim — breaking ZCode's "never emit mcp__*" invariant.
+  const content = '---\ntools: # comment-only header\n  - Read\n  - mcp__server__tool\n---\n';
+  const converted = convertClaudeAgentToZcodeAgent(content);
+  assert.doesNotMatch(converted, /mcp__/, 'mcp__server__tool must be stripped, not leaked through');
+  assert.match(converted, /^tools: # comment-only header$/m, 'the comment-only header line must survive untouched');
+  assert.match(converted, /^ {2}- Read$/m, 'the non-mcp__ item must be kept');
 });

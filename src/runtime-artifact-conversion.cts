@@ -717,6 +717,24 @@ function splitToolScalars(text: string): string[] {
   return parts;
 }
 
+/** Index of the first unquoted `[ \t]#` (comment start), or -1. Unlike `String#search`, ignores a match inside a quoted scalar (`"mcp__server #1"` has no comment). */
+function findUnquotedCommentIndex(text: string): number {
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if ((ch === ' ' || ch === '\t') && text[i + 1] === '#') return i;
+  }
+  return -1;
+}
+
 /** Normalize one complete frontmatter tool scalar through the shared YAML parser. */
 function decodeToolScalar(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -731,7 +749,13 @@ function decodeToolScalar(raw: unknown): string | null {
     }
   }
   if (value.endsWith('"') || value.endsWith("'")) return null;
-  return value;
+  // A bare (unquoted) scalar may carry a trailing `  # comment` (YAML requires
+  // whitespace before `#` to start a comment) — every caller here passes a
+  // single already-comma-split token, never the whole `tools:` line, so this
+  // is safe to strip unconditionally rather than pushing the concern onto
+  // each call site.
+  const commentIndex = value.search(/[ \t]#/);
+  return commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
 }
 
 /** Append validated canonical grants without reserializing unrelated frontmatter. */
@@ -747,7 +771,7 @@ function appendAgentTools(content: string, grants: string[]): string {
 
   const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
   if (!toolsMatch) return content;
-  const commentIndex = toolsMatch[1].search(/[ \t]#/);
+  const commentIndex = findUnquotedCommentIndex(toolsMatch[1]);
   let inlineValue = commentIndex === -1 ? toolsMatch[1] : toolsMatch[1].slice(0, commentIndex);
   let inlineComment = commentIndex === -1 ? '' : toolsMatch[1].slice(commentIndex);
   // A header that is ONLY a comment (`tools: # note`) has no leading space in
@@ -827,8 +851,11 @@ function parseFrontmatterTools(frontmatter) {
 
     if (trimmed.startsWith('tools:') || trimmed.startsWith('allowed-tools:')) {
       const value = trimmed.slice(trimmed.indexOf(':') + 1).trim();
-      if (value) {
-        for (const tool of value.split(',')) {
+      // A comment-only value (`tools: # note`) has no real inline content —
+      // fall through to the block-list scan below instead of decoding the
+      // comment text as a bogus tool name and silently dropping the list.
+      if (value && !value.startsWith('#')) {
+        for (const tool of splitToolScalars(value)) {
           const name = decodeToolScalar(tool);
           if (name !== null) tools.push(name);
         }
@@ -2687,7 +2714,12 @@ function convertClaudeAgentToZcodeAgent(content) {
   while (i < fmEnd) {
     const line = lines[i];
     const inlineTools = /^tools:[ \t]*(.+)$/.exec(line);
-    if (inlineTools) {
+    // A header that is ONLY a comment (`tools: # note`) is not real inline
+    // content — fall through to the block-list scan below instead of
+    // matching here, or a following block list's mcp__* items never get
+    // scanned and leak through unstripped.
+    const commentOnlyHeader = inlineTools !== null && inlineTools[1].trim().startsWith('#');
+    if (inlineTools && !commentOnlyHeader) {
       const grants = splitToolScalars(inlineTools[1]).map((tool) => tool.trim()).filter((tool) => tool !== '');
       const kept = grants.filter((tool) => zcodeKeepsGrant(tool));
       if (kept.length === grants.length) {
@@ -2701,7 +2733,7 @@ function convertClaudeAgentToZcodeAgent(content) {
       i++;
       continue;
     }
-    if (/^tools:[ \t]*$/.test(line)) {
+    if (/^tools:[ \t]*$/.test(line) || commentOnlyHeader) {
       // Block-list form: collect the following `- item` lines.
       const items = [];
       let j = i + 1;
