@@ -64,19 +64,28 @@ test('a hook already registered under a stale command is still tracked for valid
       configuredEntrypoints: first.configuredEntrypoints,
     });
 
-    // Simulate an entry registered by an older installer: rewrite the
-    // check-update hook's persisted command to something the current
-    // installer would never emit, while keeping the hook NAME referenced so
-    // `hasGsdUpdateHook` still finds it and applySettingsJsonHooks takes its
-    // register-only-if-absent branch on the next install (never rewriting it).
+    // Simulate an entry registered by an older installer under a DIFFERENT
+    // node install (e.g. an nvm switch, #4087/#4098/#4137): same real
+    // scriptPath under <configDir>/hooks/ (that never changes across
+    // installer versions) and still shaped as the modern runtime-resolving
+    // chain (rewriteLegacyManagedNodeHookCommands deliberately never touches
+    // an already-current-format entry — #3662), but baked with a node path
+    // this install would never produce. `hasGsdUpdateHook` still finds it and
+    // applySettingsJsonHooks takes its register-only-if-absent branch on the
+    // next install (never rewriting it).
     const onDisk = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8'));
     const staleEntry = (onDisk.hooks.SessionStart || []).find(entry =>
       entry.hooks && entry.hooks.some(h => h.command && h.command.includes('gsd-check-update.js'))
     );
     assert.ok(staleEntry, 'a fresh install must register the check-update hook');
+    const staleCommand = hooksSurface.buildHookCommand(first.configDir, 'gsd-check-update.js', {
+      execPath: '/old/nvm/pinned/node',
+      platform: process.platform,
+      runtime: 'claude',
+    });
     for (const h of staleEntry.hooks) {
       if (h.command && h.command.includes('gsd-check-update.js')) {
-        h.command = 'node /stale/path/from/an/older/install/gsd-check-update.js';
+        h.command = staleCommand;
       }
     }
     fs.writeFileSync(first.settingsPath, JSON.stringify(onDisk, null, 2));
@@ -102,12 +111,35 @@ test('configured entrypoint validation aggregates file and interpreter failures 
   const directory = path.join(root, 'directory');
   fs.mkdirSync(directory);
 
+  const unreadablePath = path.join(root, 'unreadable.js');
+  const notExecutablePath = path.join(root, 'not-executable.js');
+
   const result = hooksSurface.validateConfiguredEntrypoints([
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: path.join(root, 'missing.js') },
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: directory },
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: __filename, interpreterCandidates: ['missing-node'] },
+    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: unreadablePath },
+    // #4249: no interpreterCandidates means this entry is invoked directly via
+    // its own shebang (e.g. Cline's PreToolUse hook) — must itself be +x.
+    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: notExecutablePath },
   ], {
     resolveExecutableBinary: () => null,
+    statSync: (p) => {
+      if (p === unreadablePath) {
+        const err = new Error('EACCES: permission denied');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return fs.statSync(p === notExecutablePath ? __filename : p);
+    },
+    accessSync: (p, mode) => {
+      if (p === notExecutablePath) {
+        const err = new Error('EACCES: permission denied');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return fs.accessSync(p, mode);
+    },
   });
 
   assert.equal(result.ok, false);
@@ -115,6 +147,8 @@ test('configured entrypoint validation aggregates file and interpreter failures 
     ['script', 'missing'],
     ['script', 'wrong-file-type'],
     ['interpreter', 'unresolved-interpreter'],
+    ['script', 'unreadable'],
+    ['script', 'not-executable'],
   ]);
 });
 
@@ -170,6 +204,16 @@ test('runtime config writers expose the exact configured entrypoints they emit',
   });
   assert.equal(kimi.configuredEntrypoints.length, kimi.entryCount);
   assert.ok(kimi.configuredEntrypoints.every(entry => entry.configPath === kimiConfig));
+
+  const clineRoot = path.join(root, 'cline');
+  const cline = hooksSurface.writeClineArtifacts(clineRoot, false);
+  assert.deepEqual(
+    cline.configuredEntrypoints.map(entry => path.basename(entry.scriptPath)),
+    ['PreToolUse'],
+  );
+  // #4249: Cline's hook self-executes via shebang — no interpreterCandidates
+  // to check, so validateConfiguredEntrypoints must check its execute bit.
+  assert.ok(!('interpreterCandidates' in cline.configuredEntrypoints[0]));
 
   const portable = [];
   assert.ok(hooksSurface.buildHookCommand(root, 'gsd-context-monitor.js', {

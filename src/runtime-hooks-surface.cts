@@ -1470,8 +1470,13 @@ function configuredEntrypointsForHook(
     return [{ ...target, interpreterCandidates: [bash === null ? 'bash' : bash] }];
   }
 
+  // #4249: check the SAME stable alias buildNodeRunnerChainToken bakes as its
+  // first candidate (normalizeNodePath rewrites a version-manager shim like
+  // fnm/nvm/mise/volta into its persistent path), not the raw, currently-
+  // running process.execPath — which always trivially resolves regardless of
+  // whether the alias actually baked into the persisted command still does.
   const nodeCandidates = [
-    opts.execPath || process.execPath,
+    normalizeNodePath(opts.execPath || process.execPath, opts),
     'node',
     '/usr/local/bin/node',
     '/usr/bin/node',
@@ -1707,8 +1712,9 @@ function mergeGsdAgentsMd(filePath: string, gsdContent: string): void {
 // writeClineArtifacts
 // ---------------------------------------------------------------------------
 
-function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): string[] {
+function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): { written: string[]; configuredEntrypoints: ConfiguredEntrypoint[] } {
   const written: string[] = [];
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
   const clinerulesDir = path.join(targetDir, '.clinerules');
 
   try {
@@ -1733,6 +1739,10 @@ function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): strin
   try { fs.chmodSync(hookPath, 0o755); } catch { /* Windows: hooks unsupported anyway */ }
   written.push('.clinerules/hooks/PreToolUse');
   console.log(`  ${green}✓${reset} Wrote .clinerules/hooks/PreToolUse`);
+  // #4249: Cline invokes this file directly via its own shebang — no
+  // interpreterCandidates, so validateConfiguredEntrypoints checks it's
+  // executable instead of resolving a runner for it.
+  configuredEntrypoints.push({ runtime: 'cline', configPath: hookPath, scriptPath: hookPath, platform: process.platform });
 
   if (isGlobalInstall) {
     try {
@@ -1744,7 +1754,7 @@ function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): strin
     }
   }
 
-  return written;
+  return { written, configuredEntrypoints };
 }
 
 // ---------------------------------------------------------------------------
@@ -3347,7 +3357,7 @@ function referencesHook(h: Record<string, unknown>, hookName: string): boolean {
     (typeof url === 'string' && url.includes(hookName));
 }
 
-type ConfiguredEntrypointFailureReason = 'missing' | 'unreadable' | 'wrong-file-type' | 'unresolved-interpreter';
+type ConfiguredEntrypointFailureReason = 'missing' | 'unreadable' | 'wrong-file-type' | 'unresolved-interpreter' | 'not-executable';
 
 interface ConfiguredEntrypoint {
   runtime: string;
@@ -3372,15 +3382,18 @@ type ConfiguredEntrypointValidationResult =
 
 function validateConfiguredEntrypoints(
   entries: ConfiguredEntrypoint[],
-  deps: { statSync?: typeof fs.statSync; resolveExecutableBinary?: typeof resolveExecutableBinary } = {},
+  deps: { statSync?: typeof fs.statSync; accessSync?: typeof fs.accessSync; resolveExecutableBinary?: typeof resolveExecutableBinary } = {},
 ): ConfiguredEntrypointValidationResult {
   const statSync = deps.statSync ?? fs.statSync;
+  const accessSync = deps.accessSync ?? fs.accessSync;
   const resolve = deps.resolveExecutableBinary ?? resolveExecutableBinary;
   const invalid: ConfiguredEntrypointInvalid[] = [];
 
   for (const entry of entries) {
+    let scriptOk = false;
     try {
-      if (!statSync(entry.scriptPath).isFile()) {
+      scriptOk = statSync(entry.scriptPath).isFile();
+      if (!scriptOk) {
         invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'wrong-file-type' });
       }
     } catch (statErr) {
@@ -3388,6 +3401,17 @@ function validateConfiguredEntrypoints(
       // a real (if rare) permission problem, distinct from ENOENT's "missing".
       const reason = (statErr as NodeJS.ErrnoException)?.code === 'EACCES' ? 'unreadable' : 'missing';
       invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
+    }
+    // #4249: an entry with no interpreterCandidates runs via its own shebang
+    // (e.g. Cline's PreToolUse hook, or a Windows-Claude .sh hook that omits
+    // the bash runner) — nothing else resolves an interpreter for it, so it
+    // must itself carry the execute bit.
+    if (scriptOk && !entry.interpreterCandidates) {
+      try {
+        accessSync(entry.scriptPath, fs.constants.X_OK);
+      } catch {
+        invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'not-executable' });
+      }
     }
     if (entry.interpreterCandidates && !entry.interpreterCandidates.some(candidate =>
       resolve(candidate, { platform: entry.platform, requireExecutable: true }) !== null,
