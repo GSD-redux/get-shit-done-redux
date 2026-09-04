@@ -1944,6 +1944,11 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     //
     // `>` is strict, so `12 of 12` is in range and still reaches `last_plan`, and the
     // all-superseded `5 of 8` still advances.
+    //
+    // Since #4067 the past-the-total half of this check (`10 of 8`, `20 of 12`) is
+    // REPORTED rather than refused — those positions sit on the completion branch,
+    // and the gate comment above says who decides there. `currentPlan < 1` is on
+    // the increment branch and is still a refusal.
     const rangeDiverged = currentPlan < 1 || currentPlan > totalPlans;
 
     if (totalDiverged || rangeDiverged) {
