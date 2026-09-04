@@ -327,3 +327,49 @@ __t3130('bug #3130: update.md has exactly two robust resolved-install invocation
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #4153 review nit: update.md's PREFERRED_RUNTIME prose table and
+// src/update-context.cts's RUNTIME_DIRS constant are two independently
+// maintained representations of the same runtime -> dir mapping. Nothing
+// enforced they stay in sync; this parity check does.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { test: __t4153parity } = require('node:test');
+  const assert4153parity = require('node:assert/strict');
+  const path4153parity = require('node:path');
+  const fs4153parity = require('node:fs');
+  const { RUNTIME_DIRS: RUNTIME_DIRS_4153 } = require(
+    path4153parity.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'update-context.cjs'),
+  );
+  const { splitLines: splitLines4153parity } = require('../gsd-core/bin/lib/text-lines.cjs');
+
+  __t4153parity('update.md PREFERRED_RUNTIME table matches RUNTIME_DIRS', () => {
+    const src = fs4153parity.readFileSync(
+      path4153parity.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md'),
+      'utf8',
+    );
+    const line = splitLines4153parity(src).find((l) => l.includes('Infer `PREFERRED_RUNTIME` from the path'));
+    assert4153parity.ok(line, 'PREFERRED_RUNTIME inference line must exist');
+
+    // Each clause: one or more backtick-quoted `/dir/` tokens, `->`, a
+    // backtick-quoted runtime name. The trailing "otherwise leave it empty"
+    // clause has no `->` and is intentionally skipped.
+    const docPairs = new Set();
+    for (const clause of line.split(';')) {
+      const arrow = clause.indexOf('->');
+      if (arrow === -1) continue;
+      const dirs = [...clause.slice(0, arrow).matchAll(/`\/([^`]+)\/`/g)].map((m) => m[1]);
+      const runtime = clause.slice(arrow + 2).match(/`([a-z]+)`/)?.[1];
+      assert4153parity.ok(runtime, `clause must name a runtime: ${clause}`);
+      for (const dir of dirs) docPairs.add(`${runtime}:${dir}`);
+    }
+
+    const tablePairs = new Set(RUNTIME_DIRS_4153.map(([runtime, dir]) => `${runtime}:${dir}`));
+    assert4153parity.deepEqual(
+      [...docPairs].sort(),
+      [...tablePairs].sort(),
+      'update.md PREFERRED_RUNTIME prose and RUNTIME_DIRS must list the same runtime -> dir pairs',
+    );
+  });
+}
