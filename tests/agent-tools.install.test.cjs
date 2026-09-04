@@ -452,6 +452,17 @@ test('appendAgentTools refuses to extend a value that IS a leading quoted scalar
   assert.strictEqual(once, frontmatter, 'a leading quoted scalar must be left byte-identical, not corrupted');
 });
 
+test('appendAgentTools refuses to extend a value that IS a YAML flow sequence (#4032)', () => {
+  // Regression found in PR #4238 remediation (CodeRabbit review): a flow
+  // sequence occupies the whole node — `tools: [Bash, Read]` is valid, but
+  // `tools: [Bash, Read], Write` is not (content cannot follow a closed flow
+  // collection on the same line). The naive append produced invalid
+  // frontmatter, same failure mode as the leading-quoted-scalar case above.
+  const frontmatter = '---\ntools: [Bash, Read]\n---\n';
+  const once = appendAgentTools(frontmatter, ['Write']);
+  assert.strictEqual(once, frontmatter, 'a leading flow sequence must be left byte-identical, not corrupted');
+});
+
 test('appendAgentTools recognizes an existing block item with a trailing comment (no duplicate) (#4032)', () => {
   // Regression found in PR #4238 remediation: decodeToolScalar did not strip
   // a trailing ` # note` from a bare block-list item, so `- Read # note`

@@ -11336,7 +11336,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   } else if (_isSkillsRuntime) {
     console.log(`  ${dim}↳${reset} Agents installed via descriptor-driven layout (${runtime})`);
   } else {
-    const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry);
+    const _standaloneProjectDir = isGlobal ? process.cwd() : targetDir;
+    const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry, _standaloneProjectDir);
     if (_standaloneAgentsResult) {
       // #2875 defect fix: installAgentsKindStandalone now returns `null`
       // (rather than a truthy result pointing at an empty destDir) whenever a

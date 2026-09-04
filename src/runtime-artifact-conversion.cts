@@ -778,8 +778,11 @@ function appendAgentTools(content: string, grants: string[]): string {
   // whole node — nothing may follow it on the same line except a comment
   // (`tools: "Bash"` is valid; `tools: "Bash", Read` is not, even before this
   // function touches it). Appending in place would corrupt otherwise-valid
-  // frontmatter, so refuse rather than emit invalid YAML.
-  if (/^["']/.test(inlineValue.trim())) return content;
+  // frontmatter, so refuse rather than emit invalid YAML. A value that STARTS
+  // with `[` is a YAML flow sequence (`tools: [Bash, Read]`) — its own commas
+  // are node-internal, not scalar separators, and content cannot follow its
+  // closing `]` on the same line either, so the same refusal applies.
+  if (/^["'[]/.test(inlineValue.trim())) return content;
   const existing: string[] = [];
   let insertAt = toolsIndex + 1;
   if (inlineValue.trim()) {
