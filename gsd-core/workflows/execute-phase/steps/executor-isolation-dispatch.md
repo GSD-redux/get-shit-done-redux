@@ -181,7 +181,7 @@ the executor workflow from repository search.
   SUMMARY commit semantics and the gitignored-planning skip contract)
 - summary.md template
 - checkpoints.md
-- tdd.md
+${TDD_APPLICABLE ? "- tdd.md" : ""}  # #3990: only when this dispatch is TDD (plan type: tdd, or TDD_MODE=true)
 - worktree-path-safety.md
 - agents/gsd-executor.md (the ROLE DEFINITION you are executing — its steps
   0/0a/0b per-commit HEAD/cwd-drift/path-guard discipline applies to every
