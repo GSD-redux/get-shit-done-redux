@@ -1,6 +1,6 @@
 ---
 name: gsd:phase
-description: Multi-phase management - add, insert, remove, or edit phases in ROADMAP.md (roadmap phase CRUD)
+description: Multi-phase management — add, insert, remove, or edit phases in ROADMAP.md (roadmap phase CRUD)
 argument-hint: "[--insert | --remove | --edit] <phase-name-or-number>"
 allowed-tools:
   - Read

@@ -92,6 +92,7 @@ describe('#4051 freeform routing specificity', () => {
       ['/gsd:review', 'plan review (cross-AI peer review)'],
       ['/gsd:docs-update', 'documentation update'],
       ['/gsd:audit-milestone', 'milestone audit'],
+      ['/gsd:audit-fix', 'autonomous audit-to-fix pass'],
       ['/gsd:ui-review', 'UI review'],
       ['/gsd:secure-phase', 'security verification'],
       ['/gsd:execute-phase', 'SDD phase execution'],

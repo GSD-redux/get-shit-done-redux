@@ -57,7 +57,8 @@ Evaluate `$ARGUMENTS` against these routing rules. Rules are ordered **most-spec
 | Requesting peer review of phase plans from another AI CLI ("plan review", "review the plan") | `/gsd:review` | Cross-AI plan review |
 | Reviewing or hardening implemented UI ("visual audit", "review the UI") | `/gsd:ui-review` | Retroactive 6-pillar visual audit |
 | Verifying security mitigations of a completed phase ("security check", "secure phase N") | `/gsd:secure-phase` | Retroactive threat-mitigation verification |
-| Auditing milestone completion or an audit-to-fix pass ("audit the milestone", "audit and fix") | `/gsd:audit-milestone` | Milestone audit against original intent |
+| Auditing milestone completion against original intent ("audit the milestone") | `/gsd:audit-milestone` | Milestone audit against original intent |
+| An autonomous audit-to-fix pass ("audit and fix", "audit the repo and fix what it finds") | `/gsd:audit-fix` | Audit-to-fix pipeline |
 | Generating or updating project documentation ("update the docs", "documentation update") | `/gsd:docs-update` | Docs verified against the codebase |
 | Exploring, researching, comparing, or "how does X work" | `/gsd:explore` | Socratic ideation and idea routing |
 | Discussing vision, "how should X look", brainstorming | `/gsd:discuss-phase` | Needs context gathering |
