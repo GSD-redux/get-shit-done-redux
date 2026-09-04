@@ -689,3 +689,27 @@ describe('#2603: axis values inherited from the Python kimi descriptor are corre
     assert.equal(axes.dispatch.isolation, 'orchestrator-worktree');
   });
 });
+
+describe('#3747: matrix must not cite the disproven configHome skills path for antigravity', () => {
+  // The stateIO row sourced its evidence from an explainx.ai blog claiming the
+  // CLI reads global skills from ~/.gemini/antigravity-cli/skills/. A live
+  // `agy` 1.1.17 probe (#3747) disproved that: the CLI scans
+  // ~/.gemini/config/skills (where #3738 installs them) and silently drops
+  // everything under the configHome. The doc must not re-assert the dead path.
+  test('antigravity section cites no configHome skills path; evidence names ~/.gemini/config/skills', () => {
+    const section = matrixSection('antigravity');
+    assert.ok(section, 'antigravity section must exist in the host-integration matrix');
+    const offending = section.split('\n').filter((l) => /antigravity(-cli|-ide)?\/skills/i.test(l));
+    assert.deepStrictEqual(
+      offending,
+      [],
+      `matrix rows must not cite a configHome skills dir (~/.gemini/antigravity*/skills) as the CLI's skills location — disproven by the #3747 live agy probe:\n${offending.join('\n')}`,
+    );
+    const stateIORow = section.split('\n').find((l) => l.startsWith('| stateIO |'));
+    assert.ok(stateIORow, 'stateIO row must exist');
+    assert.ok(
+      stateIORow.includes('~/.gemini/config/skills'),
+      `stateIO evidence must name the live-probe-verified ~/.gemini/config/skills discovery dir, got: ${stateIORow}`,
+    );
+  });
+});

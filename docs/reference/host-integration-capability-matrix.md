@@ -312,7 +312,7 @@ Documentation gaps:
 | commandSurface | slash-file | https://github.com/alphaperseii3000/google-antigravity-docs/blob/master/google-antigravity-docs.md | "Workflows are saved as markdown files, providing a repeatable method for executing key processes. They can be invoked in the Agent using a s" |
 | modelMode | passive | https://dev.to/arindam_1729/antigravity-cli-a-hands-on-guide-to-googles-terminal-coding-agent-5bc7 | "Selection occurs via `-m` flag or `/model` command inside the TUI. No programmatic model request API is documented for extensions/skills" |
 | hookBus | host | https://www.aibuilderclub.com/blog/antigravity-cli-guide | "The CLI fires hooks, not the engine. These are JSON lifecycle interceptors (before tool call, after file edit, on session start)." |
-| stateIO | filesystem | https://www.explainx.ai/blog/antigravity-cli-features-sandbox-plugins-subagents-2026 | "Plugin staging at ~/.gemini/antigravity-cli/plugins/<name>/; skills at ~/.gemini/antigravity-cli/skills/" |
+| stateIO | filesystem | live `agy` 1.1.17 install probe — https://github.com/open-gsd/gsd-core/issues/3747 | "Global skills discovery scans ~/.gemini/config/skills/: a probe skill placed there is visible to `agy`, while an identical probe skill under the configHome is not. An earlier third-party blog claim about configHome skills placement was disproved by that probe; GSD installs global skills/agents under ~/.gemini/config (#3738)" |
 | transport | mcp | https://dev.to/arindam_1729/antigravity-cli-a-hands-on-guide-to-googles-terminal-coding-agent-5bc7 | "Both local (stdio) and remote (HTTP) Model Context Protocol servers are supported" |
 | runtime | go | https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/ | "Built in Go, Antigravity CLI is snappier and more responsive." |
 | effortSurface | undocumented | no authoritative doc — per-host reasoning-effort survey, #2481 (`09b535ac0`) | This host's documentation states no reasoning-effort setting, so the axis carries the fail-closed sentinel rather than inheriting a profile baseline. No host-specific URL is cited because the finding is an ABSENCE: #2481 surveyed all hosts for a reasoning-effort mechanism and found one only for claude/opencode/codex. |
@@ -329,7 +329,6 @@ Sources consulted:
 - https://github.com/alphaperseii3000/google-antigravity-docs/blob/master/google-antigravity-docs.md
 - https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/
 - https://dev.to/arindam_1729/antigravity-cli-a-hands-on-guide-to-googles-terminal-coding-agent-5bc7
-- https://www.explainx.ai/blog/antigravity-cli-features-sandbox-plugins-subagents-2026
 - https://www.aibuilderclub.com/blog/antigravity-cli-guide
 - https://antigravity.google/docs/agents
 - https://antigravity.google/docs/hooks
