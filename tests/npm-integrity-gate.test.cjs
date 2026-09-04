@@ -201,92 +201,23 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
 const {
   evaluateAuditDiff,
   runPackageLockAudit,
+  runInstalledTreeAudit,
   extractBaselineTree,
   resolveBaselineRef,
-  isTimeoutKill,
-  buildTimeoutKillError,
+  AUDIT_ATTEMPT_TIMEOUT_MS,
+  AUDIT_MAX_ATTEMPTS,
 } = require('../scripts/npm-audit-baseline.cjs');
 const { cleanup, createTempDir } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SDK = path.join(ROOT, 'sdk');
-const AUDIT_TIMEOUT_MS = 180_000;
-const TEST_TIMEOUT_MS = AUDIT_TIMEOUT_MS + 30_000;
+const TEST_TIMEOUT_MS = (AUDIT_ATTEMPT_TIMEOUT_MS * AUDIT_MAX_ATTEMPTS) + 30_000; // worst-case retry budget + margin
 
-function auditProductionVulns(cwd, { execFileSyncImpl = execFileSync } = {}) {
-  if (!fs.existsSync(path.join(cwd, 'package.json'))) {
-    return null; // signal "skip" to caller
-  }
-  if (!fs.existsSync(path.join(cwd, 'node_modules'))) {
-    return null; // signal "skip" to caller
-  }
-  const isWindows = process.platform === 'win32';
-  const npmCandidates = isWindows ? ['npm.cmd', 'npm'] : ['npm'];
-  const args = ['audit', '--omit=dev', '--json'];
-  let out;
-  let lastErr = null;
-  for (const npmCmd of npmCandidates) {
-    try {
-      out = execFileSyncImpl(
-        npmCmd,
-        args,
-        {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: AUDIT_TIMEOUT_MS,
-          shell: isWindows,
-        }
-      );
-      lastErr = null;
-      break;
-    } catch (e) {
-      if (isTimeoutKill(e)) {
-        lastErr = buildTimeoutKillError(cwd, e);
-        break;
-      }
-      // `npm audit` exits non-zero when advisories are present; the JSON is
-      // still on stdout in that case. Recover and let the assertion classify —
-      // but only when stdout actually CARRIES the JSON. A killed or aborted
-      // audit exits non-zero with EMPTY stdout (npm writes plain-text errors
-      // to stderr); accepting the empty string here used to surface as
-      // `SyntaxError: Unexpected end of JSON input` at the parse below, hiding
-      // the real cause. Keep the candidate loop going and let the explicit
-      // empty-output throw below name npm's stderr instead.
-      const recovered = e && typeof e.stdout !== 'undefined' && e.stdout !== null
-        ? (Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout))
-        : '';
-      if (recovered.trim()) {
-        out = recovered;
-        lastErr = null;
-        break;
-      }
-      lastErr = e;
-    }
-  }
-  if (!out || !out.trim()) {
-    const detail = lastErr
-      ? [lastErr.stdout, lastErr.stderr, String(lastErr.message)].filter(Boolean).join('\n').slice(0, 500)
-      : '(no error captured)';
-    throw new Error(
-      `npm audit --json produced no output. ` +
-        `Detail from the failed invocation:\n${detail}`
-    );
-  }
-  if (lastErr) throw lastErr;
-  const parsed = JSON.parse(out);
-  // `null` is reserved for the "node_modules missing → skip" signal above.
-  // Any other unexpected JSON shape is a real failure of the audit harness
-  // (npm changed its output format, audit aborted before metadata, etc.) —
-  // throw so the test fails loudly instead of skipping silently.
-  if (parsed && parsed.metadata && parsed.metadata.vulnerabilities) {
-    return parsed;
-  }
-  throw new Error(`Unexpected npm audit JSON shape in ${cwd}: missing metadata.vulnerabilities`);
+function auditProductionVulns(cwd, opts = {}) {
+  return runInstalledTreeAudit(cwd, opts);
 }
 
 describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (#4196)', () => {
@@ -336,7 +267,7 @@ describe('#3588: npm audit --omit=dev introduces no NEW advisories vs baseline (
   });
 });
 
-describe('auditProductionVulns — timeout-kill classification (#4250)', () => {
+describe('auditProductionVulns — timeout-kill retry classification (#4250, #4260)', () => {
   function makeFixtureDir(t) {
     const dir = createTempDir('gsd-audit-baseline-timeout-');
     t.after(() => cleanup(dir));
@@ -345,27 +276,47 @@ describe('auditProductionVulns — timeout-kill classification (#4250)', () => {
     return dir;
   }
 
-  test('a timeout-killed execFileSync call throws a clear timeout error, not a JSON parse error', (t) => {
-    const dir = makeFixtureDir(t);
-    const killedError = Object.assign(new Error('command timed out'), {
+  function makeKilledError() {
+    return Object.assign(new Error('command timed out'), {
       killed: true,
       signal: 'SIGTERM',
       stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
       stderr: 'npm http fetch GET 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk (attempt 1) 178234ms',
     });
-    const execFileSyncImpl = () => { throw killedError; };
+  }
+
+  test('a timeout-killed execFileSync call on every attempt throws a clear timeout error after exhausting retries, not a JSON parse error', (t) => {
+    const dir = makeFixtureDir(t);
+    const execFileSyncImpl = () => { throw makeKilledError(); };
+    const sleepImpl = () => {};
 
     assert.throws(
-      () => auditProductionVulns(dir, { execFileSyncImpl }),
+      () => auditProductionVulns(dir, { execFileSyncImpl, sleepImpl }),
       (err) => {
-        assert.match(err.message, /npm audit timed out after \d+ms/);
+        assert.match(err.message, /npm audit timed out after \d+ attempts/);
         assert.match(err.message, /status\.npmjs\.org/);
         assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
-        assert.match(err.message, /Captured stderr before the kill/);
+        assert.match(err.message, /Captured stderr before the last kill/);
         assert.match(err.message, /npm http fetch GET/);
         return true;
       },
     );
+  });
+
+  test('retry recovers: timeouts on the first attempts followed by a successful final attempt succeeds', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 0 } }, vulnerabilities: {} });
+    let calls = 0;
+    const execFileSyncImpl = () => {
+      calls += 1;
+      if (calls < 3) throw makeKilledError();
+      return completeJson;
+    };
+    const sleepImpl = () => {};
+
+    const result = auditProductionVulns(dir, { execFileSyncImpl, sleepImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 0 });
+    assert.strictEqual(calls, 3);
   });
 
   test('a normal non-zero exit with complete stdout JSON still recovers correctly (no regression)', (t) => {

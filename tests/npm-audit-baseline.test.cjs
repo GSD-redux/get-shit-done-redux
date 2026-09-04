@@ -20,9 +20,11 @@ const {
   diffNewVulnerablePackages,
   evaluateAuditDiff,
   runPackageLockAudit,
+  runNpmAuditWithRetry,
   extractBaselineTree,
   resolveBaselineRef,
   isTimeoutKill,
+  AUDIT_BACKOFF_BASE_MS,
   NULL_SHA,
 } = require('../scripts/npm-audit-baseline.cjs');
 
@@ -331,7 +333,7 @@ describe('isTimeoutKill', () => {
 
 // ─── runPackageLockAudit -- timeout-kill classification (#4250) ─────────────
 
-describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
+describe('runPackageLockAudit — timeout-kill retry classification (#4250, #4260)', () => {
   function makeFixtureDir(t) {
     const dir = createTempDir('gsd-audit-baseline-timeout-');
     t.after(() => cleanup(dir));
@@ -340,23 +342,27 @@ describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
     return dir;
   }
 
-  test('a timeout-killed execFileSync call throws a clear timeout error, not a JSON parse error', (t) => {
-    const dir = makeFixtureDir(t);
-    const killedError = Object.assign(new Error('command timed out'), {
+  function makeKilledError() {
+    return Object.assign(new Error('command timed out'), {
       killed: true,
       signal: 'SIGTERM',
       stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
       stderr: 'npm http fetch GET 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk (attempt 1) 178234ms',
     });
-    const execFileSyncImpl = () => { throw killedError; };
+  }
+
+  test('a timeout-killed execFileSync call on every attempt throws a clear timeout error after exhausting retries, not a JSON parse error', (t) => {
+    const dir = makeFixtureDir(t);
+    const execFileSyncImpl = () => { throw makeKilledError(); };
+    const sleepImpl = () => {};
 
     assert.throws(
-      () => runPackageLockAudit(dir, { execFileSyncImpl }),
+      () => runPackageLockAudit(dir, { execFileSyncImpl, sleepImpl }),
       (err) => {
-        assert.match(err.message, /npm audit timed out after \d+ms/);
+        assert.match(err.message, /npm audit timed out after \d+ attempts/);
         assert.match(err.message, /status\.npmjs\.org/);
         assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
-        assert.match(err.message, /Captured stderr before the kill/);
+        assert.match(err.message, /Captured stderr before the last kill/);
         assert.match(err.message, /npm http fetch GET/);
         return true;
       },
@@ -371,15 +377,32 @@ describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
       // no stdout, no stderr at all
     });
     const execFileSyncImpl = () => { throw killedError; };
+    const sleepImpl = () => {};
 
     assert.throws(
-      () => runPackageLockAudit(dir, { execFileSyncImpl }),
+      () => runPackageLockAudit(dir, { execFileSyncImpl, sleepImpl }),
       (err) => {
-        assert.match(err.message, /npm audit timed out after \d+ms/);
+        assert.match(err.message, /npm audit timed out after \d+ attempts/);
         assert.match(err.message, /no stderr was captured/);
         return true;
       },
     );
+  });
+
+  test('retry recovers: timeouts on the first attempts followed by a successful final attempt succeeds', (t) => {
+    const dir = makeFixtureDir(t);
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: { high: 0 } }, vulnerabilities: {} });
+    let calls = 0;
+    const execFileSyncImpl = () => {
+      calls += 1;
+      if (calls < 3) throw makeKilledError();
+      return completeJson;
+    };
+    const sleepImpl = () => {};
+
+    const result = runPackageLockAudit(dir, { execFileSyncImpl, sleepImpl });
+    assert.deepStrictEqual(result.metadata.vulnerabilities, { high: 0 });
+    assert.strictEqual(calls, 3);
   });
 
   test('a normal non-zero exit with complete stdout JSON still recovers correctly (no regression)', (t) => {
@@ -402,5 +425,30 @@ describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
 
     const result = runPackageLockAudit(dir, { execFileSyncImpl });
     assert.deepStrictEqual(result.metadata.vulnerabilities, {});
+  });
+});
+
+// ─── runNpmAuditWithRetry — backoff timing (#4260) ──────────────────────────
+
+describe('runNpmAuditWithRetry — backoff timing (#4260)', () => {
+  test('a timeout-then-recover attempt sequence sleeps once with the base backoff value', (t) => {
+    const dir = createTempDir('gsd-audit-baseline-backoff-');
+    t.after(() => cleanup(dir));
+    const completeJson = JSON.stringify({ metadata: { vulnerabilities: {} }, vulnerabilities: {} });
+    let calls = 0;
+    const execFileSyncImpl = () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('command timed out'), { killed: true, signal: 'SIGTERM' });
+      }
+      return completeJson;
+    };
+    const sleepCalls = [];
+    const sleepImpl = (ms) => sleepCalls.push(ms);
+
+    const parsed = runNpmAuditWithRetry(dir, ['audit', '--json'], { execFileSyncImpl, sleepImpl });
+
+    assert.deepStrictEqual(parsed.metadata.vulnerabilities, {});
+    assert.deepStrictEqual(sleepCalls, [AUDIT_BACKOFF_BASE_MS * 1]);
   });
 });
