@@ -246,7 +246,7 @@ function auditProductionVulns(cwd, { execFileSyncImpl = execFileSync } = {}) {
       break;
     } catch (e) {
       if (isTimeoutKill(e)) {
-        lastErr = buildTimeoutKillError(cwd);
+        lastErr = buildTimeoutKillError(cwd, e);
         break;
       }
       // `npm audit` exits non-zero when advisories are present; the JSON is
@@ -333,6 +333,7 @@ describe('auditProductionVulns — timeout-kill classification (#4250)', () => {
       killed: true,
       signal: 'SIGTERM',
       stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
+      stderr: 'npm http fetch GET 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk (attempt 1) 178234ms',
     });
     const execFileSyncImpl = () => { throw killedError; };
 
@@ -342,6 +343,8 @@ describe('auditProductionVulns — timeout-kill classification (#4250)', () => {
         assert.match(err.message, /npm audit timed out after \d+ms/);
         assert.match(err.message, /status\.npmjs\.org/);
         assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
+        assert.match(err.message, /Captured stderr before the kill/);
+        assert.match(err.message, /npm http fetch GET/);
         return true;
       },
     );

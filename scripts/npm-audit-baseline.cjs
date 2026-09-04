@@ -46,12 +46,26 @@ function isTimeoutKill(error) {
  * that classifies a killed npm audit process (see isTimeoutKill) -- kept in
  * one place so the message can't independently drift between callers, per
  * this repo's Generative Fix Divergence anti-pattern.
+ *
+ * Includes whatever `error.stderr` execFileSync captured before the kill
+ * (Node buffers stdout/stderr from a killed child in-memory and attaches
+ * them to the thrown error; without surfacing it here that data was simply
+ * discarded, giving zero diagnostic signal into WHY npm was still running
+ * when the timeout fired -- DNS stall, TLS handshake stall, a registry-side
+ * retry loop, etc. all look identical without it).
  */
-function buildTimeoutKillError(cwd) {
+function buildTimeoutKillError(cwd, error) {
+  const stderr = error && error.stderr
+    ? (Buffer.isBuffer(error.stderr) ? error.stderr.toString('utf-8') : String(error.stderr))
+    : '';
+  const stderrSuffix = stderr.trim()
+    ? `\n\nCaptured stderr before the kill:\n${stderr.trim().slice(0, 2000)}`
+    : '\n\n(no stderr was captured before the kill)';
   return new Error(
     `npm audit timed out after ${AUDIT_TIMEOUT_MS}ms in ${cwd} -- this is not a JSON ` +
     `parse failure, npm audit did not finish. The npm registry's advisories endpoint ` +
-    `may be degraded; check https://status.npmjs.org before assuming a code regression.`,
+    `may be degraded; check https://status.npmjs.org before assuming a code regression.` +
+    stderrSuffix,
   );
 }
 
@@ -134,7 +148,7 @@ function runPackageLockAudit(cwd, { execFileSyncImpl = execFileSync } = {}) {
       break;
     } catch (e) {
       if (isTimeoutKill(e)) {
-        lastErr = buildTimeoutKillError(cwd);
+        lastErr = buildTimeoutKillError(cwd, e);
         break;
       }
       // `npm audit` exits non-zero when advisories are present; the JSON is

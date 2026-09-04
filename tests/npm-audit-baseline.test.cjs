@@ -346,6 +346,7 @@ describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
       killed: true,
       signal: 'SIGTERM',
       stdout: '{"auditReportVersion":2,"vulnerabi', // deliberately truncated, non-empty
+      stderr: 'npm http fetch GET 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk (attempt 1) 178234ms',
     });
     const execFileSyncImpl = () => { throw killedError; };
 
@@ -355,6 +356,27 @@ describe('runPackageLockAudit — timeout-kill classification (#4250)', () => {
         assert.match(err.message, /npm audit timed out after \d+ms/);
         assert.match(err.message, /status\.npmjs\.org/);
         assert.doesNotMatch(err.message, /Unexpected end of JSON input/);
+        assert.match(err.message, /Captured stderr before the kill/);
+        assert.match(err.message, /npm http fetch GET/);
+        return true;
+      },
+    );
+  });
+
+  test('a timeout-killed call with no captured stderr still produces a clear message (no crash on missing stderr)', (t) => {
+    const dir = makeFixtureDir(t);
+    const killedError = Object.assign(new Error('command timed out'), {
+      killed: true,
+      signal: 'SIGTERM',
+      // no stdout, no stderr at all
+    });
+    const execFileSyncImpl = () => { throw killedError; };
+
+    assert.throws(
+      () => runPackageLockAudit(dir, { execFileSyncImpl }),
+      (err) => {
+        assert.match(err.message, /npm audit timed out after \d+ms/);
+        assert.match(err.message, /no stderr was captured/);
         return true;
       },
     );
