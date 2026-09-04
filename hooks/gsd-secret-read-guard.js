@@ -20,10 +20,12 @@
 // installer-written strings are retired by the same installer change (they
 // are filtered out as legacy entries on install and uninstall).
 //
-// What counts as a secret name (basename match, no path resolution):
+// What counts as a secret name (basename match, no path resolution, matched
+// case-INSENSITIVELY so `.ENV` / `.Secrets` are caught on the macOS/Windows
+// filesystems where they ARE the secret file — the write guard's `/i` stance):
 //   .env, .secrets, and .env.<suffix> — EXCEPT .env.example / .env.sample /
-//   .env.template / .env.dist (case-insensitive suffix), which are the
-//   non-secret templates GSD's own phase prompt tells executors to read.
+//   .env.template / .env.dist, which are the non-secret templates GSD's own
+//   phase prompt tells executors to read.
 //   Stated cost: this is narrower than the retired `Read(.env.*)` rule — a
 //   real secret stored in `.env.example` is not protected.
 //   A token containing `:` is also tested on the part after its LAST `:`,
@@ -33,22 +35,26 @@
 //
 // Bash analysis is a two-pass token scan, not a shell:
 //   pass 1 tokenizes with quote state, comments, redirect operators (with fd
-//   digits and `>&N` dups), separators, `$( )` / backtick / `<( )` / `>( )`
-//   spans (recursed as nested commands, depth ≤ 3) and heredocs — a heredoc
-//   body is NEVER scanned as commands (quoted tag: discarded outright;
-//   unquoted tag: only its `$( )` / backtick spans are recursed, because bash
-//   expands those). This keeps `git commit -m "$(cat <<'EOF' … EOF)"` and the
-//   agent-populated heredocs in GSD's own workflows from tripping on prose
-//   that merely mentions `.env`.
-//   pass 2 evaluates each `;`/`&&`/`||`/`|`/newline segment on its own:
+//   digits and `>&N` dups), separators (recording the operator text), `$( )` /
+//   backtick / `<( )` / `>( )` spans (recursed as nested commands, depth ≤ 3),
+//   and heredocs (one token per body, carrying its `<<` segment). A heredoc
+//   body is only ever run as a script when its segment's command is a shell
+//   interpreter (below); a DATA heredoc — `cat <<EOF … EOF`, the agent-
+//   populated bodies in GSD's own workflows, `git commit -m "$(cat <<'EOF' …
+//   EOF)"` — is never operand-checked, so prose mentioning `.env` is safe.
+//   pass 2 groups tokens by segment and evaluates each on its own:
 //   input redirect targets (`<`, `N<`) are always checked; the command word is
 //   located past `sudo`/`env VAR=x`/`nohup`-style prefixes; a closed set of
 //   NON-READING commands (test/[/ls/stat/rm/touch/echo/…) exempts that
 //   segment's operands — `[ -f .env ]` and `ls .env*` are existence checks
 //   GSD's own agents run — while `cp`/`mv`/`ln`/`git` are deliberately NOT
 //   exempt (`cp .env x && cat x` launders the name; `git show HEAD:.env`
-//   reads). For `bash`/`sh`/`eval`/`xargs`/`su`, every QUOTED operand is
-//   rescanned as a command.
+//   reads). A shell interpreter (bash/sh/zsh/dash/ksh/su) has its script scanned
+//   whether it arrives via `-c '…'`, a `<( )` file operand, a heredoc /
+//   here-string, or a pipe from a knowable `echo`/`printf` source
+//   (`echo cat .env | bash`); `eval` scans its joined operands; `source`/`.`
+//   scans a `<( )` operand; and `find … | xargs cat` infers the upstream
+//   segment's names as the sub-command's read operands.
 //
 // Grep globs are judged per brace alternative (never on the whole glob, so
 // `{.env.local,zzz.ts}` cannot hide behind a benign sibling): a pure-wildcard
@@ -61,7 +67,8 @@
 // Documented gaps (none are statically resolvable by a hook, and Claude
 // Code's own 2.1.259 Bash-side enforcement does not resolve them either):
 //   `$VAR` indirection (`bash -c "$TEST_CMD"`, `cat "$F"`), shell globs
-//   (`cat .e*`), interpreter one-liners (`python -c "open('.env')"`), reads
+//   (`cat .e*`), interpreter one-liners (`python -c "open('.env')"`), a piped
+//   script from a non-echo source (`cat gen.sh | bash`, `curl … | sh`), reads
 //   inside scripts the agent executes, and `glob: '*'` reaching a
 //   NON-gitignored `.env`. The promise is "no looser than the retired rules
 //   on plain commands, without arming the compound-`cd` prompt". Writes to
@@ -107,8 +114,22 @@ const NON_READING_COMMANDS = new Set([
   'basename', 'dirname', 'realpath', 'file', 'echo', 'printf',
 ]);
 
-// Commands whose quoted operands are themselves shell commands.
-const NESTED_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval', 'xargs', 'su']);
+// Shell interpreters that run a script from `-c`, a file operand, or stdin
+// (heredoc / here-string / piped `echo`|`printf`). `su` is here for its `-c`
+// form (`su [user] -c 'cmd'`); a bare `su user` resolves to file mode, which
+// only runs the ordinary operand check. `eval`, `source`/`.` and `xargs` are
+// their own cases below; they are not in this set.
+const SHELL_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
+
+// Shell flags whose VALUE is the next operand (`bash -o pipefail`,
+// `bash --rcfile x <<EOF`): skipped when locating a script-file operand, so a
+// flag value is not mistaken for the script and stdin mode still applies.
+const SHELL_VALUE_FLAGS = new Set(['-o', '-O', '+o', '+O', '--rcfile', '--init-file']);
+
+// Value-taking `xargs` flags (long `--flag=value` forms are single words).
+// `-a`/`--arg-file` additionally replaces stdin, so it suppresses the pipeline
+// inference below.
+const XARGS_VALUE_FLAGS = new Set(['-n', '-I', '-i', '-L', '-l', '-P', '-s', '-d', '-E', '-a']);
 
 // Probe names a Grep glob alternative is matched against. `.env` and
 // `.secrets` are the exact names; the rest stand in for the open-ended
@@ -143,12 +164,16 @@ function lastSegment(tok) {
 }
 
 // True when the token's basename — or the basename of the part after its
-// last `:` (git `<ref>:<path>`, Windows drive) — is a secret name.
+// last `:` (git `<ref>:<path>`, Windows drive) — is a secret name. Folded to
+// lower case once at the top so `.ENV` / `.Secrets` match on the
+// case-insensitive filesystems (macOS, Windows) where they ARE the secret file
+// — the same stance as the write guard's `/i` patterns.
 function namesSecret(tok) {
   if (typeof tok !== 'string' || tok === '') return false;
-  if (isSecretBasename(lastSegment(tok))) return true;
-  const colon = tok.lastIndexOf(':');
-  return colon !== -1 && isSecretBasename(lastSegment(tok.slice(colon + 1)));
+  const lower = tok.toLowerCase();
+  if (isSecretBasename(lastSegment(lower))) return true;
+  const colon = lower.lastIndexOf(':');
+  return colon !== -1 && isSecretBasename(lastSegment(lower.slice(colon + 1)));
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +261,9 @@ function globAltSelectsSecret(alt) {
 // Returns null (allowed), 'secret-read', or 'glob-too-complex'.
 function classifyGrepGlob(glob) {
   const segIdx = glob.replace(/\/+$/, '').lastIndexOf('/');
-  const segment = segIdx === -1 ? glob : glob.slice(segIdx + 1);
+  // Case-fold the last segment (GLOB_PROBES are lower case) so `.ENV*` and
+  // `*.ENV` select the secret namespace on case-insensitive filesystems.
+  const segment = (segIdx === -1 ? glob : glob.slice(segIdx + 1)).toLowerCase();
   const alts = expandBraces(segment);
   if (alts === null) return 'glob-too-complex';
   return alts.some(globAltSelectsSecret) ? 'secret-read' : null;
@@ -322,9 +349,10 @@ function readHeredocTag(str, i) {
 }
 
 // From `i` (start of the line after the heredoc-opening line), consume one
-// body per pending tag in order. Returns the bodies of UNQUOTED tags (the
-// only ones bash expands) and the index just past the last terminator line.
-// An unterminated body consumes to end of input.
+// body per pending tag in order. Returns every body with its `quoted`/`seg`
+// (the caller emits a token per body and recurses substitutions only for
+// unquoted ones) and the index just past the last terminator line. An
+// unterminated body consumes to end of input.
 function consumeHeredocBodies(str, i, tags) {
   const bodies = [];
   for (const t of tags) {
@@ -339,7 +367,7 @@ function consumeHeredocBodies(str, i, tags) {
       if (probe === t.tag) { terminated = true; break; }
       body += line + '\n';
     }
-    if (!t.quoted) bodies.push(body);
+    bodies.push({ body, quoted: t.quoted, seg: t.seg });
     if (!terminated) break;
   }
   return { bodies, end: i };
@@ -382,7 +410,9 @@ function tokenize(str) {
   const flush = () => {
     if (!hasWord) return;
     if (expectTag) {
-      heredocs.push({ tag: buf, quoted: quoted !== 'none', stripTabs: expectTag.stripTabs });
+      // Record the current seg (still the `<<` segment — flush runs before the
+      // newline sep increments it) so pass 2 can attach the body to the shell.
+      heredocs.push({ tag: buf, quoted: quoted !== 'none', stripTabs: expectTag.stripTabs, seg });
       expectTag = null;
     } else {
       tokens.push({ kind: 'word', text: buf, quoted, seg });
@@ -391,9 +421,11 @@ function tokenize(str) {
     quoted = 'none';
     hasWord = false;
   };
-  const sep = () => {
+  // The operator text ends segment `seg`; pass 2 reads it to tell `a | bash`
+  // (pipe inference) from `a || bash` and to skip grouping seps.
+  const sep = (text) => {
     flush();
-    tokens.push({ kind: 'sep', text: '', quoted: 'none', seg });
+    tokens.push({ kind: 'sep', text, quoted: 'none', seg });
     seg++;
   };
   const op = (text, read, dup) => {
@@ -482,17 +514,27 @@ function tokenize(str) {
     if ((ch === '<' || ch === '>') && str[i + 1] === '(') {
       flush();
       const e = findParenClose(str, i + 2);
-      nested.push(str.slice(i + 2, e));
+      const inner = str.slice(i + 2, e);
+      nested.push(inner);
+      // Emit a word carrying the inner script so a shell / `source` operand
+      // (`sh <(echo 'cat .env')`) can reconstruct it; the bare nested recursion
+      // above only sees `echo …`, whose operands are not read.
+      tokens.push({ kind: 'word', text: str.slice(i, e + 1), quoted: 'none', seg, procsub: inner });
       i = e + 1;
       continue;
     }
 
     if (ch === '\n') {
-      sep();
+      sep('\n');
       i++;
       if (heredocs.length) {
         const r = consumeHeredocBodies(str, i, heredocs);
-        for (const body of r.bodies) collectSubstitutions(body, nested);
+        for (const b of r.bodies) {
+          // Emit a heredoc token per body (quoted included) — the body is the
+          // stdin script only a shell interpreter runs. Kept out of `words`.
+          tokens.push({ kind: 'heredoc', text: b.body, quoted: b.quoted, seg: b.seg });
+          if (!b.quoted) collectSubstitutions(b.body, nested); // bash expands $( ) here
+        }
         heredocs = [];
         i = r.end;
       }
@@ -548,31 +590,37 @@ function tokenize(str) {
       continue;
     }
 
+    // Lookahead first, THEN record the full operator, so `a || bash` reports
+    // `||` (no pipe inference) and `a | bash` reports `|` (pipe inference).
     if (ch === ';') {
-      sep();
+      let text = ';';
       i++;
-      if (str[i] === ';') i++;
+      if (str[i] === ';') { text = ';;'; i++; }
+      sep(text);
       continue;
     }
     if (ch === '|') {
-      sep();
+      let text = '|';
       i++;
-      if (str[i] === '|' || str[i] === '&') i++;
+      if (str[i] === '|') { text = '||'; i++; }
+      else if (str[i] === '&') { text = '|&'; i++; }
+      sep(text);
       continue;
     }
     if (ch === '&') {
-      sep();
+      let text = '&';
       i++;
-      if (str[i] === '&') i++;
+      if (str[i] === '&') { text = '&&'; i++; }
+      sep(text);
       continue;
     }
     if (ch === '(' || ch === ')') {
-      sep();
+      sep(ch);
       i++;
       continue;
     }
     if ((ch === '{' || ch === '}') && !hasWord && (i + 1 >= str.length || /[\s;&|)]/.test(str[i + 1]))) {
-      sep();
+      sep(ch);
       i++;
       continue;
     }
@@ -604,6 +652,69 @@ function normalizeOperand(text) {
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+// `-c`, or a combined short flag ending in `c` (`-lc`, `-ec`, `-euc`): mode c.
+const DASH_C_RE = /^-[A-Za-z]*c$/;
+
+const GROUPING_SEPS = new Set(['(', ')', '{', '}']);
+
+// Command base + operands after leading `VAR=val` assignments and prefix
+// wrappers (`sudo`, `env VAR=x`, …), or null when nothing but prefixes remain.
+function resolveCommand(words) {
+  let idx = 0;
+  while (idx < words.length && ASSIGNMENT_RE.test(words[idx].text)) idx++;
+  while (idx < words.length) {
+    const base = lastSegment(words[idx].text).toLowerCase();
+    if (!CMD_PREFIXES.has(base)) break;
+    idx++;
+    if (base === 'env') {
+      while (idx < words.length && ASSIGNMENT_RE.test(words[idx].text)) idx++;
+    }
+  }
+  if (idx >= words.length) return null;
+  return { base: lastSegment(words[idx].text).toLowerCase(), operands: words.slice(idx + 1) };
+}
+
+// The statically-knowable stdin a segment writes: `echo`/`printf` operands
+// joined by a space (for `echo`, leading `-neE` flags dropped). Any other
+// source (`cat gen.sh | bash`, `curl … | sh`) is not knowable → null.
+function reconstructedScript(words) {
+  const cmd = resolveCommand(words);
+  if (!cmd) return null;
+  if (cmd.base === 'echo') {
+    let start = 0;
+    while (start < cmd.operands.length && /^-[neE]+$/.test(cmd.operands[start].text)) start++;
+    return cmd.operands.slice(start).map((w) => w.text).join(' ');
+  }
+  if (cmd.base === 'printf') return cmd.operands.map((w) => w.text).join(' ');
+  return null;
+}
+
+// Same rule applied to a `<( … )` / `>( … )` inner script's first segment.
+function reconstructedProcsub(inner) {
+  const { tokens } = tokenize(inner);
+  const words = [];
+  for (const t of tokens) {
+    if (t.kind === 'sep') break;
+    if (t.kind === 'word') words.push(t);
+  }
+  return reconstructedScript(words);
+}
+
+// The operator connecting segment `s` to the nearest PRECEDING segment that has
+// word tokens, skipping empty grouping segments (`(echo cat .env) | bash` has an
+// empty segment between `)` and `|`). Returns { op, prevSeg }.
+function precedingOp(s, bySeg, sepAfter) {
+  let p = s - 1;
+  while (p >= 0 && !(bySeg.get(p) || []).some((t) => t.kind === 'word')) p--;
+  if (p < 0) return { op: undefined, prevSeg: -1 };
+  let op;
+  for (let q = p; q < s; q++) {
+    const text = sepAfter.get(q);
+    if (text !== undefined && !GROUPING_SEPS.has(text)) op = text; // last non-grouping wins
+  }
+  return { op, prevSeg: p };
+}
+
 // Returns the offending token text, or null.
 function findSecretRead(command, depth) {
   const { tokens, nested } = tokenize(command);
@@ -615,60 +726,180 @@ function findSecretRead(command, depth) {
     }
   }
 
-  const segments = [];
-  let current = [];
+  // Group by seg, not separator order: heredoc tokens carry their `<<`
+  // segment's seg and must reach the shell even though a data heredoc sits
+  // between other separators. Heredocs are kept OUT of `words` so a data body
+  // is never operand-checked (`cat <<EOF\n.env\nEOF` stays allowed).
+  const bySeg = new Map();
+  const heredocsBySeg = new Map();
+  const sepAfter = new Map();
+  let maxSeg = 0;
   for (const t of tokens) {
+    if (t.seg > maxSeg) maxSeg = t.seg;
     if (t.kind === 'sep') {
-      if (current.length) segments.push(current);
-      current = [];
-    } else current.push(t);
+      sepAfter.set(t.seg, t.text);
+    } else if (t.kind === 'heredoc') {
+      if (!heredocsBySeg.has(t.seg)) heredocsBySeg.set(t.seg, []);
+      heredocsBySeg.get(t.seg).push(t);
+    } else {
+      if (!bySeg.has(t.seg)) bySeg.set(t.seg, []);
+      bySeg.get(t.seg).push(t);
+    }
   }
-  if (current.length) segments.push(current);
 
-  for (const segment of segments) {
+  for (let s = 0; s <= maxSeg; s++) {
+    const segTokens = bySeg.get(s);
+    if (!segTokens) continue;
+
     const words = [];
-    for (let k = 0; k < segment.length; k++) {
-      const t = segment[k];
+    const hereStrings = [];
+    for (let k = 0; k < segTokens.length; k++) {
+      const t = segTokens[k];
       if (t.kind === 'op') {
         if (t.dup) continue;
-        const target = segment[k + 1];
+        const target = segTokens[k + 1];
         if (target && target.kind === 'word') {
           k++;
+          if (t.text.endsWith('<<<')) hereStrings.push(target.text); // stdin data for a shell
           // Input redirects are reads regardless of the command's exemption.
-          if (t.read && namesSecret(target.text)) return target.text;
+          else if (t.read && namesSecret(target.text)) return target.text;
         }
         continue;
       }
       words.push(t);
     }
+    if (!words.length) continue;
 
-    let idx = 0;
-    while (idx < words.length && ASSIGNMENT_RE.test(words[idx].text)) idx++;
-    while (idx < words.length) {
-      const base = lastSegment(words[idx].text).toLowerCase();
-      if (!CMD_PREFIXES.has(base)) break;
-      idx++;
-      if (base === 'env') {
-        while (idx < words.length && ASSIGNMENT_RE.test(words[idx].text)) idx++;
-      }
-    }
-    if (idx >= words.length) continue;
+    const cmd = resolveCommand(words);
+    if (!cmd) continue;
+    const { base, operands } = cmd;
+    const heredocs = heredocsBySeg.get(s) || [];
 
-    const cmdBase = lastSegment(words[idx].text).toLowerCase();
-    const operands = words.slice(idx + 1);
-
-    if (NESTED_SHELLS.has(cmdBase) && depth < MAX_NESTING_DEPTH) {
-      for (const w of operands) {
-        if (w.quoted === 'none') continue;
-        const hit = findSecretRead(w.text, depth + 1);
+    // eval concatenates ALL its operands and runs the result.
+    if (base === 'eval') {
+      if (depth < MAX_NESTING_DEPTH) {
+        const hit = findSecretRead(operands.map((w) => w.text).join(' '), depth + 1);
         if (hit) return hit;
       }
+      continue;
     }
-    if (NON_READING_COMMANDS.has(cmdBase)) continue;
+
+    // `source` / `.` reads a file (or a process-substitution script).
+    if (base === 'source' || base === '.') {
+      for (const w of operands) {
+        if (w.procsub !== undefined && depth < MAX_NESTING_DEPTH) {
+          const src = reconstructedProcsub(w.procsub);
+          if (src !== null) {
+            const hit = findSecretRead(src, depth + 1);
+            if (hit) return hit;
+          }
+        } else if (namesSecret(normalizeOperand(w.text))) return w.text;
+      }
+      continue;
+    }
+
+    // xargs turns stdin file names into a sub-command's operands.
+    if (base === 'xargs' && depth < MAX_NESTING_DEPTH) {
+      const hit = scanXargsPipe(operands, s, bySeg, sepAfter, depth);
+      if (hit) return hit;
+      // `.env` given to xargs itself (`xargs -a .env cat`) is an ordinary
+      // operand — fall through to the operand check below.
+    }
+
+    if (SHELL_INTERPRETERS.has(base) && depth < MAX_NESTING_DEPTH) {
+      const hit = scanShellInterpreter(operands, heredocs, hereStrings, s, bySeg, sepAfter, depth);
+      if (hit) return hit;
+      // `bash .env` (file mode) is caught by the operand check below.
+    }
+
+    if (NON_READING_COMMANDS.has(base)) continue;
 
     for (const w of operands) {
       if (namesSecret(normalizeOperand(w.text))) return w.text;
     }
+  }
+  return null;
+}
+
+// A shell interpreter's script comes from `-c`, a file operand, or stdin.
+function scanShellInterpreter(operands, heredocs, hereStrings, s, bySeg, sepAfter, depth) {
+  const cIdx = operands.findIndex((w) => DASH_C_RE.test(w.text));
+  if (cIdx !== -1) {
+    // Mode c: the next operand is the script; stdin is DATA (not scanned).
+    const script = operands[cIdx + 1];
+    if (script) return findSecretRead(script.text, depth + 1);
+    return null;
+  }
+  let fileTok;
+  for (let m = 0; m < operands.length; m++) {
+    if (SHELL_VALUE_FLAGS.has(operands[m].text)) { m++; continue; }
+    if (!operands[m].text.startsWith('-')) { fileTok = operands[m]; break; }
+  }
+  if (fileTok) {
+    // Mode file: `bash <(echo 'cat .env')`; a plain file is checked as an operand.
+    if (fileTok.procsub !== undefined) {
+      const src = reconstructedProcsub(fileTok.procsub);
+      if (src !== null) return findSecretRead(src, depth + 1);
+    }
+    return null;
+  }
+  // Mode stdin: heredoc bodies, here-strings, and a piped echo/printf source.
+  for (const h of heredocs) {
+    const hit = findSecretRead(h.text, depth + 1);
+    if (hit) return hit;
+  }
+  for (const hs of hereStrings) {
+    const hit = findSecretRead(hs, depth + 1);
+    if (hit) return hit;
+  }
+  const { op, prevSeg } = precedingOp(s, bySeg, sepAfter);
+  if ((op === '|' || op === '|&') && prevSeg >= 0) {
+    const src = reconstructedScript((bySeg.get(prevSeg) || []).filter((t) => t.kind === 'word'));
+    if (src !== null) return findSecretRead(src, depth + 1);
+  }
+  return null;
+}
+
+// `find … | xargs cat`: the upstream segment's operands become file names the
+// sub-command reads. Only inferred across a real pipe and when stdin is not
+// redirected by `-a`/`--arg-file`. A sub-command that is itself a shell
+// (`xargs -I{} sh -c 'cat .env'`) carries a literal script and is scanned in
+// mode c whether or not a pipe feeds it.
+function scanXargsPipe(operands, s, bySeg, sepAfter, depth) {
+  let argFile = false;
+  let subIdx = -1;
+  for (let m = 0; m < operands.length; m++) {
+    const t = operands[m].text;
+    if (t === '-a' || t === '--arg-file') { argFile = true; m++; continue; }
+    if (t.startsWith('--arg-file=')) { argFile = true; continue; }
+    if (XARGS_VALUE_FLAGS.has(t)) { m++; continue; }
+    if (t.startsWith('--') && t.includes('=')) continue;
+    if (t.startsWith('-')) continue; // no-value flag (-0 -r -t -p) or long flag
+    subIdx = m;
+    break;
+  }
+  if (subIdx === -1) return null; // no sub-command: xargs defaults to echo
+
+  const subBase = lastSegment(operands[subIdx].text).toLowerCase();
+  if (SHELL_INTERPRETERS.has(subBase)) {
+    // Heredocs/here-strings belong to xargs, not the sub-shell; pass none.
+    const hit = scanShellInterpreter(operands.slice(subIdx + 1), [], [], s, bySeg, sepAfter, depth);
+    if (hit) return hit;
+  }
+  if (argFile) return null; // stdin replaced by a file — no pipeline inference
+  if (NON_READING_COMMANDS.has(subBase)) return null;
+
+  const { op, prevSeg } = precedingOp(s, bySeg, sepAfter);
+  if (op !== '|' && op !== '|&') return null;
+  if (prevSeg < 0) return null;
+
+  // Every upstream operand is a candidate file name — the NON_READING
+  // exemption is bypassed for it, but the `.env.example|…` suffix exemption in
+  // isSecretBasename still holds.
+  const prevCmd = resolveCommand((bySeg.get(prevSeg) || []).filter((t) => t.kind === 'word'));
+  if (!prevCmd) return null;
+  for (const w of prevCmd.operands) {
+    if (namesSecret(normalizeOperand(w.text))) return w.text;
   }
   return null;
 }

@@ -67,13 +67,15 @@ function assertBlocked(r, label, { code = 'secret-read', tool, path: expectedPat
 }
 
 describe('gsd-secret-read-guard: Read', () => {
-  const blocks = ['.env', '/proj/.env', '.env.local', '/p/.env.production', '.secrets', 'C:\\proj\\.env', '/p/.secrets/'];
+  const blocks = ['.env', '/proj/.env', '.env.local', '/p/.env.production', '.secrets', 'C:\\proj\\.env', '/p/.secrets/',
+    // Case-insensitive: these ARE the secret file on macOS/Windows.
+    '.ENV', '.Secrets', '.Env.production', '/P/.SECRETS'];
   for (const p of blocks) {
     test(`blocks Read of ${JSON.stringify(p)}`, () => {
       assertBlocked(runHook(read(p)), p, { tool: 'Read', path: p });
     });
   }
-  const allows = ['.env.example', '.env.sample', '.env.template', '.env.dist', '.env.EXAMPLE', '.envrc', 'env', 'foo.env', '/p/src/index.ts', '.environment', '.env.'];
+  const allows = ['.env.example', '.env.sample', '.env.template', '.env.dist', '.env.EXAMPLE', '.ENV.EXAMPLE', '.envrc', 'env', 'foo.env', '/p/src/index.ts', '.environment', '.env.'];
   for (const p of allows) {
     test(`allows Read of ${JSON.stringify(p)}`, () => {
       assertAllowed(runHook(read(p)), p);
@@ -96,6 +98,9 @@ describe('gsd-secret-read-guard: Grep path', () => {
   test('blocks a .secrets directory path (trailing slash)', () => {
     assertBlocked(runHook(grep({ path: '/p/.secrets/' })), '.secrets/', { path: '/p/.secrets/' });
   });
+  test('blocks an upper-case secret path (case-insensitive)', () => {
+    assertBlocked(runHook(grep({ path: '/p/.ENV' })), '.ENV', { tool: 'Grep', path: '/p/.ENV' });
+  });
   test('allows a directory path and a pattern that merely mentions .env', () => {
     assertAllowed(runHook(grep({ path: '/p' })), 'dir');
     assertAllowed(runHook(grep({ pattern: '.env' })), 'pattern only');
@@ -105,7 +110,9 @@ describe('gsd-secret-read-guard: Grep path', () => {
 
 describe('gsd-secret-read-guard: Grep glob', () => {
   const blocks = ['.env*', '.env.*', '.env.prod*', '**/.env', '.{env,secrets}', '{.env.local,zzz.ts}', '.*', '*.*',
-    '*.env*', '*.env', '*.local', '*.production', '.e*', '.s*', 'config/.env', '[.]env', '?env', '.env.p?oduction'];
+    '*.env*', '*.env', '*.local', '*.production', '.e*', '.s*', 'config/.env', '[.]env', '?env', '.env.p?oduction',
+    // Case-insensitive glob selection.
+    '.ENV*', '*.ENV', '.Env.*'];
   for (const g of blocks) {
     test(`blocks glob ${JSON.stringify(g)}`, () => {
       assertBlocked(runHook(grep({ glob: g })), g, { tool: 'Grep', path: g });
@@ -179,6 +186,49 @@ describe('gsd-secret-read-guard: Bash blocks', () => {
     ['source .env', '.env'],
     ['. .env', '.env'],
     ['python read.py --config=.secrets', '--config=.secrets'],
+    // Case-insensitive operand / <ref>:<path> match.
+    ['cat .ENV', '.ENV'],
+    ['cat .Secrets', '.Secrets'],
+    ['git show HEAD:.ENV', 'HEAD:.ENV'],
+    // Shell interpreter reads its script from stdin (heredoc / here-string),
+    // a pipe, a `-c` operand, or a `<( )` file operand.
+    ['bash <<EOF\ncat .env\nEOF', '.env'],
+    ["bash <<'EOF'\ncat .env\nEOF", '.env'],
+    ['sh <<EOF\ncd x && cat .env\nEOF', '.env'],
+    ['bash -s <<EOF\ncat .env\nEOF', '.env'],
+    ['bash - <<EOF\ncat .env\nEOF', '.env'],
+    ['bash <<< "cat .env"', '.env'],
+    ['echo "cat .env" | bash', '.env'],
+    ['echo cat .env | bash', '.env'],
+    ["printf 'cat .secrets' | sh", '.secrets'],
+    ['echo -e "cat .env" | zsh', '.env'],
+    ["sh <(echo 'cat .env')", '.env'],
+    ["bash <(printf 'cat %s' .env)", '.env'],
+    ["source <(echo 'cat .env')", '.env'],
+    ['eval cat .env', '.env'],
+    ["bash -lc 'cat .env'", '.env'], // combined short flags: guards the regression
+    ['bash -c cat .env', '.env'], // ordinary operand check still applies
+    ['bash <<EOF\ncat .env\nEOF | tee x', '.env'],
+    ['sudo bash <<EOF\ncat .env\nEOF', '.env'],
+    ['(echo cat .env) | bash', '.env'], // empty-segment walk-back
+    // xargs pipelines: upstream names become the sub-command's read operands.
+    ['echo .env | xargs cat', '.env'],
+    ["echo a | xargs -I{} sh -c 'cat .env'", '.env'],
+    ["xargs -I{} sh -c 'cat .env'", '.env'],
+    ["su -c 'cat .env'", '.env'],
+    ["su root -c 'cat .env'", '.env'],
+    ['echo "cat .env" | bash -o pipefail', '.env'],
+    ['bash --rcfile x <<EOF\ncat .env\nEOF', '.env'],
+    ['find . -name .env | xargs cat', '.env'],
+    ['ls -a | grep .env | xargs cat', '.env'],
+    ['echo .env | xargs -n1 cat', '.env'],
+    ['echo .env | xargs -0 cat', '.env'],
+    ['echo .env | xargs -I{} cat {}', '.env'],
+    ["echo .env | xargs -I{} sh -c 'cat {}'", '.env'],
+    ['xargs -a .env cat', '.env'],
+    ['xargs --arg-file=.env cat', '--arg-file=.env'],
+    ['cat .env | xargs', '.env'], // denied by the FIRST segment
+    ["rg -l '\\.env' src | xargs cat", '\\.env'], // accepted false positive
   ];
   for (const [cmd, expectedPath] of cases) {
     test(`blocks ${JSON.stringify(cmd)}`, () => {
@@ -245,6 +295,26 @@ describe('gsd-secret-read-guard: Bash allows', () => {
     'git add .env.example',
     'echo "cat .env" # only prose',
     'cat # .env',
+    // Data heredocs and unknowable / non-reading interpreter sources.
+    'cat <<EOF\ncat .env\nEOF',
+    'bash <<EOF\necho .env\nEOF',
+    'echo "cat .env" | bash -c "cat >/dev/null"', // -c: stdin is data
+    'echo "cat .env" | grep cat',
+    'bash script.sh',
+    'cat script.sh | bash', // non-echo source: documented gap
+    'bash <(cat gen.sh)',
+    'cat <<EOF\n.env\nEOF', // a body that IS a secret name is still data
+    // xargs pipelines that do not reach a reading sub-command.
+    'ls | xargs cat',
+    'su - user',
+    'su root',
+    'echo .env | xargs rm',
+    'echo .env | xargs',
+    'echo .env | xargs -a names cat', // -a: stdin replaced by a file
+    "find . -name '*.ts' | xargs cat",
+    'echo .env.example | xargs cat', // template suffix exemption still applies
+    'git ls-files | xargs grep -l KEY',
+    "printf '%s\\n' a b | xargs -n1 echo",
     '',
   ];
   for (const cmd of cases) {
