@@ -46,6 +46,7 @@ const { execFileSync } = require('child_process');
 // Project rules: temp dirs and their removal go through the shared helpers (cleanup carries the
 // Windows-EBUSY retry budget), and every synchronous spawn is bounded.
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 // runConflictGate()/withReviews() spawn bash against a Node-native temp path built by
 // createTempDir(); on win32 that path is backslash-separated and handed to Git Bash, which
@@ -158,6 +159,45 @@ function runWriterGate(reviewsFile, fields) {
           CONFLICT_PROPERTY: fields.property ?? '',
           CONFLICT_CONSTRAINT: fields.constraint ?? '',
           CONFLICT_ALTERNATIVES: fields.alternatives ?? '',
+        },
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GATE_TIMEOUT_MS,
+      });
+      return { status: 0 };
+    } catch (err) {
+      return { status: err.status, stderr: err.stderr || '' };
+    }
+  } finally {
+    cleanup(dir);
+  }
+}
+
+/**
+ * The close-on-resolve gate (#3916 adversarial-review fix), extracted from plan-phase.md's
+ * `**Otherwise (revised plans...` branch and RUN. Located by content (the fence assigning
+ * `CLOSED="- [x]${PENDING_CONFLICT`).
+ */
+function extractCloseGate() {
+  const fences = PLAN_PHASE.split(/```/);
+  const block = fences.find((f) => /^bash\r?\n/.test(f) && /CLOSED="- \[x\]\$\{PENDING_CONFLICT/.test(f));
+  assert.ok(block, 'could not find the bash fence containing the close-on-resolve gate');
+  return block.replace(/^bash\r?\n/, '');
+}
+
+/** Run the close gate against `reviewsFile`, closing `pendingConflict` with `resolution`. */
+function runCloseGate(reviewsFile, pendingConflict, resolution) {
+  const dir = createTempDir('gsd-3916-close-');
+  try {
+    const script = path.join(dir, 'close.sh');
+    fs.writeFileSync(script, extractCloseGate());
+    try {
+      execFileSync('bash', [script], {
+        env: {
+          ...process.env,
+          REVIEWS_FILE: reviewsFile,
+          PENDING_CONFLICT: pendingConflict,
+          CONFLICT_RESOLUTION: resolution ?? '',
         },
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -440,7 +480,7 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'the rule must name the exact transform, or it is advice rather than a control');
     assert.match(flat(REVISION_LOOP), /embedded newline can forge an extra conflict-shaped record inside the owned slot/,
       'the contract must state the concrete forgery sanitization prevents');
-    assert.match(flat(PLAN_PHASE), /Sanitize-then-insert is real shell, not hand-applied/,
+    assert.match(flat(PLAN_PHASE), /Sanitize-then-insert is real shell/,
       'the workflow that does the appending must run the rule, not restate it as prose (#3916)');
     for (const [name, agent] of [['planner-revision', PLANNER_REVISION], ['gsd-ui-researcher', UI_RESEARCHER]]) {
       assert.match(flat(agent), /\*\*Every field is one line of plain text\.\*\*/,
@@ -680,7 +720,7 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     );
     assert.match(
       handler,
-      /\*\*Otherwise \(planner returned revised plans, not `## REVISION_CONFLICT`\):\*\* spawn checker again \(step 10\), then increment `iteration_count`\./,
+      /\*\*Otherwise \(revised plans, not `## REVISION_CONFLICT`\):\*\*[\s\S]*?Spawn checker again \(step 10\), then increment `iteration_count`\./,
       'the normal checker path must be disjoint from the conflict re-entry path'
     );
     assert.doesNotMatch(handler, /\nAfter planner returns ->/,
@@ -970,6 +1010,58 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
       assert.notEqual(result.status, 0, 'a missing end delimiter must not silently succeed');
       assert.equal(fs.readFileSync(file, 'utf-8'), before,
         'a failed write must never partially mutate REVIEWS.md');
+    });
+  });
+
+  // Adversarial-review regression (agy/gemini-3.8-flash-high, #3916): `awk -v line="$LINE"`
+  // decodes a literal two-character `\n` in agent text into a real newline — a forgery `tr`
+  // (which only touches actual control bytes) cannot catch. ENVIRON does not decode escapes.
+  test('a literal backslash-n in agent text stays on one line (awk -v escape-decoding forgery)',
+    { skip: IS_WINDOWS }, () => {
+    withReviews(reviewsArtifact(), (file) => {
+      const fields = {
+        dimension: 'dim with literal \\n mid-text', plan: 'p1', property: 'prop',
+        constraint: 'D-1', alternatives: 'alt',
+      };
+      const result = runWriterGate(file, fields);
+      assert.equal(result.status, 0, result.stderr);
+      const reader = runConflictGate(file);
+      assert.equal(reader.status, 0, reader.stderr);
+      assert.equal(reader.stdout, '1', 'a literal backslash-n must not split the record into two lines');
+    });
+  });
+
+  // Adversarial-review regression (#3916): a resolved conflict must actually get flipped to
+  // `- [x]` in the SAME session that resolved it — nothing else in plan-phase revisits it, so
+  // an unclosed record blocks convergence forever.
+  test('the close gate flips a resolved conflict to [x] and the reader no longer counts it',
+    { skip: IS_WINDOWS }, () => {
+    withReviews(reviewsArtifact(), (file) => {
+      const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
+      assert.equal(runWriterGate(file, fields).status, 0);
+      assert.equal(runConflictGate(file).stdout, '1');
+      const body = fs.readFileSync(file, 'utf-8');
+      const openLine = splitLines(body).find((l) => l.startsWith('- [ ] REVISION_CONFLICT'));
+      assert.ok(openLine, 'fixture must carry the just-written open line');
+      const result = runCloseGate(file, openLine, 'adopted alternative');
+      assert.equal(result.status, 0, result.stderr);
+      const after = fs.readFileSync(file, 'utf-8');
+      assert.match(after, /^- \[x\] REVISION_CONFLICT .*\| resolved: adopted alternative$/m);
+      assert.doesNotMatch(after, /^- \[ \] REVISION_CONFLICT/m, 'no open line may survive a close');
+      const reader = runConflictGate(file);
+      assert.equal(reader.status, 0, reader.stderr);
+      assert.equal(reader.stdout, '0', 'a closed conflict must no longer count as open');
+    });
+  });
+
+  test('the close gate fails closed when the pending conflict line is not found',
+    { skip: IS_WINDOWS }, () => {
+    withReviews(reviewsArtifact(`${OPEN('a/1')}\n`), (file) => {
+      const before = fs.readFileSync(file, 'utf-8');
+      const result = runCloseGate(file, '- [ ] REVISION_CONFLICT never-written', 'x');
+      assert.notEqual(result.status, 0, 'closing a line that was never recorded must not silently succeed');
+      assert.equal(fs.readFileSync(file, 'utf-8'), before,
+        'a failed close must never partially mutate REVIEWS.md');
     });
   });
 

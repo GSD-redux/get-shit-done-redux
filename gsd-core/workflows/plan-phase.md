@@ -1301,32 +1301,54 @@ fi
 - After re-spawning, re-evaluate the return here — do not fall through to the checker spawn below.
 - Escalation uses the same gate as the iteration cap below — on a repeated `required_property`,
   and on the THIRD conflict return of this loop whatever property it names.
-- Sanitize-then-insert is real shell, not hand-applied: a newline/tab or leading
-  `#`/`-`/`|`/fence in agent text can't forge a record. Export the row's five fields as
-  `CONFLICT_DIMENSION`, `CONFLICT_PLAN`, `CONFLICT_PROPERTY`, `CONFLICT_CONSTRAINT`,
-  `CONFLICT_ALTERNATIVES`, then run (once per conflict row):
+- Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (which
+  decodes agent text's literal `\n` into a real newline). Export the row's
+  `CONFLICT_DIMENSION/_PLAN/_PROPERTY/_CONSTRAINT/_ALTERNATIVES`, then run:
 
 ```bash
 if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
-  san() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/^[[:space:]]*[#|`-]+[[:space:]]*//'; }
+  san() { printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/^[[:space:]]*[#|`-]+[[:space:]]*//'; }
   LINE="- [ ] REVISION_CONFLICT $(san "${CONFLICT_DIMENSION}")/$(san "${CONFLICT_PLAN}") — required_property: $(san "${CONFLICT_PROPERTY}") | conflicts with: $(san "${CONFLICT_CONSTRAINT}") | alternatives: $(san "${CONFLICT_ALTERNATIVES}")"
   END='<!-- gsd:plan-revision-conflicts:end -->'
-  TMP=$(mktemp "${TMPDIR:-/tmp}/gsd-revision-conflict-XXXXXX")
-  if ! awk -v end="${END}" -v line="${LINE}" '
-    $0 == line { seen = 1 }
-    $0 == end && !ins { if (!seen) print line; ins = 1 }
+  TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
+  if ! LINE="$LINE" END="$END" awk '
+    $0 == ENVIRON["LINE"] { seen = 1 }
+    $0 == ENVIRON["END"] && !ins { if (!seen) print ENVIRON["LINE"]; ins = 1 }
     { print }
     END { if (!ins) exit 2 }
   ' "${REVIEWS_FILE}" > "${TMP}"; then
     rm -f "${TMP}"
-    echo "BLOCKED: no writer-owned end delimiter in '${REVIEWS_FILE}'; refusing to lose the conflict." >&2
+    echo "BLOCKED: no writer-owned end delimiter in '${REVIEWS_FILE}'." >&2
     exit 1
   fi
   mv "${TMP}" "${REVIEWS_FILE}"
+  PENDING_CONFLICT="$LINE"
 fi
 ```
 
-**Otherwise (planner returned revised plans, not `## REVISION_CONFLICT`):** spawn checker again (step 10), then increment `iteration_count`.
+**Otherwise (revised plans, not `## REVISION_CONFLICT`):** if this re-spawn followed a
+resolved conflict, close its record first — nothing else in this session revisits it:
+
+```bash
+if [ -n "${PENDING_CONFLICT:-}" ]; then
+  RES=$(printf '%s' "${CONFLICT_RESOLUTION}" | tr '\r\n\t' '   ')
+  CLOSED="- [x]${PENDING_CONFLICT#- \[ \]} | resolved: ${RES}"
+  TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
+  if ! OLD="$PENDING_CONFLICT" NEW="$CLOSED" awk '
+    $0 == ENVIRON["OLD"] && !d { print ENVIRON["NEW"]; d = 1; next }
+    { print }
+    END { if (!d) exit 2 }
+  ' "${REVIEWS_FILE}" > "${TMP}"; then
+    rm -f "${TMP}"
+    echo "BLOCKED: conflict line not found in '${REVIEWS_FILE}'." >&2
+    exit 1
+  fi
+  mv "${TMP}" "${REVIEWS_FILE}"
+  unset PENDING_CONFLICT
+fi
+```
+
+Spawn checker again (step 10), then increment `iteration_count`.
 
 **If iteration_count >= 3:**
 
