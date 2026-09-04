@@ -30,6 +30,9 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 const HARNESS_PATH = 'gsd-core/workflows/execute-phase.md';
 const WORKTREE_PATH = 'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md';
+const TDD_STEP_FRAGMENT_PATH = 'gsd-core/workflows/execute-phase/steps/tdd-applicability-resolution.md';
+
+const BACKENDS = [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]];
 
 describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () => {
   // A backend may assign TDD_APPLICABLE directly from the `gsd_run query
@@ -61,7 +64,7 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
     assertTddApplicableIsComputed('executor-isolation-dispatch.md', WORKTREE_PATH);
   });
 
-  for (const [name, filePath] of [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]]) {
+  for (const [name, filePath] of BACKENDS) {
     test(`${name}'s phase.tdd-applicable call is plan-scoped, not phase-scoped`, () => {
       const text = read(filePath);
       const callLine = text.split('\n').find((l) => l.includes('phase.tdd-applicable') && l.includes('gsd_run query'));
@@ -74,7 +77,7 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   }
 
   test('both backends assign TDD_APPLICABLE before every ${TDD_APPLICABLE...} use (document order)', () => {
-    for (const [name, filePath] of [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]]) {
+    for (const [name, filePath] of BACKENDS) {
       const text = read(filePath);
       const lines = text.split('\n');
       const assignIdx = lines.findIndex((l) => /^\s*TDD_APPLICABLE=/.test(l));
@@ -94,7 +97,7 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   });
 
   test('both tdd.md embed-line comments describe the same three real sources (#4265)', () => {
-    for (const [name, filePath] of [['execute-phase.md', HARNESS_PATH], ['executor-isolation-dispatch.md', WORKTREE_PATH]]) {
+    for (const [name, filePath] of BACKENDS) {
       const text = read(filePath);
       const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE \?/.test(l));
       assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
@@ -120,7 +123,11 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
     assert.ok(/exit 1/.test(block), 'the ${TDD_APPLICABLE check must exit 1 like the ${AGENT_SKILLS} check');
   });
 
-  test('harness backend states a fail-closed halt instruction covering TDD_APPLICABLE, CONTEXT_WINDOW, and AGENT_SKILLS before Agent() is called', () => {
+  test('harness backend references the tdd-applicability-resolution step fragment before Agent() is called, and that fragment states a MANDATORY pre-dispatch halt covering TDD_APPLICABLE, CONTEXT_WINDOW, and AGENT_SKILLS', () => {
+    // #4272-phase-6 byte-ceiling extraction: the "MANDATORY pre-dispatch check"
+    // paragraph moved out of execute-phase.md into
+    // tdd-applicability-resolution.md (mirroring per-plan-executor-routing.md);
+    // the host file now carries only a one-line reference to it.
     const text = read(HARNESS_PATH);
     const lines = text.split('\n');
     // The literal executor dispatch call sits alone on its own line
@@ -130,9 +137,15 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
     const agentCallIdx = lines.findIndex((l) => /^\s*Agent\($/.test(l));
     assert.ok(agentCallIdx !== -1, 'execute-phase.md must contain the literal Agent( dispatch-call line');
     const before = lines.slice(0, agentCallIdx).join('\n');
-    const checkIdx = before.lastIndexOf('MANDATORY pre-dispatch check');
-    assert.ok(checkIdx !== -1, 'execute-phase.md must state a MANDATORY pre-dispatch check before the Agent() call');
-    const checkText = before.slice(checkIdx);
+    assert.ok(
+      before.includes('execute-phase/steps/tdd-applicability-resolution.md'),
+      'execute-phase.md must reference the tdd-applicability-resolution.md step fragment before the Agent() call',
+    );
+
+    const fragment = read(TDD_STEP_FRAGMENT_PATH);
+    const checkIdx = fragment.indexOf('MANDATORY');
+    assert.ok(checkIdx !== -1, 'tdd-applicability-resolution.md must state a MANDATORY pre-dispatch check');
+    const checkText = fragment.slice(checkIdx);
     for (const marker of ['TDD_APPLICABLE', 'CONTEXT_WINDOW', 'AGENT_SKILLS']) {
       assert.ok(checkText.includes(marker), `pre-dispatch check must name ${marker}`);
     }
@@ -140,9 +153,8 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
   });
 
   test('regression: tdd-single-statement.test.cjs assertions still hold by inspection', () => {
-    const main = read(HARNESS_PATH);
-    const wt = read(WORKTREE_PATH);
-    for (const [name, text] of [['execute-phase.md', main], ['executor-isolation-dispatch.md', wt]]) {
+    for (const [name, filePath] of BACKENDS) {
+      const text = read(filePath);
       const line = text.split('\n').find((l) => /tdd\.md/.test(l) && /TDD_APPLICABLE/.test(l));
       assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
       assert.ok(/TDD_APPLICABLE \?/.test(line), `${name}'s tdd.md entry must stay conditional on TDD_APPLICABLE (#3990)`);
