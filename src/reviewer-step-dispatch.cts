@@ -1,13 +1,15 @@
 /**
  * Reviewer Step Dispatch (#4209 Phase 1 Plan 2, ADR-2782 seam).
  *
- * ONE interpreter for reviewer-lane dispatch. `trait` is a defensive caller-supplied gate
- * (the sole production caller, `gsd-core/bin/gsd-tools.cjs`'s `review-lane dispatch-step`,
- * passes `true` unconditionally — the actual opt-in decision already happened one layer up,
- * in `gsd-core/workflows/code-review.md`'s explicit-CLI-flag match against the reviewer-lane
- * roster). Every direct or lifecycle caller routes through `dispatchReviewerLanes` so
- * selection/plan/invoke logic is owned once, not re-derived per feature. This module owns
- * NONE of those primitives — it wires
+ * ONE interpreter for "a step declares `supportsReviewerLanes: true`" (the trait plan 01-01
+ * projects onto `activeHooks` — see `src/loop-resolver.cts`). `gsd-core/workflows/code-review.md`
+ * resolves its own active hook for the configured loop point (`gsd_run loop render-hooks`) and
+ * only proceeds to explicit-CLI-flag matching when that trait reads `true`; the sole production
+ * caller of this module, `gsd-core/bin/gsd-tools.cjs`'s `review-lane dispatch-step`, is therefore
+ * only ever reached once the workflow layer has already confirmed the trait, and passes `true`
+ * here as a defensive re-statement, not the opt-in decision itself. Every direct or lifecycle
+ * caller routes through `dispatchReviewerLanes` so selection/plan/invoke logic is owned once,
+ * not re-derived per feature. This module owns NONE of those primitives — it wires
  * `resolveReviewerSelection` (selection) and `resolveLanePlan` (planning), the same building
  * blocks `gsd-core/bin/gsd-tools.cjs`'s `review-lane plan` subcommand uses. Invocation
  * (`runLane`) needs OS-aware spawn/probe plumbing this module does not own, so `deps.invoke`
@@ -65,10 +67,9 @@ export const SOURCE_REVIEW_PROHIBITIONS: readonly string[] = Object.freeze([
 
 export interface ReviewerStepDispatchInput {
   /**
-   * Defensive caller-supplied gate. Anything other than the literal boolean `true` makes this
-   * dispatch a hard no-op — callers should pass `true` only once they have independently
-   * decided this dispatch should proceed (e.g. an explicit CLI flag matched the reviewer-lane
-   * roster).
+   * Value of the step's `supportsReviewerLanes` field, read verbatim from `activeHooks`.
+   * Anything other than the literal boolean `true` (absent, `false`, or a malformed non-boolean
+   * that slipped past `capability-validator.cjs`) makes this dispatch a hard no-op.
    */
   trait: unknown;
   /** Passed through verbatim to `resolveReviewerSelection` — this module invents no selection. */

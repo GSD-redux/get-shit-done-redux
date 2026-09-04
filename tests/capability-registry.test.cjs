@@ -524,6 +524,102 @@ describe('capability-validator: step.pointFrom (#3661, matrix Section E)', () =>
   });
 });
 
+// ─── validateStep: step.supportsReviewerLanes (#4209 DISP-02) ─────────────────
+
+describe('capability-validator: step.supportsReviewerLanes (#4209 DISP-02)', () => {
+  /**
+   * Minimal synthetic non-code-review capability, independent of UI_CAP,
+   * proving the trait is provider-neutral (not code-review-specific).
+   */
+  function makeReviewerLaneCap(overrides = {}) {
+    return {
+      id: 'test-reviewer-lane-cap',
+      role: 'feature',
+      version: '1.0.0',
+      title: 'Test Reviewer Lane Cap',
+      description: 'Synthetic fixture for supportsReviewerLanes (#4209) validator tests.',
+      tier: 'standard',
+      requires: [],
+      runtimeCompat: { supported: ['*'], unsupported: [] },
+      skills: ['test-skill'],
+      agents: [],
+      hooks: [],
+      config: {},
+      steps: [],
+      contributions: [],
+      gates: [],
+      ...overrides,
+    };
+  }
+
+  test('RL1: validateStepAcceptsMissingSupportsReviewerLanes', () => {
+    const cap = makeReviewerLaneCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [], onError: 'skip',
+      }],
+    });
+    const errors = validateCapability(cap, 'test-reviewer-lane-cap');
+    assert.deepEqual(errors, [], 'Expected no validateCapability errors: ' + JSON.stringify(errors));
+  });
+
+  test('RL2: validateStepAcceptsLiteralTrue', () => {
+    const cap = makeReviewerLaneCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [], onError: 'skip',
+        supportsReviewerLanes: true,
+      }],
+    });
+    const errors = validateCapability(cap, 'test-reviewer-lane-cap');
+    assert.deepEqual(errors, [], 'Expected no validateCapability errors: ' + JSON.stringify(errors));
+  });
+
+  test('RL3: validateStepAcceptsLiteralFalse', () => {
+    const cap = makeReviewerLaneCap({
+      steps: [{
+        point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [], onError: 'skip',
+        supportsReviewerLanes: false,
+      }],
+    });
+    const errors = validateCapability(cap, 'test-reviewer-lane-cap');
+    assert.deepEqual(errors, [], 'Expected no validateCapability errors: ' + JSON.stringify(errors));
+  });
+
+  for (const [label, badValue] of [
+    ['string', 'true'],
+    ['number', 1],
+    ['object', {}],
+    ['array', []],
+    ['null', null],
+  ]) {
+    test(`RL4-${label}: validateStepRejectsNonBoolean`, () => {
+      const cap = makeReviewerLaneCap({
+        steps: [{
+          point: 'execute:post', ref: { skill: 'test-skill' }, produces: [], consumes: [], onError: 'skip',
+          supportsReviewerLanes: badValue,
+        }],
+      });
+      const errors = validateCapability(cap, 'test-reviewer-lane-cap');
+      assert.ok(
+        errors.some((e) => e.includes('steps[0].supportsReviewerLanes must be a boolean if present')),
+        `Expected a supportsReviewerLanes type error for ${label}, got: ` + JSON.stringify(errors),
+      );
+    });
+  }
+
+  test('RL5: registryOptsInBothCodeReviewSteps (real capabilities/code-review/capability.json)', () => {
+    const codeReviewCapPath = path.join(ROOT, 'capabilities', 'code-review', 'capability.json');
+    const codeReviewCap = JSON.parse(fs.readFileSync(codeReviewCapPath, 'utf8'));
+    const errors = validateCapability(codeReviewCap, 'code-review');
+    assert.deepEqual(errors, [], 'Expected no validateCapability errors: ' + JSON.stringify(errors));
+    const postStep = codeReviewCap.steps.find((s) => s.point === 'execute:post' && s.ref && s.ref.skill === 'code-review');
+    const wavePostStep = codeReviewCap.steps.find((s) => s.point === 'execute:wave:post' && s.ref && s.ref.skill === 'code-review');
+    assert.ok(postStep, 'Expected an execute:post code-review step');
+    assert.ok(wavePostStep, 'Expected an execute:wave:post code-review step');
+    assert.strictEqual(postStep.supportsReviewerLanes, true, 'execute:post code-review step must declare supportsReviewerLanes: true');
+    assert.strictEqual(wavePostStep.supportsReviewerLanes, true, 'execute:wave:post code-review step must declare supportsReviewerLanes: true');
+  });
+});
+
 describe('validateCrossCapability adversarial cases', () => {
   test('duplicate skill ownership across two capabilities rejected', () => {
     const cap1 = { ...UI_CAP };

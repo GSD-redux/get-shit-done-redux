@@ -677,6 +677,54 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
       'code-review.md workflow missing dispatch_reviewer_lanes step');
   });
 
+  test('dispatch_reviewer_lanes resolves its own supportsReviewerLanes trait via loop render-hooks before matching flags', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    assert.match(stepContent, /gsd_run loop render-hooks "\$CODE_REVIEW_POINT" --raw/,
+      'must resolve its own active hook via the real loop render-hooks mechanism, not hand-roll a trait check');
+    assert.match(stepContent, /hook\.supportsReviewerLanes === true/,
+      'must gate on the literal supportsReviewerLanes trait value, not any other field');
+  });
+
+  // #4209 (maintainer redirect on issue #4209): the trait must actually gate the dispatch, not
+  // just exist declaratively — extract the real flag-matching fence from the live workflow and
+  // execute it, proving a matching CLI flag is ignored when the trait reads false.
+  function extractFlagMatchFence() {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    const start = stepContent.indexOf('EXPLICIT_JOINED=""');
+    assert.ok(start !== -1, 'expected the flag-matching fence in dispatch_reviewer_lanes');
+    const end = stepContent.indexOf('\nfi\n```', start);
+    assert.ok(end !== -1, 'unterminated flag-matching fence');
+    return stepContent.slice(start, end + '\nfi'.length);
+  }
+
+  function runFlagMatch(supportsReviewerLanes, cliArgs) {
+    const script = [
+      `GSD_TOOLS=${JSON.stringify(GSD_TOOLS_BIN)}`,
+      `SUPPORTS_REVIEWER_LANES=${JSON.stringify(supportsReviewerLanes)}`,
+      extractFlagMatchFence(),
+      'echo "SLUGS=${EXPLICIT_REVIEWER_SLUGS[*]}"',
+    ].join('\n');
+    const result = require('node:child_process').spawnSync(
+      'bash', ['-c', script, 'bash', ...cliArgs],
+      { encoding: 'utf8', timeout: 15000, cwd: REPO_ROOT },
+    );
+    return { stdout: result.stdout, stderr: result.stderr };
+  }
+
+  test('trait gate: a matching CLI flag resolves zero slugs when supportsReviewerLanes is false', () => {
+    const { stdout } = runFlagMatch('false', ['--codex']);
+    assert.match(stdout, /^SLUGS=\s*$/m, `expected zero slugs with the trait off, got: ${stdout}`);
+  });
+
+  test('trait gate: the same matching CLI flag resolves the slug when supportsReviewerLanes is true', () => {
+    const { stdout } = runFlagMatch('true', ['--codex']);
+    assert.match(stdout, /^SLUGS=codex\s*$/m, `expected the codex slug with the trait on, got: ${stdout}`);
+  });
+
   test('dispatch_reviewer_lanes step derives explicit flags from the roster, not a hand-maintained list', () => {
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow markdown, bounded author-controlled prose
     const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);

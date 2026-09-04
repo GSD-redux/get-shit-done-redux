@@ -556,48 +556,77 @@ the default and by far the common case:** this step is then a no-op — zero sel
 invoke calls — and the internal reviewer dispatch in `spawn_reviewer` stays byte-for-behavior
 unchanged from before #4209 (COMP-01).
 
-Match only flags the reviewer-lane roster itself declares — never a hand-maintained static list.
+This step is itself opt-in at the capability layer, not just the CLI-flag layer: `code-review`'s
+own capability step declares `supportsReviewerLanes: true` (the reusable trait `src/loop-resolver.cts`
+projects onto `activeHooks` — see `gsd-core/references/loop-hook-dispatch.md`). Resolve the active
+hook for the configured loop point and proceed to flag-matching ONLY when the trait reads `true` —
+this is what makes the mechanism reusable by any other capability step declaring the same trait,
+rather than this workflow hand-wiring a call only it can make:
+```bash
+CODE_REVIEW_POINT=$(gsd_run query config-get workflow.code_review_point --raw 2>/dev/null || echo "execute:post")
+REVIEWER_LANES_TRAIT_HOOKS_JSON=$(gsd_run loop render-hooks "$CODE_REVIEW_POINT" --raw 2>/dev/null)
+SUPPORTS_REVIEWER_LANES=$(echo "$REVIEWER_LANES_TRAIT_HOOKS_JSON" | node -e "
+  let raw = '';
+  process.stdin.on('data', (d) => { raw += d; });
+  process.stdin.on('end', () => {
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { parsed = { activeHooks: [] }; }
+    const hooks = parsed.activeHooks || [];
+    const hook = hooks.find((h) => h.capId === 'code-review' && h.ref && h.ref.skill === 'code-review');
+    process.stdout.write(hook && hook.supportsReviewerLanes === true ? 'true' : 'false');
+  });
+")
+```
+
+If `SUPPORTS_REVIEWER_LANES` is not `"true"`, set `EXTERNAL_EVIDENCE_BLOCK=""` and skip the rest of
+this step entirely — this is the trait's own inert-by-absence contract, independent of whichever
+CLI flags the user passed.
+
+Otherwise, match only flags the reviewer-lane roster itself declares — never a hand-maintained static list.
 `code-review-flags.cjs` stays untouched (COMP-01's parser contract); reviewer-lane flags are
 parsed separately, straight from the merged first-party + installed-overlay roster
 (`review-lane-descriptor.cjs`), so a flag with more than one alias (e.g. antigravity's
 `--antigravity`/`--agy`) resolves to its one canonical slug:
 ```bash
-# Resolve the lane-descriptor/capability-loader modules against $GSD_TOOLS's OWN directory
-# (already resolved by the `initialize` step across every supported install location — vendored
-# in-repo, ~/.claude, ~/.codex, etc.) rather than a cwd-relative './gsd-core/...' literal, which
-# only resolves when cwd happens to BE the vendored install root.
-GSD_LIB_DIR="${GSD_TOOLS%/*}/lib"
-EXPLICIT_JOINED_STDERR=$(mktemp)
-EXPLICIT_JOINED=$(GSD_LIB_DIR="$GSD_LIB_DIR" node -e "
-  const path = require('node:path');
-  const libDir = process.env.GSD_LIB_DIR;
-  const { REVIEWER_LANES, mergeReviewerLanes } = require(path.join(libDir, 'review-lane-descriptor.cjs'));
-  const capabilityLoader = require(path.join(libDir, 'capability-loader.cjs'));
-  let lanes = REVIEWER_LANES;
-  try {
-    const registry = capabilityLoader.loadRegistry({ includeInstalled: true, cwd: process.cwd() });
-    lanes = mergeReviewerLanes(REVIEWER_LANES, registry);
-  } catch { lanes = REVIEWER_LANES; }
-  const args = new Set(process.argv.slice(1));
-  const slugs = new Set();
-  for (const lane of lanes) {
-    const flags = Array.isArray(lane.flags) ? lane.flags : [];
-    if (flags.some((f) => args.has(f))) slugs.add(lane.slug);
-  }
-  process.stdout.write([...slugs].sort().join(','));
-" -- "$@" 2>"$EXPLICIT_JOINED_STDERR")
-# A resolution failure (e.g. an install layout `initialize` didn't anticipate) must be visible,
-# not a silent downgrade to "no reviewer-lane flags were passed" — but it also must not hard-fail
-# the whole `/gsd:code-review` run for users who never asked for a reviewer lane in the first
-# place, so this stays a warning, not a halt.
-if [ -s "$EXPLICIT_JOINED_STDERR" ]; then
-  echo "Warning: could not resolve the reviewer-lane roster ($(head -1 "$EXPLICIT_JOINED_STDERR")) — treating this run as if no reviewer-lane flags were passed." >&2
-fi
-rm -f "$EXPLICIT_JOINED_STDERR"
-
+EXPLICIT_JOINED=""
 EXPLICIT_REVIEWER_SLUGS=()
-if [ -n "$EXPLICIT_JOINED" ]; then
-  IFS=',' read -ra EXPLICIT_REVIEWER_SLUGS <<< "$EXPLICIT_JOINED"
+if [ "$SUPPORTS_REVIEWER_LANES" = "true" ]; then
+  # Resolve the lane-descriptor/capability-loader modules against $GSD_TOOLS's OWN directory
+  # (already resolved by the `initialize` step across every supported install location — vendored
+  # in-repo, ~/.claude, ~/.codex, etc.) rather than a cwd-relative './gsd-core/...' literal, which
+  # only resolves when cwd happens to BE the vendored install root.
+  GSD_LIB_DIR="${GSD_TOOLS%/*}/lib"
+  EXPLICIT_JOINED_STDERR=$(mktemp)
+  EXPLICIT_JOINED=$(GSD_LIB_DIR="$GSD_LIB_DIR" node -e "
+    const path = require('node:path');
+    const libDir = process.env.GSD_LIB_DIR;
+    const { REVIEWER_LANES, mergeReviewerLanes } = require(path.join(libDir, 'review-lane-descriptor.cjs'));
+    const capabilityLoader = require(path.join(libDir, 'capability-loader.cjs'));
+    let lanes = REVIEWER_LANES;
+    try {
+      const registry = capabilityLoader.loadRegistry({ includeInstalled: true, cwd: process.cwd() });
+      lanes = mergeReviewerLanes(REVIEWER_LANES, registry);
+    } catch { lanes = REVIEWER_LANES; }
+    const args = new Set(process.argv.slice(1));
+    const slugs = new Set();
+    for (const lane of lanes) {
+      const flags = Array.isArray(lane.flags) ? lane.flags : [];
+      if (flags.some((f) => args.has(f))) slugs.add(lane.slug);
+    }
+    process.stdout.write([...slugs].sort().join(','));
+  " -- "$@" 2>"$EXPLICIT_JOINED_STDERR")
+  # A resolution failure (e.g. an install layout `initialize` didn't anticipate) must be visible,
+  # not a silent downgrade to "no reviewer-lane flags were passed" — but it also must not hard-fail
+  # the whole `/gsd:code-review` run for users who never asked for a reviewer lane in the first
+  # place, so this stays a warning, not a halt.
+  if [ -s "$EXPLICIT_JOINED_STDERR" ]; then
+    echo "Warning: could not resolve the reviewer-lane roster ($(head -1 "$EXPLICIT_JOINED_STDERR")) — treating this run as if no reviewer-lane flags were passed." >&2
+  fi
+  rm -f "$EXPLICIT_JOINED_STDERR"
+
+  if [ -n "$EXPLICIT_JOINED" ]; then
+    IFS=',' read -ra EXPLICIT_REVIEWER_SLUGS <<< "$EXPLICIT_JOINED"
+  fi
 fi
 ```
 

@@ -82,6 +82,7 @@ Steps run at a loop extension point as independent units. Ordering within a poin
 | `onError` | `"skip"` \| `"halt"` | Yes | Behaviour on failure; must be present and one of `"skip"` or `"halt"` (an omitted `onError` fails validation). Steps are purely additive — they never halt or redirect the host workflow on their own; a blocking precondition is expressed as a `gate`. |
 | `when` | string | No | Dotted config key; the step is active only when the key is truthy. Evaluated deterministically at render time; phase-context applicability is the skill's own responsibility. |
 | `fragment` | object | No | Optional inline-or-file prompt fragment attached to the step, with the **same** `{ "path": "<relative path>" }` or `{ "inline": "<string>" }` semantics as a contribution's `fragment`. A `path` is materialised (read and inlined) at load time, resolved against the capability directory and confined to it (`..` traversal is rejected). |
+| `supportsReviewerLanes` | boolean | No | Strict opt-in trait (#4209): declares that this step's dispatch target accepts external reviewer-lane evidence. Only a literal `true` opts in — every other type fails validation, and `false`/omitted are inert (no reviewer-lane behaviour, no key on the projected active hook). Step-scoped, not capability-wide. |
 
 ### `contributions`
 
