@@ -892,7 +892,7 @@ function scanQuantitativeCriteria(content: string): { errors: string[]; warnings
       // backtick before the command — criteria are prose lines like
       // "- `$NOKEY npx tsx x.ts` exits 0" — but nothing else: the expansion
       // must still be the FIRST token of the command itself.
-      if (/^(?:[-*]\s*)?`?\$[A-Z_][A-Z0-9_]*\s/.test(seg)) {
+      if (/^(?:[-*]\s*)?\u0060?\$[A-Z_][A-Z0-9_]*\s/.test(seg)) {
         record(
           errors,
           'R3',
@@ -947,7 +947,7 @@ function scanQuantitativeCriteria(content: string): { errors: string[]; warnings
         // The argument span ends at the closing backtick of an inline-code
         // span ("`git diff` shows ..."), at a redirection, or at a chain
         // operator — trailing prose must never read as diff arguments.
-        const bareDiff = /\bgit\s+diff\b([^`\n|;&<>]*)/.exec(seg);
+        const bareDiff = /\bgit\s+diff\b([^\u0060\n|;&<>]*)/.exec(seg);
         if (bareDiff) {
           const rest = bareDiff[1].trim();
           // Bare or flags-only (no rev, range, or path): ambiguous between an
