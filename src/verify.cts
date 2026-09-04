@@ -906,6 +906,10 @@ function scanQuantitativeCriteria(content: string): { errors: string[]; warnings
       // R4 — a fallible `git …` in a non-final pipeline stage: the pipeline
       // reports the LAST stage's status, so git's failure is swallowed.
       // Warn-only: without a status assertion the shape is ambiguous.
+      // Not a markdown table: the negated-pipe class matches a SHELL pipeline
+      // stage boundary (git before the next `|`), the same shape the
+      // #429/#968 scanners use; there is no table row to parse.
+      // allow-adhoc-markdown: shell pipeline stage boundary, not a table cell (#4024)
       if (/\bgit\s+[a-z][^\n|]*\|/.test(seg)) {
         record(
           warnings,

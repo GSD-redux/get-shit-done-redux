@@ -5067,12 +5067,7 @@ describe('#4024: scanQuantitativeCriteria — pure unit tests', () => {
 
   // Rows 17+18 — fail open / negative space
   test('#4024 fail-open: text outside criteria zones and plans without criteria are silent', () => {
-    const outside = makeCriteriaPlan(
-      '  - Each test discriminates.',
-      "grep -c 'unassignedTabs' store.ts == 2",
-    );
-    // The == 2 gate above sits in <automated>, which IS a criteria zone — so
-    // instead prove zone-scope with an <action>-only trap:
+    // Zone-scope proof: an <action>-only trap must not be judged.
     const actionOnly = CRITERIA_PLAN_HEAD.concat([
       '<task type="auto">',
       '  <name>Task 1</name>',
