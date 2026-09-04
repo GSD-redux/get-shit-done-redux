@@ -95,7 +95,7 @@ const FIXTURE_CRASH_TAP = [
 ].join('\n');
 
 /** Row 6: an unrelated test fails — a real assertion, but not the target test. */
-const UNRELATED_FAILURE_TAP = TARGET_FAILURE_TAP.replace(
+const UNRELATED_FAILURE_TAP = TARGET_FAILURE_TAP.replaceAll(
   'rejects empty email',
   'unrelated legacy behavior',
 );
