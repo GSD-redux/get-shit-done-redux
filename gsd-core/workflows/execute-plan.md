@@ -443,12 +443,14 @@ if [ "$IS_WORKTREE" != "true" ]; then
   # Advance plan counter (handles last-plan edge case).
   #
   # #3830/#3862: advance-plan can REFUSE at exit 0 — read its answer. ALLOW-LIST:
-  # only the two shapes below advanced; a refusal, an exit-0 {"error": ...}, a reason
-  # added later, or an empty capture all stop. Enforced by tests/state.test.cjs.
+  # only the shapes on the first arm owe the recording below — a real advance, the
+  # ordinary last plan, and #4067's `plans_outstanding` (THIS plan is done; sibling
+  # executors are still writing theirs). A refusal, an exit-0 {"error": ...}, a
+  # reason added later, or an empty capture all stop. Enforced by tests/state.test.cjs.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
   ADVANCE_RC=$?
   case "${ADVANCE_OUT}" in
-    *'"advanced": true'*|*'"reason": "last_plan"'*)
+    *'"advanced": true'*|*'"reason": "last_plan"'*|*'"reason": "plans_outstanding"'*)
       # Recalculate progress bar from disk state
       gsd_run query state.update-progress
 

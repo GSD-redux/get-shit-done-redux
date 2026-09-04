@@ -3171,17 +3171,19 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     }
   });
 
-  test('each caller ALLOW-LISTS the two answers that advanced, rather than deny-listing', () => {
+  test('each caller ALLOW-LISTS the answers that owe recording, rather than deny-listing', () => {
     // #3862 RV6.5 pass 3 (MISSED) and its follow-through. The first shape here was
     // a deny-list — stop on position_diverged, stop on {"error": ...}, and let the
     // catch-all write. That writes on every shape it has not been taught about: a
     // crashed or missing gsd_run leaving the capture EMPTY (verified against the
     // pre-fix source — update-progress ran, no STOP printed), and equally any
-    // refusal reason the verb grows later. Only two answers moved the phase
-    // forward, so only those two may record.
+    // refusal reason the verb grows later. Three answers mean this plan's work is
+    // recorded — a real advance, the ordinary last plan, and #4067's
+    // `plans_outstanding` (this plan done, siblings still writing) — so exactly
+    // those three may record, and the arm names each one.
     for (const { name, block } of callerFiles()) {
-      assert.ok(/^\s*\*'"advanced": true'\*\|\*'"reason": "last_plan"'\*\)/m.test(block),
-        `${name} must open its writing arm on the two advancing answers explicitly, not on a catch-all`);
+      assert.ok(/^\s*\*'"advanced": true'\*\|\*'"reason": "last_plan"'\*\|\*'"reason": "plans_outstanding"'\*\)/m.test(block),
+        `${name} must open its writing arm on the three recording answers explicitly, not on a catch-all`);
       const invIdx = block.search(INVOKES);
       const preCase = block.slice(invIdx, block.indexOf('case "', invIdx));
       assert.ok(/\$\?/.test(preCase),
@@ -3287,18 +3289,29 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       'Phase: 01 (Demo Phase) — EXECUTING', planLine,
       'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
     ].join('\n');
-    const seed = (planCount) => {
+    const seed = (planCount, summaries = true) => {
       const phaseDir = path.join(projectDir, '.planning', 'phases', '01-demo');
       fs.mkdirSync(phaseDir, { recursive: true });
       for (let i = 1; i <= planCount; i++) {
         const id = String(i).padStart(2, '0');
         fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
-        fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+        if (summaries) {
+          fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+        }
       }
     };
     const put = (planLine) =>
       fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), stateWith(planLine));
     const advanceOut = () => runGsdTools('state advance-plan', projectDir).output;
+
+    // Eighth shape, and the first one the callers are TAUGHT rather than fail closed
+    // on: #4292 (fix #4067) landed on next in round 7 and re-decides the completion
+    // branch from disk, declining `plans_outstanding` while sibling plans have no
+    // SUMMARY.md yet. That answer is the wave-parallel executor's ordinary end of a
+    // plan, so it owes the recording — arm 0, with `advanced: true` and `last_plan`.
+    // Produced FIRST, before seed() writes the summaries: seed only ever adds files.
+    seed(12, false);
+    put('Plan: 12 of 12'); const OUT_OUTSTANDING = advanceOut();
 
     seed(12);
 
@@ -3354,6 +3367,8 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       'fixture did not produce #4028\'s ambiguous-position refusal');
     assert.match(OUT_AMBIGUOUS_PLAN, /"reason":\s*"ambiguous_plan_position"/,
       'fixture did not produce #3791\'s ambiguous-plan refusal');
+    assert.match(OUT_OUTSTANDING, /"reason":\s*"plans_outstanding"/,
+      'fixture did not produce #4067\'s plans_outstanding decline');
 
     // Lift the caller's own `case` block and replace each arm BODY with an echo of
     // its index, leaving every PATTERN byte-identical to what ships.
@@ -3367,12 +3382,14 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
         .map((l) => l.slice(0, -1));
     };
 
-    // Arm 0 records (advance + last_plan); arm 1 is the named divergence stop; the
-    // final arm is the catch-all. An answer the callers were never taught must reach
-    // the catch-all — that is the allow-list property, checked against real bytes.
+    // Arm 0 records (advance + last_plan + #4067's plans_outstanding); arm 1 is the
+    // named divergence stop; the final arm is the catch-all. An answer the callers
+    // were never taught must reach the catch-all — that is the allow-list property,
+    // checked against real bytes.
     const EXPECT = [
       ['a real advance',        OUT_ADVANCED, 0],
       ['the last plan',         OUT_LAST,     0],
+      ['#4067 plans outstanding', OUT_OUTSTANDING, 0],
       ['a divergence refusal',  OUT_DIVERGED, 1],
       ['an exit-0 error object', OUT_ERROR,   'last'],
       ['#4028 ambiguous position', OUT_AMBIGUOUS, 'last'],

@@ -764,13 +764,14 @@ After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named 
 ```bash
 # Advance the plan counter, then READ the answer: the steps below assume it moved.
 # advance-plan refuses when `## Current Position` disagrees with the plans on disk
-# (stdout, exit 0; #3830). ALLOW-LIST: only a real advance and the ordinary last
-# plan (`advanced: false` WITH `reason: last_plan`) owe the recording below; any
+# (stdout, exit 0; #3830). ALLOW-LIST: only a real advance, the ordinary last plan
+# (`advanced: false` WITH `reason: last_plan`) and #4067's `plans_outstanding` (THIS
+# plan is done; siblings are still writing theirs) owe the recording below; any
 # other answer stops — a refusal, an exit-0 `{"error": ...}`, an empty capture.
 ADVANCE_OUT=$(gsd_run query state.advance-plan)
 ADVANCE_RC=$?
 case "${ADVANCE_OUT}" in
-  *'"advanced": true'*|*'"reason": "last_plan"'*)
+  *'"advanced": true'*|*'"reason": "last_plan"'*|*'"reason": "plans_outstanding"'*)
     # Recalculate progress bar from disk state
     gsd_run query state.update-progress
 
