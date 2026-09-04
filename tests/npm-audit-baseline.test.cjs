@@ -20,10 +20,12 @@ const {
   diffNewVulnerablePackages,
   evaluateAuditDiff,
   runPackageLockAudit,
+  runInstalledTreeAudit,
   runNpmAuditWithRetry,
   extractBaselineTree,
   resolveBaselineRef,
   isTimeoutKill,
+  buildTimeoutKillError,
   AUDIT_BACKOFF_BASE_MS,
   NULL_SHA,
 } = require('../scripts/npm-audit-baseline.cjs');
@@ -298,6 +300,29 @@ describe('runPackageLockAudit', () => {
   });
 });
 
+// ─── runInstalledTreeAudit (filesystem-only skip conditions, no registry) ──
+
+describe('runInstalledTreeAudit', () => {
+  test('missing package.json -> null', () => {
+    const dir = createTempDir('gsd-audit-installed-empty-');
+    try {
+      assert.strictEqual(runInstalledTreeAudit(dir), null);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('package.json present but no node_modules -> null', () => {
+    const dir = createTempDir('gsd-audit-installed-nomodules-');
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"nomodules"}');
+      assert.strictEqual(runInstalledTreeAudit(dir), null);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
 // ─── isTimeoutKill ───────────────────────────────────────────────────────────
 
 describe('isTimeoutKill', () => {
@@ -328,6 +353,29 @@ describe('isTimeoutKill', () => {
 
   test('plain object with no killed/signal keys at all -> false', () => {
     assert.strictEqual(isTimeoutKill({}), false);
+  });
+});
+
+// ─── buildTimeoutKillError ───────────────────────────────────────────────────
+
+describe('buildTimeoutKillError', () => {
+  test('default attempts (1) uses singular ms-based phrasing, not "N attempts"', () => {
+    const err = buildTimeoutKillError('/some/dir', { stderr: 'some stderr text' });
+    assert.match(err.message, /npm audit timed out after \d+ms/);
+    assert.doesNotMatch(err.message, /attempts/);
+    assert.match(err.message, /some stderr text/);
+  });
+
+  test('attempts > 1 uses plural "N attempts" phrasing with backoff mention', () => {
+    const err = buildTimeoutKillError('/some/dir', { stderr: '' }, 3);
+    assert.match(err.message, /npm audit timed out after 3 attempts/);
+    assert.match(err.message, /exponential backoff/);
+  });
+
+  test('no error object at all still produces a message, no crash', () => {
+    const err = buildTimeoutKillError('/some/dir', undefined);
+    assert.match(err.message, /npm audit timed out after \d+ms/);
+    assert.match(err.message, /no stderr was captured/);
   });
 });
 

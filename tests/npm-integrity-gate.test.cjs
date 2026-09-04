@@ -209,12 +209,27 @@ const {
   resolveBaselineRef,
   AUDIT_ATTEMPT_TIMEOUT_MS,
   AUDIT_MAX_ATTEMPTS,
+  AUDIT_BACKOFF_BASE_MS,
 } = require('../scripts/npm-audit-baseline.cjs');
 const { cleanup, createTempDir } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SDK = path.join(ROOT, 'sdk');
-const TEST_TIMEOUT_MS = (AUDIT_ATTEMPT_TIMEOUT_MS * AUDIT_MAX_ATTEMPTS) + 30_000; // worst-case retry budget + margin
+
+// Worst case for ONE retry-audit call: every attempt times out, with
+// exponential backoff between each (AUDIT_MAX_ATTEMPTS - 1 gaps) -- computed
+// with the SAME formula scripts/npm-audit-baseline.cjs uses internally, so
+// this can't independently drift from the real backoff schedule.
+let totalBackoffMs = 0;
+for (let attempt = 1; attempt < AUDIT_MAX_ATTEMPTS; attempt += 1) {
+  totalBackoffMs += AUDIT_BACKOFF_BASE_MS * (2 ** (attempt - 1));
+}
+const SINGLE_AUDIT_WORST_CASE_MS = (AUDIT_ATTEMPT_TIMEOUT_MS * AUDIT_MAX_ATTEMPTS) + totalBackoffMs;
+// checkTreeAgainstBaseline makes up to TWO sequential retry-audit calls
+// (auditProductionVulns for HEAD, runPackageLockAudit for the baseline) --
+// budget for both exhausting retries simultaneously, or node:test's own
+// timeout fires first and masks buildTimeoutKillError's clear message.
+const TEST_TIMEOUT_MS = (SINGLE_AUDIT_WORST_CASE_MS * 2) + 30_000;
 
 function auditProductionVulns(cwd, opts = {}) {
   return runInstalledTreeAudit(cwd, opts);
