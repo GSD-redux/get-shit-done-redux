@@ -138,7 +138,7 @@ The `GSD_DIR` value emitted by `get_installed_version` (line 4) resolves to the 
 
 ```bash
 uc_field() {
-  printf '%s' "${2:-$UC}" | node -e "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const v=JSON.parse(d)[process.argv[1]];process.stdout.write(v==null?'':String(v));}catch{}})" "$1" 2>/dev/null
+  printf '%s' "$2" | node -e "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const v=JSON.parse(d)[process.argv[1]];process.stdout.write(v==null?'':String(v));}catch{}})" "$1" 2>/dev/null
 }
 if LATEST_RESULT="$(node "$GSD_DIR/gsd-core/bin/check-latest-version.cjs" --json --tag "$TAG" 2>/dev/null)"; then
   LATEST_STATUS=0

@@ -155,6 +155,14 @@ describe('resolveUpdateContext: runtime probing + env overrides', () => {
     assert.ok(sameDir(r.gsdDir, custom), `gsdDir was ${r.gsdDir}`);
     assert.equal(r.installedVersion, '1.41.0');
   });
+
+  test('preferredConfigDir fast-path: unknown dir with no preferredRuntime resolves runtime empty (#4153)', () => {
+    const custom = '/opt/custom-gsd';
+    const fs = fakeFs({ [ver(custom)]: '1.0.0\n', [marker(custom)]: 'x' });
+    const r = resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs, preferredConfigDir: custom });
+    assert.equal(r.scope, 'GLOBAL');
+    assert.equal(r.runtime, '', 'a dir matching no RUNTIME_DIRS suffix, marker, or env must fail closed, not default to claude');
+  });
 });
 
 describe('gsd-tools update-context (CLI): emits the JSON contract', () => {
