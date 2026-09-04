@@ -297,7 +297,7 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
     assert.match(sequential, /ORCHESTRATOR_WT/, 'the pin must come from the already-validated orchestrator root');
     assert.match(
       sequential,
-      /replace[^\n]*PROJECT_ROOT=\$\(git rev-parse --show-toplevel[^\n]*literal/i,
+      /replace[\s\S]*PROJECT_ROOT=\$\(git rev-parse --show-toplevel[\s\S]*literal value/i,
       'sequential composition must replace worker-side root derivation with the literal pin',
     );
   });
