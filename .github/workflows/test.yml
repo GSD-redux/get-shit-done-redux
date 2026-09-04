@@ -11,6 +11,15 @@ on:
     branches:
       - next
       - main
+  # #4241: GitHub's merge queue fires `merge_group`, not `pull_request` or
+  # `push`, for the temporary merge-group commit it creates. Without this
+  # trigger, `required-tests` (the registered "Required tests" branch-
+  # protection check) never schedules for a queued PR and the queue stalls
+  # waiting on a check that never runs. See:
+  # https://docs.github.com/en/actions/how-tos/using-features-for-actions/using-merge-queues
+  # This is prerequisite wiring only — the merge queue itself is enabled via
+  # a separate, manual "Require merge queue" branch-protection toggle.
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -127,6 +136,33 @@ jobs:
       - name: Lint — all (ESLint, skill deps, test-file count, command contract, PR checks, legacy name, regression-test names, resolution-provenance)
         run: npm run lint:ci
 
+  # #3751 (decision 1): provision the claude CLI so plugin-manifest's C2 tier
+  # (`claude plugin validate --strict`) is a real CI gate instead of a
+  # local-only check. Dedicated job — the matrix lanes stay CLI-free.
+  plugin-validate:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # #2665 round 4: every job that runs the suite wires the strict guard
+      # (job-level env, where the live-config-guard derivation reads it).
+      GSD_STRICT_LIVE_CONFIG_GUARD: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          token: ${{ github.token }}
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: 24
+      - name: Install dev dependencies
+        run: npm ci --ignore-scripts
+      - name: Install claude CLI (C2 gate dependency, #3751)
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Run plugin-manifest suite (C1+C2+C3)
+        run: node scripts/run-tests.cjs --files plugin-manifest.test.cjs
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, preflight]
@@ -196,7 +232,15 @@ jobs:
       # even when a rebase-merged PR lands as multiple discrete commits in
       # one push (HEAD~1 would be wrong there: it could already contain an
       # earlier commit's newly-introduced vulnerable package, masking it).
-      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || '' }}
+      # #4241: a merge_group event carries no pull_request/push context, so
+      # without this arm it silently fell through to the '' branch --
+      # resolveBaselineRef()'s documented-unreachable origin/next live-tip
+      # fallback (npm-audit-baseline.cjs), reopening the exact race #4196
+      # fixed, but only for merge-queue runs. github.event.merge_group.base_sha
+      # is "the SHA of the merge group's parent commit" (GitHub's merge_group
+      # webhook payload) -- the base tip the temporary merge-group commit was
+      # built against, pinned for the life of the run same as the other two arms.
+      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || (github.event_name == 'merge_group' && github.event.merge_group.base_sha) || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -436,7 +480,15 @@ jobs:
       # even when a rebase-merged PR lands as multiple discrete commits in
       # one push (HEAD~1 would be wrong there: it could already contain an
       # earlier commit's newly-introduced vulnerable package, masking it).
-      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || '' }}
+      # #4241: a merge_group event carries no pull_request/push context, so
+      # without this arm it silently fell through to the '' branch --
+      # resolveBaselineRef()'s documented-unreachable origin/next live-tip
+      # fallback (npm-audit-baseline.cjs), reopening the exact race #4196
+      # fixed, but only for merge-queue runs. github.event.merge_group.base_sha
+      # is "the SHA of the merge group's parent commit" (GitHub's merge_group
+      # webhook payload) -- the base tip the temporary merge-group commit was
+      # built against, pinned for the life of the run same as the other two arms.
+      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || (github.event_name == 'merge_group' && github.event.merge_group.base_sha) || '' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -539,7 +591,15 @@ jobs:
       # even when a rebase-merged PR lands as multiple discrete commits in
       # one push (HEAD~1 would be wrong there: it could already contain an
       # earlier commit's newly-introduced vulnerable package, masking it).
-      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || '' }}
+      # #4241: a merge_group event carries no pull_request/push context, so
+      # without this arm it silently fell through to the '' branch --
+      # resolveBaselineRef()'s documented-unreachable origin/next live-tip
+      # fallback (npm-audit-baseline.cjs), reopening the exact race #4196
+      # fixed, but only for merge-queue runs. github.event.merge_group.base_sha
+      # is "the SHA of the merge group's parent commit" (GitHub's merge_group
+      # webhook payload) -- the base tip the temporary merge-group commit was
+      # built against, pinned for the life of the run same as the other two arms.
+      AUDIT_BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before) || (github.event_name == 'merge_group' && github.event.merge_group.base_sha) || '' }}
     strategy:
       fail-fast: false
       matrix:

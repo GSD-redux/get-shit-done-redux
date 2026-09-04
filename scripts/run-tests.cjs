@@ -957,6 +957,34 @@ function rankChunkFilesByWeight(files, weightOf, timingsTable) {
     });
 }
 
+// #4020 / #4220: pure helper extracted from main()'s temp-sweep protection
+// block. Walks each selected file's ancestor directories, protecting every
+// one from a later temp-sweep, stopping either at runTempRoot or at the
+// filesystem root. Termination uses a FIXED-POINT check (stop when
+// dirnameImpl(cur) === cur) instead of a POSIX-only length sentinel
+// (`cur.length > 1`): path.posix.dirname('/') === '/' (length 1) correctly
+// stops, but path.win32.dirname('C:\\') === 'C:\\' (length 3) never
+// satisfies a length check, so the old logic spun forever on Windows
+// whenever a selected file lived outside runTempRoot — the common case,
+// since most selected test files live in the repo checkout, not the temp
+// root (root-caused every Windows CI shard timing out since #4207). The
+// injectable dirnameImpl lets tests exercise path.win32/path.posix behavior
+// directly without a real Windows/POSIX runner.
+function computeSweepProtectSet(selectedFiles, runTempRoot, dirnameImpl = require('path').dirname) {
+  const protectSet = new Set();
+  for (const f of selectedFiles) {
+    let cur = f;
+    while (cur && cur !== runTempRoot) {
+      const parent = dirnameImpl(cur);
+      if (parent === cur) break; // cur IS the filesystem root — never protect it, just stop
+      protectSet.add(cur);
+      cur = parent;
+    }
+    if (cur === runTempRoot) protectSet.add(f); // exact-file case
+  }
+  return protectSet;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const parsed = parseArgs(args);
@@ -1135,18 +1163,7 @@ function main() {
   // chunk still runs — a harness may stage synthetic test files under the run
   // root (tests/run-tests-harness.test.cjs's 30-file chunking fixture). Protect
   // every ancestor of every selected file that lies INSIDE the run root.
-  const sweepProtectSet = new Set();
-  {
-    const { dirname } = require('path');
-    for (const f of selected) {
-      let cur = f;
-      while (cur && cur !== runTempRoot && cur.length > 1) {
-        sweepProtectSet.add(cur);
-        cur = dirname(cur);
-      }
-      if (cur === runTempRoot) sweepProtectSet.add(f); // exact-file case
-    }
-  }
+  const sweepProtectSet = computeSweepProtectSet(selected, runTempRoot);
 
   // Sandbox the overlay home so the loader's global scan ($GSD_HOME/.gsd/capabilities)
   // cannot read a developer's real installed capabilities during tests (ADR-1244 D2).
@@ -1643,4 +1660,8 @@ module.exports = {
   setupRunTempRoot,
   sweepRunTempRoot,
   assertTempRootBounded,
+  // #4220: extracted for in-process unit coverage of the ancestor-walk
+  // termination logic (Windows drive-root hang fix) without a real
+  // Windows/POSIX runner.
+  computeSweepProtectSet,
 };

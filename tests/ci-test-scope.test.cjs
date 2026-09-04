@@ -599,6 +599,49 @@ describe('test-full shard matrix parity (#1212)', () => {
       'required-tests must `needs: test-full` so all shard legs aggregate into the gate',
     );
   });
+
+  test('workflow triggers on merge_group (#4241)', () => {
+    // GitHub's merge queue fires `merge_group`, not `pull_request` or `push`,
+    // for the temporary merge-group commit it creates. Without this trigger
+    // the whole workflow — and therefore `required-tests` — never schedules
+    // for a queued PR, silently stalling the merge queue on a check that
+    // never runs. `on.merge_group` has no required config, so its presence
+    // as a key (even with a `null`/empty value) is what matters here.
+    const text = fs.readFileSync(path.join(WORKFLOWS_DIR, 'test.yml'), 'utf8');
+    const doc = yaml.load(text);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(doc.on, 'merge_group'),
+      'test.yml must trigger `on: merge_group` so required-tests schedules for merge-queue commits',
+    );
+  });
+
+  test('every AUDIT_BASELINE_REF pin covers merge_group, not just pull_request/push (#4241)', () => {
+    // scripts/npm-audit-baseline.cjs's resolveBaselineRef() documents its
+    // origin/next live-tip fallback as UNREACHABLE from CI because
+    // AUDIT_BASELINE_REF is "always set by test.yml". A merge_group event
+    // carries neither pull_request nor push context, so a ternary that only
+    // branches on those two silently falls through to '' for a merge-queue
+    // run -- reopening the exact origin/next-can-advance-mid-run race #4196
+    // fixed, but only for merge_group. Every job that sets AUDIT_BASELINE_REF
+    // must also branch on merge_group, using merge_group.base_sha (the base
+    // tip the temporary merge-group commit was built against).
+    const text = fs.readFileSync(path.join(WORKFLOWS_DIR, 'test.yml'), 'utf8');
+    const doc = yaml.load(text);
+
+    const jobsUnderTest = Object.entries(doc.jobs).filter(
+      ([, job]) => job.env && typeof job.env.AUDIT_BASELINE_REF === 'string',
+    );
+    assert.ok(jobsUnderTest.length >= 3, `expected at least 3 jobs to pin AUDIT_BASELINE_REF, got ${jobsUnderTest.length}`);
+
+    for (const [name, job] of jobsUnderTest) {
+      const expr = job.env.AUDIT_BASELINE_REF;
+      assert.ok(
+        expr.includes("github.event_name == 'merge_group'") && expr.includes('github.event.merge_group.base_sha'),
+        `job ${name}: AUDIT_BASELINE_REF must branch on merge_group using ` +
+        `github.event.merge_group.base_sha, got: ${expr}`,
+      );
+    }
+  });
 });
 
 describe('emitted-provenance selection (#1691 drift guard, retargeted by #2724)', () => {

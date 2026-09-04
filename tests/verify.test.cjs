@@ -1620,6 +1620,50 @@ describe('verify artifacts command', () => {
       `Expected "No must_haves.artifacts" in error: ${output.error}`
     );
   });
+
+  // A non-empty artifacts block whose items are all bare strings (prose bullets
+  // with no `path:` key) is item-by-item skipped, leaving zero checked results.
+  // The verdict must not read GREEN over an empty result set — mirrors the
+  // positive-evidence floor at src/uat-predicate.cts (no vacuous pass). (#3956)
+  test('does not report a vacuous pass for an all-string artifacts block (#3956)', () => {
+    writePlanWithArtifacts(tmpDir, [
+      '- login flow implemented',
+      '- user can reset password',
+    ]);
+
+    const result = runGsdTools('verify artifacts .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 0, `Expected zero checked artifacts: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.all_passed,
+      false,
+      `Expected all_passed false over a zero-check block: ${JSON.stringify(output)}`
+    );
+  });
+
+  // A MIXED artifacts block (one bare-string prose bullet + one well-formed
+  // `path:` entry) must not be disturbed by the positive-evidence floor: the
+  // string is item-skipped, the real entry is checked, results.length === 1 > 0,
+  // and the verdict follows that single item — not a vacuous pass, not a false
+  // fail. Guards the floor against over-rejecting a partial block. (#3956)
+  test('mixed artifacts block: bare string is skipped, real entry drives a passing verdict (#3956)', () => {
+    writePlanWithArtifacts(tmpDir, [
+      '- login flow implemented',
+      '- path: "src/app.js"',
+      '  min_lines: 2',
+      '  contains: "export"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'app.js'), 'const x = 1;\nexport default x;\n');
+
+    const result = runGsdTools('verify artifacts .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 1, `Expected exactly the one checkable entry: ${JSON.stringify(output)}`);
+    assert.strictEqual(output.all_passed, true, `Expected all_passed true from the real entry: ${JSON.stringify(output)}`);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1849,6 +1893,51 @@ describe('verify key-links command', () => {
       output.error.includes('No must_haves.key_links'),
       `Expected "No must_haves.key_links" in error: ${output.error}`
     );
+  });
+
+  // A non-empty key_links block whose items are all bare strings (prose bullets
+  // with no `from:` key) is item-by-item skipped, leaving zero checked results.
+  // A pending link (a `from:` file promised by a same-or-later-wave plan) is a
+  // real parsed object that IS pushed to results, so this floor keys on the
+  // empty-result case only and does not disturb #1202 pending semantics. (#3956)
+  test('does not report a vacuous pass for an all-string key_links block (#3956)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- source calls the reset endpoint',
+      '- token is persisted',
+    ]);
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 0, `Expected zero checked links: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.all_verified,
+      false,
+      `Expected all_verified false over a zero-check block: ${JSON.stringify(output)}`
+    );
+  });
+
+  // A MIXED key_links block (one bare-string prose bullet + one well-formed
+  // `from:`/`to:` link) must not be disturbed by the positive-evidence floor:
+  // only the bare string is skipped, the real link is checked, results.length
+  // === 1 > 0, and the verdict follows that single link. (#3956)
+  test('mixed key_links block: bare string is skipped, real link drives a passing verdict (#3956)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- source calls the reset endpoint',
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "import.*b"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), "import { x } from './b';\n");
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'exports.x = 1;\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 1, `Expected exactly the one checkable link: ${JSON.stringify(output)}`);
+    assert.strictEqual(output.all_verified, true, `Expected all_verified true from the real link: ${JSON.stringify(output)}`);
   });
 
   // ── #3493: path confinement — from:/to: are untrusted plan frontmatter and
