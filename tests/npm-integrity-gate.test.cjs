@@ -250,14 +250,32 @@ function auditProductionVulns(cwd, { execFileSyncImpl = execFileSync } = {}) {
         break;
       }
       // `npm audit` exits non-zero when advisories are present; the JSON is
-      // still on stdout in that case. Recover and let the assertion classify.
-      if (e && typeof e.stdout !== 'undefined' && e.stdout !== undefined && e.stdout !== null) {
-        out = Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout);
+      // still on stdout in that case. Recover and let the assertion classify —
+      // but only when stdout actually CARRIES the JSON. A killed or aborted
+      // audit exits non-zero with EMPTY stdout (npm writes plain-text errors
+      // to stderr); accepting the empty string here used to surface as
+      // `SyntaxError: Unexpected end of JSON input` at the parse below, hiding
+      // the real cause. Keep the candidate loop going and let the explicit
+      // empty-output throw below name npm's stderr instead.
+      const recovered = e && typeof e.stdout !== 'undefined' && e.stdout !== null
+        ? (Buffer.isBuffer(e.stdout) ? e.stdout.toString('utf-8') : String(e.stdout))
+        : '';
+      if (recovered.trim()) {
+        out = recovered;
         lastErr = null;
         break;
       }
       lastErr = e;
     }
+  }
+  if (!out || !out.trim()) {
+    const detail = lastErr
+      ? [lastErr.stdout, lastErr.stderr, String(lastErr.message)].filter(Boolean).join('\n').slice(0, 500)
+      : '(no error captured)';
+    throw new Error(
+      `npm audit --json produced no output. ` +
+        `Detail from the failed invocation:\n${detail}`
+    );
   }
   if (lastErr) throw lastErr;
   const parsed = JSON.parse(out);
