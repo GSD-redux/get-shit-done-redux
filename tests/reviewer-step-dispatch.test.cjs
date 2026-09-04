@@ -504,7 +504,11 @@ describe('dispatchReviewerLanes — fail-closed: budget overflow', () => {
     ]);
     const plan = spy((lane) => okPlan(lane.slug));
     const invoke = spy(() => ({ ok: true }));
-    const writePromptFile = spy(() => { throw new Error('boom: disk full'); });
+    let writeCalls = 0;
+    const writePromptFile = spy(() => {
+      writeCalls += 1;
+      if (writeCalls === 1) throw new Error('boom: disk full');
+    });
 
     const result = await dispatchReviewerLanes(
       baseInput({ selection: { explicitFlags: ['claude', 'codex'], detected: ['claude', 'codex'] } }),
