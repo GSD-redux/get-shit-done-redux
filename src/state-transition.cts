@@ -20,7 +20,7 @@ import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stat
 import { KNOWN_TEMPLATE_DEFAULTS, toFiniteNumber } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
-import { deriveProgressFromRoadmap, clampPercent } from './phase-lifecycle.cjs';
+import { deriveProgressFromRoadmap, clampPercent, clampPercentFromFraction } from './phase-lifecycle.cjs';
 import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateMdSchemaMod = require('./state-md-schema.cjs');
@@ -30,14 +30,38 @@ type StateFieldSchema = stateMdSchemaMod.StateFieldSchema;
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, FRONTMATTER_UNPARSEABLE } = frontmatter;
 
 export function formatProgressMachineSegment(percent: number): string {
-  const filled = Math.round(percent / 10);
-  return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${percent}%`;
+  // ADR-3180 Decision 7: rounding and the 100 ceiling belong to the
+  // completion-ratio kernel. The floor is added here because this helper is
+  // also fed persisted frontmatter values (hand-editable, unlike the
+  // count-shaped entries into that kernel), and `'░'.repeat` throws on a
+  // negative count. Bar and printed percent use the clamped value so the two
+  // halves of the segment can never disagree.
+  const clamped = Math.max(0, clampPercentFromFraction(percent / 100));
+  const filled = Math.round(clamped / 10);
+  return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${clamped}%`;
 }
 
+// Consumers (a future STATE.md writer that bypasses all three reintroduces the
+// #4213 divergence class): `cmdStateUpdateProgress` and `syncCore`'s progress
+// intent (both in this module) plus the post-sync body reconciliation in
+// `applyPostSyncPreservation` (src/state.cts). `cmdStateSync` never reaches
+// that reconciliation — ADR-3408 §8.3: `state sync` lets the body win, so
+// preservation must NOT run — which is why its correctness comes from
+// `syncCore`'s call here.
 export function stateReplaceProgressPercent(content: string, percent: number): string | null {
   const body = stripFrontmatter(content);
-  const pattern = /(\*\*Progress:\*\*[ \t]*|^Progress:[ \t]*)([^\r\n]*)/im;
-  if (!pattern.test(body)) return null;
+  // #2177: bold `**Progress:**` anywhere in the body wins outright; the plain
+  // `^Progress:` form is the fallback only when no bold line exists, so an
+  // earlier free-text line starting with `Progress:` cannot capture the
+  // rewrite ahead of the real status line.
+  const boldProgressPattern = /(\*\*Progress:\*\*[ \t]*)([^\r\n]*)/i;
+  const plainProgressPattern = /^(Progress:[ \t]*)([^\r\n]*)/im;
+  const pattern = boldProgressPattern.test(body)
+    ? boldProgressPattern
+    : plainProgressPattern.test(body)
+      ? plainProgressPattern
+      : null;
+  if (!pattern) return null;
   const machineSegment = /(?:\[[^\]\r\n]*\][ \t]*)?\d{1,3}%/;
   const progress = formatProgressMachineSegment(percent);
   const updatedBody = body.replace(pattern, (_match: string, prefix: string, value: string) => (

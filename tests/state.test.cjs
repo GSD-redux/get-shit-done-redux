@@ -2753,8 +2753,7 @@ describe('#4213: resyncing state verbs keep body Progress bar equal to frontmatt
   beforeEach(() => {
     tmpDir = createFixture();
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
-    for (let n = 1; n <= 4; n++) {
-      const num = String(n).padStart(2, '0');
+    for (const num of ['01', '02', '03', '04']) {
       const dir = path.join(tmpDir, '.planning', 'phases', num);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, `${num}-PLAN.md`), '# Plan\n');
@@ -2764,31 +2763,17 @@ describe('#4213: resyncing state verbs keep body Progress bar equal to frontmatt
   afterEach(() => cleanup(tmpDir));
 
   function seedState(seededPercent = 50, withProgress = true) {
+    const progressLine = withProgress
+      ? `Progress: [█████░░░░░] ${seededPercent}% (2/4 plans done)`
+      : '**Status:** Executing';
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      [
-        '---',
-        'gsd_state_version: "1.0"',
-        'status: executing',
-        'progress:',
-        `  total_phases: 4`,
-        `  completed_phases: ${seededPercent / 25}`,
-        `  total_plans: 4`,
-        `  completed_plans: ${seededPercent / 25}`,
-        `  percent: ${seededPercent}`,
-        '---',
-        '',
-        '# Project State',
-        '',
-        ...(withProgress ? [`Progress: [█████░░░░░] ${seededPercent}% (2/4 plans done)`] : ['**Status:** Executing']),
-        '',
-      ].join('\n')
+      `---\ngsd_state_version: "1.0"\nstatus: executing\nprogress:\n  total_phases: 4\n  completed_phases: ${seededPercent / 25}\n  total_plans: 4\n  completed_plans: ${seededPercent / 25}\n  percent: ${seededPercent}\n---\n\n# Project State\n\n${progressLine}\n`
     );
   }
 
   function completePhasesOnDisk(count) {
-    for (let n = 1; n <= count; n++) {
-      const num = String(n).padStart(2, '0');
+    for (const num of ['01', '02', '03', '04'].slice(0, count)) {
       const dir = path.join(tmpDir, '.planning', 'phases', num);
       fs.writeFileSync(path.join(dir, `${num}-PLAN-SUMMARY.md`), '# Summary\n');
       writePassedVerification(tmpDir, num, num);
@@ -2809,21 +2794,17 @@ describe('#4213: resyncing state verbs keep body Progress bar equal to frontmatt
     }
   });
   test('a no-drift write keeps both surfaces at the existing percent', () => {
-    seedState();
-    completePhasesOnDisk(2);
+    seedState(); completePhasesOnDisk(2);
     assert.ok(runGsdTools(['state', 'record-session', '--stopped-at', '2.3'], tmpDir).success);
     assertProgress(50);
   });
   test('resyncing verbs repair drift-down without inserting a missing bar', () => {
     seedState();
-    fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      ['# Roadmap', '', '### Phase 01: A', '### Phase 02: B', '### Phase 03: C', '### Phase 04: D', '### Phase 05: E', '### Phase 06: F', ''].join('\n')
-    );
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 01: A\n### Phase 02: B\n### Phase 03: C\n### Phase 04: D\n### Phase 05: E\n### Phase 06: F\n');
     completePhasesOnDisk(2);
     assert.ok(runGsdTools(['state', 'add-decision', '--phase', '3', '--summary', 's'], tmpDir).success);
     assertProgress(33);
-
     seedState(50, false);
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
     completePhasesOnDisk(3);
@@ -2831,6 +2812,38 @@ describe('#4213: resyncing state verbs keep body Progress bar equal to frontmatt
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     assert.strictEqual(bodyProgressPercent(state), null);
     assert.strictEqual(Number(JSON.parse(runGsdTools('state json', tmpDir).output).progress.percent), 75);
+  });
+  test('a free-text plain Progress: line above the status line cannot capture the rewrite, and an out-of-range percent clamps', () => {
+    // The #2177 bold-first priority restated for the shared helper (an earlier
+    // free-text line starting with `Progress:` must stay byte-identical while
+    // the bold status line is rewritten — a leftmost-match alternation got
+    // this wrong), and the clamp case: a hand-edited body percent (105%) with
+    // an unmeasured scan (no plans on disk, so the curated block stands)
+    // reaches the helper through applyPostSyncPreservation and must render the
+    // clamped 100% bar instead of throwing RangeError on repeat(-1).
+    const freeText = 'Progress: tracked in the weekly thread, do not edit this line by hand';
+    seedState(50);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: "1.0"\nstatus: executing\nprogress:\n  total_phases: 4\n  completed_phases: 2\n  total_plans: 4\n  completed_plans: 2\n  percent: 50\n---\n\n# Project State\n\n${freeText}\n\n**Progress:** [█████░░░░░] 50%\n`);
+    completePhasesOnDisk(3);
+    assert.ok(runGsdTools(['state', 'record-session', '--stopped-at', '2.3'], tmpDir).success);
+    let state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(state.includes(freeText), 'the free-text plain line must stay byte-identical');
+    assert.match(stateDocument.stateExtractField(state, 'Progress'), /^\[████████░░\] 75%$/, 'the bold status line is the one rewritten (extractor returns its value)');
+    assert.strictEqual(bodyProgressPercent(state), 75);
+    assert.strictEqual(Number(JSON.parse(runGsdTools('state json', tmpDir).output).progress.percent), 75);
+
+    seedState(50);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'),
+      '---\ngsd_state_version: "1.0"\nstatus: executing\nprogress:\n  total_phases: 0\n  completed_phases: 0\n  total_plans: 0\n  completed_plans: 0\n  percent: 105\n---\n\n# Project State\n\nProgress: [██████████░] 105% (2/4 plans done)\n');
+    for (let n = 1; n <= 4; n++) {
+      // eslint-disable-next-line local/no-raw-rmsync-in-tests -- removing fixture phase dirs beforeEach created; helpers.cleanup owns the tmp root itself
+      fs.rmSync(path.join(tmpDir, '.planning', 'phases', String(n).padStart(2, '0')), { recursive: true, force: true });
+    }
+    assert.ok(runGsdTools(['state', 'add-decision', '--phase', '3', '--summary', 's'], tmpDir).success);
+    state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(bodyProgressPercent(state), 100, 'bar renders the clamped 100%');
+    assert.match(stateDocument.stateExtractField(state, 'Progress'), /\(2\/4 plans done\)/, 'suffix survives');
   });
 });
 
