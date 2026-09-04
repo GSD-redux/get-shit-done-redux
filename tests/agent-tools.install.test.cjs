@@ -14,7 +14,7 @@ const { installerEnv, RUNTIME_META } = require('./helpers/install-shared.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
-const { appendAgentTools, buildKimiAgentArtifacts, convertClaudeAgentToQwenAgent, _decodeToolScalar } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+const { appendAgentTools, buildKimiAgentArtifacts, convertClaudeAgentToQwenAgent, convertClaudeAgentToZcodeAgent, _decodeToolScalar } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 const { parseFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 function parseTools(content) {
@@ -87,7 +87,7 @@ function installRuntime(t, runtime, { defaults, projectConfig, repeat = false, s
   return { root, home, configDir };
 }
 
-function emittedAgentArtifacts(install, agentName) {
+function emittedAgentArtifacts(install, agentName, root = install.configDir) {
   const artifacts = [];
   const visit = (dir) => {
     if (!fs.existsSync(dir)) return;
@@ -99,7 +99,7 @@ function emittedAgentArtifacts(install, agentName) {
       }
     }
   };
-  visit(install.configDir);
+  visit(root);
   assert.ok(artifacts.length > 0, `install must emit at least one ${agentName} artifact`);
   return artifacts;
 }
@@ -246,6 +246,23 @@ test('Kimi project selectors override matching global selectors (#4032)', (t) =>
     'the matching global selector must not survive the project override');
 });
 
+test('Kimi neutralizes ~/.claude/gsd-core references instead of leaking a repointed path (#4032)', (t) => {
+  // Routing Kimi through the ADR-1235 pre-converter pipeline (needed so
+  // project-scoped agent_tools selectors reach it, see the test above) also
+  // runs _applyAgentPathRewrites. Kimi's own neutralizeKimiAgentPrompt expects
+  // to see the ORIGINAL `~/.claude/gsd-core` text; kimi/kimi-code capability.json
+  // now opt out via hostBehaviors.noPathRewrite so that still holds.
+  const install = installRuntime(t, 'kimi', { scope: 'global' });
+  const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
+  assert.ok(artifacts.some((artifact) => artifact.includes('GSD core')),
+    'a ~/.claude/gsd-core reference must neutralize to prose, not a repointed Kimi path');
+  assert.ok(artifacts.every((artifact) =>
+    !artifact.includes('~/.claude/gsd-core') &&
+    !artifact.includes('$HOME/.claude/gsd-core') &&
+    !artifact.includes('config/agents/gsd-core/references')),
+    'no raw Claude- or Kimi-prefixed gsd-core path may leak into the Kimi prompt body');
+});
+
 test('Kilo global install resolves project agent_tools from the working directory (#4032)', (t) => {
   const install = installRuntime(t, 'kilo', {
     defaults: { agent_tools: { 'gsd-executor': ['mcp__global__loser'] } },
@@ -257,6 +274,38 @@ test('Kilo global install resolves project agent_tools from the working director
     'the combined-family path must discover project config from cwd during a global install');
   assert.ok(artifacts.every((artifact) => !artifact.includes('global_loser')),
     'the matching global selector must not survive the project override');
+});
+
+test('Kilo permission-key collision resolves deterministically to first-seen (#4032)', (t) => {
+  // mcp__a_b__c and mcp__a__b_c both derive Kilo's native "a_b_c" key — the
+  // `{server}_{tool}` format is Kilo's own fixed contract, not ours to widen.
+  const install = installRuntime(t, 'kilo', {
+    defaults: { agent_tools: { 'gsd-executor': ['mcp__a_b__c', 'mcp__a__b_c'] } },
+  });
+  const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
+  assert.ok(artifacts.some((artifact) => (artifact.match(/^ {2}a_b_c: allow$/gm) || []).length === 1),
+    'a colliding pair must still emit exactly one permission line');
+});
+
+test('every installable runtime accepts a configured MCP grant without crashing (#4032)', (t) => {
+  // Shallow, broad: appendAgentTools runs pre-converter for every runtime, but
+  // only 6 have deep per-runtime assertions elsewhere in this file. This locks
+  // in that the other runtimes' own converters don't choke or mangle output
+  // when a canonical grant is appended into their frontmatter dialect.
+  // scope: 'global' — universally supported (cline is global-only; local
+  // support varies per runtime, global does not). Search from `install.home`,
+  // not `install.configDir`: a nested-home runtime (e.g. antigravity) places
+  // agents in a sibling directory outside its own configDir subtree.
+  const NO_SUBAGENT_TOOLKIT = new Set(['pi']); // programmatic dispatch, no named-dispatch agent files
+  for (const runtime of Object.keys(RUNTIME_META)) {
+    if (NO_SUBAGENT_TOOLKIT.has(runtime)) continue;
+    const install = installRuntime(t, runtime, {
+      defaults: { agent_tools: { 'gsd-executor': ['mcp__smoke__probe'] } },
+      scope: 'global',
+    });
+    const artifacts = emittedAgentArtifacts(install, 'gsd-executor', install.home);
+    assert.ok(artifacts.every((artifact) => artifact.length > 0), `${runtime} must emit non-empty gsd-executor artifact(s)`);
+  }
 });
 
 test('Codex grants do not widen the generated TOML sandbox (#4032)', (t) => {
@@ -360,4 +409,33 @@ test('fast-check: append preserves stable first-seen order and converges (#4032)
     ),
     { numRuns: 100 },
   );
+});
+
+test('appendAgentTools applies grants under a comment-only tools: header (#4032)', () => {
+  const frontmatter = '---\ntools: # TODO: fill in\n  - Read\n---\n';
+  const once = appendAgentTools(frontmatter, ['Write']);
+  assert.deepStrictEqual(parseTools(once), ['Read', 'Write']);
+  assert.match(once, /^tools: # TODO: fill in$/m, 'the comment-only header line must survive untouched');
+});
+
+test('appendAgentTools does not tear a quoted scalar containing a literal comma (#4032)', () => {
+  // parseTools (this file's own helper) naive-splits on comma/space too, so it
+  // can't round-trip a quoted comma scalar — assert the raw line instead.
+  const frontmatter = '---\ntools: Read, "mcp__x, y"\n---\n';
+  const once = appendAgentTools(frontmatter, ['Write']);
+  assert.match(once, /^tools: Read, "mcp__x, y", Write$/m,
+    'the quoted scalar must survive intact and Write must be appended once');
+});
+
+test('ZCode strips an undecodable mcp__ scalar instead of keeping it (fail-closed) (#4032)', () => {
+  // An unterminated quote makes decodeToolScalar return null. ZCode's contract
+  // is "never emit mcp__*" (a required-MCP-server hard-fail otherwise), so a
+  // decode failure must be treated as unsafe-and-stripped, never safe-and-kept.
+  const inline = '---\ntools: Read, "mcp__server__tool\n---\n';
+  assert.doesNotMatch(convertClaudeAgentToZcodeAgent(inline), /mcp__/,
+    'an undecodable inline scalar must not survive ZCode conversion');
+
+  const block = '---\ntools:\n  - Read\n  - "mcp__server__tool\n---\n';
+  assert.doesNotMatch(convertClaudeAgentToZcodeAgent(block), /mcp__/,
+    'an undecodable block-list scalar must not survive ZCode conversion');
 });

@@ -2259,7 +2259,8 @@ const capabilities = {
         "verificationStyle": "kimi",
         "agentManifestStyle": "kimi-nested",
         "doneBannerStyle": "kimi-agent-file",
-        "skipSharedHooksInstall": true
+        "skipSharedHooksInstall": true,
+        "noPathRewrite": true
       }
     }
   },
@@ -2373,7 +2374,8 @@ const capabilities = {
         "agentManifestStyle": "none",
         "doneBannerStyle": "kimi-code",
         "skipSharedHooksInstall": true,
-        "namedSubagentsSupported": false
+        "namedSubagentsSupported": false,
+        "noPathRewrite": true
       }
     },
     "reviewer": {
@@ -6933,7 +6935,8 @@ const runtimes = {
         "verificationStyle": "kimi",
         "agentManifestStyle": "kimi-nested",
         "doneBannerStyle": "kimi-agent-file",
-        "skipSharedHooksInstall": true
+        "skipSharedHooksInstall": true,
+        "noPathRewrite": true
       }
     }
   },
@@ -7047,7 +7050,8 @@ const runtimes = {
         "agentManifestStyle": "none",
         "doneBannerStyle": "kimi-code",
         "skipSharedHooksInstall": true,
-        "namedSubagentsSupported": false
+        "namedSubagentsSupported": false,
+        "noPathRewrite": true
       }
     },
     "reviewer": {

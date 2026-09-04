@@ -1798,6 +1798,12 @@ const kiloAgentPermissionOrder = [
 
 const kiloMcpPermissionPattern = /^mcp__([A-Za-z0-9_-]+)__((?:[A-Za-z0-9_-]+)|\*)$/;
 
+// Derives Kilo's native `{server}_{tool}` MCP permission key (kilo.ai/docs —
+// external, fixed format). Not injective: both capture groups allow `_`, so
+// e.g. `mcp__a_b__c` and `mcp__a__b_c` derive the same key. The `Set` below
+// resolves any such collision deterministically to first-seen-wins — see
+// src/runtime-artifact-conversion.cts's regression test. Mirrors that file's
+// convertClaudeToKiloPermissionTool exactly (#4032).
 function convertClaudeToKiloPermissionTool(claudeTool) {
   const builtinPermission = claudeToKiloAgentPermissions[claudeTool];
   if (builtinPermission) return builtinPermission;

@@ -290,6 +290,15 @@ const kiloAgentPermissionOrder = [
 
 const kiloMcpPermissionPattern = /^mcp__([A-Za-z0-9_-]+)__((?:[A-Za-z0-9_-]+)|\*)$/;
 
+/**
+ * Derive Kilo's native `{server}_{tool}` MCP permission key (kilo.ai/docs —
+ * external, fixed format we don't control). Not injective: both capture
+ * groups allow `_`, so e.g. `mcp__a_b__c` and `mcp__a__b_c` derive the same
+ * key. `buildKiloAgentPermissionBlock`'s `Set` resolves any such collision
+ * deterministically to first-seen-wins — see its regression test. Changing
+ * the derivation to avoid the collision isn't an option: Kilo's own runtime
+ * only recognizes this exact key shape.
+ */
 function convertClaudeToKiloPermissionTool(claudeTool) {
   const builtinPermission = claudeToKiloAgentPermissions[claudeTool];
   if (builtinPermission) return builtinPermission;
@@ -685,6 +694,29 @@ function convertClaudeCommandToKimiCodeSkill(content, skillName, _runtime = null
 
 const KIMI_CANONICAL_GSD_AGENT_RE = /^gsd-[a-z0-9-]+$/;
 
+/** Split a `tools:` comma list without tearing a quoted scalar that contains a literal comma. */
+function splitToolScalars(text: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (const ch of text) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === ',') {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
+}
+
 /** Normalize one complete frontmatter tool scalar through the shared YAML parser. */
 function decodeToolScalar(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -716,12 +748,20 @@ function appendAgentTools(content: string, grants: string[]): string {
   const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
   if (!toolsMatch) return content;
   const commentIndex = toolsMatch[1].search(/[ \t]#/);
-  const inlineValue = commentIndex === -1 ? toolsMatch[1] : toolsMatch[1].slice(0, commentIndex);
-  const inlineComment = commentIndex === -1 ? '' : toolsMatch[1].slice(commentIndex);
+  let inlineValue = commentIndex === -1 ? toolsMatch[1] : toolsMatch[1].slice(0, commentIndex);
+  let inlineComment = commentIndex === -1 ? '' : toolsMatch[1].slice(commentIndex);
+  // A header that is ONLY a comment (`tools: # note`) has no leading space in
+  // the captured group — the outer regex's `[ \t]*` already consumed it — so
+  // the `[ \t]#` scan above never fires. Reclassify as no inline value so the
+  // block-list scan below runs instead of swallowing the comment as content.
+  if (inlineValue.trim().startsWith('#')) {
+    inlineComment = toolsMatch[1];
+    inlineValue = '';
+  }
   const existing: string[] = [];
   let insertAt = toolsIndex + 1;
   if (inlineValue.trim()) {
-    existing.push(...inlineValue.split(',').map(decodeToolScalar).filter((value): value is string => value !== null));
+    existing.push(...splitToolScalars(inlineValue).map(decodeToolScalar).filter((value): value is string => value !== null));
   } else {
     while (insertAt < frontmatterEnd) {
       const item = /^([ \t]+)-[ \t]*(\S.*)$/.exec(lines[insertAt]);
@@ -2618,6 +2658,12 @@ function convertClaudeAgentToQwenAgent(content) {
  * Byte-identical for an agent with no `mcp__*` grants (the common case) and
  * for an agent with no frontmatter at all.
  */
+/** Fail-closed: an undecodable scalar is dropped, never kept (ZCode's contract is "never emit mcp__*"). */
+function zcodeKeepsGrant(rawTool: string): boolean {
+  const decoded = decodeToolScalar(rawTool);
+  return decoded !== null && !decoded.startsWith('mcp__');
+}
+
 function convertClaudeAgentToZcodeAgent(content) {
   // A double-quoted YAML scalar may encode the leading "m" in mcp__ as an
   // escape, so only skip the shared scalar-decoder scan when neither form is
@@ -2642,8 +2688,8 @@ function convertClaudeAgentToZcodeAgent(content) {
     const line = lines[i];
     const inlineTools = /^tools:[ \t]*(.+)$/.exec(line);
     if (inlineTools) {
-      const grants = inlineTools[1].split(',').map((tool) => tool.trim()).filter((tool) => tool !== '');
-      const kept = grants.filter((tool) => decodeToolScalar(tool)?.startsWith('mcp__') !== true);
+      const grants = splitToolScalars(inlineTools[1]).map((tool) => tool.trim()).filter((tool) => tool !== '');
+      const kept = grants.filter((tool) => zcodeKeepsGrant(tool));
       if (kept.length === grants.length) {
         out.push(line); // no mcp__* grants — keep the line byte-identical
       } else if (kept.length > 0) {
@@ -2665,7 +2711,7 @@ function convertClaudeAgentToZcodeAgent(content) {
       }
       const kept = items.filter((item) => {
         const name = /^([ \t]*)-[ \t]*(\S.*)$/.exec(item)[2].trim();
-        return decodeToolScalar(name)?.startsWith('mcp__') !== true;
+        return zcodeKeepsGrant(name);
       });
       if (kept.length !== items.length) {
         changed = true;

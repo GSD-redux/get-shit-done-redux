@@ -108,7 +108,8 @@
       "agentManifestStyle": "none",
       "doneBannerStyle": "kimi-code",
       "skipSharedHooksInstall": true,
-      "namedSubagentsSupported": false
+      "namedSubagentsSupported": false,
+      "noPathRewrite": true
     }
   },
   "reviewer": {
