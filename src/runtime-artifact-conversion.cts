@@ -717,24 +717,6 @@ function splitToolScalars(text: string): string[] {
   return parts;
 }
 
-/** Index of the first unquoted `[ \t]#` (comment start), or -1. Unlike `String#search`, ignores a match inside a quoted scalar (`"mcp__server #1"` has no comment). */
-function findUnquotedCommentIndex(text: string): number {
-  let quote: string | null = null;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if ((ch === ' ' || ch === '\t') && text[i + 1] === '#') return i;
-  }
-  return -1;
-}
-
 /** Normalize one complete frontmatter tool scalar through the shared YAML parser. */
 function decodeToolScalar(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -748,14 +730,18 @@ function decodeToolScalar(raw: unknown): string | null {
       return null;
     }
   }
-  if (value.endsWith('"') || value.endsWith("'")) return null;
   // A bare (unquoted) scalar may carry a trailing `  # comment` (YAML requires
   // whitespace before `#` to start a comment) — every caller here passes a
   // single already-comma-split token, never the whole `tools:` line, so this
   // is safe to strip unconditionally rather than pushing the concern onto
-  // each call site.
+  // each call site. Strip BEFORE the malformed-quote check below: a comment
+  // may itself contain a `"`/`'` (e.g. `Bash # note: "internal"`), which is
+  // not a real YAML quote delimiter and must not cause a false rejection.
   const commentIndex = value.search(/[ \t]#/);
-  return commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
+  const stripped = commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
+  if (!stripped) return null;
+  if (stripped.endsWith('"') || stripped.endsWith("'")) return null;
+  return stripped;
 }
 
 /** Append validated canonical grants without reserializing unrelated frontmatter. */
@@ -771,7 +757,13 @@ function appendAgentTools(content: string, grants: string[]): string {
 
   const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
   if (!toolsMatch) return content;
-  const commentIndex = findUnquotedCommentIndex(toolsMatch[1]);
+  // Plain (non-leading-quote) YAML scalars have no internal quoting — a `#`
+  // after whitespace is a real comment start regardless of nearby quote
+  // characters (verified: real YAML truncates `Read, "x #1"` at the space
+  // before `#` too), so this scan does not need to be quote-aware. The one
+  // case that DOES need protection — a value that IS a leading quoted scalar
+  // — is refused outright below rather than parsed past.
+  const commentIndex = toolsMatch[1].search(/[ \t]#/);
   let inlineValue = commentIndex === -1 ? toolsMatch[1] : toolsMatch[1].slice(0, commentIndex);
   let inlineComment = commentIndex === -1 ? '' : toolsMatch[1].slice(commentIndex);
   // A header that is ONLY a comment (`tools: # note`) has no leading space in
@@ -782,6 +774,12 @@ function appendAgentTools(content: string, grants: string[]): string {
     inlineComment = toolsMatch[1];
     inlineValue = '';
   }
+  // A value that STARTS with a quote is a YAML quoted scalar occupying the
+  // whole node — nothing may follow it on the same line except a comment
+  // (`tools: "Bash"` is valid; `tools: "Bash", Read` is not, even before this
+  // function touches it). Appending in place would corrupt otherwise-valid
+  // frontmatter, so refuse rather than emit invalid YAML.
+  if (/^["']/.test(inlineValue.trim())) return content;
   const existing: string[] = [];
   let insertAt = toolsIndex + 1;
   if (inlineValue.trim()) {
@@ -2251,8 +2249,11 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
     if (trimmed.startsWith('tools:')) {
       if (isAgent) {
         const toolsValue = trimmed.substring(6).trim();
-        if (toolsValue) {
-          const tools = toolsValue.split(',').map(decodeToolScalar).filter((tool): tool is string => tool !== null);
+        // A comment-only value (`tools: # note`) is not real inline content —
+        // fall through to the block-list scan (`inAgentTools`) instead of
+        // decoding the comment as a bogus tool name and dropping the list.
+        if (toolsValue && !toolsValue.startsWith('#')) {
+          const tools = splitToolScalars(toolsValue).map(decodeToolScalar).filter((tool): tool is string => tool !== null);
           agentTools.push(...tools);
         } else {
           inAgentTools = true;
@@ -3853,6 +3854,7 @@ export = {
   convertClaudeToOpencodeFrontmatter,
   convertClaudeToKiloFrontmatter,
   _decodeToolScalar: decodeToolScalar,
+  _splitToolScalars: splitToolScalars,
   readGsdCommandNames,
   transformContentToHyphen,
   // #1383: version resolver (exported for regression test of the Codex

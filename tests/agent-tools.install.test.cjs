@@ -440,15 +440,16 @@ test('appendAgentTools does not tear a quoted scalar containing a literal comma 
   assert.strictEqual(twice, once, 'reapplying the same grant must be a no-op (Write not duplicated)');
 });
 
-test('appendAgentTools does not corrupt a quoted scalar containing a literal #(#4032)', () => {
-  // Regression found in PR #4238 remediation: the comment-index scan was not
-  // quote-aware, so a `#` inside a quoted scalar (e.g. "mcp__server #1") was
-  // mistaken for the start of a trailing YAML comment, splitting the quote in
-  // half and producing invalid syntax.
-  const frontmatter = '---\ntools: "mcp__server #1", Read\n---\n';
+test('appendAgentTools refuses to extend a value that IS a leading quoted scalar (#4032)', () => {
+  // Regression found in PR #4238 remediation (Opus review): a YAML quoted
+  // scalar occupies the whole node — `tools: "Read"` is valid, but
+  // `tools: "Read", Write` is not, even before this function touches it.
+  // Naively appending after it produced invalid frontmatter. There is no
+  // safe line-surgical rewrite here (that would require re-serializing the
+  // scalar), so the correct behavior is to leave the line untouched.
+  const frontmatter = '---\ntools: "Read"\n---\n';
   const once = appendAgentTools(frontmatter, ['Write']);
-  assert.match(once, /^tools: "mcp__server #1", Read, Write$/m,
-    'the quoted scalar must survive intact and Write must be appended once');
+  assert.strictEqual(once, frontmatter, 'a leading quoted scalar must be left byte-identical, not corrupted');
 });
 
 test('appendAgentTools recognizes an existing block item with a trailing comment (no duplicate) (#4032)', () => {

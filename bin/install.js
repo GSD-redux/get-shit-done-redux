@@ -7401,8 +7401,12 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
     if (trimmed.startsWith('tools:')) {
       if (isAgent) {
         const toolsValue = trimmed.substring(6).trim();
-        if (toolsValue) {
-          const tools = toolsValue.split(',').map(runtimeArtifactConversion._decodeToolScalar).filter(tool => tool !== null);
+        // A comment-only value (`tools: # note`) is not real inline content —
+        // fall through to the block-list scan instead of decoding the
+        // comment as a bogus tool name and dropping the list (mirrors
+        // src/runtime-artifact-conversion.cts's convertClaudeToKiloFrontmatter, #4032).
+        if (toolsValue && !toolsValue.startsWith('#')) {
+          const tools = runtimeArtifactConversion._splitToolScalars(toolsValue).map(runtimeArtifactConversion._decodeToolScalar).filter(tool => tool !== null);
           agentTools.push(...tools);
         } else {
           inAgentTools = true;

@@ -943,11 +943,12 @@ interface AgentCtx {
  * agent loop in bin/install.js exactly:
  *   1. applyAgentPathRewrites   (4 base ~/.claude/ regexes; skipped for copilot/antigravity)
  *   2. processAttribution       (Co-Authored-By policy)
- *   3. converter                (runtime-specific frontmatter/body transform)
- *   4. applyAgentFrontmatterExtensions (#2875 Part 2: effort/disallowedTools,
+ *   3. appendAgentTools         (#4032: validated agent_tools grants, before host conversion)
+ *   4. converter                (runtime-specific frontmatter/body transform)
+ *   5. applyAgentFrontmatterExtensions (#2875 Part 2: effort/disallowedTools,
  *      gated by hostBehaviors.agentFrontmatterExtensions — no-op for a runtime
  *      that declares nothing, e.g. every non-Claude runtime today)
- *   5. normalizeAgentBodyForRuntime (colon→hyphen refs; no-op for trivial group)
+ *   6. normalizeAgentBodyForRuntime (colon→hyphen refs; no-op for trivial group)
  * When `agentCtx` is absent, only global `agent_tools` augmentation and the
  * converter run; other cross-cutting remains absent for backward compatibility.
  *

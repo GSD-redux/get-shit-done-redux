@@ -205,6 +205,10 @@ grant for that selector; it does not restore the global value. A present but inv
 tool names as required by Claude; block-sequence entries are YAML-quoted. Agents without a
 `tools:` key inherit the runtime's default tool surface, so GSD leaves those agents unchanged.
 
+A `--global` install still discovers the nearest `.planning/config.json` from the current working
+directory, so `gsd install <runtime> --global` run from inside a project applies that project's
+`agent_tools` selectors to the global install too — not just to that project's own local install.
+
 Run `gsd install <runtime>` again after changing `agent_tools`; installed artifacts do not read
 configuration at agent-spawn time. The shared staging path gives Claude, Codex, and Qwen their
 existing host representations. Kimi maps supported canonical tools and continues to omit MCP

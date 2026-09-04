@@ -1042,7 +1042,7 @@ function installRuntimeArtifacts(
   resolvedProfile: any,
   resolveAttribution: ResolveAttribution = () => undefined,
   capabilityRegistry?: any,
-  deps: { fs?: any; os?: any; env?: Record<string, string | undefined>; cwd?: () => string } = {},
+  deps: { fs?: any; os?: any; env?: Record<string, string | undefined> } = {},
 ): any {
   return withInstallFs(deps.fs, (): any => {
     // A removed descriptor kind is no longer visited by the layout loop, so it
@@ -1055,7 +1055,7 @@ function installRuntimeArtifacts(
     // generic layout-driven loop below, mirroring the bespoke install path that
     // previously lived inline in bin/install.js.
     const behaviors = _hostBehaviors(runtime);
-    const projectDir = scope === 'global' ? (deps.cwd ?? process.cwd)() : configDir;
+    const projectDir = scope === 'global' ? process.cwd() : configDir;
     if (behaviors.combinedFamilyInstall) {
       // #2329: combined-family runtimes (OpenCode/Kilo) bypass
       // _runLegacyInstallMigrations below entirely (early return), so their
