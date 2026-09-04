@@ -668,7 +668,7 @@ If `valid != true`, refuse to verify. Surface the discrepancy and ask the user t
 
 **ALWAYS use the Write tool to create files** — never use `Bash(cat << 'EOF')` or heredoc commands for file creation.
 
-**#4155:** list EVERY phase PLAN/SUMMARY, requirement, changed impl file (omit one → undetected edits), root-relative not phaseDir-relative: `gsd_run query verification.fingerprint {phaseDir} {root-relative-file}...`, copy output — never hand-write covered_digest.
+**#4155:** `covered_files` must list EVERY phase PLAN/SUMMARY — including superseded plans and files nested under `plans/` — every mapped requirement, and every changed implementation file, as ROOT-relative paths (`src/verification.cts`, not `01-VERIFICATION.md`). Compute via `gsd_run query verification.fingerprint {phaseDir} {root-relative-file}...` and copy its output — never hand-write `covered_digest`.
 
 Create `.planning/phases/{phase_dir}/{phase_num}-VERIFICATION.md`:
 

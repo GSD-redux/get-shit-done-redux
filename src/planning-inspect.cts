@@ -303,9 +303,7 @@ function readDocument(filePath: string, root: string): { text: string | null; ex
 function containmentEnforcingVerificationFs(planningRoot: string): {
   readdirSync(dir: string): string[];
   readFileSync(filePath: string, encoding: 'utf-8'): string;
-  readFileBytes(filePath: string): Buffer;
   statSync(filePath: string): { mtimeMs: number; isFile(): boolean };
-  realpathSync(filePath: string): string;
 } {
   function assertContained(target: string): void {
     if (!isPathContained(target, planningRoot)) {
@@ -321,24 +319,9 @@ function containmentEnforcingVerificationFs(planningRoot: string): {
       assertContained(filePath);
       return fs.readFileSync(filePath, encoding);
     },
-    // #4155: computeCoveredDigest's byte-mode read — see FsLike's doc comment
-    // in src/verification.cts for why this is a distinct method, not an
-    // overload of readFileSync above.
-    readFileBytes(filePath: string): Buffer {
-      assertContained(filePath);
-      return fs.readFileSync(filePath);
-    },
     statSync(filePath: string): { mtimeMs: number; isFile(): boolean } {
       assertContained(filePath);
       return fs.statSync(filePath);
-    },
-    // #4155: computeCoveredDigest re-confines a realpath'd target against the
-    // SAME planningRoot boundary, so a covered-input symlink cannot escape it
-    // either — the identical GAP 2 threat this seam exists for, one hop later.
-    realpathSync(filePath: string): string {
-      const real = fs.realpathSync(filePath);
-      assertContained(real);
-      return real;
     },
   };
 }

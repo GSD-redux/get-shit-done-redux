@@ -39,7 +39,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempGitProject } = require('./helpers.cjs');
 const { runGit: seamRunGit, OUTCOME } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
@@ -1565,43 +1565,72 @@ describe('#4155: computeCoveredDigest — direct unit coverage', () => {
     assert.equal(computeCoveredDigest(root, ['impl.txt']), null);
   });
 
-  test('an injected fsImpl is actually consulted, not bypassed with raw node:fs (GAP 2 seam, #2790 follow-up)', (t) => {
-    // Mirrors src/planning-inspect.cts's containmentEnforcingVerificationFs:
-    // a caller-supplied fs seam that confines reads to a subdirectory. A file
-    // that exists on real disk, is inside `root`, and would digest cleanly
-    // through raw fs must still be rejected here — proving computeCoveredDigest
-    // reads through the INJECTED fsImpl, not a hidden direct node:fs call.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-seam-'));
-    t.after(() => cleanup(root));
-    const confinedDir = path.join(root, 'confined');
-    fs.mkdirSync(confinedDir);
-    fs.writeFileSync(path.join(root, 'outside-confinement.txt'), 'reachable via real fs');
-    fs.writeFileSync(path.join(confinedDir, 'inside.txt'), 'reachable via real fs');
-
-    function assertConfined(target) {
-      const rel = path.relative(confinedDir, target);
-      if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
-        throw new Error(`escapes confined dir: ${target}`);
-      }
-    }
-    const confinedFs = {
-      readdirSync: (d) => fs.readdirSync(d),
-      readFileSync: (p, enc) => fs.readFileSync(p, enc),
-      readFileBytes: (p) => { assertConfined(p); return fs.readFileSync(p); },
-      statSync: (p) => { assertConfined(p); return fs.statSync(p); },
-      realpathSync: (p) => { const real = fs.realpathSync(p); assertConfined(real); return real; },
-    };
-
-    // A file inside the confined subdir digests fine through the seam.
-    assert.notEqual(computeCoveredDigest(root, ['confined/inside.txt'], confinedFs), null);
-    // A file inside `root` but OUTSIDE the confined subdir must fail closed —
-    // if computeCoveredDigest silently used raw fs instead of confinedFs, this
-    // would wrongly succeed.
-    assert.equal(computeCoveredDigest(root, ['outside-confinement.txt'], confinedFs), null);
-  });
 });
 
 describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime staleness', () => {
+  test('a covered implementation file OUTSIDE .planning/, read through a .planning/-confined opts.fs (src/planning-inspect.cts\'s exact seam) → status stays passed, not stale', () => {
+    // #4155 review finding (blocking): src/planning-inspect.cts:1253 injects
+    // containmentEnforcingVerificationFs(paths.planning) — confined to
+    // `.planning/` — as `opts.fs`. Before the fix, computeCoveredDigest routed
+    // every per-file read through that SAME injected fsImpl, so any covered
+    // implementation file (which the issue mandates live under `src/`, outside
+    // `.planning/`) made the confinement wrapper throw, which computeCoveredDigest
+    // caught and turned into `null`, which readVerificationStatus routed to
+    // `stale` — permanently, regardless of whether anything actually changed.
+    // This reproduces that exact call shape with a real nested .planning/
+    // project (findProjectRoot must resolve past the phase dir to the real
+    // root) and a confinement fs scoped ONLY to .planning/, mirroring
+    // planning-inspect.cts's containmentEnforcingVerificationFs byte-for-byte.
+    const projectDir = createTempGitProject();
+    try {
+      const planningRoot = path.join(projectDir, '.planning');
+      const phaseDir = path.join(planningRoot, 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const implPath = path.join(projectDir, 'src', 'impl.ts');
+      fs.mkdirSync(path.dirname(implPath), { recursive: true });
+      fs.writeFileSync(implPath, 'export const x = 1;\n');
+
+      const digest = computeCoveredDigest(projectDir, ['src/impl.ts']);
+      fs.writeFileSync(
+        path.join(phaseDir, '01-VERIFICATION.md'),
+        `---\nstatus: passed\ncovered_files:\n  - src/impl.ts\ncovered_digest: "${digest}"\n---\n`,
+      );
+
+      // A naive lexical-prefix check (no realpath resolution) is a stricter
+      // stand-in for src/planning-inspect.cts's real containmentEnforcingVerificationFs
+      // here: it throws on strictly MORE paths than the real one (it can't
+      // tell a legitimate in-root path from a symlink, so it rejects both),
+      // which makes this test fail harder, not weaker, if the fix regresses.
+      function assertContained(target) {
+        if (!path.resolve(target).startsWith(planningRoot + path.sep)) {
+          throw new Error(`planning-inspect: path escapes planning root: ${target}`);
+        }
+      }
+      const containmentEnforcingVerificationFs = {
+        readdirSync: (dir) => {
+          assertContained(dir);
+          return fs.readdirSync(dir);
+        },
+        readFileSync: (filePath, encoding) => {
+          assertContained(filePath);
+          return fs.readFileSync(filePath, encoding);
+        },
+        statSync: (filePath) => {
+          assertContained(filePath);
+          return fs.statSync(filePath);
+        },
+      };
+
+      const result = readVerificationStatus(phaseDir, {
+        fs: containmentEnforcingVerificationFs,
+        phaseCleanCommitTimesMs: () => new Map(),
+      });
+      assert.equal(result.status, 'passed');
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
   test('unchanged covered inputs → status stays passed even though a SUMMARY is newer (legacy mtime check bypassed)', (t) => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-unchanged-'));
     t.after(() => cleanup(baseDir));
@@ -1647,6 +1676,53 @@ describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime 
     assert.equal(result.status, 'stale');
   });
 
+  test('an unreadable nested plans/ dir fails CLOSED to stale, not open to passed (#4155 review finding: allCurrentArtifactsCovered must branch on scanPhasePlans scope, not a try/catch it never throws into)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-scan-unreadable-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    const nestedDir = path.join(dir, 'plans');
+    fs.mkdirSync(nestedDir);
+    fs.writeFileSync(path.join(nestedDir, '01-02-PLAN.md'), '# Nested plan, never declared\n');
+
+    // fs.chmodSync(nestedDir, 0o000) is NOT used: this suite may run as root
+    // (CI/Docker), where mode bits are bypassed entirely, making the test
+    // pass with zero real coverage. A monkeypatch is CONTRIBUTING.md's
+    // documented fault-injection convention for exactly this reason (mirrors
+    // tests/broken-windows.test.cjs's writeLedgerAtomic pre-image test). The
+    // compiled src/plan-scan.cjs calls `node_fs_1.readdirSync(nestedDir)` — a
+    // property read on the SAME node:fs module object `fs` here resolves to
+    // (module caching), so patching that property is visible to it.
+    const originalReaddirSync = fs.readdirSync;
+    fs.readdirSync = (target, ...rest) => {
+      if (path.resolve(target) === path.resolve(nestedDir)) {
+        throw Object.assign(new Error('EACCES: permission denied (simulated)'), { code: 'EACCES' });
+      }
+      return originalReaddirSync(target, ...rest);
+    };
+    try {
+      // Guard: the digest alone must NOT already be stale — isolates this
+      // test to the scan-failure branch, not a digest mismatch.
+      const unpatchedScan = originalReaddirSync(dir);
+      assert.ok(unpatchedScan.includes('plans'), 'guard: nested plans/ dir must exist on disk');
+
+      const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(
+        result.status,
+        'stale',
+        'an unreadable plans/ dir must fail CLOSED — its invisible contents (an undeclared plan) can never be proven covered',
+      );
+    } finally {
+      fs.readdirSync = originalReaddirSync;
+    }
+  });
+
   test('a covered file that changed after verification → status is stale', (t) => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-changed-'));
     t.after(() => cleanup(baseDir));
@@ -1667,80 +1743,43 @@ describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime 
     assert.equal(result.next_command, '/gsd-verify-work 01');
   });
 
-  test('a covered file that disappeared after verification → status is stale', (t) => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-missing-'));
-    t.after(() => cleanup(baseDir));
-    const dir = path.join(baseDir, '01-foo');
-    fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
-    const digest = computeCoveredDigest(dir, ['impl.txt']);
-    fs.writeFileSync(
-      path.join(dir, '01-VERIFICATION.md'),
-      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
-    );
-    fs.unlinkSync(path.join(dir, 'impl.txt'));
+  // Ponytail #4155 review finding: "disappeared" and "escapes confinement"
+  // integration tests previously here re-proved computeCoveredDigest → null
+  // through the identical `recomputed !== coveredDigestVal` stale branch the
+  // "changed" test above already wires — the null-producing mechanisms
+  // themselves are unit-tested directly in the computeCoveredDigest describe
+  // block ("a covered file that is missing", "a covered path that escapes
+  // the project root via ..").
 
-    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
-    assert.equal(result.status, 'stale');
-  });
-
-  test('a covered path that escapes project confinement → status is stale (fail closed)', (t) => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-escape-'));
-    t.after(() => cleanup(baseDir));
-    const dir = path.join(baseDir, '01-foo');
-    fs.mkdirSync(dir);
-    fs.writeFileSync(
-      path.join(dir, '01-VERIFICATION.md'),
-      '---\nstatus: passed\ncovered_files:\n  - "../outside.txt"\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
-    );
-
-    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
-    assert.equal(result.status, 'stale');
-  });
-
-  test('covered_files present but covered_digest missing → stale (fail closed, not a silent legacy downgrade)', (t) => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-partial-digest-'));
-    t.after(() => cleanup(baseDir));
-    const dir = path.join(baseDir, '01-foo');
-    fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
-    // covered_files declared, covered_digest absent — an incomplete pair.
-    fs.writeFileSync(
-      path.join(dir, '01-VERIFICATION.md'),
+  // Ponytail #4155 review finding: these three were near-identical
+  // fixture-copies of the same `hasWellFormedFingerprint === false` branch —
+  // an incomplete/malformed `covered_files`+`covered_digest` pair fails
+  // closed to `stale` rather than silently downgrading to the legacy check.
+  for (const [name, frontmatter] of [
+    [
+      'covered_files present but covered_digest missing (incomplete pair)',
       '---\nstatus: passed\ncovered_files:\n  - impl.txt\n---\n',
-    );
-
-    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
-    assert.equal(result.status, 'stale');
-  });
-
-  test('covered_digest present but covered_files missing → stale (fail closed, not a silent legacy downgrade)', (t) => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-partial-files-'));
-    t.after(() => cleanup(baseDir));
-    const dir = path.join(baseDir, '01-foo');
-    fs.mkdirSync(dir);
-    fs.writeFileSync(
-      path.join(dir, '01-VERIFICATION.md'),
+    ],
+    [
+      'covered_digest present but covered_files missing (incomplete pair)',
       '---\nstatus: passed\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
-    );
-
-    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
-    assert.equal(result.status, 'stale');
-  });
-
-  test('an empty covered_files array with covered_digest present → stale (fail closed)', (t) => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-empty-array-'));
-    t.after(() => cleanup(baseDir));
-    const dir = path.join(baseDir, '01-foo');
-    fs.mkdirSync(dir);
-    fs.writeFileSync(
-      path.join(dir, '01-VERIFICATION.md'),
+    ],
+    [
+      'an empty covered_files array with covered_digest present',
       '---\nstatus: passed\ncovered_files: []\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
-    );
+    ],
+  ]) {
+    test(`${name} → stale (fail closed, not a silent legacy downgrade)`, (t) => {
+      const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-malformed-fingerprint-'));
+      t.after(() => cleanup(baseDir));
+      const dir = path.join(baseDir, '01-foo');
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), frontmatter);
 
-    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
-    assert.equal(result.status, 'stale');
-  });
+      const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(result.status, 'stale');
+    });
+  }
 
   test('a legacy report with no fingerprint metadata still uses the mtime check', (t) => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-legacy-'));

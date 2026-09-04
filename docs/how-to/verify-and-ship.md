@@ -112,6 +112,8 @@ A `*-VERIFICATION.md` reporting `status: passed` is re-checked, not cached, ever
 
 Either way, `stale` routes the same as any other incomplete state: re-run `/gsd-verify-work 1` before shipping.
 
+The content fingerprint hashes covered files exactly as they sit on disk, including line endings. A checkout without a `.gitattributes` `eol=lf` rule pinning text files to LF (a Windows checkout with `core.autocrlf=true`, for example) can report `stale` on unchanged content — fix with a `.gitattributes` `eol=lf` rule, not by treating it as drift.
+
 ---
 
 ## Closing a milestone
