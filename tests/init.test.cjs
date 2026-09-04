@@ -5155,3 +5155,100 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4040: partial-init routing signal (interrupted bootstrap detection)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4040 partial-init completeness fields', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('#4040 init.progress: interrupted bootstrap (PROJECT.md only) is flagged init_incomplete', () => {
+    // Issue repro: bootstrap died after PROJECT.md + config.json, before
+    // REQUIREMENTS.md / ROADMAP.md / STATE.md.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.planning_exists, true);
+    assert.strictEqual(output.project_exists, true);
+    assert.strictEqual(output.requirements_exists, false);
+    assert.strictEqual(output.roadmap_exists, false);
+    assert.strictEqual(output.state_exists, false);
+    assert.strictEqual(output.milestones_exists, false);
+    assert.strictEqual(output.init_incomplete, true,
+      'interrupted bootstrap must be distinguishable from new project / between milestones');
+  });
+
+  test('#4040 init.progress: complete project is not init_incomplete', () => {
+    writePlanningDocs(tmpDir); // STATE.md + ROADMAP.md + REQUIREMENTS.md
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_exists, true);
+    assert.strictEqual(output.init_incomplete, false);
+  });
+
+  test('#4040 init.progress: between-milestones archive state is not init_incomplete', () => {
+    // milestone.complete archives ROADMAP (and REQUIREMENTS) but leaves
+    // MILESTONES.md + STATE.md — Route F territory, NOT a partial bootstrap.
+    writePlanningDocs(tmpDir, { roadmap: false, requirements: false });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'MILESTONES.md'), '# Milestones\n\n## v1.0\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.milestones_exists, true);
+    assert.strictEqual(output.init_incomplete, false,
+      'an archived milestone (MILESTONES.md present) must keep the between-milestones route');
+  });
+
+  test('#4040 init.progress: empty .planning (config only) is init_incomplete, not "no planning"', () => {
+    // Bootstrap that died before even PROJECT.md: .planning/ exists, so the
+    // workflow must not claim "no planning structure found".
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.planning_exists, true);
+    assert.strictEqual(output.project_exists, false);
+    assert.strictEqual(output.init_incomplete, true);
+  });
+
+  test('#4040 init.resume: interrupted bootstrap flagged init_incomplete', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init resume', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_exists, false);
+    assert.strictEqual(output.init_incomplete, true,
+      'resume must route to initialization recovery, not STATE.md reconstruction');
+  });
+
+  test('#4040 init.new-project: interrupted bootstrap flagged init_incomplete', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init new-project', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.init_incomplete, true,
+      'new-project gate must resume a partial bootstrap instead of erroring');
+  });
+});
