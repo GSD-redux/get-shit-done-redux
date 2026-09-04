@@ -380,6 +380,11 @@
     "message": "Expressions don't expand in single quotes, use double quotes for that."
   },
   {
+    "file": "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md",
+    "code": "2016",
+    "message": "Expressions don't expand in single quotes, use double quotes for that."
+  },
+  {
     "file": "gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md",
     "code": "2086",
     "message": "Double quote to prevent globbing and word splitting."

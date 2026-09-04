@@ -1299,6 +1299,36 @@ function cmdInitPlanPhase(
   output(withProjectRoot(cwd, result), raw);
 }
 
+// #4040: shared partial-init discriminator for the init.progress / init.resume /
+// init.new-project payloads. A bootstrap interrupted before the core quartet
+// (PROJECT.md / REQUIREMENTS.md / ROADMAP.md / STATE.md) all landed is a
+// DISTINCT routing state from "new project" and from "between milestones";
+// pre-#4040 the payloads could not express it, so progress.md mis-routed it to
+// Route F and resume-project.md offered STATE.md reconstruction.
+//
+// Negative-space guard: `milestone.complete` archives ROADMAP.md (and
+// REQUIREMENTS.md) but always leaves MILESTONES.md behind — so MILESTONES.md
+// present proves missing core files are archival (between-milestones), never an
+// unfinished bootstrap. REQUIREMENTS.md is written by new-project BEFORE
+// ROADMAP/STATE, so its absence also proves init never finished.
+function buildInitCompletenessFields(cwd: string): Record<string, boolean> {
+  const dir = planningDir(cwd);
+  const planningExists = fs.existsSync(dir);
+  const requirementsExists = fs.existsSync(path.join(dir, 'REQUIREMENTS.md'));
+  const milestonesExists = fs.existsSync(path.join(dir, 'MILESTONES.md'));
+  const coreComplete =
+    fs.existsSync(path.join(dir, 'PROJECT.md')) &&
+    requirementsExists &&
+    fs.existsSync(path.join(dir, 'ROADMAP.md')) &&
+    fs.existsSync(path.join(dir, 'STATE.md'));
+  return {
+    planning_exists: planningExists,
+    requirements_exists: requirementsExists,
+    milestones_exists: milestonesExists,
+    init_incomplete: planningExists && !coreComplete && !milestonesExists,
+  };
+}
+
 function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
 
@@ -1324,6 +1354,12 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
     roadmapper_model: resolveModelInternal(cwd, 'gsd-roadmapper'),
 
     commit_docs: config.commit_docs,
+
+    // #4040: partial-init discriminator (see buildInitCompletenessFields).
+    // Spread BEFORE this literal's own planning_exists so the existing
+    // root-scoped (`pathExistsInternal(cwd, '.planning')`) semantics for that
+    // one key stay byte-identical for existing consumers.
+    ...buildInitCompletenessFields(cwd),
 
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     has_codebase_map: hasCodebaseMap,
@@ -1626,6 +1662,12 @@ function cmdInitResume(cwd: string, raw: boolean): void {
   if (agentIdRaw !== null) interruptedAgentId = agentIdRaw.trim();
 
   const result: Record<string, unknown> = {
+    // #4040: partial-init discriminator (see buildInitCompletenessFields).
+    // Spread FIRST so this literal's own root-scoped planning_exists
+    // (planningRoot) keeps its existing semantics; init_incomplete itself
+    // keys off the artifact dir (planningDir) where the core docs live.
+    ...buildInitCompletenessFields(cwd),
+
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
@@ -3329,6 +3371,10 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
+    // #4040: partial-init discriminator (see buildInitCompletenessFields) —
+    // also adds planning_exists / requirements_exists / milestones_exists so
+    // progress.md's init_context routing never has to fall back to Glob.
+    ...buildInitCompletenessFields(cwd),
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
     state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
