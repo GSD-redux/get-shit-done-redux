@@ -122,7 +122,14 @@ function readSentinel(target) {
   const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
     const buf = Buffer.alloc(st.size);
-    fs.readSync(fd, buf, 0, st.size, 0);
+    // The RETURN VALUE, not just the call (review of #3808, round 11). A file that shrinks
+    // between the lstat above and this read — a concurrent legitimate writer truncating
+    // mid-write, not the planted-object case the rest of this function guards — leaves the tail
+    // of `buf` zero-filled, and those NULs reach JSON.parse as garbage. Every caller already
+    // treats a throw here as "no file", so refusing a short read is both safer and the same
+    // outcome the caller would reach one line later, stated on purpose rather than by accident.
+    const bytesRead = fs.readSync(fd, buf, 0, st.size, 0);
+    if (bytesRead !== st.size) throw new Error('sentinel shrank under the read');
     return buf.toString('utf8');
   } finally { fs.closeSync(fd); }
 }
@@ -139,7 +146,19 @@ function writeSentinel(target, payload) {
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
     );
     try {
-      fs.writeSync(fd, payload);
+      // LOOP, and check progress (Codex review of round 11). A single `fs.writeSync` is
+      // permitted to write fewer bytes than it was given, and the return value was discarded —
+      // a short write left a truncated sentinel that JSON.parse rejects, silently defeating the
+      // debounce accounting or the compaction watermark this write exists to record. Node's own
+      // `writeFileSync` loops for exactly this reason; the explicit no-progress guard keeps a
+      // pathological fd from spinning. Symmetric with the bytesRead check in readSentinel.
+      const buf = Buffer.from(payload, 'utf8');
+      let written = 0;
+      while (written < buf.length) {
+        const n = fs.writeSync(fd, buf, written, buf.length - written);
+        if (!(n > 0)) throw new Error('sentinel write made no progress');
+        written += n;
+      }
     } finally { fs.closeSync(fd); }
   } catch (e) { /* best effort — see above */ }
 }
@@ -264,9 +283,19 @@ process.stdin.on('end', () => {
     // If no metrics file, this is a subagent or fresh session -- exit silently.
     // Collapsed existsSync+readFileSync: ENOENT → exit 0 (identical to old !existsSync branch),
     // other errors rethrow to the outer catch (swallowed → exit 0, as before).
+    //
+    // Through readSentinel, like the other two (review of #3808, round 11). This read was the
+    // asymmetry left in this file: `metricsPath` is built one line away from `warnPath` and
+    // `watermarkPath` (same tmpdir, same predictable `claude-ctx-{sessionId}` shape), it is the
+    // only one of the three read on EVERY invocation, and it was the only one still reached by a
+    // bare readFileSync — so the symlink-to-FIFO stall the other two are hardened against was
+    // still reachable here, on the highest-traffic path in the file. The 4096-byte bound is
+    // ample: the statusline writes four fixed fields (`gsd-statusline.js`, ~140 bytes with a
+    // UUID session id), so no legitimate bridge approaches it. A refusal throws and lands in the
+    // rethrow below exactly as an unreadable or malformed bridge already did.
     let metricsRaw;
     try {
-      metricsRaw = fs.readFileSync(metricsPath, 'utf8');
+      metricsRaw = readSentinel(metricsPath);
     } catch (e) {
       if (e && e.code === 'ENOENT') allow(undefined);
       throw e;
@@ -336,10 +365,12 @@ process.stdin.on('end', () => {
     // (same as old "file absent" branch). firstWarn tracks whether we read a valid sentinel.
     //
     // READ HARDENING (self-found while addressing round 7; same class, same
-    // file). Hardening the writes above leaves this read as the one bare
+    // file). Hardening the writes above leaves this read as a bare
     // readFileSync on warnPath, which is the exact asymmetry round 7 asks be
     // removed from the write side — and the watermark's read was hardened in
-    // round 4 for this same reason, so leaving this one recreates it. The
+    // round 4 for this same reason, so leaving this one recreates it. It was
+    // not the LAST bare read in the file: the statusline bridge kept its own
+    // until round 11 found it. All three go through readSentinel now. The
     // exposure is real but bounded: the writes now unlink any planted object,
     // so only a read reaching this line BEFORE the first write of an
     // invocation can follow one, and re-planting reopens it every invocation.

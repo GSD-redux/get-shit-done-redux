@@ -1242,6 +1242,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     return {
       warnPath,
       watermarkPath,
+      metricsPath,
       // Drive one hook invocation at a given remaining%, WITHOUT touching the
       // sentinel — that is the state under test. `metrics` selects how the
       // statusline bridge is presented:
@@ -1283,6 +1284,8 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         metrics = true,
         failUnlinkMatching = null,
         lstatClaimsFileMatching = null,
+        shrinkAfterLstatMatching = null,
+        shortWriteMarker = null,
         nowMs = null,
         bridgeTimestamp = null,
         env: envOverrides = null,
@@ -1318,7 +1321,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         }
         let stdout = '';
         let exitCode = 0;
-        const usePreload = failUnlinkMatching || lstatClaimsFileMatching;
+        const usePreload = failUnlinkMatching || lstatClaimsFileMatching || shrinkAfterLstatMatching || shortWriteMarker;
         const preloads = [];
         if (usePreload) preloads.push('--require', UNLINK_EPERM_PRELOAD);
         if (nowMs != null) preloads.push('--require', NOW_PRELOAD);
@@ -1327,6 +1330,8 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
           ...process.env,
           ...(failUnlinkMatching ? { GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching } : {}),
           ...(lstatClaimsFileMatching ? { GSD_TEST_LSTAT_CLAIMS_FILE_MATCH: lstatClaimsFileMatching } : {}),
+          ...(shrinkAfterLstatMatching ? { GSD_TEST_SHRINK_AFTER_LSTAT_MATCH: shrinkAfterLstatMatching } : {}),
+          ...(shortWriteMarker ? { GSD_TEST_SHORT_WRITE_MATCH: shortWriteMarker } : {}),
           ...(nowMs != null ? { GSD_TEST_NOW_MS: String(nowMs) } : {}),
           ...(envOverrides || {}),
         };
@@ -1710,6 +1715,153 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       + 'must be untouched');
     assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
       'the planted symlink must survive — its absence means the injection never engaged');
+  });
+
+  test('round 11: the statusline bridge is read through the same hardening as the sentinels', (t) => {
+    // Review of #3808, round 11. `metricsPath` is built one line from `warnPath` and
+    // `watermarkPath` — same tmpdir, same predictable `claude-ctx-{sessionId}` shape, same
+    // threat model this PR documents at length — and it is the only one of the three read on
+    // EVERY invocation. It was also the only one still reached by a bare readFileSync, so the
+    // symlink-to-FIFO stall the other two were hardened against stayed reachable on the file's
+    // highest-traffic path. This row plants a symlink at the bridge and asserts the hook neither
+    // follows it nor fails.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows; the lstat half of the guard still '
+        + 'refuses a non-regular bridge there, and the directory row below covers it');
+      return;
+    }
+    const s = makeSession(t);
+    const planted = path.join(os.tmpdir(),
+      `fix-3709-planted-bridge-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    // A bridge that WOULD warn if it were followed: remaining=20 is CRITICAL territory, and the
+    // timestamp is current so it passes the staleness gate. Following the link emits; refusing
+    // it is silent. That asymmetry is what makes this row non-vacuous.
+    fs.writeFileSync(planted, JSON.stringify({
+      session_id: 'planted', remaining_percentage: 20, used_pct: 80,
+      timestamp: Math.floor(Date.now() / 1000),
+    }));
+    t.after(() => { try { fs.unlinkSync(planted); } catch { /* absent */ } });
+    fs.symlinkSync(planted, s.metricsPath);
+
+    const { stdout, exitCode } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(exitCode, 0, 'a refused bridge must never fail the hook');
+    assert.strictEqual(stdout, '',
+      'an attacker-chosen reading reached through a link must not drive a warning — following it '
+      + 'is a false-CRITICAL primitive, and a link to a FIFO stalls this synchronous read on the '
+      + 'one path that runs for every tool call');
+    assert.ok(fs.lstatSync(s.metricsPath).isSymbolicLink(),
+      'the planted link must survive — its absence means the hook rewrote the path and this row '
+      + 'passed without the guard ever being reached');
+  });
+
+  test('round 11: a non-regular bridge is refused without failing the hook', (t) => {
+    // The arm every platform runs. WHAT IT PINS, stated precisely because the obvious reading is
+    // wrong (Codex review of round 11): this row asserts the OUTCOME — a directory at the bridge
+    // path produces no warning and no failure — not that `lstat`'s isFile() check is what
+    // produced it. Measured: deleting `!st.isFile() ||` leaves this row green, because the read
+    // of a directory fails on its own one line later. The isFile() half is pinned by the symlink
+    // row above, where a bare read would have succeeded and emitted.
+    const s = makeSession(t);
+    fs.mkdirSync(s.metricsPath);
+    t.after(() => { try { fs.rmdirSync(s.metricsPath); } catch { /* absent */ } });
+
+    const { stdout, exitCode } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(exitCode, 0, 'refusing the bridge is a give-up, never a hook failure');
+    assert.strictEqual(stdout, '', 'and nothing is emitted off an object that is not a bridge');
+    assert.ok(fs.lstatSync(s.metricsPath).isDirectory(), 'the planted directory must survive');
+  });
+
+  test('round 11: an oversized bridge is refused rather than slurped', (t) => {
+    // The size bound is what stops a planted multi-megabyte file from being read into memory on
+    // every tool call. A legitimate bridge is four fixed fields (~140 bytes with a UUID session
+    // id, gsd-statusline.js), so nothing real approaches 4096.
+    const s = makeSession(t);
+    fs.writeFileSync(s.metricsPath, JSON.stringify({
+      session_id: 'x', remaining_percentage: 20, used_pct: 80,
+      timestamp: Math.floor(Date.now() / 1000), pad: 'x'.repeat(5000),
+    }));
+    const { stdout, exitCode } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(stdout, '', 'a bridge past the size bound is refused, not parsed');
+  });
+
+  test('round 11: readSentinel refuses a file that shrinks under the read', (t) => {
+    // Round 11, Minor. `fs.readSync`'s RETURN value was discarded and the buffer assumed full.
+    // A file truncated between the lstat and the read — an ordinary concurrent writer, not the
+    // planted-object case the rest of the function guards — leaves the tail zero-filled. The
+    // preload shrinks the file after lstat has measured it, the only way to produce a short read
+    // deterministically.
+    //
+    // WHAT THIS ROW PINS, stated because it is narrower than it looks: the END-TO-END outcome of
+    // a shrink, not the `bytesRead` guard itself. Measured by mutation — deleting the guard
+    // leaves this row GREEN, because the zero-filled tail makes JSON.parse throw one line later
+    // and both paths land in the same catch and degrade to "no sentinel". The guard has no
+    // observable behavioural delta; it is a consistency fix in a function whose whole purpose is
+    // refusing to trust what it read, and it is worth having for the same reason the lstat and
+    // O_NOFOLLOW checks are. No row here claims otherwise.
+    if (process.platform === 'win32') {
+      t.skip('the preload shrinks the file between lstat and read; Windows holds a share lock '
+        + 'that makes the truncation unreliable, and the guard itself is platform-independent');
+      return;
+    }
+    const s = makeSession(t);
+    // A sentinel whose ACCEPTANCE would suppress: critical→critical is not an escalation and
+    // callsSinceWarn=1 is under DEBOUNCE_CALLS, so a hook that trusted it stays silent. A hook
+    // that REFUSES it falls back to the default warnData, and the first warning of a fresh cycle
+    // is emitted immediately. That asymmetry is the whole row — with a sentinel that emitted
+    // either way, this would pass without the guard existing.
+    fs.writeFileSync(s.warnPath, JSON.stringify({
+      callsSinceWarn: 1, lastLevel: 'critical', criticalRecorded: true, pad: 'x'.repeat(400),
+    }));
+    const marker = `${s.warnPath}.gsd-test-shrunk`;
+    t.after(() => { try { fs.unlinkSync(marker); } catch { /* absent */ } });
+    const { stdout, exitCode } = s.call('PostToolUse', 20, {
+      shrinkAfterLstatMatching: '-warned.json',
+    });
+    assert.strictEqual(exitCode, 0, 'a short read is a refusal, never a hook failure');
+    // Non-vacuity, and NOT a size check on the sentinel: the hook rewrites that file later in
+    // the same invocation, so its size afterwards says nothing about whether the truncation
+    // landed (this row was written that way first and passed for the wrong reason).
+    assert.ok(fs.existsSync(marker),
+      'the shrink injection must PROVE it engaged — without the marker, a match string that '
+      + 'silently stops matching lets an ordinary full read satisfy every assertion here');
+    assert.match(stdout, /CONTEXT/,
+      'a refused sentinel degrades to "no sentinel", which is the same fresh-cycle behaviour '
+      + 'every other refusal in this function produces');
+  });
+
+  test('round 11: a short write is retried, not left as a truncated sentinel', (t) => {
+    // Codex review of round 11. `fs.writeSync` may write fewer bytes than it is given, and the
+    // return value was discarded — so a short write left a truncated sentinel on disk that every
+    // later read rejects, silently defeating the debounce accounting this write exists to record.
+    // The injection makes the first write of the payload return 1 byte, once; the loop under test
+    // must finish the rest. Without the loop the sentinel is `{` and the next invocation warns
+    // again instead of debouncing.
+    const s = makeSession(t);
+    const marker = path.join(os.tmpdir(), `fix-3709-shortwrite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    t.after(() => { try { fs.unlinkSync(`${marker}.gsd-test-short-write`); } catch { /* absent */ } });
+
+    const first = s.call('PostToolUse', 20, { shortWriteMarker: marker });
+    assert.strictEqual(first.exitCode, 0);
+    assert.ok(fs.existsSync(`${marker}.gsd-test-short-write`),
+      'the short-write injection must PROVE it engaged — without the marker this row exercises '
+      + 'an ordinary full write and proves nothing');
+    const raw = s.warnRaw();
+    assert.ok(raw && raw.length > 1,
+      `the sentinel must be complete after a short write, got ${JSON.stringify(raw)}`);
+    assert.doesNotThrow(() => JSON.parse(raw),
+      'a truncated sentinel is unparseable, which is how a short write silently lost the state');
+  });
+
+  test('round 11: a healthy bridge still drives a warning — the hardening is not a mute', (t) => {
+    // The direction that matters most: every row above asserts SILENCE, and silence is also what
+    // a hook that refused every bridge would produce. This is the same read path with an ordinary
+    // regular file, and it must still emit.
+    const s = makeSession(t);
+    const { stdout, exitCode } = s.call('PostToolUse', 20);
+    assert.strictEqual(exitCode, 0);
+    assert.match(stdout, /CONTEXT/,
+      'routing the bridge through readSentinel must not change what a normal reading does');
   });
 
   test('round 10: the watermark write refuses to follow a planted symlink', (t) => {
