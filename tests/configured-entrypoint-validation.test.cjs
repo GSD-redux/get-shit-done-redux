@@ -119,9 +119,9 @@ test('configured entrypoint validation aggregates file and interpreter failures 
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: directory },
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: __filename, interpreterCandidates: ['missing-node'] },
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: unreadablePath },
-    // #4249: no interpreterCandidates means this entry is invoked directly via
-    // its own shebang (e.g. Cline's PreToolUse hook) — must itself be +x.
-    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: notExecutablePath },
+    // #4249: selfExecutable means this entry is invoked directly via its own
+    // shebang (e.g. a Windows-Claude .sh hook) — must itself be +x.
+    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: notExecutablePath, selfExecutable: true },
   ], {
     resolveExecutableBinary: () => null,
     statSync: (p) => {
@@ -133,12 +133,15 @@ test('configured entrypoint validation aggregates file and interpreter failures 
       return fs.statSync(p === notExecutablePath ? __filename : p);
     },
     accessSync: (p, mode) => {
-      if (p === notExecutablePath) {
+      if (p === notExecutablePath && mode === fs.constants.X_OK) {
         const err = new Error('EACCES: permission denied');
         err.code = 'EACCES';
         throw err;
       }
-      return fs.accessSync(p, mode);
+      // notExecutablePath is never written to disk (its statSync mock above
+      // redirects to a real file instead) — its R_OK call must redirect too,
+      // or this falls through to a real accessSync on a nonexistent path.
+      return fs.accessSync(p === notExecutablePath ? __filename : p, mode);
     },
   });
 
@@ -242,6 +245,37 @@ test('a selfExecutable + interpreterCandidates entry checks both the execute bit
     accessSync: alwaysOk,
   });
   assert.equal(clean.ok, true);
+});
+
+test('a win32 selfExecutable entry (Codex .cmd shim) skips the execute-bit check (#4249 agy review)', (t) => {
+  // POSIX mode bits don't mean executable on win32 — this must not depend on
+  // Node's own accessSync(X_OK)-as-F_OK no-op (which only protects a real
+  // Windows machine), or a test simulating win32 on a POSIX runner would see
+  // a spurious 'not-executable' for a .cmd shim that was never chmod'd +x.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-win32-cmd-'));
+  t.after(() => helpers.cleanup(root));
+  const cmdPath = path.join(root, 'gsd-check-update.cmd');
+  fs.writeFileSync(cmdPath, '@echo off\r\n');
+
+  const result = hooksSurface.validateConfiguredEntrypoints([
+    {
+      runtime: 'codex',
+      configPath: path.join(root, 'hooks.json'),
+      scriptPath: cmdPath,
+      platform: 'win32',
+      selfExecutable: true,
+    },
+  ], {
+    accessSync: (p, mode) => {
+      if (mode === fs.constants.X_OK) {
+        const err = new Error('EACCES: permission denied');
+        err.code = 'EACCES';
+        throw err;
+      }
+    },
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
 });
 
 test('runtime config writers expose the exact configured entrypoints they emit', (t) => {

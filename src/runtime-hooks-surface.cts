@@ -1190,7 +1190,7 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
     }
     managedCommand = shimIR.hookCommand;
     configuredEntrypoints.push(
-      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform },
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform, selfExecutable: true },
       { runtime: 'codex', configPath: hooksJsonPath, scriptPath, interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)], platform },
     );
   } else {
@@ -1253,7 +1253,7 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
     }
     managedCommand = shimIR.hookCommand;
     configuredEntrypoints.push(
-      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform },
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform, selfExecutable: true },
       { runtime: 'codex', configPath: hooksJsonPath, scriptPath, interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)], platform },
     );
   } else {
@@ -1459,7 +1459,7 @@ function configuredEntrypointsForHook(
   };
   const isShellHook = hookName.endsWith('.sh');
 
-  if (shellHookOmitsBashRunner({ platform, runtime, isShellHook })) return [target];
+  if (shellHookOmitsBashRunner({ platform, runtime, isShellHook })) return [{ ...target, selfExecutable: true }];
 
   const bash = resolveBashExecutable(opts);
   if (isShellHook) {
@@ -3374,11 +3374,13 @@ interface ConfiguredEntrypoint {
   configPath: string;
   scriptPath: string;
   interpreterCandidates?: string[];
-  // #4249 (CodeRabbit): true when the OS execs scriptPath directly via its own
-  // shebang — orthogonal to interpreterCandidates. Most shebang-invoked entries
-  // have no candidates (the shebang interpreter is a fixed absolute path, e.g.
-  // `bash`), but Cline's `#!/usr/bin/env node` is a hybrid: the script itself
-  // still needs the execute bit AND `node` still needs to resolve on PATH.
+  // #4249 (CodeRabbit): true when the OS execs scriptPath directly (via a
+  // shebang, or Windows' own .cmd extension dispatch) — orthogonal to
+  // interpreterCandidates, which every producer that needs both sets
+  // alongside this rather than relying on their absence. Most self-executable
+  // entries have no candidates (a Windows-Claude .sh hook, Codex's .cmd shim);
+  // Cline's `#!/usr/bin/env node` is a hybrid needing both: the execute bit
+  // AND `node` resolving on PATH.
   selfExecutable?: boolean;
   platform?: string;
   command?: string;
@@ -3411,13 +3413,14 @@ function validateConfiguredEntrypoints(
       scriptOk = statSync(entry.scriptPath).isFile();
       if (!scriptOk) {
         invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'wrong-file-type' });
-      } else if (entry.interpreterCandidates) {
+      } else {
         // #4249: statSync only needs search permission on the parent dirs, so
         // it succeeds even for a chmod-000 file — the EACCES catch below
-        // never fires for that case, and an interpreter-invoked entry has no
-        // other readability gate (unlike the candidate-less/X_OK branch
-        // below). Read permission on the file itself must be checked
-        // explicitly to catch a genuinely unreadable script.
+        // never fires for that case. Read permission on the file itself must
+        // be checked explicitly: an interpreter opens the script directly,
+        // and even a self-executable shebang script is opened and read by
+        // its kernel-invoked interpreter, not just exec'd — X_OK alone does
+        // not prove it's readable.
         try {
           accessSync(entry.scriptPath, fs.constants.R_OK);
         } catch {
@@ -3431,14 +3434,17 @@ function validateConfiguredEntrypoints(
       const reason = (statErr as NodeJS.ErrnoException)?.code === 'EACCES' ? 'unreadable' : 'missing';
       invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
     }
-    // #4249: an entry with no interpreterCandidates runs via its own shebang
-    // (e.g. a Windows-Claude .sh hook that omits the bash runner) — nothing
-    // else resolves an interpreter for it, so it must itself carry the
-    // execute bit. selfExecutable additionally covers the hybrid case (e.g.
-    // Cline's `#!/usr/bin/env node` hook): self-exec AND a resolvable
-    // interpreter are both required, so this check must not be skipped just
-    // because interpreterCandidates is also present.
-    if (scriptOk && (entry.selfExecutable || !entry.interpreterCandidates)) {
+    // #4249: selfExecutable is the sole source of truth for whether the OS
+    // execs scriptPath directly via its own shebang (set explicitly by every
+    // producer that needs it — a Windows-Claude .sh hook, Codex's Windows
+    // .cmd shim, Cline's hybrid `env node` hook — rather than inferred from
+    // the absence of interpreterCandidates, which Cline's hybrid case also
+    // carries). Skip on win32 like resolveExecutableBinary's own X_OK
+    // carve-out does: POSIX mode bits don't mean executable on Windows, and a
+    // real accessSync(X_OK) there would fail a .cmd shim under a test that
+    // simulates win32 on a POSIX runner (Node's own no-op only protects an
+    // actual Windows machine). Cline is the only producer where this runs.
+    if (scriptOk && entry.selfExecutable && (entry.platform ?? process.platform) !== 'win32') {
       try {
         accessSync(entry.scriptPath, fs.constants.X_OK);
       } catch {

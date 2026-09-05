@@ -13195,11 +13195,13 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
   const plan = resolveInstallPlan(runtime);
 
   // #4249 Major: validate BEFORE this function's own settings.json write (and
-  // before writeNonClaudeDefaults) instead of after. Codex/Cursor/Windsurf/Kimi
-  // already persisted their config inside install() by this point (no rollback
-  // path covers those writes — see docs/how-to/update-gsd.md), but for the
-  // settings-json surface this ordering means a failing validation never
-  // reaches this function's own write at all.
+  // before writeNonClaudeDefaults) instead of after. Cursor/Windsurf/Kimi/Cline
+  // already persisted their config inside install() by this point, with no
+  // rollback path covering those writes; Codex also persists inside install()
+  // but its rollback binds to a full pre-install snapshot restore, so it IS
+  // covered (see docs/how-to/update-gsd.md). For the settings-json surface
+  // this ordering means a failing validation never reaches this function's
+  // own write at all.
   assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
 
   if (shouldInstallStatusline && plan.writesSharedSettings && !_hostBehaviors(runtime).skipSettingsUi) {
