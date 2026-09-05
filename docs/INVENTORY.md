@@ -351,6 +351,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `execute-phase-between-wave-reset.md` | Between-wave manifest reset and worktree base refresh for waves 2+, plus the pre-wave cross-plan key-links dependency check (#1369). |
 | `execute-phase-wave-guard.md` | Inter-wave worktree base re-check for wave N+1 — the harness caches the fork base, so a fresh worktree would otherwise be cut from the stale pre-wave base (#1369, #2652). |
 | `offer-next.md` | The `offer_next` step body extracted from `execute-phase.md` — auto-advance routing and the no-transition check (#2537). |
+| `response-language-directive.md` | Shared response-language directive for workflow output, inter-tool narration, and translated report-template prose (#2529). |
 | `continuation-format.md` | Session continuation/resume format. |
 | `domain-probes.md` | Domain-specific probing questions for discuss-phase. |
 | `edge-probe.md` | Spec-phase edge-completeness probe — 8-category edge taxonomy, shape classification, and the `requirements → checks → verifier` resolution model (Step 5.5). |
@@ -721,6 +722,7 @@ Full listing: `hooks/`.
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Hard-blocks Edit/Write/MultiEdit with absolute paths outside the worktree root (PR #579, #260) |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | Hard-blocks an executor `Agent()` dispatch missing its harness isolation parameter when the project's resolved dispatch isolation is `harness-worktree` (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | Hard-blocks a whole-file `Write` that catastrophically shrinks a curated `.planning/` artifact (ROADMAP.md, milestone roadmaps, STATE.md); override via the single-use sentinel `.planning/.gsd-allow-shrink` (workflow steps) or `GSD_ALLOW_PLANNING_SHRINK=1` (interactive) (#2255, fix 3 of #973) |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Hard-blocks Read / Grep / Bash reads of `.env`, `.env.<suffix>` (templates such as `.env.example` exempt) and `.secrets`; replaces the installer-written `Read(.env*)` permission deny rules, which made every `cd DIR && grep …` compound prompt for approval on Claude Code ≥ 2.1.259 (#4221) |
 | `gsd-config-reload.js` | `FileChanged` | Hot-reloads GSD config context when `.planning/config.json` changes mid-session (#770) |
 | `gsd-ensure-canonical-path.js` | `SessionStart` | Symlinks `~/.claude/gsd-core/{bin,contexts,references,templates,workflows}` to the plugin's bundled tree so `@~/.claude/gsd-core/...` includes resolve in marketplace plugin installs; no-op in classic installs, self-heals after `claude plugin update` (#997) |
 | `gsd-session-state.sh` | `SessionStart` | Session-state tracking for shell-based runtimes |
