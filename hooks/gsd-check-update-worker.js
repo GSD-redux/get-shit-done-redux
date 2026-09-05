@@ -156,5 +156,22 @@ const result = {
 };
 
 if (cacheFile) {
-  try { fs.writeFileSync(cacheFile, JSON.stringify(result)); } catch (e) {}
-}
+  // #4091: the cache file is shared per-PACKAGE across every runtime's worker
+  // (#607/#1421), so concurrent statusline/banner readers parse it while this
+  // worker writes it. A direct writeFileSync truncates before writing — a
+  // reader landing mid-write sees a torn/empty record (its JSON.parse catch
+  // swallows it, so the symptom is an intermittently blank update segment).
+  // Publish atomically instead: stage under a unique same-directory temp
+  // (same filesystem, so rename(2) is atomic — readers see the old or the new
+  // record, never a partial one), then renameSync into place. Failure policy
+  // is unchanged (#3582 degrade): any error is swallowed and the temp, if
+  // left behind, is best-effort removed.
+  const tmp = cacheFile + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(result));
+    fs.renameSync(tmp, cacheFile);
+  } catch (e) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch (e2) {}
+  }}

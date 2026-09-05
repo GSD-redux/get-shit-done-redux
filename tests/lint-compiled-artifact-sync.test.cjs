@@ -183,8 +183,20 @@ describe('fix-2657: compiled .cjs artifacts are gitignored, not tracked (ADR-457
   });
 
   test('lint-compiled-artifact-sync exits 0 with nothing left to check', () => {
+    // #4093 CI: this spawn is NOT the PROBE class the shared default below
+    // describes. The script's "nothing left to check" path still runs a FULL
+    // `tsc -p tsconfig.build.json` compile to a throwaway outDir whenever any
+    // compiled artifact remains tracked (ten are, deliberately — ADR-457's
+    // staged end state), and under CI shard load that compile can exceed the
+    // 15s probe budget, dying to a SIGTERM with empty piped stdout (observed
+    // twice on ubuntu shard 1/3). Per helpers/timeouts.cjs's own rule, a call
+    // site that genuinely differs from its class — "a real `tsc` compile" —
+    // keeps its own local constant with its own justifying comment; see
+    // tests/ensure-runtime-build.test.cjs's BUILD_TIMEOUT_MS for the other
+    // instance. 60s is that same class, sized for the cold-cache CI case.
+    const TSC_COMPILE_TIMEOUT_MS = 60000;
     const args = [path.join(REPO_ROOT, 'scripts', 'lint-compiled-artifact-sync.cjs')];
-    const result = run(process.execPath, args);
+    const result = run(process.execPath, args, { timeoutMs: TSC_COMPILE_TIMEOUT_MS });
     assert.equal(result.status, 0, describeFailure(process.execPath, args, result));
   });
 });
