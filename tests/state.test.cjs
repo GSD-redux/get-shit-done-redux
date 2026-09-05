@@ -18164,6 +18164,240 @@ describe('#3871 / #3756: curated progress must survive a write on an archived mi
 });
 
 // ═════════════════════════════════════════════════════════════════════════
+// #4129: progress.completed_phases is recomputed to a WRONG value on every
+// resyncing state write, and hand-fixes never survive (.gsd/bug/
+// fix-4129-completed-phases-recompute/{10-diagnosis,50-test-matrix}.md).
+//
+// The repro shape (issue rows 1/4): a completed phase whose SUMMARY was
+// touched after its verification passed — a later reformat/re-run commit, or
+// any dirty working-tree edit — permanently stale-dates that phase's
+// verification under the #2348 clean-commit-time clock. isPhaseComplete
+// (#2957 disk-strict, correctly) refuses to count it, so
+// buildStateFrontmatter's disk numerator UNDER-counts vs the ROADMAP
+// Complete rows that `phase complete` itself maintains, and the resync arm
+// of applyPreserveAlways wholesale-replaces the stored block with the
+// under-count on every default-resync write (record-session / add-decision /
+// begin-phase / ...), clobbering any hand-corrected value.
+//
+// The fixture below is git-free: outside a repo the #2348 clock falls back
+// to filesystem mtimes, so a newer-mtime SUMMARY reproduces the exact stale
+// routing the real git clock produces (verified against the same
+// `verification status` CLI the reporter used).
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('#4129: completed_phases derives from the ROADMAP authority and survives resyncing writes', () => {
+  /**
+   * The #4129 STALE shape: milestone v1.0, 18 phases, phases 1-3 Complete in
+   * the ROADMAP (canonical 4-column Progress table + checklist), each with
+   * plans/summaries and a passing verification; phase 1's SUMMARY carries a
+   * NEWER mtime than its verification → `verification status` routes `stale`
+   * → disk numerator 2, ROADMAP truth 3. STATE.md starts at the truth (3).
+   */
+  function buildStaleVerificationFixture(cwd, initialCompleted = 3) {
+    const planningDir = path.join(cwd, '.planning');
+    const phasesDir = path.join(planningDir, 'phases');
+    fs.mkdirSync(phasesDir, { recursive: true });
+    fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ project_code: 'REPRO' }));
+
+    const roadmapLines = [
+      '# Roadmap',
+      '',
+      '## Current Milestone: v1.0',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 1.    | 2/2            | Complete | 2026-01-01 |',
+      '| 2.    | 2/2            | Complete | 2026-01-02 |',
+      '| 3.    | 2/2            | Complete | 2026-01-03 |',
+    ];
+    for (let i = 4; i <= 18; i += 1) roadmapLines.push(`| ${i}.    | 0/2            | Not Started |  |`);
+    roadmapLines.push('', '- [x] Phase 1: Alpha (completed 2026-01-01)', '- [x] Phase 2: Beta (completed 2026-01-02)', '- [x] Phase 3: Gamma (completed 2026-01-03)');
+    for (let i = 4; i <= 18; i += 1) roadmapLines.push(`- [ ] Phase ${i}: P${i}`);
+    for (let i = 1; i <= 18; i += 1) {
+      roadmapLines.push('', `### Phase ${i}: P${i}`, '', '**Goal:** goal', '**Plans:** 2 plans', '');
+    }
+    fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmapLines.join('\n'));
+
+    fs.writeFileSync(
+      path.join(planningDir, 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'milestone: v1.0',
+        'milestone_name: Programme',
+        'status: executing',
+        'current_phase: 4',
+        'last_updated: 2026-01-03T10:00:00.000Z',
+        'progress:',
+        '  total_phases: 18',
+        `  completed_phases: ${initialCompleted}`,
+        '  total_plans: 6',
+        '  completed_plans: 6',
+        '  percent: 17',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 4 of 18 (P4) — EXECUTING',
+        'Plan: 1 of 2',
+        'Status: Executing Phase 4',
+        'Last activity: 2026-01-03',
+        '',
+        '## Progress',
+        '',
+        `Progress: [██░░░░░░░░] 17% (${initialCompleted}/18 phases complete)`,
+        '',
+        '## Session',
+        '',
+        'Last session: 2026-01-03T10:00:00.000Z',
+        'Stopped at: Finished phase 3',
+        'Resume file: None',
+        '',
+      ].join('\n'),
+    );
+
+    for (const p of [1, 2, 3]) {
+      const pp = String(p).padStart(2, '0');
+      const dir = path.join(phasesDir, `${pp}-p${p}`);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const i of [1, 2]) {
+        fs.writeFileSync(path.join(dir, `${pp}-0${i}-PLAN.md`), '# Plan\n');
+        fs.writeFileSync(path.join(dir, `${pp}-0${i}-SUMMARY.md`), '# Summary\n');
+      }
+      writePassedVerification(cwd, `${pp}-p${p}`, pp);
+    }
+
+    // The drift: phase 1's summary edited AFTER the verification was written.
+    // No git repo → the #2348 clock compares mtimes; the newer summary mtime
+    // routes the phase-1 verification `stale` exactly as a later commit would.
+    const verificationPath = path.join(phasesDir, '01-p1', '01-VERIFICATION.md');
+    const driftedSummary = path.join(phasesDir, '01-p1', '01-01-SUMMARY.md');
+    const older = new Date('2026-01-01T00:00:00Z');
+    const newer = new Date('2026-03-01T00:00:00Z');
+    fs.utimesSync(verificationPath, older, older);
+    fs.utimesSync(driftedSummary, newer, newer);
+
+    return { planningDir, phasesDir };
+  }
+
+  function readProgress(cwd) {
+    const content = fs.readFileSync(path.join(cwd, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(content);
+    assert.ok(fm && fm.progress, 'STATE.md frontmatter must carry a progress block');
+    return { progress: fm.progress, content };
+  }
+
+  // Row 1 of the 50-test-matrix — the failing-first regression. On current
+  // `next` each of these verbs clobbers the stored 3 down to the
+  // stale-verification disk count 2 (percent 17 → 11), which is the issue's
+  // "any hand-correction is silently reverted by the next one".
+  test('handFixedCompletedPhasesSurvivesEveryResyncingWrite', (t) => {
+    const cwd = createTempDir('gsd-4129-handfix-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 3);
+
+    // Precondition — the drift is really in place: phase 1 routes stale, so
+    // the disk numerator is 2 while ROADMAP + stored say 3.
+    const staleCheck = runGsdTools(['verification', 'status', path.join('.planning', 'phases', '01-p1')], cwd);
+    assert.ok(staleCheck.success, `verification status failed: ${staleCheck.error}`);
+    assert.strictEqual(JSON.parse(staleCheck.output).status, 'stale', 'fixture precondition: phase 1 verification must route stale (newer summary)');
+
+    for (const [label, args] of [
+      ['state record-session', ['state', 'record-session', '--stopped-at', 'Finished phase 3 verification']],
+      ['state add-decision', ['state', 'add-decision', '--summary', 'Ship it']],
+      ['state begin-phase', ['state', 'begin-phase', '--phase', '4', '--name', 'P4']],
+    ]) {
+      const result = runGsdTools(args, cwd);
+      assert.ok(result.success, `${label} failed: ${result.error}`);
+      const { progress, content } = readProgress(cwd);
+      assert.strictEqual(
+        Number(progress.completed_phases),
+        3,
+        `#4129: ${label} must not clobber the ROADMAP-correct completed_phases 3 down to the stale-verification disk count (${progress.completed_phases})`,
+      );
+      assert.strictEqual(Number(progress.percent), 17, `#4129: ${label} — percent follows the surviving counters (3/18), not the discarded disk count`);
+      assert.strictEqual(bodyProgressPercent(content), 17, `#4129: ${label} — the body Progress bar must stay coherent with the persisted percent`);
+    }
+  });
+
+  // Row 2 — the DERIVED block itself must carry the ROADMAP-floored numerator.
+  // state json applies the read-path ratchet (shouldPreserveExistingProgress),
+  // which would mask a still-wrong derivation whenever a stored block exists —
+  // so this asserts on a STATE.md whose stored block is ABSENT: what json
+  // reports is then exactly what buildStateFrontmatter derived.
+  test('stateJsonDerivesCompletedPhasesFromRoadmapAuthority', (t) => {
+    const cwd = createTempDir('gsd-4129-jsonfloor-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 3);
+
+    // Drop the stored block: the derivation has no stored value to ratchet
+    // against, so the reported counter IS the derived numerator.
+    const statePath = path.join(cwd, '.planning', 'STATE.md');
+    fs.writeFileSync(
+      statePath,
+      fs.readFileSync(statePath, 'utf-8').replace(/^progress:[\s\S]*?---/m, '---'),
+    );
+
+    const result = runGsdTools(['state', 'json'], cwd);
+    assert.ok(result.success, `state json failed: ${result.error}`);
+    const reported = JSON.parse(result.output).progress;
+    assert.strictEqual(
+      Number(reported.completed_phases),
+      3,
+      `#4129: the derived completed_phases must agree with the ROADMAP Complete rows (3), not the stale-verification disk count (${reported.completed_phases})`,
+    );
+    assert.strictEqual(Number(reported.percent), 17, '#4129: percent derives from the floored numerator');
+  });
+
+  // Row 3 — the flip side: a counter STUCK LOW (the issue's row-1 aftermath)
+  // must move UP to the ROADMAP truth on the next write, not stay pinned.
+  test('stuckLowCounterIncrementsToRoadmapTruthOnNextWrite', (t) => {
+    const cwd = createTempDir('gsd-4129-stucklow-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 2);
+
+    const result = runGsdTools(['state', 'record-session', '--stopped-at', 'x'], cwd);
+    assert.ok(result.success, `record-session failed: ${result.error}`);
+    const { progress } = readProgress(cwd);
+    assert.strictEqual(Number(progress.completed_phases), 3, '#4129: a stored 2 below the ROADMAP truth must rise to 3, not be re-derived as 2');
+    assert.strictEqual(Number(progress.percent), 17, '#4129: percent follows the corrected numerator');
+  });
+
+  // Row 5 — negative space: no canonical Progress table (checklist-only
+  // ROADMAP) → deriveProgressFromRoadmap resolves no table → the floor is
+  // inert and the disk-verification count stands. The floor must not invent
+  // a parser for checklist bullets (one-owner rule).
+  test('floorIsInertWithoutCanonicalProgressTable', (t) => {
+    const cwd = createTempDir('gsd-4129-notable-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 2);
+
+    // Rewrite the ROADMAP with the table stripped — checklist only.
+    const roadmapPath = path.join(cwd, '.planning', 'ROADMAP.md');
+    const withoutTable = fs
+      .readFileSync(roadmapPath, 'utf-8')
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('|'))
+      .join('\n');
+    fs.writeFileSync(roadmapPath, withoutTable);
+
+    const statePath = path.join(cwd, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, fs.readFileSync(statePath, 'utf-8').replace(/^progress:[\s\S]*?---/m, '---'));
+
+    const result = runGsdTools(['state', 'json'], cwd);
+    assert.ok(result.success, `state json failed: ${result.error}`);
+    const reported = JSON.parse(result.output).progress;
+    assert.strictEqual(
+      Number(reported.completed_phases),
+      2,
+      '#4129 negative space: without a canonical Progress table the completed count stays the disk-verification count (the floor reuses deriveProgressFromRoadmap, which reads only the table)',
+    );
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
 // #3872 / ADR-3473 §8.7: what a command reports it wrote
 // (.gsd/phase/feat-3872-transaction-diff-reporting/{40-design,50-test-matrix}.md)
 //
