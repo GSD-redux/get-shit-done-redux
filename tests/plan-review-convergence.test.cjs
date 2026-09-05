@@ -1040,14 +1040,28 @@ describe('plan-review-convergence reviews-mode ledger canonicalization (#3806)',
   const planChecker = fs.readFileSync(PLAN_CHECKER_PATH, 'utf8');
   const reviewWorkflow = fs.readFileSync(WORKFLOW_REVIEW_PATH, 'utf8');
 
-  const LEDGER_HEADING_RE = /^##\s+(Review Dispositions Ledger[^\r\n]*)$/m;
+  const LEDGER_HEADING_RE = /^##\s+(Review Dispositions Ledger[^\r\n]{0,200})$/m;
 
   test('planner-reviews.md defines the canonical "Review Dispositions Ledger" heading exactly once', () => {
-    const matches = plannerReviews.match(/^##\s+Review Dispositions Ledger[^\r\n]*$/gm) || [];
+    // Counts only the REAL heading occurrence, skipping any fenced code-block
+    // example that happens to show the same heading text as sample content
+    // (planner-reviews.md's worked example does this deliberately, so a plan-
+    // writing agent has a full copyable sample including its own top heading).
+    const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+    let inFence = false;
+    let realHeadingCount = 0;
+    for (const line of splitLines(plannerReviews)) {
+      if (line.trimStart().startsWith('```')) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      if (line.trim() === '## Review Dispositions Ledger') realHeadingCount += 1;
+    }
     assert.equal(
-      matches.length,
+      realHeadingCount,
       1,
-      'references/planner-reviews.md must define the "## Review Dispositions Ledger" heading exactly once — this is the single canonical statement of the ledger contract (#3806)'
+      'references/planner-reviews.md must define the real (non-fenced-example) "## Review Dispositions Ledger" heading exactly once — this is the single canonical statement of the ledger contract (#3806)'
     );
   });
 
