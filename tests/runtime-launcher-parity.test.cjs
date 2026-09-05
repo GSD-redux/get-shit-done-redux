@@ -55,8 +55,11 @@ const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
  *    fixture that exits 0 appends `export PATH='<temp dir>'` to the
  *    developer's real env file — 11 lines per suite run, each naming a
  *    /tmp dir the fixture has already deleted.
+ *  - BASH_ENV: sourced by non-interactive bash BEFORE the script, which is
+ *    after this scrub is applied — so one inherited var re-injects any of
+ *    the others. Measured: a BASH_ENV exporting CODEX_HOME turns (H) red.
  */
-const SNIPPET_SCRUB = { GEMINI_CONFIG_DIR: '', CLAUDE_ENV_FILE: '' };
+const SNIPPET_SCRUB = { GEMINI_CONFIG_DIR: '', CLAUDE_ENV_FILE: '', BASH_ENV: '' };
 function snippetEnv(overrides = {}) {
   return { ...process.env, ...TEST_ENV_BASE, ...SNIPPET_SCRUB, ...overrides };
 }
@@ -1703,6 +1706,11 @@ function makeTempDir() {
 }
 
 function runResolver({ cwd, runtimeDir, pathDir }) {
+  // RUNTIME_DIR='' is INDISTINGUISHABLE from unset to the resolver's
+  // ${RUNTIME_DIR:-$(git rev-parse --show-toplevel)} — an empty value silently
+  // falls back to the real repo root and resolves its real install. Fail loudly
+  // instead; every caller passes one.
+  if (!runtimeDir) throw new Error('runResolver requires runtimeDir: an empty value resolves the real repo root');
   const script = [
     'set -e',
     extractResolverSnippet(),
@@ -1721,7 +1729,7 @@ function runResolver({ cwd, runtimeDir, pathDir }) {
     cwd,
     env: snippetEnv({
       PATH: `${pathDir}${path.delimiter}${process.env.PATH || ''}`,
-      RUNTIME_DIR: runtimeDir || '',
+      RUNTIME_DIR: runtimeDir,
     }),
   });
   throwIfFailed(r, 'bash -c <runtime resolver snippet>');
