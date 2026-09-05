@@ -475,7 +475,7 @@ describe('runtime-launcher-parity (#373)', () => {
     // The resolution order must be:
     //   (1) local/RUNTIME_DIR  →  (2) PATH  →  (3) $HOME/.claude/gsd-core/bin  →  (4) hard error
     // We probe for .claude/gsd-core/bin (using ${_GSD_SHIM_NAME} indirection)
-    // between the `command -v gsd-tools` elif and the hard-error else branch.
+    // between the `command -v gsd_run` elif and the hard-error else branch.
     const CLAUDE_HOME_PROBE = '.claude/gsd-core/bin/';
 
     // Assert snippet itself contains the probe
@@ -882,7 +882,7 @@ describe('runtime-launcher-parity — agents (#1041)', () => {
  * Asserts:
  * (A) The canonical snippet file contains the ~/.claude fallback arm.
  * (B) A representative propagated workflow file contains the ~/.claude fallback arm.
- * (C) Behavioral: when RUNTIME_DIR misses and gsd-tools is NOT on PATH,
+ * (C) Behavioral: when RUNTIME_DIR misses and gsd_run is NOT on PATH,
  *     a stub at $HOME/.claude/gsd-core/bin/gsd-tools.cjs is resolved and invoked.
  * (D) The resolution order is preserved: local -> PATH -> ~/.claude -> hard error.
  *     When all three miss, exit non-zero.
@@ -1092,11 +1092,11 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  * Every non-Claude runtime (Hermes, Cursor, Codex, Copilot, Windsurf, …)
  * installs gsd-core into a *different* directory that the shim never tried,
  * causing a false-positive fatal ERROR on all non-Claude runtimes when
- * RUNTIME_DIR is not set and gsd-tools is not on PATH.
+ * RUNTIME_DIR is not set and gsd_run is not on PATH.
  *
  * Asserts:
  * (A) Snippet contains all expected non-Claude runtime home probes (structural).
- * (B) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd-tools is NOT on
+ * (B) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd_run is NOT on
  *     PATH, a stub at ${HERMES_HOME}/gsd-core/bin/gsd-tools.cjs is invoked.
  * (C) Default Hermes path behavioral: stub at $HOME/.hermes/gsd-core/bin/
  *     gsd-tools.cjs is invoked when HERMES_HOME is not set.
@@ -1220,15 +1220,15 @@ function extractShellBlocks(content) {
 }
 
 /**
- * Build a PATH with no gsd-tools binary so the PATH fallback branch is skipped,
+ * Build a PATH with no gsd_run binary so the PATH fallback branch is skipped,
  * while guaranteeing that a bare `node` lookup still resolves regardless of whether
- * the real node binary co-locates with a global gsd-tools shim (e.g. fnm/nvm/Homebrew).
+ * the real node binary co-locates with a global gsd_run shim (e.g. fnm/nvm/Homebrew).
  *
  * Strategy (POSIX only): create a temp dir containing only a `node` symlink →
- * process.execPath, prepend it to the gsd-tools-filtered PATH.  The filtered
- * PATH excludes any directory that contains an executable `gsd-tools`.
+ * process.execPath, prepend it to the gsd_run-filtered PATH.  The filtered
+ * PATH excludes any directory that contains an executable `gsd_run`.
  *
- * On Windows the co-location bug does not apply (gsd-tools resolves via .cmd/.ps1,
+ * On Windows the co-location bug does not apply (gsd_run resolves via .cmd/.ps1,
  * not the bare binary probed here), and symlinks may require elevated privileges,
  * so we skip the symlink step entirely on that platform.
  *
@@ -1617,7 +1617,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
  *
  * A user project normally does not contain gsd-core/bin/gsd-tools.cjs.
  * The snippets should still prefer RUNTIME_DIR for local/dev installs, then
- * fall back to the installed gsd-tools binary on PATH.
+ * fall back to the installed gsd_run binary on PATH.
  */
 'use strict';
 
@@ -1705,7 +1705,7 @@ function runResolver({ cwd, runtimeDir, pathDir }) {
   ].join('\n');
 
   // Consolidation #1969: POSIX-shell resolver. These tests create an
-  // extension-less `gsd-tools` PATH stub (mode 0o755) and exec it via `bash -c`;
+  // extension-less `gsd_run` PATH stub (mode 0o755) and exec it via `bash -c`;
   // Windows Git Bash ignores the exec bit for extension-less PATH scripts, so the
   // suite is guarded to POSIX (matches the host suite's own bash -c guard).
   if (process.platform === 'win32') return '';
@@ -1845,21 +1845,21 @@ function runBashFile(scriptPath, options = {}) {
 const LOCAL_CLAUDE_PROBE = '_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/';
 
 /**
- * Build a PATH that strips gsd-tools but keeps node and system binaries.
+ * Build a PATH that strips gsd_run but keeps node and system binaries.
  * Accepts additional bin dirs to prepend.
  *
- * We cannot simply remove the whole directory that contains gsd-tools because
+ * We cannot simply remove the whole directory that contains gsd_run because
  * that directory may also contain node (e.g. /opt/homebrew/bin on macOS).
  * Instead, we keep the system PATH as-is and rely on the test's RUNTIME_DIR
  * having no gsd-core/bin/ sub-path, so the resolver's first two checks
  * (RUNTIME_DIR/gsd-core/bin/ and RUNTIME_DIR/.claude/gsd-core/bin/)
  * are the only ones exercised before we hit our stub.
  *
- * The extra extraBefore dirs (e.g. noToolsBin) sit first but have no gsd-tools
- * binary, so command -v gsd-tools still falls back to PATH lookup. However,
- * the snippet's elif arm that uses `command -v gsd-tools` will find the real
+ * The extra extraBefore dirs (e.g. noToolsBin) sit first but have no gsd_run
+ * binary, so command -v gsd_run still falls back to PATH lookup. However,
+ * the snippet's elif arm that uses `command -v gsd_run` will find the real
  * installed one unless we mask it. To mask it without losing node, we create
- * a noToolsBin dir that shadows gsd-tools with a sentinel that must NOT be
+ * a noToolsBin dir that shadows gsd_run with a sentinel that must NOT be
  * called — and we only call makeIsolatedPath for tests where the .claude stub
  * must win before PATH is consulted (i.e. the elif PATH arm is never reached).
  *
@@ -1869,7 +1869,7 @@ const LOCAL_CLAUDE_PROBE = '_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/';
 function makeIsolatedPath(extraBefore = []) {
   // Keep full system PATH so node remains accessible.
   // Tests B and C exercise only the RUNTIME_DIR/.claude arm which fires
-  // before command -v gsd-tools — so the real gsd-tools on PATH is never reached.
+  // before command -v gsd_run — so the real gsd_run on PATH is never reached.
   const systemPaths = (process.env.PATH || '/usr/bin:/bin').split(path.delimiter);
   return [...extraBefore, ...systemPaths].join(path.delimiter);
 }
