@@ -118,7 +118,7 @@
     "pretest:coverage": "npm run build:lib && npm run lint:skill-deps",
     "lint": "eslint . --cache --cache-location node_modules/.cache/eslint/ --max-warnings 0",
     "lint:fix": "eslint . --fix",
-    "lint:table-schema-drift": "node scripts/lint-table-schema-drift.cjs",
+    "lint:table-schema-drift": "node scripts/lint-table-schema-drift.cjs && node scripts/lint-summary-task-commits-drift.cjs",
     "lint:frontmatter-scalar-broad-grep": "node scripts/lint-frontmatter-scalar-broad-grep.cjs",
     "lint:removed-but-needed": "node scripts/lint-removed-but-needed.cjs",
     "lint:response-language": "node scripts/lint-response-language-coverage.cjs",
