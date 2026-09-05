@@ -42,7 +42,10 @@ describe('#4020 — run-tests temp root', () => {
     const outer = createTempDir('gsd-4020-outer-');
     t.after(() => cleanup(outer));
 
-    const r = runNode(['-e', setupProbe], { timeoutMs: 30_000, env: { ...process.env, TMPDIR: outer } });
+    const r = runNode(['-e', setupProbe], {
+      timeoutMs: 30_000,
+      env: { ...process.env, TMPDIR: outer, TEMP: outer, TMP: outer },
+    });
     assert.equal(r.exitCode, 0, `probe failed: ${r.stderr.slice(-300)}`);
     const out = JSON.parse(r.stdout.trim().split(/\n/).pop());
     assert.ok(out.base.startsWith('gsd-test-run-'),
@@ -64,7 +67,10 @@ describe('#4020 — run-tests temp root', () => {
     const outer = createTempDir('gsd-4020-idem-');
     t.after(() => cleanup(outer));
 
-    const r = runNode(['-e', probe], { timeoutMs: 30_000, env: { ...process.env, TMPDIR: outer } });
+    const r = runNode(['-e', probe], {
+      timeoutMs: 30_000,
+      env: { ...process.env, TMPDIR: outer, TEMP: outer, TMP: outer },
+    });
     assert.equal(r.exitCode, 0, `probe failed: ${r.stderr.slice(-300)}`);
     assert.ok(JSON.parse(r.stderr.trim().split('\n').pop()).reuse === true,
       'a second invocation with the root active reuses it');
@@ -174,5 +180,119 @@ describe('#4020 — run-tests temp root', () => {
     assert.equal(r2.exitCode, 0, `second nested runner should pass: ${r2.stderr.slice(-300)}`);
     assert.ok(fs.existsSync(sibling),
       'a nested runner never sweeps the shared root — sibling fixtures survive');
+  });
+
+  describe('#4220 — computeSweepProtectSet ancestor-walk termination', () => {
+    // The original inline block stopped the ancestor walk on
+    // `cur !== runTempRoot && cur.length > 1`, a POSIX-only sentinel:
+    // path.posix.dirname('/') === '/' (length 1) correctly stops, but
+    // path.win32.dirname('C:\\') === 'C:\\' (length 3) never satisfies a
+    // length check — dirname returns the SAME string forever, so the loop
+    // never terminates on Windows whenever a selected file lives outside
+    // runTempRoot (the common case: most selected test files are in the repo
+    // checkout, not the temp root). This bounds every assertion below with a
+    // hard iteration cap so a genuinely-hanging implementation fails FAST in
+    // this test run rather than wedging the suite.
+    const HARD_ITERATION_CAP = 10_000;
+
+    // A dirnameImpl wrapper that throws once it has been called more times
+    // than a real ancestor walk could ever need, turning an infinite loop
+    // into a fast, loud test failure instead of a hang.
+    function boundedDirname(realDirnameImpl) {
+      let calls = 0;
+      return (p) => {
+        calls++;
+        if (calls > HARD_ITERATION_CAP) {
+          throw new Error(
+            `computeSweepProtectSet: dirname called >${HARD_ITERATION_CAP} times — ` +
+            `the ancestor walk did not terminate (regression of #4220)`,
+          );
+        }
+        return realDirnameImpl(p);
+      };
+    }
+
+    test('terminates and protects ancestors on win32 paths outside runTempRoot', () => {
+      const runner = require('../scripts/run-tests.cjs');
+      assert.equal(typeof runner.computeSweepProtectSet, 'function',
+        'the runner must export computeSweepProtectSet for in-process verification');
+      const win32 = require('node:path').win32;
+      // A file living entirely outside runTempRoot (the common case — most
+      // selected test files are in the repo checkout), walked with the
+      // Windows dirname implementation whose drive-root is NOT length 1.
+      const selected = ['C:\\repo\\tests\\a\\b.test.cjs'];
+      const runTempRoot = 'C:\\Users\\ci\\AppData\\Local\\Temp\\gsd-test-run-xyz';
+
+      const protectSet = runner.computeSweepProtectSet(
+        selected, runTempRoot, boundedDirname(win32.dirname),
+      );
+
+      assert.ok(protectSet.has('C:\\repo\\tests\\a\\b.test.cjs'), 'the file itself is protected');
+      assert.ok(protectSet.has('C:\\repo\\tests\\a'), 'immediate parent is protected');
+      assert.ok(protectSet.has('C:\\repo\\tests'), 'grandparent is protected');
+      assert.ok(protectSet.has('C:\\repo'), 'walk reaches up to the drive-relative root');
+      // The walk must have stopped — it must NOT contain the drive root
+      // itself looping forever, and the protect set must be finite/small.
+      assert.ok(protectSet.size < 20, 'the walk terminates with a small, bounded protect set');
+    });
+
+    test('terminates and protects ancestors on win32 paths INSIDE runTempRoot (exact-file case)', () => {
+      const runner = require('../scripts/run-tests.cjs');
+      const win32 = require('node:path').win32;
+      const runTempRoot = 'C:\\Users\\ci\\AppData\\Local\\Temp\\gsd-test-run-xyz';
+      const selected = [`${runTempRoot}\\fixture\\nested\\c.test.cjs`];
+
+      const protectSet = runner.computeSweepProtectSet(
+        selected, runTempRoot, boundedDirname(win32.dirname),
+      );
+
+      assert.ok(protectSet.has(selected[0]), 'the file itself is protected');
+      assert.ok(protectSet.has(`${runTempRoot}\\fixture\\nested`), 'immediate parent is protected');
+      assert.ok(protectSet.has(`${runTempRoot}\\fixture`), 'grandparent is protected');
+      assert.ok(!protectSet.has(win32.dirname(runTempRoot)),
+        'the walk stops at runTempRoot and never protects its parent');
+    });
+
+    test('terminates and protects ancestors on posix paths (parity with win32)', () => {
+      const runner = require('../scripts/run-tests.cjs');
+      const posix = require('node:path').posix;
+      const selected = ['/repo/tests/a/b.test.cjs'];
+      const runTempRoot = '/synthetic-root/gsd-test-run-xyz';
+
+      const protectSet = runner.computeSweepProtectSet(
+        selected, runTempRoot, boundedDirname(posix.dirname),
+      );
+
+      assert.ok(protectSet.has('/repo/tests/a/b.test.cjs'), 'the file itself is protected');
+      assert.ok(protectSet.has('/repo/tests/a'), 'immediate parent is protected');
+      assert.ok(protectSet.has('/repo/tests'), 'grandparent is protected');
+      assert.ok(protectSet.has('/repo'), 'walk reaches up toward the root');
+      assert.ok(!protectSet.has('/'),
+        'the walk stops before adding the filesystem root itself, mirroring win32 behavior');
+    });
+
+    test('exact-file case on posix: selected file lies directly under runTempRoot', () => {
+      const runner = require('../scripts/run-tests.cjs');
+      const posix = require('node:path').posix;
+      const runTempRoot = '/synthetic-root/gsd-test-run-xyz';
+      const selected = [runTempRoot];
+
+      const protectSet = runner.computeSweepProtectSet(
+        selected, runTempRoot, boundedDirname(posix.dirname),
+      );
+      assert.ok(protectSet.has(runTempRoot), 'the exact-file case protects runTempRoot itself');
+    });
+
+    test('defaults dirnameImpl to the real platform path.dirname when not injected', () => {
+      const runner = require('../scripts/run-tests.cjs');
+      const path = require('node:path');
+      const os = require('node:os');
+      const runTempRoot = path.join(os.tmpdir(), 'gsd-test-run-default');
+      const selected = [path.join(runTempRoot, 'fixture', 'd.test.cjs')];
+
+      const protectSet = runner.computeSweepProtectSet(selected, runTempRoot);
+      assert.ok(protectSet.has(selected[0]), 'default dirnameImpl still protects the selected file');
+      assert.ok(protectSet.has(path.join(runTempRoot, 'fixture')), 'default dirnameImpl walks ancestors');
+    });
   });
 });

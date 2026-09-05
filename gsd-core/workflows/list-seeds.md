@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 List captured seeds for browsing and audit, with an optional status filter. Read-only — never mutates seeds.
 </purpose>

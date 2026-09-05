@@ -76,11 +76,20 @@ interface PlanTask {
    * normalises to null, same as every other optional attribute here).
    */
   trackerId: string | null;
+  /**
+   * Verbatim `tdd` attribute value on a `<task>` opening tag (e.g. `"true"`),
+   * or null. Never coerced to boolean — read exactly like `trackerId`. Null
+   * for a checkpoint task (never read), an absent attribute, or an
+   * empty-string value. #4273 (epic #4272, ADR-3473's 4th application).
+   */
+  tdd: string | null;
 }
 
 interface PlanDocument {
   /** `<objective>` body, else frontmatter `objective`, else null. */
   objective: string | null;
+  /** Frontmatter `type` value, read verbatim (e.g. `"tdd"`, `"standard"`), or null when absent. #4273. */
+  type: string | null;
   /** Frontmatter `wave` as an integer, or null when absent/unparseable. */
   declaredWave: number | null;
   dependsOn: string[];
@@ -206,6 +215,7 @@ function parseXmlTasks(content: string): PlanTask[] {
         acceptanceCriteria: [],
         done: null,
         trackerId: null,
+        tdd: null,
       };
     }
 
@@ -218,6 +228,7 @@ function parseXmlTasks(content: string): PlanTask[] {
       acceptanceCriteria: splitCriteria(elementBody(block, 'acceptance_criteria')),
       done: collapseWhitespace(elementBody(block, 'done')),
       trackerId: tagAttribute(openTag, 'tracker-id'),
+      tdd: tagAttribute(openTag, 'tdd'),
     };
   });
 }
@@ -237,6 +248,7 @@ function parseMarkdownTasks(content: string): PlanTask[] {
     acceptanceCriteria: [],
     done: null,
     trackerId: null,
+    tdd: null,
   }));
 }
 
@@ -324,8 +336,16 @@ function parsePlanDocument(content: string, planPath = ''): PlanDocument {
     agentHint = hintStr !== '' ? hintStr : null;
   }
 
+  let planType: string | null = null;
+  const fmType = fm['type'];
+  if (fmType !== undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
+    planType = String(fmType);
+  }
+
   return {
     objective: extractObjective(content) || (fm['objective'] as string | null) || null,
+    type: planType,
     declaredWave,
     dependsOn,
     autonomous,

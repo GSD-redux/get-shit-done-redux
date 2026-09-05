@@ -66,6 +66,42 @@
     "discussion": "https://github.com/open-gsd/gsd-core/discussions/2342"
   },
   {
+    "id": "gsd-qoder",
+    "name": "GSD for Qoder",
+    "type": "eos",
+    "repo": "cainiao1992/gsd-qoder",
+    "description": "Embeds GSD in Qoder — Alibaba's AI coding product family (Qoder CLI and Qoder Desktop) — by projecting GSD's agents, skills, and hook scripts into the Qoder config directory (~/.qoder, or ~/.qoder-cn for the China edition, or QODER_CONFIG_DIR), applying Qoder-specific path and subagent-frontmatter conversions, merging GSD's lifecycle hooks into settings.json without disturbing existing user settings, and recording an install manifest so uninstall removes exactly what was projected.",
+    "author": "cainiao1992",
+    "license": "Apache-2.0",
+    "enginesGsd": "1.12.0",
+    "protocolVersion": 1,
+    "install": "npm install --global github:cainiao1992/gsd-qoder#v0.3.4 && gsd-qoder install",
+    "uninstall": "gsd-qoder uninstall && npm uninstall --global gsd-qoder",
+    "interactions": {
+      "interfacePoints": [
+        "command",
+        "dispatch",
+        "model",
+        "hooks",
+        "state",
+        "artifact"
+      ],
+      "profile": "declarative-cli",
+      "axes": {
+        "embeddingMode": "declarative",
+        "commandSurface": "slash-file",
+        "dispatch": "Named and nested Qoder subagent dispatch with background execution and a full subagent toolkit; no numeric nesting depth is documented, and isolation is none because Qoder's worktree is a frontmatter-declared, per-agent-definition property rather than a dispatch-time parameter",
+        "modelMode": "passive",
+        "hookBus": "host",
+        "stateIO": "filesystem",
+        "transport": "mcp",
+        "runtime": "node",
+        "effortSurface": "argv"
+      }
+    },
+    "discussion": "https://github.com/open-gsd/gsd-core/discussions/4122"
+  },
+  {
     "id": "gsd-reasonix",
     "name": "GSD for Reasonix",
     "type": "eos",
