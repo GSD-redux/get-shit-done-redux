@@ -161,9 +161,7 @@ test('configured entrypoint validation aggregates file and interpreter failures 
 test('an interpreter-invoked script that exists but has no read permission is reported unreadable, not ok (#4249 agy review)', (t) => {
   // statSync only needs search (+x) permission on the parent directories, so
   // it succeeds on a chmod-000 file even though `node <script>` would fail
-  // with EACCES at hook-fire time. Only the interpreterCandidates branch is
-  // exercised here — the candidate-less/shebang branch already has its own
-  // X_OK gate, proven by the 'not-executable' case in the aggregate test above.
+  // with EACCES at hook-fire time.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-unreadable-interp-'));
   t.after(() => helpers.cleanup(root));
   const scriptPath = path.join(root, 'hook.js');
@@ -185,6 +183,27 @@ test('an interpreter-invoked script that exists but has no read permission is re
         throw err;
       }
       return fs.accessSync(p, mode);
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.invalid.map(({ role, reason }) => [role, reason]), [
+    ['script', 'unreadable'],
+  ]);
+});
+
+test('an EPERM from statSync (Windows equivalent of EACCES on a parent directory) is also reported unreadable, not missing (#4249 agy review)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-eperm-'));
+  t.after(() => helpers.cleanup(root));
+  const scriptPath = path.join(root, 'hook.js');
+
+  const result = hooksSurface.validateConfiguredEntrypoints([
+    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath },
+  ], {
+    statSync: () => {
+      const err = new Error('EPERM: operation not permitted');
+      err.code = 'EPERM';
+      throw err;
     },
   });
 

@@ -3431,7 +3431,10 @@ function validateConfiguredEntrypoints(
     } catch (statErr) {
       // #4249 Nit: EACCES means a parent directory couldn't be searched —
       // a real (if rare) permission problem, distinct from ENOENT's "missing".
-      const reason = (statErr as NodeJS.ErrnoException)?.code === 'EACCES' ? 'unreadable' : 'missing';
+      // EPERM: Windows' equivalent permission-denied code for a directory a
+      // parent path couldn't be traversed into.
+      const code = (statErr as NodeJS.ErrnoException)?.code;
+      const reason = code === 'EACCES' || code === 'EPERM' ? 'unreadable' : 'missing';
       invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
     }
     // #4249: selfExecutable is the sole source of truth for whether the OS
