@@ -1739,10 +1739,20 @@ function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): { wri
   try { fs.chmodSync(hookPath, 0o755); } catch { /* Windows: hooks unsupported anyway */ }
   written.push('.clinerules/hooks/PreToolUse');
   console.log(`  ${green}✓${reset} Wrote .clinerules/hooks/PreToolUse`);
-  // #4249: Cline invokes this file directly via its own shebang — no
-  // interpreterCandidates, so validateConfiguredEntrypoints checks it's
-  // executable instead of resolving a runner for it.
-  configuredEntrypoints.push({ runtime: 'cline', configPath: hookPath, scriptPath: hookPath, platform: process.platform });
+  // #4249 (CodeRabbit): Cline invokes this file directly via its own
+  // `#!/usr/bin/env node` shebang — a hybrid case. The script itself still
+  // needs the execute bit (selfExecutable), but unlike GSD's other JS hooks
+  // (which bake an absolute, install-time-resolved node path specifically to
+  // avoid this) its interpreter is looked up on PATH by `env` at hook-fire
+  // time, so `node` must also resolve or the hook can never run.
+  configuredEntrypoints.push({
+    runtime: 'cline',
+    configPath: hookPath,
+    scriptPath: hookPath,
+    interpreterCandidates: ['node'],
+    selfExecutable: true,
+    platform: process.platform,
+  });
 
   if (isGlobalInstall) {
     try {
@@ -3364,6 +3374,12 @@ interface ConfiguredEntrypoint {
   configPath: string;
   scriptPath: string;
   interpreterCandidates?: string[];
+  // #4249 (CodeRabbit): true when the OS execs scriptPath directly via its own
+  // shebang — orthogonal to interpreterCandidates. Most shebang-invoked entries
+  // have no candidates (the shebang interpreter is a fixed absolute path, e.g.
+  // `bash`), but Cline's `#!/usr/bin/env node` is a hybrid: the script itself
+  // still needs the execute bit AND `node` still needs to resolve on PATH.
+  selfExecutable?: boolean;
   platform?: string;
   command?: string;
 }
@@ -3416,10 +3432,13 @@ function validateConfiguredEntrypoints(
       invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
     }
     // #4249: an entry with no interpreterCandidates runs via its own shebang
-    // (e.g. Cline's PreToolUse hook, or a Windows-Claude .sh hook that omits
-    // the bash runner) — nothing else resolves an interpreter for it, so it
-    // must itself carry the execute bit.
-    if (scriptOk && !entry.interpreterCandidates) {
+    // (e.g. a Windows-Claude .sh hook that omits the bash runner) — nothing
+    // else resolves an interpreter for it, so it must itself carry the
+    // execute bit. selfExecutable additionally covers the hybrid case (e.g.
+    // Cline's `#!/usr/bin/env node` hook): self-exec AND a resolvable
+    // interpreter are both required, so this check must not be skipped just
+    // because interpreterCandidates is also present.
+    if (scriptOk && (entry.selfExecutable || !entry.interpreterCandidates)) {
       try {
         accessSync(entry.scriptPath, fs.constants.X_OK);
       } catch {

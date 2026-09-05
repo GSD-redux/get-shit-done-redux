@@ -188,6 +188,62 @@ test('an interpreter-invoked script that exists but has no read permission is re
   ]);
 });
 
+test('a selfExecutable + interpreterCandidates entry checks both the execute bit and the interpreter (#4249 CodeRabbit review — Cline\'s hybrid `env node` shebang)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-self-exec-'));
+  t.after(() => helpers.cleanup(root));
+  const okScript = path.join(root, 'ok.js');
+  const notExecScript = path.join(root, 'not-exec.js');
+  fs.writeFileSync(okScript, '#!/usr/bin/env node\n');
+  fs.writeFileSync(notExecScript, '#!/usr/bin/env node\n');
+
+  const makeEntry = (scriptPath) => ({
+    runtime: 'cline',
+    configPath: path.join(root, '.clinerules', 'hooks', 'PreToolUse'),
+    scriptPath,
+    interpreterCandidates: ['node'],
+    selfExecutable: true,
+  });
+
+  // plain writeFileSync never sets the execute bit (and the repo bans chmod
+  // in tests), so every case below stubs accessSync to simulate the exact
+  // permission state under test rather than relying on the real filesystem.
+  const alwaysOk = () => {};
+
+  // node missing from PATH entirely: caught even though the script itself is fine.
+  const missingInterpreter = hooksSurface.validateConfiguredEntrypoints([makeEntry(okScript)], {
+    resolveExecutableBinary: () => null,
+    accessSync: alwaysOk,
+  });
+  assert.equal(missingInterpreter.ok, false);
+  assert.deepEqual(missingInterpreter.invalid.map(({ role, reason }) => [role, reason]), [
+    ['interpreter', 'unresolved-interpreter'],
+  ]);
+
+  // node resolves fine, but the script itself lost its execute bit: caught too —
+  // interpreterCandidates being present must not skip the X_OK check here.
+  const notExecutable = hooksSurface.validateConfiguredEntrypoints([makeEntry(notExecScript)], {
+    resolveExecutableBinary: () => '/usr/bin/node',
+    accessSync: (p, mode) => {
+      if (p === notExecScript && mode === fs.constants.X_OK) {
+        const err = new Error('EACCES: permission denied');
+        err.code = 'EACCES';
+        throw err;
+      }
+    },
+  });
+  assert.equal(notExecutable.ok, false);
+  assert.deepEqual(notExecutable.invalid.map(({ role, reason }) => [role, reason]), [
+    ['script', 'not-executable'],
+  ]);
+
+  // both hold: clean pass.
+  const clean = hooksSurface.validateConfiguredEntrypoints([makeEntry(okScript)], {
+    resolveExecutableBinary: () => '/usr/bin/node',
+    accessSync: alwaysOk,
+  });
+  assert.equal(clean.ok, true);
+});
+
 test('runtime config writers expose the exact configured entrypoints they emit', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-writers-'));
   t.after(() => helpers.cleanup(root));
@@ -246,9 +302,12 @@ test('runtime config writers expose the exact configured entrypoints they emit',
     cline.configuredEntrypoints.map(entry => path.basename(entry.scriptPath)),
     ['PreToolUse'],
   );
-  // #4249: Cline's hook self-executes via shebang — no interpreterCandidates
-  // to check, so validateConfiguredEntrypoints must check its execute bit.
-  assert.ok(!('interpreterCandidates' in cline.configuredEntrypoints[0]));
+  // #4249 (CodeRabbit): Cline's `#!/usr/bin/env node` hook is a hybrid —
+  // self-executable (needs its own execute bit checked) AND PATH-dependent
+  // on `node` (needs an interpreter candidate resolved), unlike GSD's other
+  // JS hooks which bake an absolute node path specifically to avoid this.
+  assert.equal(cline.configuredEntrypoints[0].selfExecutable, true);
+  assert.deepEqual(cline.configuredEntrypoints[0].interpreterCandidates, ['node']);
 
   const portable = [];
   assert.ok(hooksSurface.buildHookCommand(root, 'gsd-context-monitor.js', {
