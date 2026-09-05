@@ -1401,6 +1401,39 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     });
   }
 
+  // The shared parser's two inherited quirks, pinned so a later "cleanup" cannot
+  // change them silently: the `=` form wins over the space form regardless of
+  // position, and only the `=` form trims. Both predate #4030; these assert the
+  // extraction preserved them.
+  test('[bva] --phase= equals-form takes precedence over a space-form occurrence, whatever the order', (t) => {
+    const dir = makePhaseProject('05-widgets', '07-gadgets');
+    t.after(() => cleanup(dir));
+    for (const argv of [
+      ['--phase', '07', '--phase=05', '--raw'],
+      ['--phase=05', '--phase', '07', '--raw'],
+    ]) {
+      const result = renderWithPhase(dir, 'plan:pre', argv);
+      assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+      assert.strictEqual(JSON.parse(result.stdout.trim()).context.phase, '05',
+        `the = form must win for ${argv.join(' ')}`);
+    }
+  });
+
+  test('[bva] only the equals-form trims; the space form is passed through verbatim', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    const trimmed = renderWithPhase(dir, 'plan:pre', ['--phase=  05  ', '--raw']);
+    assert.strictEqual(trimmed.exitCode, 0, 'stderr: ' + trimmed.stderr);
+    assert.strictEqual(JSON.parse(trimmed.stdout.trim()).context.phase, '05',
+      'the = form trims, so a padded token still resolves');
+
+    const untrimmed = renderWithPhase(dir, 'plan:pre', ['--phase', '  05  ', '--raw']);
+    assert.strictEqual(untrimmed.exitCode, 0, 'stderr: ' + untrimmed.stderr);
+    const envelope = JSON.parse(untrimmed.stdout.trim());
+    assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+      'the space form does not trim, so a padded token does not match a directory');
+  });
+
   test('[bva] --phase=05 equals-form parses identically to the space-separated form', (t) => {
     const dir = makePhaseProject('05-widgets');
     t.after(() => cleanup(dir));

@@ -2,6 +2,8 @@
 
 Lazily loaded by `gsd-core/workflows/plan-phase.md` step 12.5 when, and only when, bounce is already activated. Reaching this file means the activation gate has passed — do not re-evaluate it here; `plan-phase.md` §12.5 owns that decision.
 
+**Run these steps in the shell session plan-phase.md is already using.** They read `${PHASE_DIR}` and `${padded_phase}`, which that workflow set earlier, and the blocks below share one `gsd_run` definition. A fresh shell per block would leave those empty and `gsd_run` undefined — commit an empty path, or fail with `command not found`.
+
 **Prerequisites:** `workflow.plan_bounce_script` must be set to a valid script path. If bounce is activated but no script is configured, display warning and skip:
 ```
 ⚠ Plan bounce activated but no script configured.
