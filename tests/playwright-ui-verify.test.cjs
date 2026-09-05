@@ -174,8 +174,17 @@ function guardedLines(lines) {
 // direction over-fires, which is the safe one.)
 // Inline comments are stripped too, not just whole-line ones. `--timeout=30000` moved into a
 // trailing comment is an ordinary edit, not sabotage, and it would otherwise keep satisfying the
-// time-bound assertion while no longer being passed to the command. Strip from an unquoted ` #`
-// to end of line BEFORE joining, which also closes the splice via a trailing comment.
+// time-bound assertion while no longer being passed to the command. Strip from ` #` to end of
+// line BEFORE joining, which also closes the splice via a trailing comment.
+//
+// KNOWN LIMIT, stated because the regex does not enforce what a looser comment here once claimed:
+// this is QUOTE-BLIND. It cannot tell a comment from a `#` inside a string, so a line such as
+// `--user-agent=" # " \` has its quoted `#` read as a comment start, taking the real continuation
+// backslash with it. The consequence is direction-dependent: an assertion REQUIRING a flag then
+// over-fires (safe), but a BAN — the `localhost:\d+` check below — would stop seeing a hard-coded
+// port that moved onto the hidden continuation line, which is a false clean. No line in the block
+// this reads contains a quoted ` #` today. Making it quote-aware means lexing bash, which is more
+// than a confirmed-bug fix should carry, so the limit is recorded rather than closed.
 function stripComment(line) {
   const stripped = line.replace(/\s+#.*$/, '');
   if (stripped === line) return line; // nothing removed — leave real continuations alone
