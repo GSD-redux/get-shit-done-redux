@@ -121,7 +121,10 @@ test('configured entrypoint validation aggregates file and interpreter failures 
     { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: unreadablePath },
     // #4249: selfExecutable means this entry is invoked directly via its own
     // shebang (e.g. a Windows-Claude .sh hook) — must itself be +x.
-    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: notExecutablePath, selfExecutable: true },
+    // platform pinned to non-win32: the X_OK check itself is a POSIX-only
+    // concept (skipped entirely on win32, matching production) — this case
+    // must exercise it deterministically regardless of which OS runs the test.
+    { runtime: 'claude', configPath: path.join(root, 'settings.json'), scriptPath: notExecutablePath, selfExecutable: true, platform: 'linux' },
   ], {
     resolveExecutableBinary: () => null,
     statSync: (p) => {
@@ -205,6 +208,10 @@ test('a selfExecutable + interpreterCandidates entry checks both the execute bit
     scriptPath,
     interpreterCandidates: ['node'],
     selfExecutable: true,
+    // X_OK is a POSIX-only concept (skipped entirely on win32, matching
+    // production) — pinned here so the execute-bit case below is exercised
+    // deterministically regardless of which OS runs the test.
+    platform: 'linux',
   });
 
   // plain writeFileSync never sets the execute bit (and the repo bans chmod
