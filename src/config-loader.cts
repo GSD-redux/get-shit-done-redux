@@ -116,6 +116,33 @@ function _getConfigValue(
   return undefined;
 }
 
+/**
+ * #4071: the flat-then-nested read for a GLOBAL-DEFAULTS RESOLUTION key, where
+ * an explicit `null` means UNSET (the documented contract for that set). A
+ * legacy flat `null` must not shadow an explicitly-set nested alias: with the
+ * global tier now sitting behind the builtin, `{ research: null, workflow:
+ * { research: true } }` would otherwise resolve past the project's own nested
+ * value to a machine-wide one. Only an explicitly-set nested value overrides
+ * the null; with none set the flat value is returned unchanged.
+ *
+ * Deliberately NOT folded into `_getConfigValue`: outside the resolution set
+ * `null` can be an explicit operational value (`max_prompt_tokens: null` is
+ * "no trim", planning-config.md), and there the flat spelling must keep
+ * winning. Exported for tests.
+ */
+function _getConfigValueNullAsUnset(
+  parsed: Record<string, unknown>,
+  key: string,
+  nested?: { section: string; field: string },
+): unknown {
+  const value = _getConfigValue(parsed, key, nested);
+  if (value === null && nested) {
+    const nestedValue = _getConfigNested(parsed, nested.section, nested.field);
+    if (nestedValue !== undefined) return nestedValue;
+  }
+  return value;
+}
+
 /** Shared nested-only config lookup; exported for parity tests. */
 function _getConfigNested(parsed: Record<string, unknown>, section: string, field: string): unknown {
   const sec = parsed[section];
@@ -351,21 +378,22 @@ function _resetRuntimeWarningCacheForTests(): void {
   _warnedConfigKeys.clear();
   _warnedUnknownConfigKeys.clear();
   _warnedUnusableConfig.clear();
-  _warnedShadowedGlobalKeys.clear();
 }
 
-// ─── #3532 (10b): shadowed global-defaults diagnostic ────────────────────────
+// ─── #4071: ~/.gsd/defaults.json — one projection, honored on every branch ───
 
-// The keys Branch D's `_globalBaseCfg` demonstrably honors from
-// ~/.gsd/defaults.json when no project config exists. Under a project
-// .planning/config.json (Branch A — every real project) the global file is
-// never opened, so each of these set globally is silently inert for resolution.
-// `effort` is in Branch D's honored set but is EXCLUDED from the shadow warning:
-// the install-time effort sync (readGsdEffectiveEffortConfig) DOES merge the
-// global file, so warning on it would be false for the channel users actually
-// control via `effort sync`. Keep this list in lockstep with `_globalBaseCfg`
-// below — the per-key canary in tests/config-loader.test.cjs fails first on
-// drift in either direction.
+// The keys ~/.gsd/defaults.json contributes to RUNTIME resolution. With no
+// project config (Branch D) the global file is the whole base. Under a project
+// .planning/config.json (Branch A — every real project) each of these resolves
+// project → global → builtin, PER KEY: a project key wins on collision, and a
+// key only the global file sets is preserved from it — the semantics
+// readGsdEffectiveModelOverrides (#2256), the install-time effort sync
+// (readGsdEffectiveEffortConfig) and buildNewProjectConfig already ship.
+// Before #4071, Branch A opened this file only to feed a "these keys are
+// shadowed" warning (#3532) and discarded every value, so the mere EXISTENCE
+// of a project config — not a per-key collision — made all of these inert.
+// Keep this list in lockstep with `_globalDefaultsBaseCfg` below — the per-key
+// canary in tests/config-loader.test.cjs fails first on drift in either direction.
 const GLOBAL_DEFAULTS_RESOLUTION_KEYS = [
   'model_profile', 'commit_docs', 'research', 'plan_checker', 'verifier',
   'nyquist_validation', 'post_planning_gaps', 'research_before_questions', 'parallelization', 'text_mode',
@@ -375,39 +403,57 @@ const GLOBAL_DEFAULTS_RESOLUTION_KEYS = [
   'model_profile_overrides', 'model_policy',
 ];
 
-// Module-level dedup keyed on the SORTED shadowed-key set: a later call with
-// the same shadowed set stays quiet, while a config that grows a new shadowed
-// key re-arms the warning. Stronger than _warnedUnknownConfigKeys (which keys
-// on insertion order) — same discipline, order-independent key.
-const _warnedShadowedGlobalKeys = new Set<string>();
-
-function _warnShadowedGlobalDefaults(globalDefaults: Record<string, unknown>, globalPath: string): void {
-  const shadowed = GLOBAL_DEFAULTS_RESOLUTION_KEYS.filter(k =>
-    k !== 'effort' && Object.prototype.hasOwnProperty.call(globalDefaults, k));
-  // Branch D also honors the nested alias workflow.post_planning_gaps (the
-  // `?? globalDefaults['workflow']?.['post_planning_gaps']` fallback in
-  // _globalBaseCfg) — a global file using only the nested form is equally
-  // shadowed, so it reports under its dotted name.
-  // #3894: research_before_questions gets the same nested-alias reporting.
-  const nestedAliasKeys = ['post_planning_gaps', 'research_before_questions'];
-  const wf = globalDefaults['workflow'];
-  if (wf && typeof wf === 'object' && !Array.isArray(wf)) {
-    for (const k of nestedAliasKeys) {
-      if (!shadowed.includes(k) && Object.prototype.hasOwnProperty.call(wf, k)) {
-        shadowed.push(`workflow.${k}`);
-      }
-    }
-  }
-  if (shadowed.length === 0) return;
-  const dedupKey = shadowed.slice().sort().join(',');
-  if (_warnedShadowedGlobalKeys.has(dedupKey)) return;
-  _warnedShadowedGlobalKeys.add(dedupKey);
-  try {
-    process.stderr.write(
-      `gsd-tools: warning: ${globalPath} sets ${shadowed.join(', ')} but a project config ` +
-      `takes precedence here — those global keys are ignored for model resolution. (#3532)\n`,
-    );
-  } catch { /* stderr might be closed in some test harnesses */ }
+/**
+ * Project the raw ~/.gsd/defaults.json object onto the resolution shape:
+ * every key in GLOBAL_DEFAULTS_RESOLUTION_KEYS, each falling through to its
+ * builtin default when the global file does not set it. Branch D returns this
+ * as its whole config (plus the federated overlay); Branch A reads it per key
+ * BEHIND the project config. One builder, so the two branches cannot drift on
+ * which keys the global file contributes or on how each one is coerced.
+ */
+function _globalDefaultsBaseCfg(globalDefaults: Record<string, unknown>): Record<string, unknown> {
+  const defaults = CONFIG_DEFAULTS;
+  return {
+    ...defaults,
+    model_profile: (globalDefaults['model_profile']) ?? defaults.model_profile,
+    commit_docs: (globalDefaults['commit_docs']) ?? defaults.commit_docs,
+    research: (globalDefaults['research']) ?? defaults.research,
+    plan_checker: (globalDefaults['plan_checker']) ?? defaults.plan_checker,
+    verifier: (globalDefaults['verifier']) ?? defaults.verifier,
+    nyquist_validation: (globalDefaults['nyquist_validation']) ?? defaults.nyquist_validation,
+    post_planning_gaps: (globalDefaults['post_planning_gaps'])
+      ?? (globalDefaults['workflow'] as Record<string, unknown> | undefined)?.['post_planning_gaps']
+      ?? defaults.post_planning_gaps,
+    // #3894: same nested-alias shape as post_planning_gaps above — the key
+    // was silently dropped from global defaults, so it was unavailable at
+    // user scope AND inert at project scope on the /gsd-quick path.
+    research_before_questions: (globalDefaults['research_before_questions'])
+      ?? (globalDefaults['workflow'] as Record<string, unknown> | undefined)?.['research_before_questions']
+      ?? defaults.research_before_questions,
+    parallelization: (globalDefaults['parallelization']) ?? defaults.parallelization,
+    text_mode: (globalDefaults['text_mode']) ?? defaults.text_mode,
+    resolve_model_ids: (globalDefaults['resolve_model_ids']) ?? defaults.resolve_model_ids,
+    context_window: (globalDefaults['context_window']) ?? defaults.context_window,
+    subagent_timeout: (globalDefaults['subagent_timeout']) ?? defaults.subagent_timeout,
+    model_overrides: (globalDefaults['model_overrides']) || null,
+    models: (globalDefaults['models']) || null,
+    granularity: (globalDefaults['granularity']) !== undefined ? globalDefaults['granularity'] : null,
+    granularities: (globalDefaults['granularities']) || null,
+    planning: (globalDefaults['planning']) || null,
+    dynamic_routing: (globalDefaults['dynamic_routing']) || null,
+    effort: (globalDefaults['effort']) || null,
+    fast_mode: (globalDefaults['fast_mode']) || null,
+    agent_skills: (globalDefaults['agent_skills']) || {},
+    response_language: (globalDefaults['response_language']) || null,
+    // #2069: forward model_policy / model_profile_overrides / runtime so the global-defaults
+    // path is at parity with the project-config path (which forwards these three from
+    // parsed['…'] in Branch A). Without these entries, ~/.gsd/defaults.json silently
+    // drops them — model_policy/provider/budget etc. are honored when set in a
+    // project but ignored when set globally.
+    runtime: (globalDefaults['runtime']) || null,
+    model_profile_overrides: (globalDefaults['model_profile_overrides']) || null,
+    model_policy: (globalDefaults['model_policy']) || null,
+  };
 }
 
 // ─── FIX 2: Federated overlay helpers ────────────────────────────────────────
@@ -868,6 +914,10 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
 
     const get = (key: string, nested?: { section: string; field: string }): unknown =>
       _getConfigValue(parsed, key, nested);
+    // #4071: the read for a resolution key that carries a nested alias — an
+    // explicit flat `null` is unset there and yields to the nested spelling.
+    const getResolved = (key: string, nested: { section: string; field: string }): unknown =>
+      _getConfigValueNullAsUnset(parsed, key, nested);
 
     /**
      * Nested-ONLY read — no top-level fallback (#3648).
@@ -883,20 +933,71 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
     const getNested = (section: string, field: string): unknown =>
       _getConfigNested(parsed, section, field);
 
+    // #4071: read ~/.gsd/defaults.json ONCE and let every resolution key fall
+    // through project → global → builtin below. `globalBase` is the SAME
+    // projection Branch D returns as its whole config, so a key the global
+    // file sets resolves identically here and there; a key it does not set
+    // is already the builtin default inside it — which is why the no-file
+    // baseline is the builder over `{}`, not bare CONFIG_DEFAULTS: the
+    // `|| null` / `|| {}` keys have no entry there. A global file that is present
+    // but unusable is reported and degrades the resolution exactly as on
+    // Branch D — its settings were silently dropped, which is the condition
+    // `degraded` exists to name — while the project's own fault, when there is
+    // one, still outranks it as the reason (the nearer file is the actionable one).
+    let globalBase: Record<string, unknown> = _globalDefaultsBaseCfg({});
+    try {
+      const globalHome = process.env['GSD_HOME'] || os.homedir();
+      const globalRead = _readConfigFile(path.join(globalHome, '.gsd', 'defaults.json'));
+      if (globalRead.kind === 'ok') {
+        globalBase = _globalDefaultsBaseCfg(globalRead.data);
+      } else if (globalRead.kind === 'fault') {
+        if (!configFault) configFault = globalRead.fault;
+        _warnUnusableConfig(globalRead.fault);
+      }
+    } catch {
+      // Never let the global read perturb project resolution.
+    }
+
+    // #4071: the `|| null` / `|| {}` keys. "Set in the project" is decided by
+    // PRESENCE, not truthiness — a project `fast_mode: false` or
+    // `dynamic_routing: false` is a collision the project must win, and the
+    // historical `|| fallback` coercion of that falsy value is kept exactly
+    // (so `false` still reads as `null`, as it always has). Only an UNSET
+    // project key falls through to the global projection — and an explicit
+    // `null` IS unset, exactly as the `??`-routed keys above already read it
+    // and as readGsdEffectiveModelOverrides always has: a `!== undefined`
+    // presence test admitted `null` as "set", the `|| fallback` arm coerced
+    // it, and a correctly-projected global value was silently dropped (PR
+    // review, round 1). Caught by the pre-create review: a plain
+    // `parsed[k] || globalBase[k]` let every falsy project value lose to a
+    // truthy global one.
+    const projectOr = (key: string, fallback: unknown): unknown => {
+      const v = parsed[key];
+      return v !== undefined && v !== null ? (v || fallback) : globalBase[key];
+    };
+
     const parallelization = (() => {
-      const val = get('parallelization');
+      const val = get('parallelization') ?? globalBase['parallelization'];
       if (typeof val === 'boolean') return val;
       if (typeof val === 'object' && val !== null && 'enabled' in (val)) return (val as Record<string, unknown>)['enabled'];
       return defaults.parallelization;
     })();
 
     const _baseConfig: Record<string, unknown> = {
-      model_profile: get('model_profile') ?? defaults.model_profile,
+      model_profile: get('model_profile') ?? globalBase['model_profile'],
       commit_docs: (() => {
-        const explicit = get('commit_docs', { section: 'planning', field: 'commit_docs' });
-        if (explicit !== undefined) return explicit;
+        // An explicit `null` is unset here as on every other resolution key
+        // (PR review, round 1 — self-found sibling): before #4071 it was
+        // returned verbatim and short-circuited every tier below. A flat
+        // `null` yielding to an explicit `planning.commit_docs` is
+        // getResolved()'s job, not a special case here.
+        const explicit = getResolved('commit_docs', { section: 'planning', field: 'commit_docs' });
+        if (explicit !== undefined && explicit !== null) return explicit;
         if (isGitIgnored(cwd, '.planning/')) return false;
-        return defaults.commit_docs;
+        // #4071: the gitignore inference stays AHEAD of the global file — it is
+        // a fact about this repository, and a machine-wide `true` must not
+        // re-enable committing a directory this project ignores.
+        return globalBase['commit_docs'];
       })(),
       search_gitignored: get('search_gitignored', { section: 'planning', field: 'search_gitignored' }) ?? defaults.search_gitignored,
       branching_strategy: get('branching_strategy', { section: 'git', field: 'branching_strategy' }) ?? defaults.branching_strategy,
@@ -905,40 +1006,45 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       phase_branch_template: get('phase_branch_template', { section: 'git', field: 'phase_branch_template' }) ?? defaults.phase_branch_template,
       milestone_branch_template: get('milestone_branch_template', { section: 'git', field: 'milestone_branch_template' }) ?? defaults.milestone_branch_template,
       quick_branch_template: get('quick_branch_template', { section: 'git', field: 'quick_branch_template' }) ?? defaults.quick_branch_template,
-      research: get('research', { section: 'workflow', field: 'research' }) ?? defaults.research,
-      plan_checker: get('plan_checker', { section: 'workflow', field: 'plan_check' }) ?? defaults.plan_checker,
-      verifier: get('verifier', { section: 'workflow', field: 'verifier' }) ?? defaults.verifier,
-      nyquist_validation: get('nyquist_validation', { section: 'workflow', field: 'nyquist_validation' }) ?? defaults.nyquist_validation,
-      post_planning_gaps: get('post_planning_gaps', { section: 'workflow', field: 'post_planning_gaps' }) ?? defaults.post_planning_gaps,
+      research: getResolved('research', { section: 'workflow', field: 'research' }) ?? globalBase['research'],
+      plan_checker: getResolved('plan_checker', { section: 'workflow', field: 'plan_check' }) ?? globalBase['plan_checker'],
+      verifier: getResolved('verifier', { section: 'workflow', field: 'verifier' }) ?? globalBase['verifier'],
+      nyquist_validation: getResolved('nyquist_validation', { section: 'workflow', field: 'nyquist_validation' }) ?? globalBase['nyquist_validation'],
+      post_planning_gaps: getResolved('post_planning_gaps', { section: 'workflow', field: 'post_planning_gaps' }) ?? globalBase['post_planning_gaps'],
+      // #4071: Branch D has projected this since #3894 but Branch A never did,
+      // so a global value was inert here AND a project value never surfaced
+      // through this loader. Nested-only read (#3648): the key has no legacy
+      // flat spelling to be compatible with.
+      research_before_questions: getNested('workflow', 'research_before_questions') ?? globalBase['research_before_questions'],
       parallelization,
       brave_search: get('brave_search') ?? defaults.brave_search,
       firecrawl: get('firecrawl') ?? defaults.firecrawl,
       exa_search: get('exa_search') ?? defaults.exa_search,
       mvp_mode: get('mvp_mode', { section: 'workflow', field: 'mvp_mode' }) ?? false,
       tdd_mode: getNested('workflow', 'tdd_mode') ?? false,
-      text_mode: get('text_mode', { section: 'workflow', field: 'text_mode' }) ?? defaults.text_mode,
+      text_mode: getResolved('text_mode', { section: 'workflow', field: 'text_mode' }) ?? globalBase['text_mode'],
       auto_advance: get('auto_advance', { section: 'workflow', field: 'auto_advance' }) ?? false,
       _auto_chain_active: get('_auto_chain_active', { section: 'workflow', field: '_auto_chain_active' }) ?? false,
       mode: get('mode') ?? 'interactive',
       sub_repos: get('sub_repos', { section: 'planning', field: 'sub_repos' }) ?? defaults.sub_repos,
       pr_strict: get('pr_strict', { section: 'planning', field: 'pr_strict' }) ?? defaults.pr_strict,
-      resolve_model_ids: get('resolve_model_ids') ?? defaults.resolve_model_ids,
-      context_window: get('context_window') ?? defaults.context_window,
+      resolve_model_ids: get('resolve_model_ids') ?? globalBase['resolve_model_ids'],
+      context_window: get('context_window') ?? globalBase['context_window'],
       phase_naming: get('phase_naming') ?? defaults.phase_naming,
       project_code: get('project_code') ?? defaults.project_code,
-      subagent_timeout: get('subagent_timeout', { section: 'workflow', field: 'subagent_timeout' }) ?? defaults.subagent_timeout,
-      model_overrides: (parsed['model_overrides']) || null,
-      models: (parsed['models']) || null,
-      granularity: parsed['granularity'] !== undefined ? parsed['granularity'] : null,
-      granularities: (parsed['granularities']) || null,
-      planning: (parsed['planning']) || null,
-      dynamic_routing: (parsed['dynamic_routing']) || null,
-      runtime: (parsed['runtime']) || null,
-      model_profile_overrides: (parsed['model_profile_overrides']) || null,
-      model_policy: (parsed['model_policy']) || null,
-      effort: (parsed['effort']) || null,
-      fast_mode: (parsed['fast_mode']) || null,
-      agent_skills: (parsed['agent_skills']) || {},
+      subagent_timeout: getResolved('subagent_timeout', { section: 'workflow', field: 'subagent_timeout' }) ?? globalBase['subagent_timeout'],
+      model_overrides: projectOr('model_overrides', null),
+      models: projectOr('models', null),
+      granularity: parsed['granularity'] ?? globalBase['granularity'],
+      granularities: projectOr('granularities', null),
+      planning: projectOr('planning', null),
+      dynamic_routing: projectOr('dynamic_routing', null),
+      runtime: projectOr('runtime', null),
+      model_profile_overrides: projectOr('model_profile_overrides', null),
+      model_policy: projectOr('model_policy', null),
+      effort: projectOr('effort', null),
+      fast_mode: projectOr('fast_mode', null),
+      agent_skills: projectOr('agent_skills', {}),
       agent_skills_security: (parsed['agent_skills_security']) || null,
       // #3587: phase_commit_docs.<phase-id> — a dynamic-key family shaped like
       // agent_skills above (`{ "<phase-id>": boolean }`). Must be threaded here
@@ -948,7 +1054,9 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       // failure mode this module's own A3 test guards against.
       phase_commit_docs: (parsed['phase_commit_docs']) || {},
       manager: (parsed['manager']) || {},
-      response_language: get('response_language') || null,
+      // `get('response_language')` with no nested alias is `parsed['response_language']`
+      // verbatim, so this is the same presence-then-coerce read as the keys above.
+      response_language: projectOr('response_language', null),
       claude_md_path: get('claude_md_path') || null,
       claude_md_assembly: (parsed['claude_md_assembly']) || null,
       phase_id_convention: get('phase_id_convention') ?? null,
@@ -981,22 +1089,6 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
     // A1 vs A2: disambiguate by whether a real workstream was requested.
     // Fix 4: empty-string ws ('') resolves the root path → source:'root'.
     const source: ConfigSource = wsRequested ? 'workstream' : 'root';
-
-    // #3532 (10b): a parsed project config means Branch D never runs, so every
-    // key ~/.gsd/defaults.json sets that Branch D would honor is silently inert
-    // here. Observation only — one deduped stderr warning; precedence is
-    // untouched. Faults in the global file stay silent in this branch (the
-    // project config governs; the nearer file is the actionable one).
-    try {
-      const shadowHome = process.env['GSD_HOME'] || os.homedir();
-      const shadowPath = path.join(shadowHome, '.gsd', 'defaults.json');
-      const shadowRead = _readConfigFile(shadowPath);
-      if (shadowRead.kind === 'ok') {
-        _warnShadowedGlobalDefaults(shadowRead.data, shadowPath);
-      }
-    } catch {
-      // Observation only — never let the diagnostic perturb resolution.
-    }
 
     // This config parsed — but a DIFFERENT file on the resolution path may not
     // have. A workstream config that loads cleanly while the root config it
@@ -1063,47 +1155,9 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       }
       if (globalRead.kind !== 'ok') throw new Error('global defaults absent or unusable');
       const globalDefaults = globalRead.data;
-      const _globalBaseCfg: Record<string, unknown> = {
-        ...defaults,
-        model_profile: (globalDefaults['model_profile']) ?? defaults.model_profile,
-        commit_docs: (globalDefaults['commit_docs']) ?? defaults.commit_docs,
-        research: (globalDefaults['research']) ?? defaults.research,
-        plan_checker: (globalDefaults['plan_checker']) ?? defaults.plan_checker,
-        verifier: (globalDefaults['verifier']) ?? defaults.verifier,
-        nyquist_validation: (globalDefaults['nyquist_validation']) ?? defaults.nyquist_validation,
-        post_planning_gaps: (globalDefaults['post_planning_gaps'])
-          ?? (globalDefaults['workflow'] as Record<string, unknown> | undefined)?.['post_planning_gaps']
-          ?? defaults.post_planning_gaps,
-        // #3894: same nested-alias shape as post_planning_gaps above — the key
-        // was silently dropped from global defaults, so it was unavailable at
-        // user scope AND inert at project scope on the /gsd-quick path.
-        research_before_questions: (globalDefaults['research_before_questions'])
-          ?? (globalDefaults['workflow'] as Record<string, unknown> | undefined)?.['research_before_questions']
-          ?? defaults.research_before_questions,
-        parallelization: (globalDefaults['parallelization']) ?? defaults.parallelization,
-        text_mode: (globalDefaults['text_mode']) ?? defaults.text_mode,
-        resolve_model_ids: (globalDefaults['resolve_model_ids']) ?? defaults.resolve_model_ids,
-        context_window: (globalDefaults['context_window']) ?? defaults.context_window,
-        subagent_timeout: (globalDefaults['subagent_timeout']) ?? defaults.subagent_timeout,
-        model_overrides: (globalDefaults['model_overrides']) || null,
-        models: (globalDefaults['models']) || null,
-        granularity: (globalDefaults['granularity']) !== undefined ? globalDefaults['granularity'] : null,
-        granularities: (globalDefaults['granularities']) || null,
-        planning: (globalDefaults['planning']) || null,
-        dynamic_routing: (globalDefaults['dynamic_routing']) || null,
-        effort: (globalDefaults['effort']) || null,
-        fast_mode: (globalDefaults['fast_mode']) || null,
-        agent_skills: (globalDefaults['agent_skills']) || {},
-        response_language: (globalDefaults['response_language']) || null,
-        // #2069: forward model_policy / model_profile_overrides / runtime so the global-defaults
-        // path is at parity with the project-config path (which forwards these three from
-        // parsed['…'] at the top of this function). Without these entries, ~/.gsd/defaults.json
-        // silently drops them — model_policy/provider/budget etc. are honored when set in a
-        // project but ignored when set globally.
-        runtime: (globalDefaults['runtime']) || null,
-        model_profile_overrides: (globalDefaults['model_profile_overrides']) || null,
-        model_policy: (globalDefaults['model_policy']) || null,
-      };
+      // #4071: the same projection Branch A reads per key behind its project
+      // config — see _globalDefaultsBaseCfg for the key set and coercions.
+      const _globalBaseCfg = _globalDefaultsBaseCfg(globalDefaults);
       // Branch D: global-defaults
       try {
         return fallback({ config: _applyFederatedOverlay(_globalBaseCfg, globalDefaults, cwd), source: 'global-defaults', degraded: false });
@@ -1139,11 +1193,12 @@ export = {
   _getConfigDefault,
   _getNestedConfigDefault,
   _getConfigValue,
+  _getConfigValueNullAsUnset,
   _getConfigNested,
   _deepMergeConfig,
   _warnedUnknownConfigKeys,
-  _warnedShadowedGlobalKeys,
   GLOBAL_DEFAULTS_RESOLUTION_KEYS,
+  _globalDefaultsBaseCfg,
   _warnUnknownProfileOverrides,
   _resetRuntimeWarningCacheForTests,
   _warnedConfigKeys,

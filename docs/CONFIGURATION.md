@@ -2108,27 +2108,42 @@ When `/gsd-new-project` creates a new `config.json`, it reads global defaults an
 
 ### What a global file can and cannot set at runtime
 
-Two different rules apply, and the difference is deliberate ([#3532](https://github.com/open-gsd/gsd-core/issues/3532)):
+The global file is read for runtime resolution in both directory shapes
+([#4071](https://github.com/open-gsd/gsd-core/issues/4071)):
 
 - **In a directory with no `.planning/` at all**, `~/.gsd/defaults.json` is the active
   configuration — model resolution reads it directly.
 - **In a real project (`.planning/config.json` present, even if empty)**, the global file is
-  **not read for model resolution** — every model-side key it sets (`model_profile`,
-  `model_overrides`, `models`, `dynamic_routing`, `runtime`, and the rest of the resolution
-  set) is inert there. GSD prints a one-time stderr warning naming the shadowed keys when it
-  detects this, instead of failing silently. To apply a global model setting to a project,
-  put it in that project's `.planning/config.json`.
-- **`effort` is the exception**: the install-time effort channel always merges
-  `~/.gsd/defaults.json` with the project config (that is how `effort sync` works), so a
-  global `effort` block keeps working in projects and does not trigger the warning.
+  merged **per key** behind the project config: a key the project config sets wins (a key set to
+  `null` counts as unset, as it always has), and a key only the global file sets is honored exactly
+  as it would be with no project config. This
+  covers the whole resolution set — `model_profile`, `model_overrides`, `models`,
+  `model_policy`, `model_profile_overrides`, `dynamic_routing`, `runtime`,
+  `resolve_model_ids`, `context_window`, `granularity`, `granularities`, `effort`,
+  `fast_mode`, `agent_skills`, `response_language`, `subagent_timeout`, `planning`, and the
+  workflow toggles (`research`, `plan_checker`, `verifier`, `nyquist_validation`,
+  `post_planning_gaps`, `research_before_questions`, `parallelization`, `text_mode`,
+  `commit_docs`). Set a preference once globally and override it only in the projects that
+  differ. Before #4071 the global file was ignored wholesale whenever a project config
+  existed — its mere presence, not a per-key collision, was the trigger — and a one-time
+  stderr warning named the ignored keys ([#3532](https://github.com/open-gsd/gsd-core/issues/3532)).
+  That warning is gone, because nothing is ignored any more.
+- **Two project-side rules stay ahead of the global file.** A `.planning/` directory that is
+  gitignored resolves `commit_docs` to `false` before a global `commit_docs` is consulted —
+  that is a fact about the repository, and a machine-wide `true` must not re-enable committing
+  a directory the project ignores. And the global file's nested spellings are read only for
+  `workflow.post_planning_gaps` and `workflow.research_before_questions`; every other key is
+  read from the global file's top level, the same as in the no-`.planning/` case.
+- **An unusable global file** (not valid JSON, or unreadable) is reported once per run and
+  marks the resolution degraded in both directory shapes; the project's own settings still
+  apply, and when the project config is also unusable, that is the fault reported.
 - **The whole `git.*` namespace is project-scoped and never resolves from the global file**,
   in either directory shape — not `git.base_branch`, not `git.protected_branches`, not
   `git.branching_strategy` or the branch templates. Branch policy is a property of the
   repository, not of the machine, so it is read only from that project's
   `.planning/config.json`. A `git` block in `~/.gsd/defaults.json` still seeds new projects
   (`/gsd-new-project` copies globals into the new `config.json`), but it never takes effect
-  at runtime on its own. It is outside the shadowed-key warning above, which covers the
-  model-resolution set only.
+  at runtime on its own.
 
 ---
 

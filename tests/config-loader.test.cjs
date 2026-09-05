@@ -751,10 +751,11 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 function runWithStderr(args, cwd, env = {}) {
   const result = runNode([TOOLS_PATH, ...args], {
     cwd,
-    // #3532: pin GSD_HOME to an empty sandbox so a developer's real
-    // ~/.gsd/defaults.json cannot leak shadow-key warnings into children that
-    // these suites assert are stderr-clean (TEST_ENV_BASE only BLANKS the
-    // var; an empty string falls through to the real homedir).
+    // #3532 / #4071: pin GSD_HOME to an empty sandbox so a developer's real
+    // ~/.gsd/defaults.json cannot leak into children — once as shadow-key
+    // warnings these suites asserted absent, now as merged SETTINGS that would
+    // change what they resolve (TEST_ENV_BASE only BLANKS the var; an empty
+    // string falls through to the real homedir).
     env: { ...process.env, ...TEST_ENV_BASE, GSD_HOME: installSpawnHome(), ...env },
     timeoutMs: PROBE_TIMEOUT_MS,
   });
@@ -1289,33 +1290,48 @@ describe('#2997: phase_id_convention is not silently dropped on a clean read', (
   });
 });
 
-// ─── #3532 (10b): shadowed global-defaults diagnostic ─────────────────────────
+// ─── #4071: ~/.gsd/defaults.json is merged per key under a project config ─────
+//
+// Before #4071 the mere EXISTENCE of a project .planning/config.json — not a
+// per-key collision — made every key ~/.gsd/defaults.json sets inert for
+// runtime resolution: Branch A opened the file only to feed the #3532
+// "shadowed keys" warning and discarded the values. These cases pin the
+// per-key merge (project → global → builtin) and the retirement of that
+// warning. The canary drives BOTH branches from the same global file and
+// asserts Branch A's answer equals Branch D's — the issue's acceptance
+// criterion verbatim — with an anti-vacuity check that the shared answer is
+// the sentinel, not a builtin default the two branches happen to agree on.
 
-// The keys Branch D's _globalBaseCfg demonstrably honors when NO project config
-// exists. Under a project .planning/config.json (Branch A — every real project)
-// the global file is never opened, so each of these set globally is silently
-// inert. `effort` is deliberately absent: the install-time effort sync
-// (readGsdEffectiveEffortConfig) DOES merge the global file, so warning on it
-// would be false for the channel users control via effort sync.
-const GLOBAL_KEYS_SHADOWED_UNDER_PROJECT = [
+// Every key the global file contributes, mirrored from the implementation's
+// export so the list cannot drift silently in either direction (parity test
+// below). `parallelization` is listed but exercised on its own: Branch A
+// normalizes `{ enabled }` to a boolean while Branch D returns the raw value,
+// a pre-existing shape difference this fix does not change.
+const GLOBAL_KEYS_HONORED_UNDER_PROJECT = [
   'model_profile', 'commit_docs', 'research', 'plan_checker', 'verifier',
   'nyquist_validation', 'post_planning_gaps', 'research_before_questions', 'parallelization', 'text_mode',
   'resolve_model_ids', 'context_window', 'subagent_timeout', 'model_overrides',
   'models', 'granularity', 'granularities', 'planning', 'dynamic_routing',
-  'fast_mode', 'agent_skills', 'response_language', 'runtime',
+  'effort', 'fast_mode', 'agent_skills', 'response_language', 'runtime',
   'model_profile_overrides', 'model_policy',
 ];
 
-describe('#3532 shadowed global-defaults warning', () => {
+describe('#4071 global defaults merge per key under a project config', () => {
+  const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+  const { runNode, runGit } = require('./helpers/process-seam.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
   let tmpDir;
+  let bareDir;
   let gsdHome;
   let stderrLines;
   let originalStderrWrite;
   let originalGsdHome;
 
   beforeEach(() => {
-    tmpDir = makeTempProject('gsd-3532-shadow-');
-    gsdHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3532-home-'));
+    tmpDir = makeTempProject('gsd-4071-project-');
+    bareDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4071-bare-'));
+    gsdHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4071-home-'));
     stderrLines = [];
     originalStderrWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk) => { stderrLines.push(String(chunk)); return true; };
@@ -1329,8 +1345,9 @@ describe('#3532 shadowed global-defaults warning', () => {
     if (originalGsdHome === undefined) delete process.env.GSD_HOME;
     else process.env.GSD_HOME = originalGsdHome;
     if (tmpDir) cleanup(tmpDir);
+    if (bareDir) cleanup(bareDir);
     if (gsdHome) cleanup(gsdHome);
-    tmpDir = gsdHome = null;
+    tmpDir = bareDir = gsdHome = null;
   });
 
   function writeGlobalDefaults(obj) {
@@ -1341,118 +1358,285 @@ describe('#3532 shadowed global-defaults warning', () => {
     );
   }
 
-  test('project config + global model keys -> one warning naming both keys', () => {
+  /** The issue's instrument: `resolve-model` routes through loadConfigResolved; `config-get` does not. */
+  function resolveModelRaw(cwd) {
+    const result = runNode([TOOLS_PATH, 'resolve-model', 'gsd-planner', '--cwd', cwd, '--raw'], {
+      cwd,
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_HOME: gsdHome },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+    return { stdout: (result.stdout || '').trim(), stderr: result.stderr || '', status: result.exitCode };
+  }
+
+  test('regression: a global model_profile is honored when the project config is silent on it', () => {
+    writeConfig(tmpDir, { granularity: 'standard' });
+    writeGlobalDefaults({ model_profile: 'budget' });
+    const resolution = loadConfigResolved(tmpDir);
+    assert.equal(resolution.source, 'root');
+    assert.equal(resolution.degraded, false);
+    assert.equal(resolution.config['model_profile'], 'budget');
+    assert.equal(resolution.config['granularity'], 'standard', 'the project key is still read');
+  });
+
+  test('regression: resolve-model honors the global model_profile identically with and without a project config', () => {
+    writeConfig(tmpDir, { granularity: 'standard' });
+    const noGlobal = resolveModelRaw(tmpDir);
+    assert.equal(noGlobal.status, 0, noGlobal.stderr);
+    writeGlobalDefaults({ model_profile: 'budget' });
+    const withProject = resolveModelRaw(tmpDir);
+    const withoutProject = resolveModelRaw(bareDir);
+    assert.equal(withProject.status, 0, withProject.stderr);
+    assert.equal(withoutProject.status, 0, withoutProject.stderr);
+    assert.equal(withProject.stdout, withoutProject.stdout,
+      'a project config that does not set model_profile must not change what the global profile resolves to');
+    assert.notEqual(withProject.stdout, noGlobal.stdout,
+      'anti-vacuity: the global profile must actually move the answer off the builtin default');
+    assert.ok(!withProject.stderr.includes('#3532'), `retired warning still emitted: ${withProject.stderr}`);
+  });
+
+  test('project key wins on collision (unchanged)', () => {
     writeConfig(tmpDir, { model_profile: 'balanced' });
-    writeGlobalDefaults({ model_overrides: { 'gsd-executor': 'haiku' }, model_profile: 'quality' });
-    loadConfigResolved(tmpDir);
-    const warnings = stderrLines.filter(l => l.includes('model_overrides') && l.includes('model_profile'));
-    assert.equal(warnings.length, 1, `expected exactly one shadowed-keys warning, got: ${stderrLines.join('')}`);
+    writeGlobalDefaults({ model_profile: 'quality', model_overrides: { 'gsd-executor': 'haiku' } });
+    const { config } = loadConfigResolved(tmpDir);
+    assert.equal(config['model_profile'], 'balanced');
+    assert.deepEqual(config['model_overrides'], { 'gsd-executor': 'haiku' }, 'a key only the global file sets is preserved');
   });
 
-  test('second loadConfig call does not repeat the warning', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    writeGlobalDefaults({ model_profile: 'quality' });
-    loadConfigResolved(tmpDir);
-    loadConfigResolved(tmpDir);
-    const warnings = stderrLines.filter(l => l.includes('model_profile') && l.includes('defaults.json'));
-    assert.ok(warnings.length <= 1, `warning emitted more than once: ${warnings.length}`);
+  // Presence, not truthiness, decides a collision: a falsy project value must
+  // still beat a truthy global one, and keep its historical `|| null` coercion.
+  // (Caught by the pre-create adversarial review of the first draft.)
+  test('falsy project values win collisions on the || keys and keep their null coercion', () => {
+    writeConfig(tmpDir, { fast_mode: false, dynamic_routing: false, response_language: '' });
+    writeGlobalDefaults({ fast_mode: true, dynamic_routing: { enabled: true }, response_language: 'French' });
+    const { config } = loadConfigResolved(tmpDir);
+    assert.equal(config['fast_mode'], null);
+    assert.equal(config['dynamic_routing'], null);
+    assert.equal(config['response_language'], null);
   });
 
-  test('global effort keys do not warn (honored by the install-time effort sync)', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    writeGlobalDefaults({ effort: { default: 'low' } });
-    loadConfigResolved(tmpDir);
-    assert.equal(stderrLines.filter(l => l.includes('defaults.json')).length, 0,
-      `effort must not trigger the shadow warning: ${stderrLines.join('')}`);
-  });
-
-  test('absent global defaults never warn', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    loadConfigResolved(tmpDir);
-    assert.equal(stderrLines.length, 0, `unexpected warnings: ${stderrLines.join('')}`);
-  });
-
-  test('bare dir without .planning honors global defaults without warning (Branch D)', () => {
-    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3532-bare-'));
-    try {
-      writeGlobalDefaults({ model_profile: 'quality' });
-      const resolution = loadConfigResolved(bare);
-      assert.equal(resolution.source, 'global-defaults');
-      assert.equal(resolution.config['model_profile'], 'quality');
-      assert.equal(stderrLines.length, 0, `Branch D must not warn: ${stderrLines.join('')}`);
-    } finally {
-      cleanup(bare);
-    }
-  });
-
-  test('unparseable global defaults skip the shadow warning', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    fs.mkdirSync(path.join(gsdHome, '.gsd'), { recursive: true });
-    fs.writeFileSync(path.join(gsdHome, '.gsd', 'defaults.json'), '{not json');
-    loadConfigResolved(tmpDir);
-    assert.equal(stderrLines.filter(l => l.includes('shadowed')).length, 0);
-  });
-
-  test('present-but-empty project config still shadows', () => {
-    writeConfig(tmpDir, {});
-    writeGlobalDefaults({ model_profile: 'quality' });
-    loadConfigResolved(tmpDir);
-    assert.ok(stderrLines.some(l => l.includes('model_profile')),
-      `empty project config must still warn: ${stderrLines.join('')}`);
-  });
-
-  test('non-resolution global keys do not warn from this check', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    writeGlobalDefaults({ __gsd_3532_arbitrary__: true });
-    loadConfigResolved(tmpDir);
-    assert.equal(stderrLines.filter(l => l.includes('__gsd_3532_arbitrary__') && l.includes('shadowed')).length, 0);
-  });
-
-  // Typed-IR parity canary (CONTRIBUTING: assert the exported dedup Set, not
-  // stderr prose — #2674 precedent). Every key Branch D honors must register
-  // as shadowed when set globally under a project config.
-  for (const key of GLOBAL_KEYS_SHADOWED_UNDER_PROJECT) {
-    test(`canary: global "${key}" alone warns under a project config`, () => {
-      writeConfig(tmpDir, { model_profile: 'balanced' });
-      writeGlobalDefaults({ [key]: true });
-      loadConfigResolved(tmpDir);
-      const registered = [...configLoader._warnedShadowedGlobalKeys].some(set => set.split(',').includes(key));
-      assert.ok(registered, `global "${key}" must register as shadowed`);
+  // Every `|| null` / `|| {}` key routes through the same presence test — a
+  // key that regresses to a plain `||` lets `false` lose to a truthy global.
+  const OR_KEYS = ['model_overrides', 'models', 'granularities', 'planning', 'dynamic_routing', 'runtime',
+    'model_profile_overrides', 'model_policy', 'effort', 'fast_mode', 'agent_skills', 'response_language'];
+  for (const key of OR_KEYS) {
+    test(`canary: present-but-false project "${key}" beats a truthy global value`, () => {
+      writeConfig(tmpDir, { [key]: false });
+      writeGlobalDefaults({ [key]: `gsd-4071-global-${key}` });
+      const { config } = loadConfigResolved(tmpDir);
+      assert.deepEqual(config[key], key === 'agent_skills' ? {} : null,
+        `project false must win for "${key}" and keep its historical coercion`);
     });
   }
 
-  // The nested alias Branch D honors (workflow.post_planning_gaps fallback in
-  // _globalBaseCfg) is equally shadowed and reports under its dotted name.
-  test('canary: nested workflow.post_planning_gaps warns under a project config', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    writeGlobalDefaults({ workflow: { post_planning_gaps: 'extended' } });
-    loadConfigResolved(tmpDir);
-    const registered = [...configLoader._warnedShadowedGlobalKeys].some(set => set.split(',').includes('workflow.post_planning_gaps'));
-    assert.ok(registered, 'nested workflow.post_planning_gaps must register as shadowed');
+  // Round-1 review (Major): an explicit project `null` counts as UNSET — the
+  // contract CONFIGURATION.md states — so it must fall through to the
+  // global projection exactly as an absent key does, on every `||`-routed key
+  // and on the hand-rolled `granularity`. Before the fix the `!== undefined`
+  // presence test admitted `null` as "set", the `|| fallback` arm coerced it,
+  // and a correctly-projected global value was silently dropped: the #4071
+  // defect class re-entered through `null` instead of through "a project
+  // config exists". The `??`-routed keys never had this gap.
+  const NULL_IS_UNSET_KEYS = [...OR_KEYS, 'granularity'];
+  for (const key of NULL_IS_UNSET_KEYS) {
+    test(`null-is-unset: an explicit project null "${key}" falls through to the global value`, () => {
+      writeConfig(tmpDir, { [key]: null });
+      writeGlobalDefaults({ [key]: `gsd-4071-global-${key}` });
+      assert.deepEqual(loadConfigResolved(tmpDir).config[key], `gsd-4071-global-${key}`,
+        `project null must read as unset for "${key}" and honor the global value`);
+    });
+  }
+
+  // Self-found sibling of the round-1 Major (defect class: a `!== undefined`
+  // presence test in front of the global-defaults tier): `commit_docs`
+  // returned an explicit project `null` verbatim, short-circuiting the
+  // gitignore, global AND builtin tiers. It is on the documented resolution
+  // set, so `null` counts as unset here too.
+  test('null-is-unset: an explicit project null commit_docs falls through to the global value', () => {
+    writeConfig(tmpDir, { commit_docs: null });
+    writeGlobalDefaults({ commit_docs: false }); // builtin is true — false is the anti-vacuity sentinel
+    assert.equal(loadConfigResolved(tmpDir).config['commit_docs'], false);
   });
 
-  // List parity, both directions: the implementation's exported list (minus
-  // effort) must equal this file's expected list — a key _globalBaseCfg grows
-  // without updating GLOBAL_DEFAULTS_RESOLUTION_KEYS goes silently unwarned,
-  // and a key the export grows without _globalBaseCfg reading makes the
-  // warning lie.
-  test('GLOBAL_DEFAULTS_RESOLUTION_KEYS parity with the expected shadow set', () => {
-    const exported = configLoader.GLOBAL_DEFAULTS_RESOLUTION_KEYS.filter(k => k !== 'effort').sort();
-    const expected = GLOBAL_KEYS_SHADOWED_UNDER_PROJECT.slice().sort();
+  // Round review (self-found, pre-push): the flat/nested read returns a
+  // top-level `null` BEFORE consulting the `planning.commit_docs` alias, so
+  // treating that null as unset must retry the alias — otherwise a nested
+  // explicit opt-out is skipped and the chain lands on the builtin `true`.
+  test('null-is-unset: a top-level null commit_docs does not shadow the nested planning.commit_docs alias', () => {
+    writeConfig(tmpDir, { commit_docs: null, planning: { commit_docs: false } });
+    writeGlobalDefaults({ commit_docs: true });
+    assert.equal(loadConfigResolved(tmpDir).config['commit_docs'], false);
+  });
+
+  test('null-is-unset: an explicit project null commit_docs with no global file resolves to the builtin', () => {
+    writeConfig(tmpDir, { commit_docs: null });
+    assert.equal(loadConfigResolved(tmpDir).config['commit_docs'], configLoader.CONFIG_DEFAULTS.commit_docs);
+  });
+
+  // Round review (pre-push, refuted claim): `get()` returns a present flat
+  // value BEFORE consulting the nested alias, so a legacy flat `null` shadowed
+  // an explicit nested spelling. Pre-#4071 that null fell to the BUILTIN; with
+  // the global tier behind it, a machine-wide value could now defeat an
+  // explicit nested project value — strictly worse. A flat `null` yields to
+  // an explicitly-set nested alias, on every alias-carrying resolution key.
+  const NESTED_ALIAS_KEYS = {
+    research: ['workflow', 'research'], plan_checker: ['workflow', 'plan_check'],
+    verifier: ['workflow', 'verifier'], nyquist_validation: ['workflow', 'nyquist_validation'],
+    post_planning_gaps: ['workflow', 'post_planning_gaps'], text_mode: ['workflow', 'text_mode'],
+    subagent_timeout: ['workflow', 'subagent_timeout'], commit_docs: ['planning', 'commit_docs'],
+  };
+  for (const [flat, [section, field]] of Object.entries(NESTED_ALIAS_KEYS)) {
+    test(`null-is-unset: a null legacy flat "${flat}" does not shadow an explicit nested ${section}.${field}`, () => {
+      writeConfig(tmpDir, { [flat]: null, [section]: { [field]: `gsd-4071-nested-${flat}` } });
+      writeGlobalDefaults({ [flat]: `gsd-4071-global-${flat}` });
+      assert.equal(loadConfigResolved(tmpDir).config[flat], `gsd-4071-nested-${flat}`,
+        `the explicit nested ${section}.${field} must win over a null flat "${flat}" and over the global value`);
+    });
+  }
+
+  test('_getConfigValueNullAsUnset: a flat null with no nested value set is still returned as null (shape unchanged)', () => {
+    const n = { section: 'workflow', field: 'research' };
+    assert.equal(configLoader._getConfigValueNullAsUnset({ research: null }, 'research', n), null);
+    assert.equal(configLoader._getConfigValueNullAsUnset({ research: null, workflow: {} }, 'research', n), null);
+    assert.equal(configLoader._getConfigValueNullAsUnset({ research: null, workflow: { research: false } }, 'research', n), false);
+    assert.equal(configLoader._getConfigValueNullAsUnset({ research: false, workflow: { research: true } }, 'research', n), false, 'a set flat value still wins');
+    // The generic reader is untouched: outside the resolution set a flat null still wins.
+    assert.equal(configLoader._getConfigValue({ research: null, workflow: { research: false } }, 'research', n), null);
+  });
+
+  // Pre-push round review: the null-is-unset rule is scoped to the resolution
+  // set. `max_prompt_tokens: null` is a documented explicit value ("no trim",
+  // planning-config.md), so its flat spelling must keep winning over the
+  // nested alias exactly as before this PR.
+  test('null-is-unset is scoped: a flat max_prompt_tokens null still wins over the nested alias', () => {
+    writeConfig(tmpDir, { max_prompt_tokens: null, review: { max_prompt_tokens: 1234 } });
+    const { config } = loadConfigResolved(tmpDir);
+    assert.equal(config['review']['max_prompt_tokens'], null, 'the flat explicit null ("no trim") must not be overridden by the nested value');
+  });
+
+  test('null-is-unset: with no global file an explicit project null keeps its historical coercion', () => {
+    writeConfig(tmpDir, { model_overrides: null, granularity: null, agent_skills: null, response_language: null });
+    const { config } = loadConfigResolved(tmpDir);
+    assert.equal(config['model_overrides'], null);
+    assert.equal(config['granularity'], null);
+    assert.deepEqual(config['agent_skills'], {});
+    assert.equal(config['response_language'], null);
+  });
+
+  test('a project nested spelling still wins over a global flat one', () => {
+    writeConfig(tmpDir, { workflow: { research: false } });
+    writeGlobalDefaults({ research: true });
+    assert.equal(loadConfigResolved(tmpDir).config['research'], false);
+  });
+
+  test('present-but-empty project config honors the global file', () => {
+    writeConfig(tmpDir, {});
+    writeGlobalDefaults({ model_profile: 'quality' });
+    assert.equal(loadConfigResolved(tmpDir).config['model_profile'], 'quality');
+  });
+
+  test('the #3532 shadowed-keys warning is retired: nothing is shadowed any more', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced' });
+    writeGlobalDefaults({ model_overrides: { 'gsd-executor': 'haiku' }, model_profile: 'quality' });
+    loadConfigResolved(tmpDir);
+    assert.equal(stderrLines.length, 0, `unexpected stderr: ${stderrLines.join('')}`);
+  });
+
+  test('no global file: builtin defaults and the null/empty shapes are unchanged', () => {
+    writeConfig(tmpDir, {});
+    const { config } = loadConfigResolved(tmpDir);
+    assert.equal(config['model_profile'], configLoader.CONFIG_DEFAULTS.model_profile);
+    assert.equal(config['model_overrides'], null);
+    assert.equal(config['granularity'], null);
+    assert.deepEqual(config['agent_skills'], {});
+    assert.equal(stderrLines.length, 0, `unexpected stderr: ${stderrLines.join('')}`);
+  });
+
+  test('unusable global file under a project config: warned once, project keys still applied, resolution degraded', () => {
+    writeConfig(tmpDir, { model_profile: 'balanced' });
+    fs.mkdirSync(path.join(gsdHome, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(gsdHome, '.gsd', 'defaults.json'), '{not json');
+    const resolution = loadConfigResolved(tmpDir);
+    assert.equal(resolution.config['model_profile'], 'balanced');
+    assert.equal(resolution.source, 'root');
+    assert.equal(resolution.degraded, true, 'the global settings were dropped — that is what degraded names');
+    assert.equal(resolution.reason, configLoader.CONFIG_REASON.CONFIG_UNPARSEABLE);
+    const warned = () => stderrLines.filter(l => l.includes('defaults.json') && l.includes('NOT applied')).length;
+    assert.equal(warned(), 1, `expected one unusable-file warning, got: ${stderrLines.join('')}`);
+    loadConfigResolved(tmpDir);
+    assert.equal(warned(), 1, 'the warning is deduped across calls');
+  });
+
+  test('commit_docs: a gitignored .planning/ still wins over a global true', () => {
+    const init = runGit(['init', '-q'], { cwd: tmpDir, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.equal(init.exitCode, 0, `git init failed: ${init.stderr}`);
+    fs.writeFileSync(path.join(tmpDir, '.gitignore'), '.planning/\n');
+    writeConfig(tmpDir, {});
+    writeGlobalDefaults({ commit_docs: true });
+    assert.equal(loadConfigResolved(tmpDir).config['commit_docs'], false);
+  });
+
+  test('parallelization: a global { enabled } object normalizes under a project config', () => {
+    const builtin = configLoader.CONFIG_DEFAULTS.parallelization;
+    const flipped = !builtin;
+    writeConfig(tmpDir, {});
+    writeGlobalDefaults({ parallelization: { enabled: flipped } });
+    assert.equal(loadConfigResolved(tmpDir).config['parallelization'], flipped);
+  });
+
+  // Typed-IR parity canary: every key the global file contributes must
+  // resolve to the same value whether or not a (silent) project config
+  // exists — the issue's acceptance criterion — and that value must be the
+  // sentinel, so agreement on a builtin default cannot pass vacuously.
+  for (const key of GLOBAL_KEYS_HONORED_UNDER_PROJECT) {
+    if (key === 'parallelization') continue;
+    test(`canary: global "${key}" resolves identically with and without a project config`, () => {
+      const sentinel = `gsd-4071-${key}`;
+      writeConfig(tmpDir, {});
+      writeGlobalDefaults({ [key]: sentinel });
+      const withProject = loadConfigResolved(tmpDir);
+      const withoutProject = loadConfigResolved(bareDir);
+      assert.equal(withProject.source, 'root');
+      assert.equal(withoutProject.source, 'global-defaults');
+      assert.deepEqual(withProject.config[key], withoutProject.config[key],
+        `global "${key}" must resolve the same under a project config as without one`);
+      assert.equal(withProject.config[key], sentinel, `anti-vacuity: global "${key}" must reach the resolved config`);
+    });
+  }
+
+  // The nested aliases Branch D honors (`workflow.post_planning_gaps`, and
+  // `workflow.research_before_questions` since #3894) are honored under a
+  // project config too, through the same builder.
+  for (const key of ['post_planning_gaps', 'research_before_questions']) {
+    test(`canary: nested global workflow.${key} is honored under a project config`, () => {
+      const sentinel = `gsd-4071-nested-${key}`;
+      writeConfig(tmpDir, {});
+      writeGlobalDefaults({ workflow: { [key]: sentinel } });
+      assert.equal(loadConfigResolved(tmpDir).config[key], sentinel);
+    });
+  }
+
+  test('research_before_questions: the project nested key surfaces through this loader and wins', () => {
+    writeConfig(tmpDir, { workflow: { research_before_questions: 'from-project' } });
+    writeGlobalDefaults({ research_before_questions: 'from-global' });
+    assert.equal(loadConfigResolved(tmpDir).config['research_before_questions'], 'from-project');
+  });
+
+  // List parity, both directions: the implementation's exported list must
+  // equal this file's expected list, and the shared builder must project
+  // every key in it — a key one grows without the other goes silently
+  // unhonored on one branch.
+  test('GLOBAL_DEFAULTS_RESOLUTION_KEYS parity with the expected honored set', () => {
+    const exported = configLoader.GLOBAL_DEFAULTS_RESOLUTION_KEYS.slice().sort();
+    const expected = GLOBAL_KEYS_HONORED_UNDER_PROJECT.slice().sort();
     assert.deepEqual(exported, expected,
       `resolution-key list drifted: exported=${JSON.stringify(exported)} expected=${JSON.stringify(expected)}`);
   });
 
-  test('_resetRuntimeWarningCacheForTests clears the shadowed-key dedup set', () => {
-    writeConfig(tmpDir, { model_profile: 'balanced' });
-    writeGlobalDefaults({ model_profile: 'quality' });
-    loadConfigResolved(tmpDir);
-    assert.ok(
-      configLoader._warnedShadowedGlobalKeys && configLoader._warnedShadowedGlobalKeys.size > 0,
-      'precondition: a shadowed key must populate the dedup set',
-    );
-    _resetRuntimeWarningCacheForTests();
-    assert.equal(configLoader._warnedShadowedGlobalKeys.size, 0);
+  test('_globalDefaultsBaseCfg projects every resolution key', () => {
+    const projected = configLoader._globalDefaultsBaseCfg({});
+    for (const key of configLoader.GLOBAL_DEFAULTS_RESOLUTION_KEYS) {
+      assert.ok(Object.prototype.hasOwnProperty.call(projected, key), `builder must project "${key}"`);
+    }
   });
 });
 

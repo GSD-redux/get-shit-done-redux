@@ -100,7 +100,10 @@ describe('loadConfig ~/.gsd/defaults.json fallback (#1683)', () => {
 
     const config = loadConfig(tmpDir);
     assert.strictEqual(config.model_profile, 'budget');
-    assert.strictEqual(config.context_window, 200000);
+    // #4071: a key only the global file sets is preserved from it — the
+    // project config wins on COLLISION, not by existing. This line pinned the
+    // old wholesale drop (builtin 200000) as intended behavior; it was not.
+    assert.strictEqual(config.context_window, 1000000);
   });
 
   test('defaults.json with unknown keys → unknown keys NOT passed through', (t) => {

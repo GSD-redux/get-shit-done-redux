@@ -411,7 +411,7 @@ These can be set at top level or nested under `planning.*` (e.g., `"planning": {
 
 Several config fields affect each other or trigger special behavior:
 
-1. **`commit_docs` resolution chain** -- Four tiers, highest wins: (1) `phase_commit_docs.<phase-id>` for the phase being committed, (2) an explicit `commit_docs` (or `planning.commit_docs`) value in config.json, (3) `.gitignore` auto-detection (`.planning/` in `.gitignore` resolves to `false`), (4) the manifest default (`true`). Precedence: per-phase → explicit config → gitignore auto-detect → default.
+1. **`commit_docs` resolution chain** -- Five tiers, highest wins: (1) `phase_commit_docs.<phase-id>` for the phase being committed, (2) an explicit `commit_docs` (or `planning.commit_docs`) value in config.json (an explicit `null` counts as unset), (3) `.gitignore` auto-detection (`.planning/` in `.gitignore` resolves to `false`), (4) `commit_docs` in `~/.gsd/defaults.json` (#4071 — the gitignore inference stays ahead of the global file because it is a fact about this repository), (5) the manifest default (`true`). Precedence: per-phase → explicit config → gitignore auto-detect → global defaults → default.
 
 2. **`branching_strategy` controls branch templates** -- The `phase_branch_template` and `milestone_branch_template` fields are only used when `branching_strategy` is set to `"phase"` or `"milestone"` respectively. When `branching_strategy` is `"none"`, all template fields are ignored.
 
