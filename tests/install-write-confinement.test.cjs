@@ -3977,7 +3977,7 @@ describe('Bug #4086: saveLocalPatches resolves skills/ manifest keys at the runt
     assert.deepEqual(modifiedList, [], 'without a runtime the old skip behavior applies');
   });
 
-  test('end-to-end codex reinstall backs up the modified skill (#4086)', { timeout: 120_000 }, (t) => {
+  test('end-to-end codex reinstall backs up the modified skill (#4086)', { timeout: 120_000 }, () => {
     const origLog = console.log;
     const origWarn = console.warn;
     console.log = () => {};
