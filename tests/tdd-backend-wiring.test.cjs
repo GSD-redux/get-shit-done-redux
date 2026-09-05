@@ -46,6 +46,24 @@ const BACKENDS = {
   'executor-isolation-dispatch.md': { referenceFile: WORKTREE_PATH, assignmentFile: WORKTREE_PATH },
 };
 
+// #4268: the two backends' `gsd_run query phase.tdd-applicable` calls differ
+// today ONLY in their variable-name prefix (`TDD_APPLICABLE_RAW=$(...)` vs
+// `_TDD_APPLICABLE_RAW=$(...)`), and nothing asserts the command-substitution
+// CONTENT itself stays byte-identical — a one-word divergence (e.g. dropping
+// `2>/dev/null` or changing `--pick applicable` in only one backend) ships
+// green. This extracts the call starting at `gsd_run query
+// phase.tdd-applicable` through the end of the line, stripping only the
+// trailing `)` that closes the `$( ... )` command substitution — i.e.
+// everything up to and including the variable-name-and-`=$(` prefix is
+// discarded, exactly per #4268.
+function extractQueryCall(line) {
+  const start = line.indexOf('gsd_run query phase.tdd-applicable');
+  if (start === -1) return null;
+  let call = line.slice(start);
+  if (call.endsWith(')')) call = call.slice(0, -1);
+  return call;
+}
+
 describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () => {
   // A backend may assign TDD_APPLICABLE directly from the `gsd_run query
   // phase.tdd-applicable` call (harness: `TDD_APPLICABLE=$(gsd_run query
@@ -207,5 +225,49 @@ describe('#4266 — TDD_APPLICABLE is actually computed in both backends', () =>
       assert.ok(line, `${name} still lists tdd.md as a conditional embed entry`);
       assert.ok(/TDD_APPLICABLE \?/.test(line), `${name}'s tdd.md entry must stay conditional on TDD_APPLICABLE (#3990)`);
     }
+  });
+
+  test('RED-first: the predicate-equality comparison actually has teeth on a one-token divergence', () => {
+    // Prove the comparison catches a divergence BEFORE trusting it against
+    // the real files — a deliberately mutated in-memory pair, no file edits.
+    const original = 'gsd_run query phase.tdd-applicable "{phase_dir}/{plan_file}" --pick applicable 2>/dev/null';
+    const mutated = original.replace('--pick applicable', '--pick other');
+    assert.notEqual(mutated, original, 'sanity: the mutated fixture must actually differ from the original');
+    assert.throws(
+      () => assert.equal(mutated, original),
+      (err) => err instanceof assert.AssertionError,
+      'assert.equal must fail on a one-token divergence between two backends\' predicate calls — otherwise the real-file check below has no teeth',
+    );
+  });
+
+  test('both backends\' gsd_run query phase.tdd-applicable command-substitution calls are byte-identical', () => {
+    // #4268 Standards review: both real backend files also carry this exact
+    // substring inside an unrelated FATAL echo message a few lines after the
+    // real assignment line (`echo "FATAL: ... 'gsd_run query
+    // phase.tdd-applicable' failed. ..."`). A bare `.includes()` match
+    // happened to work only because `.find()` hits the assignment line
+    // first in document order. Anchor on `=$(` immediately before the call —
+    // only the real `..._RAW=$(gsd_run query phase.tdd-applicable ...)`
+    // assignment line has that shape; the FATAL message's `'gsd_run query
+    // phase.tdd-applicable' failed` is preceded by a quote, not `=$(`.
+    const harnessLine = read(BACKENDS['execute-phase.md'].assignmentFile)
+      .split('\n')
+      .find((l) => l.includes('=$(gsd_run query phase.tdd-applicable'));
+    const worktreeLine = read(BACKENDS['executor-isolation-dispatch.md'].assignmentFile)
+      .split('\n')
+      .find((l) => l.includes('=$(gsd_run query phase.tdd-applicable'));
+    assert.ok(harnessLine, 'execute-phase.md backend must carry a gsd_run query phase.tdd-applicable call');
+    assert.ok(worktreeLine, 'executor-isolation-dispatch.md backend must carry a gsd_run query phase.tdd-applicable call');
+
+    const harnessCall = extractQueryCall(harnessLine);
+    const worktreeCall = extractQueryCall(worktreeLine);
+    assert.equal(
+      harnessCall,
+      worktreeCall,
+      '#4268: the harness and worktree backends must issue byte-identical phase.tdd-applicable command-substitution calls ' +
+        '(only the variable-name-and-`=$(` prefix may differ), got:\n' +
+        `  execute-phase.md (harness):              ${harnessCall}\n` +
+        `  executor-isolation-dispatch.md (worktree): ${worktreeCall}`,
+    );
   });
 });
