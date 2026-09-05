@@ -729,11 +729,19 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     fs.writeFileSync(tf, HANGS_BODY);
     const child = spawn(process.execPath, [tf], { stdio: 'ignore' });
     t.after(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } });
+    // Fast-fail on a spawn error (execPath unspawnable): the poll below keys on exit/signal, which
+    // a failed spawn never sets, so without this the 20s ceiling would expire with a misleading
+    // "did not self-terminate" message instead of the real cause.
+    child.on('error', (err) => {
+      assert.fail(`could not spawn the fixture directly: ${err.message}`);
+    });
     const CEILING_MS = 20_000;
     const stillHangingAt = Date.now() + 750; // > half the 1500ms enforcement bound: it must not finish early
     const deadline = Date.now() + CEILING_MS;
     const poll = () => {
-      if (child.exitCode !== null) {
+      // `exitCode !== null` alone misses a SIGNALED exit (exitCode stays null when a signal ends
+      // the child); signalCode covers that, and the assertions below then name it as the failure.
+      if (child.exitCode !== null || child.signalCode !== null) {
         // Exited. If it exited BEFORE the still-hanging checkpoint the fixture is no longer a hang
         // fixture at all (breaks the enforcement test it serves — the negative space in 10-diagnosis).
         assert.ok(Date.now() >= stillHangingAt,
