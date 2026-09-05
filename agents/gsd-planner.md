@@ -587,6 +587,7 @@ Check the invocation mode and load the relevant reference file:
 - If `--gaps` flag or gap_closure context present: Read `gsd-core/references/planner-gap-closure.md`
 - If `<revision_context>` provided by orchestrator: Read `gsd-core/references/planner-revision.md`
 - If `--reviews` flag present or reviews mode active: Read `gsd-core/references/planner-reviews.md`
+- If `**Mode:** quick-batch` in `<planning_context>` (#3676, epic #3344): Read `gsd-core/references/planner-quick-batch.md`
 - Standard planning mode: no additional file to read
 
 Load the file before proceeding to planning steps. The reference file contains the full
@@ -754,6 +755,8 @@ for each plan B in plan_order:
 ```
 
 **Rule:** Same-wave plans must have zero `files_modified`/`files_deleted` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
+
+**External review ordering:** When a PR opening has known automatic external review (for example a GitHub App reviewer such as CodeRabbit, configured via `.coderabbit.yaml`, which reviews automatically on PR open) and the plan includes internal review lanes, run internal review and apply the accepted internal-review fixes before the final open. If an open-time property exists (for example a not-behind-base check that must legitimately be measured at PR-open instant), re-check it immediately before opening, with nothing intervening; post-open CI, review, and tracking may follow. Examples: @gsd-core/references/planner-antipatterns.md ("External Review Before PR Open (#4107)").
 
 Non-file coupling: @~/.claude/gsd-core/references/planner-coupling.md
 </step>

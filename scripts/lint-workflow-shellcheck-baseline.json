@@ -380,6 +380,11 @@
     "message": "Expressions don't expand in single quotes, use double quotes for that."
   },
   {
+    "file": "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md",
+    "code": "2016",
+    "message": "Expressions don't expand in single quotes, use double quotes for that."
+  },
+  {
     "file": "gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md",
     "code": "2086",
     "message": "Double quote to prevent globbing and word splitting."
@@ -658,6 +663,16 @@
     "file": "gsd-core/workflows/progress.md",
     "code": "2102",
     "message": "Ranges can only match single chars (mentioned due to duplicates)."
+  },
+  {
+    "file": "gsd-core/workflows/quick-batch.md",
+    "code": "2046",
+    "message": "Quote this to prevent word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/quick-batch.md",
+    "code": "2046",
+    "message": "Quote this to prevent word splitting."
   },
   {
     "file": "gsd-core/workflows/quick.md",

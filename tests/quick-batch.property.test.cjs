@@ -34,6 +34,7 @@ const {
   computeWaves,
   resumeBatch,
   completeQuickItem,
+  updateBatchItems,
 } = require('../gsd-core/bin/lib/quick-batch.cjs');
 const { makeFakeClock } = require('./helpers/clock.cjs');
 const { cleanup } = require('./helpers.cjs');
@@ -240,5 +241,62 @@ describe('quick-batch: property — wave order respects the DAG (row 33)', () =>
         }
       },
     ));
+  });
+});
+
+// #3676 review pass 3 (Spec finding, test matrix row 24): a post-planning
+// updateBatchItems write racing a concurrent completeQuickItem write for a
+// DIFFERENT already-dispatched item — both go through withPlanningLock, so
+// no update should ever be lost regardless of call order. Mirrors row 15's
+// own technique above: real lock serialization exercised via SEQUENTIAL
+// calls (a working mutex makes any interleaving equivalent to SOME serial
+// order — proving no ordering loses an update is the same claim a literal
+// concurrent-thread test would make, without OS-level threading).
+describe('quick-batch: property — updateBatchItems does not lose a concurrent completeQuickItem update, or vice versa (row 24)', () => {
+  test('property: for any call order, both a post-planning update AND a different item\'s completion survive in the final manifest', () => {
+    fc.assert(fc.property(
+      fc.boolean(), // true: updateBatchItems first; false: completeQuickItem first
+      fc.array(fc.constantFrom('f0', 'f1', 'f2'), { maxLength: 2 }),
+      (updateFirst, plannedFiles) => {
+        const dir = mkTmpProject();
+        fs.writeFileSync(path.join(dir, '.planning', 'STATE.md'), stateWithQuickTasksSection());
+        try {
+          const created = createBatch(dir, [
+            { description: 'item A (gets the post-planning update)', clientId: 'a' },
+            { description: 'item B (gets completed concurrently)', clientId: 'b' },
+          ]);
+          assert.equal(created.ok, true);
+          const [itemA, itemB] = created.value.manifest.items;
+
+          const doUpdate = () => updateBatchItems(dir, created.value.batchId, [
+            { quickId: itemA.quick_id, plannedFiles },
+          ]);
+          const doComplete = () => completeQuickItem(dir, created.value.batchId, itemB.quick_id, {
+            description: itemB.description,
+            date: '2026-01-01',
+            commit: 'deadbeef',
+          });
+
+          const [first, second] = updateFirst ? [doUpdate, doComplete] : [doComplete, doUpdate];
+          const firstResult = first();
+          assert.equal(firstResult.ok, true, firstResult.ok ? '' : firstResult.reason);
+          const secondResult = second();
+          assert.equal(secondResult.ok, true, secondResult.ok ? '' : secondResult.reason);
+
+          // No lost update, regardless of order: the FINAL on-disk manifest
+          // (re-read fresh, not either call's own stale in-memory copy)
+          // reflects BOTH mutations — valid JSON, both writers' changes present.
+          const raw = fs.readFileSync(path.join(dir, '.planning', 'quick-batches', created.value.batchId, 'BATCH.json'), 'utf-8');
+          const finalManifest = JSON.parse(raw); // throws (property fails) on invalid JSON
+          const finalA = finalManifest.items.find((it) => it.quick_id === itemA.quick_id);
+          const finalB = finalManifest.items.find((it) => it.quick_id === itemB.quick_id);
+          assert.deepEqual(finalA.planned_files, plannedFiles, 'item A\'s post-planning update was not lost');
+          assert.equal(finalB.status, 'complete', 'item B\'s completion was not lost');
+          assert.equal(finalB.commit, 'deadbeef');
+        } finally {
+          cleanupDir(dir);
+        }
+      },
+    ), { numRuns: 20 }); // filesystem-backed property — bounded below the global default
   });
 });

@@ -998,6 +998,31 @@ Granular flags are composable: `--discuss --research --validate` is equivalent t
 /gsd-quick resume my-task-slug      # Resume a quick task
 ```
 
+### `/gsd-quick-batch`
+
+Batch several `/gsd-quick`-shaped tasks together — one coordinator plans, dispatches, and merges them as one run (#3676, epic #3344, ADR-1239 "Quick-batch binding"). See [Batch quick tasks](how-to/batch-quick-tasks.md) for a walkthrough.
+
+| Argument | Description |
+|----------|-------------|
+| Inline task list | A bulleted or numbered list, ≥2 items, one per line |
+| `--file <path>` | Read the task list from a file instead of inline text |
+
+| Flag | Description |
+|------|-------------|
+| `--jobs auto\|N` | `auto` (default) uses the negotiated dispatch capacity as-is; `N` caps effective concurrency at `min(task count, N, capacity)` |
+| `--validate` | Per-item plan-checker loop (max 2 iterations) + post-merge verification |
+| `--research` | Per-item researcher dispatched before planning |
+| `--resume <batch-id>` | Skip task-list parsing and batch creation; dispatch only the batch's still-eligible items |
+
+**Not supported in v1:** `--discuss` and `--full` are rejected with a usage error before any dispatch — run `/gsd-quick --discuss`/`--full` per item instead.
+
+```bash
+/gsd-quick-batch "- fix the login timeout\n- add the retry banner"   # inline list
+/gsd-quick-batch --file .planning/my-tasks.md                          # from a file
+/gsd-quick-batch --jobs 3 --validate "- item one\n- item two\n- item three"
+/gsd-quick-batch --resume 260101-abc                                    # resume an interrupted batch
+```
+
 ### `/gsd-autonomous`
 
 Run all remaining phases autonomously.

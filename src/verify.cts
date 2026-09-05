@@ -28,6 +28,11 @@ const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- worktree-safety.cjs is an export= CommonJS module
+import worktreeSafetyMod = require('./worktree-safety.cjs');
+// Single owner of git C-quoted-path decoding (see #4081 note at the
+// codebase-drift --name-status parse loop).
+const { decodeGitQuotedPath } = worktreeSafetyMod;
 import { execGit, platformReadSync as safeReadFile } from './shell-command-projection.cjs';
 import { validatePath } from './security.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
@@ -745,6 +750,232 @@ function scanFileWideNegativeGateConflict(content: string): { warnings: string[]
   return { warnings, valid: true as const };
 }
 
+/**
+ * Issue #4024 — quantitative-criteria trap-shape scanner, the third plan-discipline
+ * gate in this family (after #429's comment-echo gate and #968's file-wide
+ * negative-gate conflict detector). #429/#968 judge `grep -c … == 0` shapes; this
+ * scanner judges the OTHER quantitative criterion shapes that are provably traps
+ * at HEAD, so a plan whose criteria are unsatisfiable-or-vacuous before any
+ * executor touches them no longer passes `verify plan-structure` clean.
+ *
+ * Scope: criteria text only — `<acceptance_criteria>`, `<automated>`, and
+ * `<verify>` blocks. Prose elsewhere in the plan (e.g. an explanatory
+ * `<action>`) is not judged (fail-open; see the negative-space section of the
+ * #4024 diagnosis).
+ *
+ * Ban list, each rule with a corrected arm asserted in tests (a rule that fires
+ * on its own fix is a refusal, not a rule):
+ *   R1 (error) exact count out of `grep -c` with N ≥ 2 — `grep -c` counts LINES,
+ *       not matches. Hedged counts (`>=`, "at least"), `== 0` (the #429/#968
+ *       family) and the `== 1` presence idiom stay clean.
+ *   R2 (error) bulk observed-failing claims — "all N tests … observed failing" /
+ *       "tests N through M … each … observed failing". A test asserting a
+ *       non-change cannot go red before the change exists. Per-test
+ *       "discriminates" wording and subset claims stay clean.
+ *   R3 (error) `$VAR` unquoted in command position — zsh does not word-split an
+ *       unquoted expansion, the command exits 127, and any arm reading its
+ *       status passes vacuously.
+ *   R4 (warn)  a fallible command (`git …`) in a non-final pipeline stage — the
+ *       pipeline reports the LAST stage's status, so the failure is swallowed.
+ *       Warn-only: the shape is ambiguous unless the criterion reads the status.
+ *   R5 (error) `wc` output compared by string equality (`… | wc -l | grep -x 0`)
+ *       — BSD `wc` pads its output, so the comparison never matches.
+ *   R6 (error) `git diff`/`git log` with a relative `HEAD~N` anchor — it names
+ *       whatever commit happened to land (another session's). Bare `git diff`
+ *       with no range is a WARNING: a committed change produces no output and
+ *       the check passes, but an uncommitted-tree check is a legitimate idiom.
+ *
+ * Legitimate exit: `<!-- plan-criteria-allow: R# - reason -->` (house style of
+ * `planner-discipline-allow`); the reason must be non-empty. Fail open: no
+ * criteria zones → no findings; every parse is text-only, nothing executes.
+ */
+function scanQuantitativeCriteria(content: string): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Criteria zones: <acceptance_criteria>, <automated>, <verify>. A <verify>
+  // block contains its <automated> child, so the same segment may be harvested
+  // twice — dedupe findings by message below.
+  const zones: { text: string; prose: boolean }[] = [];
+  for (const tag of ['acceptance_criteria', 'automated', 'verify'] as const) {
+    for (const block of extractTaggedBlocks(content || '', tag)) {
+      zones.push({ text: block, prose: tag === 'acceptance_criteria' });
+    }
+  }
+  if (zones.length === 0) return { errors, warnings };
+
+  // Allow markers may sit anywhere in the plan (same as the sibling scanners).
+  // The reason must be non-empty: `R1 - -->` is not an auditable exit.
+  const allow = new Set<string>();
+  const allowRe = /<!--\s*plan-criteria-allow:\s*(R[1-6])\s+-\s+([^>]*\S)\s*-->/g;
+  let am: RegExpExecArray | null;
+  while ((am = allowRe.exec(content || '')) !== null) allow.add(am[1]);
+
+  const record = (bucket: string[], rule: string, message: string, seen: Set<string>): void => {
+    if (allow.has(rule) || seen.has(message)) return;
+    seen.add(message);
+    bucket.push(message);
+  };
+
+  // A count-grep invocation (grep with -c / --count), per the #429 idiom.
+  const countGrepRe =
+    /grep((?:\s+-{1,2}[A-Za-z][A-Za-z-]*)+)\s+(?:'[^']*'|"[^"]*"|[^\s|>&;]+)/g;
+  const optsHaveCount = (opts: string): boolean =>
+    /(?:^|\s)-[A-Za-z]*c[A-Za-z]*(?=\s|$)/.test(opts) || /--count\b/.test(opts);
+  const hasCountGrep = (s: string): boolean => {
+    countGrepRe.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = countGrepRe.exec(s)) !== null) {
+      if (optsHaveCount(m[1])) return true;
+    }
+    return false;
+  };
+
+  const seenErr = new Set<string>();
+  const seenWarn = new Set<string>();
+
+  for (const zone of zones) {
+    // Same normalization as the sibling scanners (#3611): newline join,
+    // backslash continuation join, entity-amp decode.
+    const text = decodeEntityAmps(zone.text
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\\\n/g, ' '));
+
+    // R2 — bulk observed-failing prose (acceptance_criteria only). The gap
+    // [^\n.]{0,120} keeps the subject and the claim adjacent within one
+    // sentence, so the corrected arm (a subset claim, or "each test
+    // discriminates") never fires.
+    if (zone.prose) {
+      const bulkRedRes = [
+        /\ball\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+tests\b[^\n.]{0,120}?observed\s+fail/i,
+        /\btests\s+\d+\s+through\s+\d+\b[^\n.]{0,120}?observed\s+fail/i,
+      ];
+      for (const re of bulkRedRes) {
+        if (re.test(text)) {
+          record(
+            errors,
+            'R2',
+            '[plan-criteria R2] A bulk "all N tests / tests N through M were observed failing" criterion is ' +
+              'unsatisfiable whenever any of the N tests asserts a non-change, which cannot go red before the ' +
+              'change exists. Say "each test discriminates" (fails before the change, passes after), and attach a ' +
+              'mutation record for any test that cannot be seen red.',
+            seenErr,
+          );
+        }
+      }
+    }
+
+    for (const seg of text.split('\n').flatMap(splitShellSegments)) {
+      // R1 — exact count out of `grep -c` (N ≥ 2). Spaced `==`/`-eq` (the
+      // #429 zeroCmp idiom, excluding assignments and >=/<=/!=), or the prose
+      // "returns exactly N".
+      if (hasCountGrep(seg)) {
+        const exact: number[] = [];
+        let m: RegExpExecArray | null;
+        const shellCmp = /\s==?\s*(\d+)\b/g;
+        while ((m = shellCmp.exec(seg)) !== null) exact.push(parseInt(m[1], 10));
+        const eqCmp = /-eq\s+(\d+)\b/g;
+        while ((m = eqCmp.exec(seg)) !== null) exact.push(parseInt(m[1], 10));
+        const proseCmp = /\breturns?\s+exactly\s+(\d+)\b/gi;
+        while ((m = proseCmp.exec(seg)) !== null) exact.push(parseInt(m[1], 10));
+        if (exact.some((n) => n >= 2)) {
+          record(
+            errors,
+            'R1',
+            '[plan-criteria R1] An exact count out of `grep -c` is a trap: `grep -c` counts LINES, not matches, ' +
+              'so the criterion can be false at HEAD before any executor touches it. Use `>= 1`, `== 0`, or ' +
+              '`grep -n` and read the line numbers.',
+            seenErr,
+          );
+        }
+      }
+
+      // R3 — unquoted $VAR in command position (zsh does not word-split; the
+      // command exits 127 and any arm reading its status passes vacuously).
+      // The anchor tolerates a markdown list bullet and/or an inline-code
+      // backtick before the command — criteria are prose lines like
+      // "- `$NOKEY npx tsx x.ts` exits 0" — but nothing else: the expansion
+      // must still be the FIRST token of the command itself.
+      if (/^(?:[-*]\s*)?\u0060?\$[A-Z_][A-Z0-9_]*\s/.test(seg)) {
+        record(
+          errors,
+          'R3',
+          '[plan-criteria R3] `$VAR` unquoted in command position does not word-split under zsh — the shell ' +
+            'looks for a command literally named by the whole expansion and exits 127, so any arm reading its ' +
+            'status passes vacuously. Write the prefix inline or use a shell function.',
+          seenErr,
+        );
+      }
+
+      // R4 — a fallible `git …` in a non-final pipeline stage: the pipeline
+      // reports the LAST stage's status, so git's failure is swallowed.
+      // Warn-only: without a status assertion the shape is ambiguous.
+      // Not a markdown table: the negated-pipe class matches a SHELL pipeline
+      // stage boundary (git before the next `|`), the same shape the
+      // #429/#968 scanners use; there is no table row to parse.
+      // allow-adhoc-markdown: shell pipeline stage boundary, not a table cell (#4024)
+      if (/\bgit\s+[a-z][^\n|]*\|/.test(seg)) {
+        record(
+          warnings,
+          'R4',
+          '[plan-criteria R4] A fallible `git` in a non-final pipeline stage is swallowed — the pipeline reports ' +
+            'the last stage\'s status, so a broken command reads as clean. Capture the status first.',
+          seenWarn,
+        );
+      }
+
+      // R5 — `wc` output compared by string equality: BSD `wc` pads its output
+      // (seven spaces then the number), so `grep -x 0` can never match.
+      if (/\bwc\b/.test(seg) && /\bgrep\s+(?:-{1,2}[A-Za-z]*x[A-Za-z]*|--line-regexp)\s+['"]?\d+['"]?/.test(seg)) {
+        record(
+          errors,
+          'R5',
+          '[plan-criteria R5] `wc` output compared by string equality is unsatisfiable on BSD `wc`, which pads ' +
+            'its output before the number. Compare numerically: `test "$n" -eq 0`, or `tr -d \' \'` first.',
+          seenErr,
+        );
+      }
+
+      // R6 — relative HEAD~N anchors name whatever commit happened to land;
+      // a bare `git diff` with no range makes a committed change invisible.
+      if (/\bgit\s+(?:diff|log)\b[^\n|;&]*\bHEAD~\d+/.test(seg)) {
+        record(
+          errors,
+          'R6',
+          '[plan-criteria R6] `git diff`/`git log` with a relative `HEAD~N` anchor names whatever commit ' +
+            'happened to land last — in a repository with parallel sessions that is another session\'s commit. ' +
+            'Pin an explicit range: `<sha>^..<sha>`.',
+          seenErr,
+        );
+      } else {
+        // The argument span ends at the closing backtick of an inline-code
+        // span ("`git diff` shows ..."), at a redirection, or at a chain
+        // operator — trailing prose must never read as diff arguments.
+        const bareDiff = /\bgit\s+diff\b([^\u0060\n|;&<>]*)/.exec(seg);
+        if (bareDiff) {
+          const rest = bareDiff[1].trim();
+          // Bare or flags-only (no rev, range, or path): ambiguous between an
+          // uncommitted-tree check (legitimate) and a committed-change check
+          // (vacuously clean) — warn, never error.
+          if (rest === '' || /^-{1,2}[A-Za-z-]+$/.test(rest)) {
+            record(
+              warnings,
+              'R6',
+              '[plan-criteria R6] Bare `git diff` with no revision range produces no output for a COMMITTED ' +
+                'change, so the criterion passes vacuously. Pin an explicit range (`<sha>^..<sha>`) unless the ' +
+                'check is intentionally about the uncommitted tree.',
+              seenWarn,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return { errors, warnings };
+}
+
 // ─── Plan-task structure validation (#2444) ──────────────────────────────────
 
 /**
@@ -995,6 +1226,13 @@ function cmdVerifyPlanStructure(cwd: string, filePath: string, raw: boolean): vo
   const conflictScan = scanFileWideNegativeGateConflict(content);
   warnings.push(...conflictScan.warnings);
 
+  // #4024: quantitative-criteria trap shapes (exact grep -c counts, bulk
+  // observed-failing claims, $VAR command position, swallowed pipeline
+  // stages, wc string-equality, relative git anchors).
+  const quantScan = scanQuantitativeCriteria(content);
+  errors.push(...quantScan.errors);
+  warnings.push(...quantScan.warnings);
+
   output(
     {
       valid: errors.length === 0,
@@ -1200,15 +1438,22 @@ function cmdVerifyArtifacts(cwd: string, planFilePath: string, raw: boolean): vo
   }
 
   const passed = results.filter((r) => r['passed']).length;
+  // Positive-evidence floor (#3956): a non-empty artifacts block whose items are
+  // all bare strings / path-less objects is item-by-item skipped, leaving results
+  // empty; `passed === results.length` would then be `0 === 0` → a vacuous GREEN
+  // over zero checks. Require at least one checked artifact, mirroring the
+  // no-vacuous-pass rule at src/uat-predicate.cts. The fully-empty block is still
+  // caught earlier by the `artifacts.length === 0` guard and returns its error.
+  const allPassed = results.length > 0 && passed === results.length;
   output(
     {
-      all_passed: passed === results.length,
+      all_passed: allPassed,
       passed,
       total: results.length,
       artifacts: results,
     },
     raw,
-    passed === results.length ? 'valid' : 'invalid',
+    allPassed ? 'valid' : 'invalid',
   );
 }
 
@@ -1417,7 +1662,17 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
   // A pending link (from: file promised by a same-or-later-wave plan) is not a
   // hard failure — it should not count against the all_verified gate (#1202).
   const hardFailed = results.filter((r) => !r['verified'] && !r['pending']).length;
-  const allVerified = hardFailed === 0;
+  // Positive-evidence floor (#3956): an all-bare-string key_links block skips
+  // every item (only `typeof link === 'string'` items are continue-skipped
+  // above), leaving results empty; `hardFailed === 0` would then be a vacuous
+  // GREEN over zero checks. Require at least one checked link. (A `from:`-less
+  // object is NOT skipped, unlike a path-less object on the artifacts side — it
+  // falls through to a `verified: false` result and hard-fails, so it was never
+  // part of the vacuous-pass surface; only the all-bare-string case is.) A
+  // pending link IS pushed to results (with pending: true), so an all-pending
+  // block still satisfies results.length > 0 and its #1202 non-hard-failing
+  // semantics are unchanged — the floor only rejects the zero-result case.
+  const allVerified = results.length > 0 && hardFailed === 0;
   output(
     {
       all_verified: allVerified,
@@ -2059,7 +2314,16 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
       const m = line.match(/^([A-Z])\d*\t(.+?)(?:\t(.+))?$/);
       if (!m) continue;
       const status = m[1];
-      const file = m[3] || m[2];
+      // execGit sets no core.quotepath config, so git's default `true` applies:
+      // any path containing non-ASCII bytes (or `"`, `\`, control bytes) is
+      // C-quoted — `"docs/\350\256\276…/overview.md"`. Capturing that verbatim
+      // garbles affected_paths/elements and makes isPathMapped compare the
+      // quoted prefix (`"docs`) against STRUCTURE.md, misclassifying DOCUMENTED
+      // directories as new_dir (#4081). Decode with the single owner of the
+      // git C-quote seam (worktree-safety.cjs); a non-quoted value — the plain
+      // ASCII common case — passes through untouched. Both capture groups are
+      // decoded: R/C lines carry old AND new paths, either may be quoted.
+      const file = decodeGitQuotedPath(m[3] || m[2]);
       if (status === 'A' || status === 'R' || status === 'C') added.push(file);
       else if (status === 'M') modified.push(file);
       else if (status === 'D') deleted.push(file);
@@ -2124,6 +2388,7 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
 export = {
   scanNegativeGrepCommentEcho,
   scanFileWideNegativeGateConflict,
+  scanQuantitativeCriteria,
   cmdVerifySummary,
   verifySummaryCore,
   cmdVerifyPlanStructure,

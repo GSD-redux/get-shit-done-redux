@@ -75,6 +75,12 @@ interface QuickBatchItemInput {
   plannedFiles?: string[];
   directory?: string | null;
   worktree?: string | null;
+  /** #3677: the item's dispatched worktree path, when known at creation (normally set later via `updateBatchItems`). */
+  dispatchedWorktree?: string | null;
+  /** #3677: the item's dispatched worktree branch, when known at creation (normally set later via `updateBatchItems`). */
+  dispatchedBranch?: string | null;
+  /** #3677: the merge-base `dispatchedBranch` forked from, when known at creation (normally set later via `updateBatchItems`). */
+  dispatchedBase?: string | null;
 }
 
 type QuickBatchItemStatus = 'pending' | 'complete' | 'failed' | 'blocked';
@@ -91,6 +97,29 @@ interface QuickBatchItem {
   planned_files: string[];
   directory: string | null;
   worktree: string | null;
+  /**
+   * #3677: this item's dispatched worktree path, persisted durably (via
+   * `updateBatchItems`) once `worktree.create` succeeds — the crash-window
+   * duplicate-dispatch guard's recovery path. The ephemeral, per-process
+   * `$QUICK_BATCH_WORKTREE_MANIFEST` (a `mktemp` file, same shape
+   * `/gsd:quick`'s own `QUICK_WORKTREE_MANIFEST` uses) does NOT survive a
+   * coordinator crash/restart; this field is the durable fallback a
+   * RESUMED coordinator process reads when its own fresh ephemeral
+   * manifest has no entry for an item that finished executing in a PRIOR
+   * process (see `.gsd/phase/feat-3677-quick-batch-hardening-acceptance/40-design.md` §1).
+   *
+   * Deliberately a SEPARATE field from the pre-existing `worktree` above,
+   * not a reuse of it: `worktree`'s own `loadBatch` validation requires the
+   * path to exist on disk, which is fatal here — a successful merge
+   * legitimately REMOVES the worktree, and this field's whole purpose is to
+   * keep being readable (and clearable) after that removal. No existence
+   * check applies to this field or the two below.
+   */
+  dispatched_worktree: string | null;
+  /** #3677: this item's dispatched worktree branch — same durable-fallback purpose as `dispatched_worktree` above. */
+  dispatched_branch: string | null;
+  /** #3677: the merge-base `dispatched_branch` forked from — same durable-fallback purpose as `dispatched_worktree` above. */
+  dispatched_base: string | null;
   /** Dependency-DAG + file-overlap wave index, assigned once at `createBatch` time. */
   wave: number;
   /** Set by `completeQuickItem` alongside the STATE.md row it records. */
@@ -489,6 +518,9 @@ function createBatch(
         planned_files: (input.plannedFiles ?? []).map(posixNormalize),
         directory: input.directory ?? null,
         worktree: input.worktree ?? null,
+        dispatched_worktree: input.dispatchedWorktree ?? null,
+        dispatched_branch: input.dispatchedBranch ?? null,
+        dispatched_base: input.dispatchedBase ?? null,
         wave: -1,
         commit: null,
         failure_reason: null,
@@ -587,6 +619,18 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
     if (typeof it.worktree === 'string' && it.worktree !== '' && !fs.existsSync(it.worktree)) {
       return { ok: false, reason: `item ${it.quick_id} references a worktree that does not exist on disk: ${it.worktree}` };
     }
+    // #3677: dispatched_worktree/branch/base deliberately carry NO
+    // existence check (unlike `worktree` above) — they must stay readable
+    // after a legitimate post-merge worktree removal.
+    if (it.dispatched_worktree !== null && it.dispatched_worktree !== undefined && typeof it.dispatched_worktree !== 'string') {
+      return { ok: false, reason: `item ${it.quick_id} has an invalid dispatched_worktree field` };
+    }
+    if (it.dispatched_branch !== null && it.dispatched_branch !== undefined && typeof it.dispatched_branch !== 'string') {
+      return { ok: false, reason: `item ${it.quick_id} has an invalid dispatched_branch field` };
+    }
+    if (it.dispatched_base !== null && it.dispatched_base !== undefined && typeof it.dispatched_base !== 'string') {
+      return { ok: false, reason: `item ${it.quick_id} has an invalid dispatched_base field` };
+    }
     if (it.wave !== undefined && (typeof it.wave !== 'number' || !Number.isInteger(it.wave) || it.wave < 0)) {
       return { ok: false, reason: `item ${it.quick_id} has an invalid wave field` };
     }
@@ -605,6 +649,9 @@ function validateBatchSchema(parsed: unknown, batchId: string): Result<QuickBatc
       planned_files: it.planned_files,
       directory: typeof it.directory === 'string' ? it.directory : null,
       worktree: typeof it.worktree === 'string' ? it.worktree : null,
+      dispatched_worktree: typeof it.dispatched_worktree === 'string' ? it.dispatched_worktree : null,
+      dispatched_branch: typeof it.dispatched_branch === 'string' ? it.dispatched_branch : null,
+      dispatched_base: typeof it.dispatched_base === 'string' ? it.dispatched_base : null,
       wave: typeof it.wave === 'number' ? it.wave : -1,
       commit: typeof it.commit === 'string' ? it.commit : null,
       failure_reason: typeof it.failure_reason === 'string' ? it.failure_reason : null,
@@ -752,6 +799,110 @@ function completeQuickItem(
   }
 }
 
+// ─── Post-planning update (Phase 4, #3676) ──────────────────────────────────────
+
+/**
+ * One item's post-planning/post-dispatch update: `dependsOn` (already-
+ * canonical `quick_id` strings — planning happens after allocation, so
+ * these are never indices or `clientId`s), `plannedFiles` (normalized here,
+ * same as `createBatch`), and/or the #3677 durable worktree-recovery triple
+ * `dispatchedWorktree`/`dispatchedBranch`/`dispatchedBase` (persisted once
+ * `worktree.create` succeeds in Step 6, and explicitly cleared back to
+ * `null` once Step 7 removes the worktree on a successful merge — the
+ * crash-window duplicate-dispatch guard's fallback for a coordinator
+ * process that resumes without the prior process's ephemeral
+ * `$QUICK_BATCH_WORKTREE_MANIFEST`). Any field may be omitted to leave that
+ * item's existing value untouched; pass `null` explicitly to clear one.
+ */
+interface QuickBatchItemUpdate {
+  quickId: string;
+  dependsOn?: string[];
+  plannedFiles?: string[];
+  dispatchedWorktree?: string | null;
+  dispatchedBranch?: string | null;
+  dispatchedBase?: string | null;
+}
+
+/**
+ * Persist post-planning `depends_on`/`planned_files` updates and recompute
+ * `wave` for every item (Phase 4 / #3676, resolving design doc Open
+ * Question 1's "no mutator exists" gap as ONE additive export on this
+ * module — never a second, independent writer against the same
+ * `BATCH.json`). Runs inside ONE `withPlanningLock` transaction, reusing
+ * the exact `loadBatch` -> mutate -> `computeWaves` -> `platformWriteSync`
+ * shape `resumeBatch`/`completeQuickItem` already use.
+ *
+ * Fails closed WITHOUT persisting anything when an update references an
+ * unknown `quickId`, an unknown/self dependency, or the resulting graph has
+ * a cycle — `computeWaves` (reused, not duplicated) is the single source of
+ * truth for that validation, exactly as it is at `createBatch` time.
+ */
+function updateBatchItems(
+  cwd: string,
+  batchId: string,
+  updates: QuickBatchItemUpdate[],
+  options: { clock?: Clock } = {},
+): Result<{ manifest: QuickBatchManifest }> {
+  const clock = options.clock ?? realClock;
+  try {
+    return withPlanningLock(cwd, (): Result<{ manifest: QuickBatchManifest }> => {
+      const loaded = loadBatch(cwd, batchId);
+      if (!loaded.ok) return loaded;
+      const manifest = loaded.value;
+      const byId = new Map(manifest.items.map((it) => [it.quick_id, it]));
+
+      for (const update of updates) {
+        const item = byId.get(update.quickId);
+        if (!item) {
+          return { ok: false, reason: `batch ${batchId} has no item ${update.quickId}` };
+        }
+        if (update.dependsOn !== undefined) {
+          for (const dep of update.dependsOn) {
+            if (dep === update.quickId) {
+              return { ok: false, reason: `item ${update.quickId} declares a dependency on itself` };
+            }
+            if (!byId.has(dep)) {
+              return { ok: false, reason: `item ${update.quickId} declares an unknown dependency reference: ${JSON.stringify(dep)}` };
+            }
+          }
+          item.depends_on = [...update.dependsOn];
+        }
+        if (update.plannedFiles !== undefined) {
+          item.planned_files = update.plannedFiles.map(posixNormalize);
+        }
+        // #3677: durable worktree-recovery fields — persisted verbatim, no
+        // existence/shape validation (opaque identifiers this module never
+        // interprets, same as `commit`). Explicit `null` clears a field
+        // (post-merge); `undefined` leaves it untouched, same convention
+        // `dependsOn`/`plannedFiles` above already use.
+        if (update.dispatchedWorktree !== undefined) {
+          item.dispatched_worktree = update.dispatchedWorktree;
+        }
+        if (update.dispatchedBranch !== undefined) {
+          item.dispatched_branch = update.dispatchedBranch;
+        }
+        if (update.dispatchedBase !== undefined) {
+          item.dispatched_base = update.dispatchedBase;
+        }
+      }
+
+      const wavesResult = computeWaves(toWaveInput(manifest.items));
+      if (!wavesResult.ok) return wavesResult;
+      const waveOf = new Map<string, number>();
+      wavesResult.value.forEach((wave, idx) => {
+        for (const quickId of wave) waveOf.set(quickId, idx);
+      });
+      for (const it of manifest.items) it.wave = waveOf.get(it.quick_id) as number;
+
+      platformWriteSync(batchManifestPath(cwd, batchId), JSON.stringify(manifest, null, 2) + '\n');
+
+      return { ok: true, value: { manifest } };
+    }, clock);
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ─── Resume ──────────────────────────────────────────────────────────────────────
 
 interface QuickBatchTransition {
@@ -870,4 +1021,5 @@ export = {
   resumeBatch,
   completeQuickItem,
   hasQuickTaskRow,
+  updateBatchItems,
 };

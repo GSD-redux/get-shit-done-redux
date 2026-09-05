@@ -4,7 +4,8 @@
  * fast-check-setup.cjs
  *
  * Shared configuration for all property-based tests. Require this at the
- * top of every *.property.test.cjs file before any fc.assert() call.
+ * top of every test file that calls fc.assert() — property-dedicated
+ * (*.property.test.cjs) or not — before the first fc.assert().
  *
  * Settings:
  *   numRuns: 200  — enough to catch boundary bugs without slow CI

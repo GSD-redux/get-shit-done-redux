@@ -15,7 +15,16 @@
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
-const { test, describe } = require('node:test');
+const { test, describe, after } = require('node:test');
+const { cleanup } = require('./helpers.cjs'); // #4020: fixture-tree removal
+
+// #4020: remove every writeTmp tree once the suite ends (writeTmp callers hold
+// file paths, not dirs, so this is the only owner that can).
+after(() => {
+  for (const dir of SPEC_SECTION_TMP_DIRS.splice(0)) {
+    try { cleanup(dir); } catch { /* best-effort */ }
+  }
+});
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -27,8 +36,12 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const BUILT_SCRIPT = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'spec-section.cjs');
 const ss = require(BUILT_SCRIPT);
 
+// #4020: every writeTmp tree is tracked and removed after the suite — writeTmp
+// returns a FILE path, so callers had no dir handle to clean up themselves.
+const SPEC_SECTION_TMP_DIRS = [];
 function writeTmp(name, content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spec-section-'));
+  SPEC_SECTION_TMP_DIRS.push(dir);
   const p = path.join(dir, name);
   fs.writeFileSync(p, content);
   return p;

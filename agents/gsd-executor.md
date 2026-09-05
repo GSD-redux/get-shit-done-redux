@@ -399,26 +399,19 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run (MUST fail), commit: `test({phase}-{plan}): add failing test for [feature]`
+**2-4. RED → GREEN → REFACTOR (#3990: stated ONCE; #4267: cited correctly):** execute the
+cycle exactly as the canonical `gsd-core/references/tdd.md` reference specifies (embedded when
+TDD applies) — the "Red-Green-Refactor Cycle" section's commit-scope contract, the "Gate
+Enforcement Rules" section's "Fail-Fast Rules" subsection, and the "Error Handling" section.
+The reference is the single source; do not improvise a variant.
 
-**3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
+## Plan-Level TDD Gate Enforcement (type: tdd plans, #4269: stated ONCE)
 
-**4. REFACTOR (if needed):** Clean up, run tests (MUST still pass), commit only if changes: `refactor({phase}-{plan}): clean up [feature]`
-
-**Error handling:** RED doesn't fail ��� investigate. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
-
-## Plan-Level TDD Gate Enforcement (type: tdd plans)
-
-When the plan frontmatter has `type: tdd`, the entire plan follows the RED/GREEN/REFACTOR cycle as a single feature. Gate sequence is mandatory:
-
-**Fail-fast rule:** If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
-
-**Gate sequence validation:** After completing the plan, verify in git log:
-1. A `test(...)` commit exists (RED gate)
-2. A `feat(...)` commit exists after it (GREEN gate)
-3. Optionally a `refactor(...)` commit exists after GREEN (REFACTOR gate)
-
-If RED or GREEN gate commits are missing, add a warning to SUMMARY.md under a `## TDD Gate Compliance` section.
+When the plan frontmatter has `type: tdd`, the mandatory RED/GREEN/REFACTOR gate sequence,
+its fail-fast rules (including the #3770 INVALID_RED / intentional-RED-evidence requirement
+enforced via `gsd_run check tdd-red-evidence`), and the `## TDD Gate Compliance` SUMMARY.md contract are
+specified in the canonical `gsd-core/references/tdd.md` "Gate Enforcement Rules" section
+(embedded when TDD applies). The reference is the single source; do not improvise a variant.
 </tdd_execution>
 
 ## MVP+TDD Gate
@@ -537,6 +530,18 @@ git add src/types/user.ts
 ```bash
 gsd_run query commit-to-subrepo "{type}({phase}-{plan}): {concise task description}" --files file1 file2 ...
 ```
+**0c. Plan commit ledger (#3968, single-repo — before the first commit):**
+Each Bash call is a FRESH shell, so the ledger persists on disk like the #3097 sentinel above
+(a variable would be unset at SUMMARY time and `rev-list ..HEAD` would measure zero).
+Per-plan filename, so sequential plans cannot contaminate each other:
+```bash
+_GSD_LEDGER="$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}"
+[ -f "$_GSD_LEDGER" ] || git rev-parse HEAD > "$_GSD_LEDGER"
+```
+The SUMMARY's `commits:` is MEASURED from this ledger, the base recorded as
+`plan_head_before:` for `/gsd:verify-work`'s same-instrument check. Multi-repo keeps commit-to-subrepo
+JSON hashes instead.
+
 Returns JSON with per-repo commit hashes: `{ committed: true, repos: { "backend": { hash: "abc", files: [...] }, ... } }`. Record all hashes for SUMMARY.
 
 **Otherwise (standard single-repo):**
@@ -649,9 +654,21 @@ This file is the canonical output of this step. The orchestrator reads `.plannin
 actuals:
   tokens: 74000    # chars/4 over the files you actually changed
   tasks: 5         # tasks completed
-  commits: 7       # commits made
+  commits: 7       # MEASURED: git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD (#3968)
 ```
 These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
+
+**`commits:` is measured, never narrated (#3968).** At SUMMARY write, read the persisted
+ledger (protocol 0c — a fresh shell per Bash call; the base comes from disk):
+```bash
+PLAN_HEAD_BEFORE=$(cat "$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}")
+COMMITS_ACTUAL=$(git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD)
+```
+Write BOTH into the frontmatter — `commits: ${COMMITS_ACTUAL}`,
+`plan_head_before: ${PLAN_HEAD_BEFORE}` — including when the count is `0`.
+A `0` with code changes means the changes sit UNCOMMITTED: **HALT — do not write the
+SUMMARY with a narrated count**; surface `git status --short` in your return. A `0` with no
+code changes (docs-only) is legitimate. `/gsd:verify-work` flags mismatches as BLOCKER.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 

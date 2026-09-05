@@ -1620,6 +1620,50 @@ describe('verify artifacts command', () => {
       `Expected "No must_haves.artifacts" in error: ${output.error}`
     );
   });
+
+  // A non-empty artifacts block whose items are all bare strings (prose bullets
+  // with no `path:` key) is item-by-item skipped, leaving zero checked results.
+  // The verdict must not read GREEN over an empty result set — mirrors the
+  // positive-evidence floor at src/uat-predicate.cts (no vacuous pass). (#3956)
+  test('does not report a vacuous pass for an all-string artifacts block (#3956)', () => {
+    writePlanWithArtifacts(tmpDir, [
+      '- login flow implemented',
+      '- user can reset password',
+    ]);
+
+    const result = runGsdTools('verify artifacts .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 0, `Expected zero checked artifacts: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.all_passed,
+      false,
+      `Expected all_passed false over a zero-check block: ${JSON.stringify(output)}`
+    );
+  });
+
+  // A MIXED artifacts block (one bare-string prose bullet + one well-formed
+  // `path:` entry) must not be disturbed by the positive-evidence floor: the
+  // string is item-skipped, the real entry is checked, results.length === 1 > 0,
+  // and the verdict follows that single item — not a vacuous pass, not a false
+  // fail. Guards the floor against over-rejecting a partial block. (#3956)
+  test('mixed artifacts block: bare string is skipped, real entry drives a passing verdict (#3956)', () => {
+    writePlanWithArtifacts(tmpDir, [
+      '- login flow implemented',
+      '- path: "src/app.js"',
+      '  min_lines: 2',
+      '  contains: "export"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'app.js'), 'const x = 1;\nexport default x;\n');
+
+    const result = runGsdTools('verify artifacts .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 1, `Expected exactly the one checkable entry: ${JSON.stringify(output)}`);
+    assert.strictEqual(output.all_passed, true, `Expected all_passed true from the real entry: ${JSON.stringify(output)}`);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1849,6 +1893,51 @@ describe('verify key-links command', () => {
       output.error.includes('No must_haves.key_links'),
       `Expected "No must_haves.key_links" in error: ${output.error}`
     );
+  });
+
+  // A non-empty key_links block whose items are all bare strings (prose bullets
+  // with no `from:` key) is item-by-item skipped, leaving zero checked results.
+  // A pending link (a `from:` file promised by a same-or-later-wave plan) is a
+  // real parsed object that IS pushed to results, so this floor keys on the
+  // empty-result case only and does not disturb #1202 pending semantics. (#3956)
+  test('does not report a vacuous pass for an all-string key_links block (#3956)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- source calls the reset endpoint',
+      '- token is persisted',
+    ]);
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 0, `Expected zero checked links: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.all_verified,
+      false,
+      `Expected all_verified false over a zero-check block: ${JSON.stringify(output)}`
+    );
+  });
+
+  // A MIXED key_links block (one bare-string prose bullet + one well-formed
+  // `from:`/`to:` link) must not be disturbed by the positive-evidence floor:
+  // only the bare string is skipped, the real link is checked, results.length
+  // === 1 > 0, and the verdict follows that single link. (#3956)
+  test('mixed key_links block: bare string is skipped, real link drives a passing verdict (#3956)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- source calls the reset endpoint',
+      '- from: "src/a.js"',
+      '  to: "src/b.js"',
+      '  pattern: "import.*b"',
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), "import { x } from './b';\n");
+    fs.writeFileSync(path.join(tmpDir, 'src', 'b.js'), 'exports.x = 1;\n');
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 1, `Expected exactly the one checkable link: ${JSON.stringify(output)}`);
+    assert.strictEqual(output.all_verified, true, `Expected all_verified true from the real link: ${JSON.stringify(output)}`);
   });
 
   // ── #3493: path confinement — from:/to: are untrusted plan frontmatter and
@@ -4709,3 +4798,362 @@ describe('allowlist-syntax parity: doc marker == runtime marker', () => {
 });
   });
 }
+
+// ─── #4024: quantitative acceptance criteria measured shapes ─────────────────
+//
+// scanQuantitativeCriteria is the third plan-discipline scanner in the
+// cmdVerifyPlanStructure family (after #429's comment-echo gate and #968's
+// file-wide negative-gate conflict detector). It judges whether quantitative
+// acceptance criteria are WRITTEN in a shape that is provably a trap at HEAD —
+// an exact line-count out of `grep -c`, a bulk all-N observed-failing claim,
+// an unquoted $VAR in command position, a fallible command swallowed by a
+// non-final pipeline stage, `wc` output compared by string equality, or a
+// `git diff`/`git log` anchored to whatever commit happened to land.
+//
+// Every rule has a corrected arm asserted here: a rule that fires on its own
+// fix is a refusal, not a rule (issue #4024, "Every rule needs a corrected arm").
+
+const CRITERIA_PLAN_HEAD = [
+  '---',
+  'phase: 01-test',
+  'plan: 01',
+  'type: execute',
+  'wave: 1',
+  'depends_on: []',
+  'files_modified: [some/file.ts]',
+  'autonomous: true',
+  'must_haves:',
+  '  truths:',
+  '    - "something is true"',
+  '---',
+  '',
+];
+
+function makeCriteriaPlan(criteriaBody, taskVerify) {
+  return CRITERIA_PLAN_HEAD.concat([
+    '<acceptance_criteria>',
+    criteriaBody,
+    '</acceptance_criteria>',
+    '',
+    '<task type="auto">',
+    '  <name>Task 1: Do something</name>',
+    '  <files>some/file.ts</files>',
+    '  <action>Do the thing</action>',
+    `  <verify><automated>${taskVerify || 'echo ok'}</automated></verify>`,
+    '  <done>Thing is done</done>',
+    '</task>',
+  ]).join('\n');
+}
+
+describe('#4024: scanQuantitativeCriteria — pure unit tests', () => {
+  let scanQuantitativeCriteria;
+
+  // Self-contained bindings: this block sits below the file's fold-points,
+  // whose nested scopes own the earlier VERIFY_CJS consts and omit `before`
+  // from the top-level destructure. Bind both locally rather than relying
+  // on file position.
+  const before = require('node:test').before;
+  const VERIFY_CJS_LOCAL = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'verify.cjs');
+
+  before(() => {
+    const verify = require(VERIFY_CJS_LOCAL);
+    scanQuantitativeCriteria = verify.scanQuantitativeCriteria;
+  });
+
+  // Row 1 — issue reproduction shape 1 (phase 444 row 13)
+  test('#4024 R1: exact grep -c count (== 2) in acceptance_criteria is an error', () => {
+    const content = makeCriteriaPlan(
+      "  - `grep -c 'unassignedTabs' store.ts` returns exactly 2.",
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.errors.some(e => e.includes('[plan-criteria R1]')),
+      `expected an R1 error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Row 1 shell spelling of the same trap
+  test('#4024 R1: shell exact-count comparison (grep -c ... == 2) is an error', () => {
+    const content = makeCriteriaPlan(
+      '  - `grep -c \'unassignedTabs\' store.ts == 2` passes.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.errors.some(e => e.includes('[plan-criteria R1]')),
+      `expected an R1 error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Rows 4+5 — corrected arms: hedged counts, and the == 1 presence idiom
+  test('#4024 R1 corrected arm: hedged counts and == 1 / == 0 gates stay clean', () => {
+    for (const criterion of [
+      "`grep -c 'presentTok' f == 1` passes.",
+      "`grep -c 'absentTok' f == 0` passes.",
+      "`grep -c 'tok' f` returns at least 2.",
+      "`grep -c 'tok' f` is >= 1.",
+    ]) {
+      const result = scanQuantitativeCriteria(makeCriteriaPlan(`  - ${criterion}`, ''));
+      assert.deepStrictEqual(
+        result.errors.filter(e => e.includes('[plan-criteria R1]')),
+        [],
+        `hedged/presence criterion must stay clean: ${criterion}, got: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  // Row 2 — issue reproduction shape 2 (phase 444 row 6)
+  test('#4024 R2: bulk all-N observed-failing claim is an error', () => {
+    const content = makeCriteriaPlan(
+      '  - All seven tests were observed FAILING before the implementation existed.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.errors.some(e => e.includes('[plan-criteria R2]')),
+      `expected an R2 error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Row 3 — phase 444 row 14 spelling
+  test('#4024 R2: N-through-M observed-failing claim is an error', () => {
+    const content = makeCriteriaPlan(
+      '  - Tests 8 through 20 were each observed FAILING before their rule existed.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.errors.some(e => e.includes('[plan-criteria R2]')),
+      `expected an R2 error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Row 6 — corrected arm: the prescription row 6 itself recorded
+  test('#4024 R2 corrected arm: per-test discrimination wording stays clean', () => {
+    const content = makeCriteriaPlan(
+      '  - Each test discriminates: it fails before the change and passes after it.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.deepStrictEqual(result.errors, [],
+      `corrected wording must stay clean, got: ${JSON.stringify(result.errors)}`);
+    // Subset claims without the all-N / N-through-M subject are also clean
+    // (the corrected arm still says "were observed failing" about a subset).
+    const subset = scanQuantitativeCriteria(makeCriteriaPlan(
+      '  - The two tests that pin the rule were observed failing before the change.', ''));
+    assert.deepStrictEqual(subset.errors, [],
+      `subset wording must stay clean, got: ${JSON.stringify(subset.errors)}`);
+  });
+
+  // Row 7 — phase 443 row 8: $NOKEY in command position
+  test('#4024 R3: unquoted $VAR in command position is an error', () => {
+    const content = makeCriteriaPlan(
+      '  - `$NOKEY npx tsx scripts/check.ts` exits 0 (NOKEY="env -u KEY").',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.errors.some(e => e.includes('[plan-criteria R3]')),
+      `expected an R3 error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Row 8 — corrected arm: prefix written inline
+  test('#4024 R3 corrected arm: inline env prefix stays clean', () => {
+    const content = makeCriteriaPlan(
+      '  - `env -u KEY npx tsx scripts/check.ts` exits 0.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.deepStrictEqual(result.errors, [],
+      `inline prefix must stay clean, got: ${JSON.stringify(result.errors)}`);
+  });
+
+  // Row 9 — phase 443 rows 6/9: fallible git swallowed by a non-final stage
+  test('#4024 R4: fallible git in non-final pipeline stage warns (never errors)', () => {
+    const content = makeCriteriaPlan(
+      '  - `git grep -l "pattern" | wc -l` is 0.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.warnings.some(w => w.includes('[plan-criteria R4]')),
+      `expected an R4 warning, got: ${JSON.stringify(result.warnings)}`,
+    );
+    assert.deepStrictEqual(result.errors, [],
+      `R4 is warn-only, got errors: ${JSON.stringify(result.errors)}`);
+  });
+
+  // Row 10 — phase 443 row 24: BSD wc pads, grep -x 0 never matches
+  test('#4024 R5: wc output compared by grep -x string equality is an error', () => {
+    const content = makeCriteriaPlan(
+      '  - `git status --porcelain | wc -l | grep -x 0` succeeds.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(
+      result.errors.some(e => e.includes('[plan-criteria R5]')),
+      `expected an R5 error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Row 11 — corrected arm: numeric comparison
+  test('#4024 R5 corrected arm: numeric test on captured count stays clean', () => {
+    const content = makeCriteriaPlan(
+      '  - `n=$(git status --porcelain | wc -l); test "$n" -eq 0` succeeds.',
+      '',
+    );
+    const result = scanQuantitativeCriteria(content);
+    assert.deepStrictEqual(result.errors, [],
+      `numeric test must stay clean, got: ${JSON.stringify(result.errors)}`);
+  });
+
+  // Row 12 — phase 443 row 25: HEAD~1 names whatever landed last
+  test('#4024 R6: relative HEAD~N anchor is an error', () => {
+    for (const criterion of [
+      '`git diff HEAD~1 --stat` shows no deletions.',
+      '`git log HEAD~2..HEAD --oneline` lists only this session\'s commits.',
+    ]) {
+      const result = scanQuantitativeCriteria(makeCriteriaPlan(`  - ${criterion}`, ''));
+      assert.ok(
+        result.errors.some(e => e.includes('[plan-criteria R6]')),
+        `expected an R6 error for: ${criterion}, got: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  // Rows 13+14 — corrected arm (explicit range) and ambiguous shape (bare diff)
+  test('#4024 R6 corrected arm + bare-diff warning', () => {
+    const fixed = scanQuantitativeCriteria(makeCriteriaPlan(
+      '  - `git diff abc1234^..abc1234 --stat` shows no deletions.', ''));
+    assert.deepStrictEqual(fixed.errors.filter(e => e.includes('[plan-criteria R6]')), [],
+      `explicit sha range must stay clean, got: ${JSON.stringify(fixed.errors)}`);
+
+    const bare = scanQuantitativeCriteria(makeCriteriaPlan(
+      '  - `git diff` shows no deletions.', ''));
+    assert.ok(
+      bare.warnings.some(w => w.includes('[plan-criteria R6]')),
+      `bare git diff must warn, got: ${JSON.stringify(bare.warnings)}`,
+    );
+    assert.deepStrictEqual(bare.errors, [],
+      `bare git diff is warn-only, got: ${JSON.stringify(bare.errors)}`);
+  });
+
+  // Rows 15+16 — the legitimate exit
+  test('#4024 allow marker suppresses the flagged rule; empty reason is not honored', () => {
+    const flagged = makeCriteriaPlan(
+      '  - `grep -c \'unassignedTabs\' store.ts` returns exactly 2.',
+      '',
+    );
+    const withMarker = flagged.replace(
+      '<acceptance_criteria>',
+      '<acceptance_criteria>\n  <!-- plan-criteria-allow: R1 - store.ts line count is pinned by an adjacent grep -n proof -->',
+    );
+    const r1 = scanQuantitativeCriteria(withMarker);
+    assert.deepStrictEqual(r1.errors, [],
+      `allow marker with a reason must suppress R1, got: ${JSON.stringify(r1.errors)}`);
+
+    const emptyReason = flagged.replace(
+      '<acceptance_criteria>',
+      '<acceptance_criteria>\n  <!-- plan-criteria-allow: R1 - -->',
+    );
+    const r2 = scanQuantitativeCriteria(emptyReason);
+    assert.ok(
+      r2.errors.some(e => e.includes('[plan-criteria R1]')),
+      `empty reason must NOT suppress R1, got: ${JSON.stringify(r2.errors)}`,
+    );
+  });
+
+  // Rows 17+18 — fail open / negative space
+  test('#4024 fail-open: text outside criteria zones and plans without criteria are silent', () => {
+    // Zone-scope proof: an <action>-only trap must not be judged.
+    const actionOnly = CRITERIA_PLAN_HEAD.concat([
+      '<task type="auto">',
+      '  <name>Task 1</name>',
+      '  <files>f</files>',
+      '  <action>Run `git diff HEAD~1` to inspect the previous session.</action>',
+      '  <verify><automated>echo ok</automated></verify>',
+      '  <done>Done</done>',
+      '</task>',
+    ]).join('\n');
+    const rAction = scanQuantitativeCriteria(actionOnly);
+    assert.deepStrictEqual(rAction.errors, [],
+      `<action>-only text is not judged, got: ${JSON.stringify(rAction.errors)}`);
+    assert.deepStrictEqual(rAction.warnings, [],
+      `<action>-only text yields no warnings, got: ${JSON.stringify(rAction.warnings)}`);
+
+    const noCriteria = scanQuantitativeCriteria(validPlanContent());
+    assert.deepStrictEqual(noCriteria.errors, []);
+    assert.deepStrictEqual(noCriteria.warnings, []);
+  });
+
+  // Row 19 — normalization: CRLF + entity-escaped chains
+  test('#4024 normalization: CRLF and &amp;&amp; chains are read decoded', () => {
+    const content = makeCriteriaPlan(
+      "  - `grep -c 'a' f == 2 &amp;&amp; git diff HEAD~1 --stat` passes.",
+      '',
+    ).replace(/\n/g, '\r\n');
+    const result = scanQuantitativeCriteria(content);
+    assert.ok(result.errors.some(e => e.includes('[plan-criteria R1]')),
+      `entity-escaped chain must still trip R1, got: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.errors.some(e => e.includes('[plan-criteria R6]')),
+      `entity-escaped chain must still trip R6, got: ${JSON.stringify(result.errors)}`);
+  });
+});
+
+describe('#4024: verify plan-structure — quantitative criteria gate (e2e)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-test'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writePlan(content) {
+    const planPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-PLAN.md');
+    fs.writeFileSync(planPath, content);
+    return 'verify plan-structure .planning/phases/01-test/01-01-PLAN.md';
+  }
+
+  // Row 20 — the issue's reproduction, verbatim shapes
+  test('#4024 e2e: issue reproduction plan is invalid', () => {
+    const cmd = writePlan(makeCriteriaPlan([
+      '  - `grep -c \'someIdentifier\' src/some/file.ts` returns exactly 2.',
+      '  - All seven tests were observed FAILING before the implementation existed.',
+    ].join('\n'), ''));
+    const result = runGsdTools(cmd, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.valid, false, `trap criteria must invalidate the plan, errors: ${JSON.stringify(out.errors)}`);
+    assert.ok(out.errors.length >= 2, `both shapes must be flagged, got: ${JSON.stringify(out.errors)}`);
+  });
+
+  test('#4024 e2e: corrected-arm plan stays valid', () => {
+    const cmd = writePlan(makeCriteriaPlan([
+      '  - `grep -c \'presentTok\' f == 1` passes.',
+      '  - Each test discriminates: it fails before the change and passes after it.',
+    ].join('\n'), ''));
+    const result = runGsdTools(cmd, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.valid, true, `corrected plan must stay valid, errors: ${JSON.stringify(out.errors)}`);
+    assert.deepStrictEqual(out.errors, []);
+  });
+
+  test('#4024 e2e: allow marker restores validity', () => {
+    const cmd = writePlan(makeCriteriaPlan([
+      '  <!-- plan-criteria-allow: R1 - count is pinned by an adjacent grep -n proof -->',
+      '  - `grep -c \'someIdentifier\' src/some/file.ts` returns exactly 2.',
+    ].join('\n'), ''));
+    const result = runGsdTools(cmd, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.valid, true, `allow marker must restore validity, errors: ${JSON.stringify(out.errors)}`);
+    assert.deepStrictEqual(out.errors, []);
+  });
+});
