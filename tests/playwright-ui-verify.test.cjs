@@ -166,10 +166,15 @@ function guardedLines(lines) {
 // why the exclusion lives here once rather than in each caller.
 // logicalLines first: the invocation spans four physical lines, so its flags are only all on one
 // line after continuations are joined.
+// Comments are dropped from the PHYSICAL lines, BEFORE continuations are joined. Doing it after
+// is a false clean: a comment ending in a backslash splices the following real invocation onto
+// itself, the joined line then starts with `#`, and the invocation disappears from the set — so
+// the assertions over it pass on an empty selection. Filtering first makes that shape impossible
+// rather than merely unlikely. (A trailing comment on a real code line is still selected; that
+// direction over-fires, which is the safe one.)
 function captureInvocations(lines) {
-  return logicalLines(lines)
+  return logicalLines(lines.filter((l) => !/^[\t ]*#/.test(l)))
     .map((l) => l.trim())
-    .filter((l) => !l.startsWith('#'))
     .filter((l) => l.includes('playwright screenshot'));
 }
 
@@ -360,14 +365,23 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // surface outside the block must CONSUME the variable — a status computed and never
     // rendered is not a surface that can express anything.
     const block = screenshotApproachBlock();
-    const content = fs.readFileSync(AUDITOR_PATH, 'utf-8');
     assert.ok(
       /CAPTURE_STATUS=["']?partially captured/i.test(block),
       'the capture block must PRODUCE a partial status — full/none alone cannot describe 2 of 3'
     );
+    // Name the consuming surface POSITIVELY rather than subtracting the block from the file.
+    // `content.replace(block, '')` was two bugs in one: String#replace with a string argument
+    // drops only the FIRST occurrence, and the block is joined with '\n' by splitLines() while
+    // readFileSync returns the file's own '\r\n' on a Windows checkout — so the match fails
+    // outright, the block stays in the haystack, and the assertion is then satisfied by the
+    // block's own text. That is a false clean, and CRLF-fragility is a class this repo lints
+    // for (local/no-crlf-fragile-split). Assert on the Screenshots report field itself.
+    const surfaces = splitLines(fs.readFileSync(AUDITOR_PATH, 'utf-8'))
+      .filter((l) => /^\*\*Screenshots:\*\*/.test(l.trim()));
+    assert.ok(surfaces.length > 0, 'expected a Screenshots report field in the agent output template');
     assert.ok(
-      /\$CAPTURE_STATUS/.test(content.replace(block, '')),
-      'a report surface outside the block must render $CAPTURE_STATUS, or the status is computed and dropped'
+      surfaces.every((l) => l.includes('$CAPTURE_STATUS')),
+      'every Screenshots report field must render $CAPTURE_STATUS, or the status is computed and dropped'
     );
   });
 });
