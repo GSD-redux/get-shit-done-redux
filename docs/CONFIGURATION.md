@@ -527,7 +527,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.plan_bounce_passes` | number | `2` | Number of sequential bounce passes to run. Each pass feeds the previous pass's output back into the validator. Higher values increase rigor at the cost of latency. Added in v1.36 |
 | `workflow.post_planning_gaps` | boolean | `true` | Unified post-planning gap report (#2493). After all plans are generated and committed, scans REQUIREMENTS.md and CONTEXT.md `<decisions>` against every PLAN.md in the phase directory, then prints one `Source \| Item \| Status` table. Word-boundary matching (REQ-1 vs REQ-10) and natural sort (REQ-02 before REQ-10). Non-blocking — informational report only. Set to `false` to skip Step 13e of plan-phase. |
 | `workflow.plan_review_convergence` | boolean | `false` | Enable the `/gsd-plan-review-convergence` command. Disabled by default — the command exits with an enable instruction when this key is `false`. The command automates the manual plan→review→replan loop: it spawns configured reviewers (Codex, Gemini, Claude, OpenCode, Ollama, LM Studio, llama.cpp), counts unresolved HIGH concerns and actionable MEDIUM/LOW findings via the CYCLE_SUMMARY contract, replans with `--reviews` feedback, and repeats until converged or max cycles reached. Enable with `gsd config-set workflow.plan_review_convergence true`. Added in v1.39 |
-| `workflow.plan_chunked` | boolean | `false` | Enable chunked planning mode. When `true` (or when `--chunked` flag is passed to `/gsd-plan-phase`), the orchestrator splits the single long-lived planner Task into a short outline Task followed by N short per-plan Tasks (~3-5 min each). Each plan is committed individually for crash resilience. If a Task hangs and the terminal is force-killed, rerunning with `--chunked` resumes from the last completed plan. Particularly useful on Windows where long-lived Tasks may hang on stdio. Added in v1.38 |
+| `workflow.plan_chunked` | boolean | `false` | Enable chunked planning mode. When `true` (or when `--chunked` flag is passed to `/gsd-plan-phase`), the orchestrator splits the single long-lived planner Task into a short outline Task followed by N short per-plan Tasks (~3-5 min each). Each plan is committed individually for crash resilience. If a Task hangs and the terminal is force-killed, rerunning with `--chunked` resumes from the last completed plan. Particularly useful on Windows where long-lived Tasks may hang on stdio. See [`planning.chunked_parallel`](#planning-settings) to dispatch the per-plan Tasks concurrently instead of one at a time. Added in v1.38 |
 | `workflow.code_review_command` | string | (none) | Shell command for external code review integration in `/gsd-ship`. Receives changed file paths via stdin. Non-zero exit blocks the ship workflow. Added in v1.36 |
 | `workflow.tdd_mode` | boolean | `false` | Enable TDD pipeline as a first-class execution mode. When `true`, the planner aggressively applies `type: tdd` to eligible tasks (business logic, APIs, validations, algorithms) and the executor enforces RED/GREEN/REFACTOR gate sequence. An end-of-phase collaborative review checkpoint verifies gate compliance. Added in v1.36 |
 | `workflow.mvp_mode` | boolean | `false` | Persist the MVP-mode flag in config so every phase defaults to MVP framing without requiring `--mvp` on the CLI. Resolved via the precedence chain: `--mvp` CLI flag → ROADMAP.md `**Mode:** mvp` field → this config value → `false`. When `true`, the planner, executor, verifier, and discovery surfaces treat the phase as an MVP vertical slice (UI → API → DB) of one user-visible capability instead of a horizontal layer. |
@@ -664,6 +664,47 @@ The following combinations of `mode`, `granularity`, `model_profile`, and workfl
 | `planning.pr_strict` | boolean | `false` | Filter mode for [`/gsd-pr-branch`](COMMANDS.md#gsd-pr-branch). `false` — the generated PR branch keeps structural planning state (`STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**`) and drops the transient subdirectories. `true` — every `.planning/` path is dropped, structural files included, and a commit is carried over only when it touches at least one file outside `.planning/`. Applies to the root repository's PR branch only; `planning.sub_repos` companion branches are unaffected |
 | `planning.search_gitignored` | boolean | `false` | Add `--no-ignore` to broad searches to include `.planning/` |
 | `planning.sub_repos` | array of strings | `[]` | Paths of nested sub-repos relative to the project root. When set, GSD-aware tooling scopes phase-lookup, path-resolution, and commit operations per sub-repo instead of treating the outer repo as a monorepo |
+| `planning.chunked_parallel` | boolean | `false` | Opt-in concurrent per-plan planners in chunked mode. See [Concurrent per-plan planners in chunked mode](#concurrent-per-plan-planners-in-chunked-mode-3777) below. |
+
+### Concurrent per-plan planners in chunked mode (#3777)
+
+[`workflow.plan_chunked`](#workflow-toggles) splits a phase's planning into a short outline Task
+followed by N short per-plan Tasks, committing each plan individually for crash resilience. By
+default those per-plan Tasks still run **one at a time** — a phase with 6 plans at ~3-5 minutes
+each pays roughly the sum of their runtimes, even though each plan writes a disjoint
+`{plan_id}-PLAN.md` file with no data dependency on its siblings.
+
+```json
+{
+  "planning": {
+    "chunked_parallel": true
+  }
+}
+```
+
+```bash
+gsd config-set planning.chunked_parallel true
+/gsd-plan-phase 3 --chunked
+```
+
+When `true`, the runnable per-plan planners that share one outline Wave are dispatched together
+(one message, `run_in_background=true` on each) instead of one at a time; a later Wave still waits
+for every plan in the current Wave to be verified on disk and committed, honoring the outline's
+Wave column as the schedule. `Depends On` itself is not separately parsed — it is expected to name
+only a plan in an earlier Wave, so batching strictly by Wave already respects it; a same-Wave
+`Depends On` would be a defect in the outline, not something this dispatch mechanism detects.
+
+**This is gated, not unconditional.** Concurrent dispatch only fires when the runtime's negotiated
+dispatch capacity (`gsd-tools query dispatch-capacity`, #3673) is greater than `1`. A runtime that
+declares no `maxConcurrency` — most non-Claude runtimes today — resolves to the fail-closed floor
+of `1` and stays serial regardless of this setting, exactly like the pre-#3777 loop. Claude Code
+declares a capacity of 20, so this setting has an effect there out of the box.
+
+**Trade-offs accepted by this setting.** Per-plan commits interleave within a batch instead of
+landing strictly one-at-a-time, and a stalled plan's retry no longer blocks sibling plans in the
+same batch that already completed and committed — a mid-batch interrupt leaves whichever plans
+finished first already committed, rather than stopping after the last plan in strict outline
+order. Default `false` keeps the original serial behavior byte-for-byte.
 
 ### Project-Root Resolution in Multi-Repo Workspaces
 
