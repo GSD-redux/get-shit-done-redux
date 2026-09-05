@@ -182,6 +182,12 @@ describe('Hermes Agent: installRuntimeArtifacts', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-hermes-test-'));
+    // Hermes consumes commands and agents from one source provider. Keep the
+    // compatibility-marker fixture complete even when an assertion exercises
+    // only its command-to-skill output.
+    const agentsDir = path.join(tmpDir, 'src', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'fixture-agent.md'), '# Fixture agent\n');
   });
 
   afterEach(() => {
@@ -944,7 +950,7 @@ describe('#2284 fail-closed role resolution', () => {
 
       assert.throws(
         () => install(true, 'hermes'),
-        /could not resolve|refusing to install/i,
+        /could not resolve|refusing to install|source is unavailable or incomplete/i,
         'a real hermes install must fail closed, never silently install workflows with unverifiable role references',
       );
     });

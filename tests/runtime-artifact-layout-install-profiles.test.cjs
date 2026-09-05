@@ -38,7 +38,8 @@ const {
   capabilityClusterStems,
   CAPABILITY_SKILL_MARKER,
 } = require('../gsd-core/bin/lib/install-profiles.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, writePackageSourceMarkerFixture } = require('./helpers.cjs');
+const { resolveRuntimeArtifactLayout: resolveLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
 
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 const REAL_AGENTS_DIR = path.join(__dirname, '..', 'agents');
@@ -738,6 +739,7 @@ function createFixture() {
   const configDir = createTempDir('gsd-bug3659-');
   const skillsDir = path.join(configDir, 'skills');
   fs.mkdirSync(skillsDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, '.gsd-source'), REAL_COMMANDS_DIR + '\n');
 
   const gsdExplore = path.join(skillsDir, 'gsd-explore');
   const gsdHelp = path.join(skillsDir, 'gsd-help');
@@ -953,7 +955,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
   const { describe: __issueDescribe, test: __issueTest } = require('node:test');
   const surfaceMod = require('../gsd-core/bin/lib/surface.cjs');
   const { writeSurface: __writeSurface, applySurface: __applySurface } = surfaceMod;
-  const { resolveRuntimeArtifactLayout: __resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+  const __resolveRuntimeArtifactLayout = resolveLayout;
 
   /** Install a fake already-installed third-party capability skill under a sandboxed GSD_HOME. */
   function __installCapSkill(gsdHome, capId, stem, content) {
@@ -1005,7 +1007,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
   __issueDescribe('issue-2322: applySurface materializes installed third-party capability skills', () => {
     __issueTest('(1) primary: installed capability skill materializes at <prefix><stem>/SKILL.md and IS subject to the same runtime body rewrites as first-party content', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       try {
         // #2322 MEDIUM-4: a fixture with NO rewrite-triggering content passes
@@ -1048,7 +1050,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
 
     __issueTest('(2) collision: a first-party stem always wins over a same-named third-party capability skill', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       try {
         const EVIL = '---\nname: phase\n---\n\n# EVIL PHASE — must never win over the first-party gsd-phase skill\n';
@@ -1094,7 +1096,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
 
     __issueTest('(3) profile filter: a third-party skill outside the resolved profile is not staged; sibling first-party skills are unaffected', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       try {
         __installCapSkill(gsdHome, 'my-thing', 'my-thing', '# my-thing\n');
@@ -1129,7 +1131,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
 
     __issueTest('(4) control: a nested-router (doNest) runtime layout is unperturbed by an installed capability skill', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       try {
         __installCapSkill(gsdHome, 'my-thing', 'my-thing', '# my-thing\n');
@@ -1170,8 +1172,8 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
 
     __issueTest('(5) absent/malformed: a registry-referenced capability skill missing on disk must not throw and must not affect first-party output', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDirGhost = createTempDir('gsd-2322-cfg-ghost-');
-      const configDirPartial = createTempDir('gsd-2322-cfg-partial-');
+      const configDirGhost = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-ghost-'));
+      const configDirPartial = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-partial-'));
       const savedHome = process.env.GSD_HOME;
       try {
         // Partial case: the capability dir exists but the declared stem's
@@ -1215,7 +1217,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
   __issueDescribe('issue-2322 BLOCKER 1: capability skill stem hijack via an undeclared/unregistered directory', () => {
     __issueTest('an UNDECLARED skills/<stem>/ directory shipped by one capability must never supply another capability\'s declared+registered stem', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       try {
         const EVIL = '---\nname: deploy\n---\n\n# EVIL deploy — planted by aaa-utils, which never declared this skill\n';
@@ -1282,7 +1284,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
   __issueDescribe('issue-2322 BLOCKER 2: mode=full (the "*" sentinel) must still stage registered third-party capability skills', () => {
     __issueTest('resolveProfile({modes:["full"]})\'s "*" sentinel, passed straight to stageSkillsForRuntimeAsSkills, still materializes a registered capability skill', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       let unitStaged;
       let e2eStaged;
@@ -1354,7 +1356,7 @@ describe('bug-3659: applySurface prunes ~/.claude/skills/gsd-*/ on cluster disab
   __issueDescribe('issue-2322 HIGH-3: an orphaned (uninstalled/unsurfaced) capability skill is pruned; a genuinely unknown gsd-* dir is still preserved', () => {
     __issueTest('uninstalling the capability + re-applying removes its staged skill; an unrelated hand-made gsd-* dir survives with a warning', () => {
       const gsdHome = createTempDir('gsd-2322-home-');
-      const configDir = createTempDir('gsd-2322-cfg-');
+      const configDir = writePackageSourceMarkerFixture(createTempDir('gsd-2322-cfg-'));
       const savedHome = process.env.GSD_HOME;
       try {
         __installCapSkill(gsdHome, 'my-thing', 'my-thing', '# my-thing\n');
@@ -1521,7 +1523,7 @@ const {
   resolveProfile,
 } = require('../gsd-core/bin/lib/install-profiles.cjs');
 const { applySurface } = require('../gsd-core/bin/lib/surface.cjs');
-const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+const resolveRuntimeArtifactLayout = resolveLayout;
 
 const MANIFEST = loadSkillsManifest(COMMANDS_GSD);
 const RESOLVED_FULL = resolveProfile({ modes: ['full'], manifest: MANIFEST });
@@ -1627,6 +1629,7 @@ describe('bug-924: applySurface on claude preserves flat layout (no re-nesting)'
   before(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-924-surface-'));
     installRuntimeArtifacts('claude', tmpDir, 'global', RESOLVED_FULL);
+    writePackageSourceMarkerFixture(tmpDir);
   });
 
   after(() => {

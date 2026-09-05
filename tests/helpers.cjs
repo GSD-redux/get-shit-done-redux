@@ -1173,7 +1173,16 @@ function sandboxHome(t, dir) {
   });
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow, captureFdSync };
+function writePackageSourceMarkerFixture(configDir) {
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, '.gsd-source'),
+    path.join(__dirname, '..', 'commands', 'gsd') + '\n',
+  );
+  return configDir;
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, writePackageSourceMarkerFixture, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow, captureFdSync };
 
 // Lazy, for the reason builtLib() is lazy: reading either of these is what
 // forces the built-lib require, so a test file that needs neither can still

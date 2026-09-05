@@ -185,11 +185,10 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
     resolveAttribution,
   };
 
-  // ADR-1235 §1: build agentCtx once per plan so agents kind entries can apply
-  // the CORRECT pre-converter cross-cutting (path rewrites → attribution → converter
-  // → normalize). This mirrors the exact per-file order in the inline agent loop
-  // in bin/install.js (lines 9330-9415). agentCtx is passed as the second arg
-  // to kind.stage() for agents kind entries with a converter (convertedAgentsKind).
+  // ADR-1235 §1: build the staging context once per plan. Agent kinds apply
+  // the CORRECT pre-converter cross-cutting (path rewrites → attribution →
+  // converter → normalize). This
+  // mirrors the exact per-file order in the former inline agent loop.
   // NO _stampNonClaudeRuntimeDefaults — agents are NOT stamped in the inline loop.
   const os = _require('node:os') as typeof import('node:os');
   const { posixNormalize } = _require('./shell-command-projection.cjs') as { posixNormalize: (p: string) => string };
@@ -214,18 +213,12 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
     targetDir: layout.configDir,
     projectDir: projectDir ?? layout.configDir,
   };
-
   for (const kind of layout.kinds) {
     let stagedDir: string;
     try {
-      if (kind.kind === 'agents' || kind.kind === 'kimi-agents') {
-        // ADR-1235 §1: pass agentCtx so stageAgentsForRuntimeWithConverter applies
-        // the full inline-loop order: pathRewrites → attribution → converter → normalize.
-        // The cross-cutting is now PRE-converter (inside staging), not POST.
-        stagedDir = kind.stage(resolvedProfile, agentCtx);
-      } else {
-        stagedDir = kind.stage(resolvedProfile);
-      }
+      // Agent kinds use the context for their pre-converter cross-cutting
+      // sequence; other kinds ignore it.
+      stagedDir = kind.stage(resolvedProfile, agentCtx);
     } catch (err) {
       return { ok: false, kind: 'stage_failed', message: errorMessage(err), cleanupDirs, failedKind: kind.kind };
     }

@@ -253,7 +253,8 @@ test('Kimi neutralizes ~/.claude/gsd-core references instead of leaking a repoin
   // to see the ORIGINAL `~/.claude/gsd-core` text; kimi/kimi-code capability.json
   // now opt out via hostBehaviors.noPathRewrite so that still holds.
   const install = installRuntime(t, 'kimi', { scope: 'global' });
-  const artifacts = emittedAgentArtifacts(install, 'gsd-executor');
+  // Inspect generated prompts, not the installation-owned raw source corpus.
+  const artifacts = emittedAgentArtifacts(install, 'gsd-executor', path.join(install.configDir, 'agents'));
   assert.ok(artifacts.some((artifact) => artifact.includes('GSD core')),
     'a ~/.claude/gsd-core reference must neutralize to prose, not a repointed Kimi path');
   assert.ok(artifacts.every((artifact) =>

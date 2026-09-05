@@ -136,6 +136,12 @@ describe('Qwen Code: installRuntimeArtifacts', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-qwen-test-'));
+    // Qwen's global layout consumes commands and agents from one provider.
+    // Keep this legacy-marker fixture complete even though these assertions
+    // exercise only the command-to-skill half of the install.
+    const agentsDir = path.join(tmpDir, 'src', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'fixture-agent.md'), '# Fixture agent\n');
   });
 
   afterEach(() => {

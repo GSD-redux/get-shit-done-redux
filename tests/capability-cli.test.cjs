@@ -1145,6 +1145,10 @@ describe('issue-2322: capability set --runtime materializes an installed third-p
 
     // Step 3 of the issue repro: capability set my-thing --runtime claude --scope global
     const rcd = tmpDir('cap-cli-rcd-');
+    // A global materialization needs one complete Runtime Surface provider.
+    // This fixture exercises the supported legacy compatibility-marker path;
+    // source-less global trees now fail closed and must be upgraded first.
+    fs.writeFileSync(path.join(rcd, '.gsd-source'), path.join(__dirname, '..', 'commands', 'gsd') + '\n');
     const setResult = runGsdTools(
       ['capability', 'set', 'my-thing', '--runtime', 'claude', '--scope', 'global', '--config-dir', rcd, '--raw'],
       cwd,

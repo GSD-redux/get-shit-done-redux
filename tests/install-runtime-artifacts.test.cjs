@@ -29,7 +29,7 @@ const os = require('node:os');
 const espree = require('espree');
 const { splitLines, joinLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, writePackageSourceMarkerFixture } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const {
@@ -170,6 +170,299 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     );
     assert.ok(!fs.existsSync(cleanupDir), 'failure cleanup dir must be removed');
   });
+});
+
+describe('installRuntimeArtifacts — durable Runtime Surface corpus (#4132)', () => {
+  test('#4132: provisioning refuses a gsd-core ancestor symlink that escapes configDir', (t) => {
+    const root = createTempDir('gsd-corpus-parent-symlink-');
+    const configDir = path.join(root, 'config');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(configDir);
+    fs.mkdirSync(outside);
+    t.after(() => cleanup(root));
+    try {
+      fs.symlinkSync(outside, path.join(configDir, 'gsd-core'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      t.skip(`directory symlink creation unavailable: ${error.code || error.message}`);
+      return;
+    }
+
+    assert.throws(
+      () => installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE),
+      /symlink|refusing/i,
+    );
+    assert.equal(fs.existsSync(path.join(outside, 'commands')), false, 'commands must not escape configDir');
+    assert.equal(fs.existsSync(path.join(outside, 'agents')), false, 'agents must not escape configDir');
+  });
+
+  test('#4132: provisioning does not follow a compatibility-marker symlink outside configDir', (t) => {
+    const root = createTempDir('gsd-corpus-marker-symlink-');
+    const configDir = path.join(root, '.claude');
+    const outsideMarker = path.join(root, 'outside-marker');
+    const outsideCheckout = path.join(root, 'outside-checkout');
+    fs.mkdirSync(configDir);
+    fs.cpSync(path.join(__dirname, '..', 'commands'), path.join(outsideCheckout, 'commands'), { recursive: true });
+    fs.cpSync(path.join(__dirname, '..', 'agents'), path.join(outsideCheckout, 'agents'), { recursive: true });
+    fs.appendFileSync(path.join(outsideCheckout, 'commands', 'gsd', 'help.md'), '\nMARKER_SYMLINK_SOURCE\n');
+    const outsideMarkerBytes = path.join(outsideCheckout, 'commands', 'gsd') + '\n';
+    fs.writeFileSync(outsideMarker, outsideMarkerBytes);
+    t.after(() => cleanup(root));
+    try {
+      fs.symlinkSync(outsideMarker, path.join(configDir, '.gsd-source'), 'file');
+    } catch (error) {
+      t.skip(`file symlink creation unavailable: ${error.code || error.message}`);
+      return;
+    }
+    runMinimalInstall({ runtime: 'claude', scope: 'global', root });
+
+    assert.equal(
+      fs.readFileSync(outsideMarker, 'utf8'),
+      outsideMarkerBytes,
+      'the compatibility marker write must remain confined to configDir',
+    );
+    assert.doesNotMatch(
+      fs.readFileSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md'), 'utf8'),
+      /MARKER_SYMLINK_SOURCE/,
+      'the installer must not read a source provider through a symlinked marker file',
+    );
+  });
+
+  test('global Codex owns the canonical commands and agents corpus', (t) => {
+    const configDir = createTempDir('gsd-codex-surface-corpus-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE);
+
+    assert.deepStrictEqual(
+      snapshot2362Dir(path.join(configDir, 'gsd-core', 'commands', 'gsd')),
+      snapshot2362Dir(path.join(__dirname, '..', 'commands', 'gsd')),
+      'installed commands corpus must match the package source tree',
+    );
+    assert.deepStrictEqual(
+      snapshot2362Dir(path.join(configDir, 'gsd-core', 'agents')),
+      snapshot2362Dir(path.join(__dirname, '..', 'agents')),
+      'installed agents corpus must match the package source tree',
+    );
+  });
+
+  test('agents-only and empty layouts derive corpus needs from layout kinds', (t) => {
+    const windsurfDir = createTempDir('gsd-windsurf-surface-corpus-');
+    const piDir = createTempDir('gsd-pi-surface-corpus-');
+    const vscodeDir = createTempDir('gsd-vscode-surface-corpus-');
+    t.after(() => { cleanup(windsurfDir); cleanup(piDir); cleanup(vscodeDir); });
+
+    installRuntimeArtifacts('windsurf', windsurfDir, 'global', RESOLVED_CORE);
+    assert.ok(fs.existsSync(path.join(windsurfDir, 'gsd-core', 'agents')));
+    assert.ok(!fs.existsSync(path.join(windsurfDir, 'gsd-core', 'commands', 'gsd')));
+
+    installRuntimeArtifacts('pi', piDir, 'global', RESOLVED_CORE);
+    installRuntimeArtifacts('vscode', vscodeDir, 'global', RESOLVED_CORE);
+    assert.ok(!fs.existsSync(path.join(piDir, 'gsd-core', 'commands')));
+    assert.ok(!fs.existsSync(path.join(piDir, 'gsd-core', 'agents')));
+    assert.ok(!fs.existsSync(path.join(vscodeDir, 'gsd-core', 'commands')));
+    assert.ok(!fs.existsSync(path.join(vscodeDir, 'gsd-core', 'agents')));
+  });
+
+  test('local Claude and Codex installs do not gain the global corpus', (t) => {
+    const claudeDir = createTempDir('gsd-claude-local-no-corpus-');
+    const codexDir = createTempDir('gsd-codex-local-no-corpus-');
+    t.after(() => { cleanup(claudeDir); cleanup(codexDir); });
+
+    installRuntimeArtifacts('claude', claudeDir, 'local', RESOLVED_CORE);
+    installRuntimeArtifacts('codex', codexDir, 'local', RESOLVED_CORE);
+    for (const configDir of [claudeDir, codexDir]) {
+      assert.ok(!fs.existsSync(path.join(configDir, 'gsd-core', 'commands')));
+      assert.ok(!fs.existsSync(path.join(configDir, 'gsd-core', 'agents')));
+    }
+  });
+
+  test('refresh restores canonical bytes and removes only manifest-proven stale corpus files', (t) => {
+    const configDir = createTempDir('gsd-corpus-refresh-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+    installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE);
+
+    const commandsDir = path.join(configDir, 'gsd-core', 'commands', 'gsd');
+    const canonicalName = fs.readdirSync(commandsDir).find((name) => name.endsWith('.md'));
+    assert.ok(canonicalName);
+    fs.writeFileSync(path.join(commandsDir, canonicalName), '# corrupted\n');
+    fs.writeFileSync(path.join(commandsDir, 'stale-owned.md'), '# stale\n');
+    fs.writeFileSync(path.join(commandsDir, 'unknown-neighbour.md'), '# preserve\n');
+    fs.writeFileSync(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      files: { 'gsd-core/commands/gsd/stale-owned.md': '0'.repeat(64) },
+    }));
+
+    installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE);
+    assert.strictEqual(
+      fs.readFileSync(path.join(commandsDir, canonicalName), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '..', 'commands', 'gsd', canonicalName), 'utf8'),
+    );
+    assert.ok(!fs.existsSync(path.join(commandsDir, 'stale-owned.md')));
+    assert.strictEqual(fs.readFileSync(path.join(commandsDir, 'unknown-neighbour.md'), 'utf8'), '# preserve\n');
+  });
+
+  test('a partial corpus copy failure is rejected until a later install repairs it', (t) => {
+    const configDir = createTempDir('gsd-corpus-copy-failure-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+    const agentsDestination = path.join(configDir, 'gsd-core', 'agents');
+    const originalCpSync = fs.cpSync;
+    t.mock.method(fs, 'cpSync', (source, destination, options) => {
+      if (destination === agentsDestination) {
+        fs.mkdirSync(destination, { recursive: true });
+        fs.writeFileSync(path.join(destination, 'gsd-planner.md'), '# partial agent\n');
+        throw new Error('injected corpus copy failure');
+      }
+      return originalCpSync(source, destination, options);
+    });
+
+    assert.throws(
+      () => installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE),
+      /injected corpus copy failure/,
+    );
+    const incompleteLayout = resolveRuntimeArtifactLayout('codex', configDir, 'global');
+    assert.throws(
+      () => incompleteLayout.kinds.find((kind) => kind.kind === 'skills').stage(RESOLVED_CORE),
+      /install or upgrade gsd-core/,
+    );
+
+    t.mock.restoreAll();
+    installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE);
+    assert.deepStrictEqual(
+      snapshot2362Dir(agentsDestination),
+      snapshot2362Dir(path.join(__dirname, '..', 'agents')),
+      'a later install must heal the partial agents corpus',
+    );
+  });
+
+  test('an unreadable prior manifest preserves unproven neighbours while refreshing canonical bytes', (t) => {
+    const configDir = createTempDir('gsd-corpus-manifest-read-failure-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+    const commandsDir = path.join(configDir, 'gsd-core', 'commands', 'gsd');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    const canonicalName = fs.readdirSync(path.join(__dirname, '..', 'commands', 'gsd'))
+      .find((name) => name.endsWith('.md'));
+    assert.ok(canonicalName);
+    fs.writeFileSync(path.join(commandsDir, canonicalName), '# corrupted\n');
+    fs.writeFileSync(path.join(commandsDir, 'unproven-neighbour.md'), '# preserve\n');
+    const manifestPath = path.join(configDir, 'gsd-file-manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({ files: {
+      'gsd-core/commands/gsd/unproven-neighbour.md': '0'.repeat(64),
+    } }));
+
+    const originalReadFileSync = fs.readFileSync;
+    t.mock.method(fs, 'readFileSync', (filePath, ...args) => {
+      if (filePath === manifestPath) throw new Error('injected manifest read failure');
+      return originalReadFileSync(filePath, ...args);
+    });
+
+    installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE);
+    assert.equal(
+      fs.readFileSync(path.join(commandsDir, canonicalName), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '..', 'commands', 'gsd', canonicalName), 'utf8'),
+    );
+    assert.equal(
+      fs.readFileSync(path.join(commandsDir, 'unproven-neighbour.md'), 'utf8'),
+      '# preserve\n',
+      'an unreadable manifest provides no ownership proof for deletion',
+    );
+  });
+
+  test('a stale corpus removal failure leaves a resolver-rejected corpus', (t) => {
+    const configDir = createTempDir('gsd-corpus-remove-failure-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+    const commandsDir = path.join(configDir, 'gsd-core', 'commands', 'gsd');
+    const agentsDir = path.join(configDir, 'gsd-core', 'agents');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const stalePath = path.join(commandsDir, 'removed-by-4132-test.md');
+    fs.writeFileSync(stalePath, '# stale\n');
+    fs.writeFileSync(path.join(agentsDir, 'gsd-planner.md'), '# stale agent\n');
+    const manifestPath = path.join(configDir, 'gsd-file-manifest.json');
+    const manifestBytes = JSON.stringify({ files: {
+      'gsd-core/commands/gsd/removed-by-4132-test.md': '0'.repeat(64),
+      'gsd-core/agents/gsd-planner.md': '0'.repeat(64),
+    } });
+    fs.writeFileSync(manifestPath, manifestBytes);
+
+    const originalRmSync = fs.rmSync;
+    t.mock.method(fs, 'rmSync', (target, options) => {
+      if (target === stalePath) throw new Error('injected stale corpus removal failure');
+      // eslint-disable-next-line local/no-raw-rmsync-in-tests -- delegate non-target production writes; fixture cleanup still uses cleanup().
+      return originalRmSync(target, options);
+    });
+
+    assert.throws(
+      () => installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE),
+      /injected stale corpus removal failure/,
+    );
+    assert.equal(fs.readFileSync(manifestPath, 'utf8'), manifestBytes, 'failed provisioning must not claim a new manifest');
+    const incompleteLayout = resolveRuntimeArtifactLayout('codex', configDir, 'global');
+    assert.throws(
+      () => incompleteLayout.kinds.find((kind) => kind.kind === 'skills').stage(RESOLVED_CORE),
+      /install or upgrade gsd-core/,
+    );
+  });
+
+  test('an empty-parent prune failure leaves a resolver-rejected corpus', (t) => {
+    const configDir = createTempDir('gsd-corpus-prune-failure-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+    const commandsDir = path.join(configDir, 'gsd-core', 'commands', 'gsd');
+    const agentsDir = path.join(configDir, 'gsd-core', 'agents');
+    const staleParent = path.join(commandsDir, 'retired');
+    const stalePath = path.join(staleParent, 'removed-by-4132-test.md');
+    fs.mkdirSync(staleParent, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(stalePath, '# stale\n');
+    fs.writeFileSync(path.join(agentsDir, 'gsd-planner.md'), '# stale agent\n');
+    const manifestPath = path.join(configDir, 'gsd-file-manifest.json');
+    const manifestBytes = JSON.stringify({ files: {
+      'gsd-core/commands/gsd/retired/removed-by-4132-test.md': '0'.repeat(64),
+      'gsd-core/agents/gsd-planner.md': '0'.repeat(64),
+    } });
+    fs.writeFileSync(manifestPath, manifestBytes);
+
+    const originalRmdirSync = fs.rmdirSync;
+    t.mock.method(fs, 'rmdirSync', (target, options) => {
+      if (target === staleParent) throw new Error('injected corpus parent prune failure');
+      return originalRmdirSync(target, options);
+    });
+
+    assert.throws(
+      () => installRuntimeArtifacts('codex', configDir, 'global', RESOLVED_CORE),
+      /injected corpus parent prune failure/,
+    );
+    assert.equal(fs.existsSync(stalePath), false, 'owned stale file was removed before parent pruning failed');
+    assert.equal(fs.existsSync(staleParent), true, 'failed empty parent removal must leave the directory in place');
+    assert.equal(fs.readFileSync(manifestPath, 'utf8'), manifestBytes, 'failed provisioning must not claim a new manifest');
+    const incompleteLayout = resolveRuntimeArtifactLayout('codex', configDir, 'global');
+    assert.throws(
+      () => incompleteLayout.kinds.find((kind) => kind.kind === 'skills').stage(RESOLVED_CORE),
+      /install or upgrade gsd-core/,
+    );
+  });
+
+  for (const runtime of ['codex', 'claude']) {
+    test(`full global ${runtime} manifest covers every installed corpus file with its hash`, (t) => {
+      const installed = runMinimalInstall({ runtime, scope: 'global' });
+      t.after(() => cleanup(installed.root));
+      const corpusRoots = [
+        ['gsd-core/commands/gsd/', path.join(installed.configDir, 'gsd-core', 'commands', 'gsd')],
+        ['gsd-core/agents/', path.join(installed.configDir, 'gsd-core', 'agents')],
+      ];
+      for (const [prefix, root] of corpusRoots) {
+        for (const file of walk(root)) {
+          const key = prefix + path.relative(root, file).replace(/\\/g, '/');
+          const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          assert.strictEqual(installed.manifest.files[key], hash, `${key} must be manifest-owned with the installed hash`);
+        }
+      }
+    });
+  }
 });
 
 const SKILLS_RUNTIMES_LAYOUT = [
@@ -415,6 +708,7 @@ describe('installOpencodeFamilySkills — emits skills/<name>/SKILL.md (#784)', 
     test(`${runtime}: writes gsd-help/SKILL.md with name + description`, (t) => {
       const configDir = createTempDir(`gsd-ocs-${runtime}-`);
       t.after(() => cleanup(configDir));
+      writePackageSourceMarkerFixture(configDir);
 
       const raw = stageRawCommands(runtime, configDir);
       const count = installOpencodeFamilySkills(runtime, configDir, raw, `${configDir}/`);
@@ -431,6 +725,7 @@ describe('installOpencodeFamilySkills — emits skills/<name>/SKILL.md (#784)', 
     test(`${runtime}: rewrites body paths to the actual install target (#784 path fix)`, (t) => {
       const configDir = createTempDir(`gsd-ocp-${runtime}-`);
       t.after(() => cleanup(configDir));
+      writePackageSourceMarkerFixture(configDir);
 
       // Simulate a custom/local install: pathPrefix points at configDir, NOT the
       // runtime's default global config dir. Body refs must use pathPrefix.
@@ -461,6 +756,7 @@ describe('installOpencodeFamilySkills — emits skills/<name>/SKILL.md (#784)', 
     test(`${runtime}: preserves user-owned gsd-dev-preferences across reinstall (#784)`, (t) => {
       const configDir = createTempDir(`gsd-ocd-${runtime}-`);
       t.after(() => cleanup(configDir));
+      writePackageSourceMarkerFixture(configDir);
 
       const userSkill = path.join(configDir, 'skills', 'gsd-dev-preferences');
       fs.mkdirSync(userSkill, { recursive: true });
@@ -2656,6 +2952,7 @@ describe('fix-2644 — Cursor has one menu entry per GSD workflow', () => {
       version: '1.8.0', timestamp: '2026-07-28T00:00:00.000Z', mode: 'core',
       files: { 'commands/gsd-help.md': crypto.createHash('sha256').update(content).digest('hex') },
     }));
+    writePackageSourceMarkerFixture(configDir);
 
     const layout = resolveRuntimeArtifactLayout('cursor', configDir, 'global');
     applySurface(configDir, layout, MANIFEST);
@@ -5582,7 +5879,13 @@ const {
  */
 function writeMinimalSourceTree(baseDir, stems) {
   const srcDir = path.join(baseDir, 'src', 'commands', 'gsd');
+  const agentsDir = path.join(baseDir, 'src', 'agents');
   fs.mkdirSync(srcDir, { recursive: true });
+  fs.mkdirSync(agentsDir, { recursive: true });
+  // Hermes resolves one complete provider for its skills+agents layout. Keep
+  // this legacy-marker fixture complete so it exercises marker compatibility
+  // without relying on forbidden per-kind provider mixing (#4132).
+  fs.writeFileSync(path.join(agentsDir, 'gsd-test-agent.md'), '# test agent\n');
   for (const stem of stems) {
     fs.writeFileSync(path.join(srcDir, `${stem}.md`), [
       '---',
@@ -7583,6 +7886,11 @@ describe('#3719: real global Claude install — agents/*.md @-refs must resolve 
     const failures = [];
     for (const file of walk(rootDir)) {
       if (!file.endsWith('.md')) continue;
+      const relative = path.relative(claudeGlobal.configDir, file).replace(/\\/g, '/');
+      // The installation-owned Runtime Surface corpus is raw package input,
+      // not an emitted runtime artifact. It must remain byte-identical to the
+      // package and is validated separately by the corpus parity matrix.
+      if (relative.startsWith('gsd-core/commands/gsd/') || relative.startsWith('gsd-core/agents/')) continue;
       const content = fs.readFileSync(file, 'utf8');
       for (const line of splitLines(content)) {
         if (/@\$HOME\//.test(line.replace(INLINE_CODE_SPAN_RE, ''))) failures.push({ file, line });

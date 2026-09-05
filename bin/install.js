@@ -816,6 +816,10 @@ const {
   resolveRuntimeArtifactLayout,
 } = require(path.join(_gsdLibDir, 'runtime-artifact-layout.cjs'));
 const {
+  readSurface,
+  resolveSurface,
+} = require(path.join(_gsdLibDir, 'surface.cjs'));
+const {
   assertDestWithinConfigHome,
   createRuntimeArtifactInstallPlan,
   createRuntimeArtifactUninstallPlan,
@@ -10620,7 +10624,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // one) is honored on every profile, `full` included (#2322 blocker 2).
   const _commandsDir = path.join(src, 'commands', 'gsd');
   const _skillsManifest = _isCoreProfileAlias ? new Map() : loadSkillsManifest(_commandsDir);
-  const _resolvedProfile = resolveProfile({
+  let _resolvedProfile = resolveProfile({
     modes: [_activeProfileName],
     manifest: _skillsManifest,
     registry: _installedCapabilityRegistry,
@@ -10971,6 +10975,28 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     return Array.isArray(scopeLayout) && scopeLayout.length > 0;
   })();
 
+  // Install the distribution-owned gsd-core tree before layout materialization.
+  // installRuntimeArtifacts then provisions the durable Runtime Surface corpus
+  // exactly once into this final tree instead of having that corpus overwritten
+  // by a later whole-tree copy and needing a second provisioning pass.
+  const skillSrc = path.join(src, 'gsd-core');
+  const skillDest = path.join(targetDir, 'gsd-core');
+  const _gsdArtifactsStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
+  if (_gsdArtifactsStagingRoot === null) {
+    console.warn(`  ${yellow}!${reset} Skipping gsd-core/${USER_OWNED_ARTIFACTS.join(', gsd-core/')} preservation (staging unavailable) — it will be lost if present.`);
+    copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
+  } else {
+    const stagedGsdArtifacts = stageUserArtifacts(skillDest, USER_OWNED_ARTIFACTS, _gsdArtifactsStagingRoot);
+    copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
+    restoreStagedUserArtifacts(skillDest, stagedGsdArtifacts);
+    discardStagedUserArtifacts(stagedGsdArtifacts);
+  }
+  if (verifyInstalled(skillDest, 'gsd-core')) {
+    console.log(`  ${green}✓${reset} Installed workflow assets`);
+  } else {
+    failures.push('gsd-core');
+  }
+
   // #2624: write the .gsd-source marker. Extracted from its former late position so it can be
   // called BEFORE staging reads the marker (see the call site below). Scoped to the Claude-global
   // layout (issue #1477) — the only install path that ships the skills layout without a
@@ -10987,6 +11013,9 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           // ADR-1239 Phase B write-confinement: the descriptor-sourced marker filename
           // must resolve under targetDir (parity with the other descriptor-driven writes).
           const _markerPath = assertDestWithinConfigHome(targetDir, _hostBehaviors(runtime).sourceMarkerFile);
+          if (hasExistingSymlinkBetween(path.resolve(targetDir), _markerPath, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+            throw new Error(`compatibility marker "${_markerPath}" contains an untrusted symlink`);
+          }
           fs.writeFileSync(_markerPath, gsdSourceCommands + '\n', 'utf8');
         } catch (err) {
           // Non-fatal: install proceeds. But on the Claude-global layout walk-up
@@ -11013,6 +11042,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   if (_isSkillsRuntime) {
     // Layout-driven install for skills-based runtimes (full and minimal modes)
     const scope = _installScopeId;
+    // Preserve an existing Runtime Surface selection during upgrades. The
+    // installer refreshes the source corpus first, then emits exactly the
+    // already-committed selection instead of widening it to the base profile.
+    const _committedSurface = readSurface(targetDir);
+    if (_committedSurface) {
+      _resolvedProfile = resolveSurface(
+        targetDir,
+        loadSkillsManifest(_commandsDir),
+        undefined,
+        _installedCapabilityRegistry,
+        _committedSurface,
+      );
+    }
     // ADR-1239 upgrade 3 / #2088: a kind may declare an alternate install `home`
     // (e.g. Codex skills -> $HOME/.agents/skills) instead of the runtime's normal
     // configDir. Resolve the ACTUAL on-disk skills root here, descriptor-driven
@@ -11303,36 +11345,6 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // needs its declared hostBehaviors.nativePlugin file copied into targetDir.
   if (!_isSkillsRuntime && _hostBehaviors(runtime).nativePlugin) {
     _installNativePluginIfDeclared(runtime, targetDir, _hostBehaviors(runtime), src);
-  }
-
-  // Copy gsd-core skill with path replacement
-  // Stage user-generated files DURABLY to disk before the wipe-and-copy so
-  // they survive re-install even if the process dies mid-copy (#2875 /
-  // #1874-F19) — copyWithPathReplacement wipes and recursively re-copies the
-  // entire gsd-core/ tree, the single longest operation in the install, on
-  // the path every user takes (40-design.md "Site 4 is far worse...").
-  const skillSrc = path.join(src, 'gsd-core');
-  const skillDest = path.join(targetDir, 'gsd-core');
-  // #2875 defect fix: this IS the mainline install step (installing
-  // gsd-core/ itself) — unlike the optional legacy-cleanup blocks above,
-  // install must still be able to proceed and actually write gsd-core/ even
-  // when the staging root cannot be resolved. Degrade by skipping ONLY the
-  // USER_OWNED_ARTIFACTS preserve/restore wrapper around the copy (warn),
-  // never the copy itself.
-  const _gsdArtifactsStagingRoot = _tryResolveUserArtifactStagingRoot(targetDir);
-  if (_gsdArtifactsStagingRoot === null) {
-    console.warn(`  ${yellow}!${reset} Skipping gsd-core/${USER_OWNED_ARTIFACTS.join(', gsd-core/')} preservation (staging unavailable) — it will be lost if present.`);
-    copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
-  } else {
-    const stagedGsdArtifacts = stageUserArtifacts(skillDest, USER_OWNED_ARTIFACTS, _gsdArtifactsStagingRoot);
-    copyWithPathReplacement(skillSrc, skillDest, pathPrefix, runtime, false, isGlobal, targetDir);
-    restoreStagedUserArtifacts(skillDest, stagedGsdArtifacts);
-    discardStagedUserArtifacts(stagedGsdArtifacts);
-  }
-  if (verifyInstalled(skillDest, 'gsd-core')) {
-    console.log(`  ${green}✓${reset} Installed workflow assets`);
-  } else {
-    failures.push('gsd-core');
   }
 
   // #2624: the .gsd-source marker is now written by _writeGsdSourceMarker()
