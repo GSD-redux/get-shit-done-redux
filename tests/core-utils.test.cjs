@@ -32,6 +32,7 @@ const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const {
   cleanup, runGsdTools, scrubConfigLocationEnv,
   saveSessionEnv, restoreSessionEnv, clearSessionEnv, TEST_HOME_SANDBOX_MARKER,
+  captureFdSync,
 } = require('./helpers.cjs');
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
@@ -63,23 +64,7 @@ const initMod = require('../gsd-core/bin/lib/init.cjs');
 // `~/.gsd` config or leak real session-identity env into the slug output.
 
 function captureFd1Sync(fn) {
-  const chunks = [];
-  const origWriteSync = fs.writeSync.bind(fs);
-  fs.writeSync = (fd, data, offset, length) => {
-    if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-    if (fd !== 1) return origWriteSync(fd, data, offset, length);
-    const chunk = Buffer.isBuffer(data)
-      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-      : String(data);
-    chunks.push(chunk);
-    return Buffer.byteLength(chunk, 'utf8');
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = origWriteSync;
-  }
-  return chunks.join('');
+  return captureFdSync(1, fn);
 }
 
 function withHermeticInProcessEnv(dir, fn) {

@@ -668,6 +668,8 @@ If `valid != true`, refuse to verify. Surface the discrepancy and ask the user t
 
 **ALWAYS use the Write tool to create files** — never use `Bash(cat << 'EOF')` or heredoc commands for file creation.
 
+**#4155:** `covered_files`: every phase PLAN/SUMMARY (+superseded, nested `plans/`), mapped requirement, changed impl file — ROOT-relative. `gsd_run query verification.fingerprint {phaseDir} {file}...`, copy output — never hand-write `covered_digest`.
+
 Create `.planning/phases/{phase_dir}/{phase_num}-VERIFICATION.md`:
 
 ```markdown
@@ -676,6 +678,8 @@ phase: XX-name
 verified: YYYY-MM-DDTHH:MM:SSZ
 status: passed | gaps_found | human_needed
 score: N/M must-haves verified
+covered_files: [...]
+covered_digest: "v1:sha256:..."
 behavior_unverified: 0 # Count of ⚠️ PRESENT_BEHAVIOR_UNVERIFIED truths (present + wired, behavior not exercised); each is detailed in behavior_unverified_items below (and in human_verification when status is human_needed)
 overrides_applied: 0 # Count of PASSED (override) items included in score
 overrides: # Only if overrides exist — carried forward or newly added
@@ -935,6 +939,7 @@ return <div>No messages</div>  // Always shows "no messages"
 - [ ] Gaps structured in YAML frontmatter (if gaps_found)
 - [ ] Deferred items structured in YAML frontmatter (if deferred items exist)
 - [ ] Re-verification metadata included (if previous existed)
+- [ ] fingerprint fields written via verification.fingerprint (#4155)
 - [ ] VERIFICATION.md created with complete report
 - [ ] Results returned to orchestrator (NOT committed)
 </success_criteria>

@@ -5188,6 +5188,35 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       );
     });
 
+    test('boundary: cap declaring an execute:wave:pre step is accepted against real getWiredKinds(ROOT) (#4148)', () => {
+      const cap = makeCapWithStep('execute:wave:pre');
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const errs = validateHooksWired(cap, getWiredKinds(ROOT));
+      assert.deepEqual(
+        errs, [],
+        `execute:wave:pre must dispatch step hooks before executor spawning. Errors: ${errs.join('; ')}`,
+      );
+
+      const workflow = fs.readFileSync(path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8');
+      const wavePre = workflow.indexOf('WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre --raw)');
+      const stepDispatch = workflow.indexOf('**Step dispatch:**', wavePre);
+      const executorSpawn = workflow.indexOf('3. **Spawn executor agents:**', wavePre);
+      assert.ok(
+        wavePre !== -1 && stepDispatch > wavePre && executorSpawn > stepDispatch,
+        'wave-pre step dispatch must occur after hook rendering and before executor spawning',
+      );
+
+      const stepContract = workflow.slice(stepDispatch, executorSpawn);
+      assert.match(stepContract, /kind == "step"/, 'wave-pre must select step hooks');
+      assert.match(stepContract, /loop-hook-dispatch/, 'wave-pre must use the shared dispatch contract');
+      assert.match(stepContract, /Validate `ref\.command`/, 'wave-pre must validate third-party commands');
+      assert.match(
+        stepContract,
+        /never blocks or redirects executor spawning/,
+        'wave-pre step failures must remain advisory',
+      );
+    });
+
     // ─── #3866: the verify lane must be open to every hook kind ────────────────
     //
     // verify-work.md's verify_pre_hooks step historically dispatched only

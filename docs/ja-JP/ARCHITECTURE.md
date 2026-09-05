@@ -217,6 +217,7 @@ eager なスキルリストはターンごとの 2 つの主要コストの一�
 | `gsd-check-update.js` | `SessionStart` | GSDの新バージョンをバックグラウンドで確認 |
 | `gsd-prompt-guard.js` | `PreToolUse` | `.planning/` への書き込みにプロンプトインジェクションパターンがないかスキャン（アドバイザリー） |
 | `gsd-workflow-guard.js` | `PreToolUse` | GSDワークフローコンテキスト外でのファイル編集を検出（アドバイザリー、`hooks.workflow_guard` によるオプトイン） |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Read / Grep / Bash による `.env`、`.env.<suffix>`（`.env.example` などのテンプレートは除外）、`.secrets` の読み取りをハードブロック。インストーラが書き込んでいた `Read(.env*)` の deny ルールを置き換える（#4221） |
 
 ### コマンドルーティングハブ（`gsd-core/bin/lib/command-routing-hub.cjs`）
 

@@ -36,6 +36,7 @@ const MANAGED_HOOKS = [
   'gsd-prompt-guard.js',
   'gsd-read-guard.js',
   'gsd-read-injection-scanner.js',
+  'gsd-secret-read-guard.js',
   'gsd-session-state.sh',
   'gsd-statusline.js',
   'gsd-update-banner.js',
