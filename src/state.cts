@@ -3001,7 +3001,7 @@ function buildStateFrontmatter(
               storedMilestone.trim() !== '';
             if (roadmapAbsentWithAssertedMilestone) {
               process.stderr.write(
-                `gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so the progress counters (total_phases, completed_phases, total_plans, completed_plans) are left at their stored values. (#3573/#4094)\n`
+                `gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so the progress counters (total_phases, completed_phases, total_plans, completed_plans) are left at their stored values. (#3573) (#4094)\n`
               );
             }
             // #4094: the withhold condition covers ALL FOUR progress counters,

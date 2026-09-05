@@ -1799,6 +1799,14 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('#4094 milestone-unbounded withhold — all four progress counters', () => {
+  // Local requires: this block sits after the closing brace of the section
+  // that owned the module-level beforeEach/afterEach destructure above, so
+  // (mirroring the #3642 block below) everything it needs is required here.
+  const { test, beforeEach, afterEach } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('fs');
+  const path = require('path');
+  const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
   const { runNode } = require('./helpers/process-seam.cjs');
   const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
 

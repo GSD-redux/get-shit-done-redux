@@ -11149,21 +11149,20 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     // No ROADMAP.md at all + a stale "Total Phases: 2" body annotation drives
     // the #3573 roadmap-absent withhold path: totalPhases stays pinned at the
     // stale body-declared value (2) instead of being replaced by the live
-    // disk-scanned total, while completedPhases is UNCONDITIONALLY set from
-    // the disk scan (buildStateFrontmatter) regardless of that withhold — so
-    // completedPhases (4) ends up greater than totalPhases (2), making the
-    // guard's `completedPhases < totalPhases` conjunct false (verified by
-    // direct probe: status lands 'completed' with progress
-    // {total_phases:2, completed_phases:4}). Note this fixture necessarily
-    // also drives listMilestonePhaseDirs' own ROADMAP-absent scope to
-    // non-COMPLETE (same missing file, independent read), so it does not
-    // purely isolate the counter conjunct from `diskScope === SCOPE.COMPLETE`
-    // — src/state.cts's withhold-with-a-stale-numeric-total path is only
-    // reachable via ROADMAP absence, which always drags that second conjunct
-    // along with it; no fixture can decouple the two under the current
-    // implementation. Inconsistent counters deliberately fall through to
-    // normalizeStateStatus's answer rather than guessing which of the two
-    // disagreeing numbers is correct.
+    // disk-scanned total. #4094 extended that withhold to completedPhases too
+    // — it comes from the same phaseDirs walk and is equally untrustworthy
+    // here — so completed_phases is withheld (omitted) alongside any
+    // non-derivable counter, and the guard's `typeof completedPhases ===
+    // 'number'` conjunct fails, so it cannot fire. Pre-#4094 completedPhases
+    // was UNCONDITIONALLY set from the disk scan (4 > 2 made the
+    // `completedPhases < totalPhases` conjunct false) — the exact
+    // "completed_phases larger than a total_phases-consistent value" symptom
+    // #4094's issue reports. Either way the guard does not demote; the row
+    // still pins that conclusion. Note this fixture necessarily also drives
+    // listMilestonePhaseDirs' own ROADMAP-absent scope to non-COMPLETE (same
+    // missing file, independent read). Inconsistent/untrustworthy counters
+    // deliberately fall through to normalizeStateStatus's answer rather than
+    // guessing which of the two disagreeing numbers is correct.
     seed4PhaseDirsNoRoadmap(4);
     writeStateAtPhase(4, ['Total Phases: 2']);
 
@@ -11174,14 +11173,18 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     assert.strictEqual(
       frontmatterStatus(after),
       'completed',
-      `guard must not demote when completedPhases > totalPhases; got frontmatter:\n${after}`,
+      `guard must not demote when the counters are withheld as untrustworthy; got frontmatter:\n${after}`,
     );
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
     const output = JSON.parse(jsonResult.output);
-    assert.strictEqual(Number(output.progress.completed_phases), 4, 'completed_phases must reflect disk truth (4)');
-    assert.strictEqual(Number(output.progress.total_phases), 2, 'total_phases must stay pinned at the stale declared value (2)');
+    assert.strictEqual(
+      output.progress && output.progress.completed_phases,
+      undefined,
+      'completed_phases must be withheld under the #4094 roadmap-absent withhold (no trustworthy scan, no stored value)',
+    );
+    assert.strictEqual(Number(output.progress && output.progress.total_phases), 2, 'total_phases must stay pinned at the stale declared value (2)');
   });
 
   test('untrustworthy counters (no ROADMAP.md, no derivable total) must not demote status', () => {
@@ -11208,12 +11211,19 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
     const output = JSON.parse(jsonResult.output);
+    // #4094: the withhold now covers all four counters (same untrustworthy
+    // phaseDirs walk), and this fixture stores none of them in frontmatter —
+    // so the whole progress block may be absent, not just total_phases.
     assert.strictEqual(
-      output.progress.total_phases,
+      output.progress && output.progress.total_phases,
       undefined,
       'total_phases must be withheld (no ROADMAP to derive it from), proving the guard truly had no denominator to compare against',
     );
-    assert.strictEqual(Number(output.progress.completed_phases), 2, 'completed_phases is still disk truth even when total_phases is withheld');
+    assert.strictEqual(
+      output.progress && output.progress.completed_phases,
+      undefined,
+      'completed_phases is withheld too under #4094 (same untrustworthy scan, no stored value)',
+    );
   });
 
   test('#3578 AC4: gsd_invoke_command (MCP dispatch) yields the same non-completed status as the CLI route (2 of 4 case)', () => {
