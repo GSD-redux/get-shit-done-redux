@@ -896,9 +896,23 @@ test('noop', () => {});
     // once (via `before`) and every assertion group below reads from those
     // captured results instead of spawning its own. This is the whole
     // savings — no assertion is weakened or removed.
-    const HANGS_FOREVER_BODY = `'use strict';
+    // The fixture served to the timeout-path run below (#4105). Parks on a
+    // SETTLING timer — the #4104 idiom — so the hang is a property of the
+    // FIXTURE on every Node line, not of the runtime: the retired
+    // `new Promise(() => {})` shape held NO libuv handle, so whether the
+    // spawned child hung was decided by the Node line's test-runner shutdown
+    // behavior (measured: v24/v26 happen to hold the loop open; v22.22.0
+    // exits on its own in ~60ms with `# cancelled 1`, so the chunk never
+    // reached the timeout path and T1/T4 below asserted nothing). The park
+    // must outlast the chunk bound below with wide margin (asserted
+    // structurally in the #4105 regression test), stays ~0% CPU while parked,
+    // and the settle guarantees the fixture SELF-TERMINATES if a kill orphans
+    // it — unlike `setInterval`-forever (never exits) or `while (true) {}`
+    // (100% CPU forever), the two shapes #4104's pairing note rules out.
+    const HANG_PARK_MS = 10_000;
+    const HANGS_BODY = `'use strict';
 const { test } = require('node:test');
-test('hangs forever', () => new Promise(() => {}));
+test('hangs forever', () => new Promise((resolve) => { setTimeout(resolve, ${HANG_PARK_MS}); }));
 `;
 
     // The per-chunk timeout the timeout-path run below arms. Hoisted (#4105)
@@ -929,7 +943,7 @@ test('hangs forever', () => new Promise(() => {}));
       // box that has to boot node --test, register the hang, and observe
       // the kill inside the window.
       timeoutDir = createTempDir('gsd-3889-timeout-');
-      fs.writeFileSync(path.join(timeoutDir, 'hangs.test.cjs'), HANGS_FOREVER_BODY, 'utf8');
+      fs.writeFileSync(path.join(timeoutDir, 'hangs.test.cjs'), HANGS_BODY, 'utf8');
       timeoutRun = runHarness(timeoutDir, [], {
         RUN_TESTS_NO_FORCE_EXIT: '1',
         RUN_TESTS_CHUNK_TIMEOUT_MS: String(CHUNK_TIMEOUT_MS_FOR_HANG_RUN),
@@ -995,7 +1009,8 @@ test('hangs forever', () => new Promise(() => {}));
     // T1: on a chunk timeout, the diagnostic must NAME the file that was
     // still executing — not merely list every file the chunk contained (the
     // pre-instrumentation behavior). A test that hangs INSIDE its own body
-    // (never resolving) keeps its test:start event unmatched by any
+    // (parks on a settling timer that outlasts the chunk bound, so it never
+    // resolves inside the window) keeps its test:start event unmatched by any
     // test:pass/test:fail in the ndjson companion reporter's output, which
     // is exactly the signal the diagnostic reads back on timeout.
     test('a chunk timeout names the file that was in flight when killed', () => {
@@ -1181,10 +1196,17 @@ test('hangs forever', () => new Promise(() => {}));
     // exit/signal/liveness behavior only — never a measured duration value
     // (RULESET.TESTS.no-timing-assertion).
     test('the #3889 hang fixture genuinely hangs by itself and self-terminates (#4105)', (t, done) => {
+      // (a) Structural margin, single-sourced with the served body: the park
+      // must outlast the chunk bound by >= 4x, so a loaded box's scheduling
+      // jitter can never let the timer settle before the harness kill fires.
+      assert.ok(
+        HANG_PARK_MS >= 4 * CHUNK_TIMEOUT_MS_FOR_HANG_RUN,
+        `fixture park (${HANG_PARK_MS}ms) must exceed the chunk bound (${CHUNK_TIMEOUT_MS_FOR_HANG_RUN}ms) with margin`,
+      );
       const dir = createTempDir('gsd-3889-hang-fixture-');
       t.after(() => cleanup(dir));
       const tf = path.join(dir, 'hangs.test.cjs');
-      fs.writeFileSync(tf, HANGS_FOREVER_BODY, 'utf8');
+      fs.writeFileSync(tf, HANGS_BODY, 'utf8');
       const child = spawn(process.execPath, [tf], { stdio: 'ignore' });
       t.after(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } });
       // Fast-fail on a spawn error (execPath unspawnable): the poll below keys
@@ -1194,9 +1216,9 @@ test('hangs forever', () => new Promise(() => {}));
       child.on('error', (err) => {
         assert.fail(`could not spawn the fixture directly: ${err.message}`);
       });
-      // 2x the intended 10s park (#4105 fix); also bounds a fully-immortal
-      // body (the RED state) well inside this suite's chunk budget.
-      const CEILING_MS = 20_000;
+      // 2x the park: generous for a loaded runner, still bounded so an
+      // immortal body fails loudly well inside this suite's chunk budget.
+      const CEILING_MS = 2 * HANG_PARK_MS;
       const spawnedAt = Date.now();
       // Past the chunk bound the harness kills at: the fixture must still be
       // hanging HERE, alone — this is the vacuity guard. +400ms covers child
