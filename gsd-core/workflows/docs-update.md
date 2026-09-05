@@ -34,7 +34,7 @@ Extract from init JSON:
 - `monorepo_workspaces` — array of workspace glob patterns (empty if not a monorepo)
 - `section_manifest` — parsed from `INIT_DOCS_UPDATE` (not `INIT`); gates the `dispatch-monorepo-packages` section below
 - `project_root` — absolute path to the project root
-- `response_language` — if set, present all user-facing questions, prompts, and explanations in this workflow in that language; technical terms, code, file paths, and subagent prompts stay in English
+- `response_language` — if set, present all user-facing output of this workflow in that language — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations; technical terms, code, file paths, and subagent prompts stay in English
 </step>
 
 <step name="classify_project">

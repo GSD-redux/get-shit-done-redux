@@ -479,3 +479,76 @@ test('--cwd pointing at a non-existent path fails uniformly across families', ()
 });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// #4106 — every Stryker flag in package.json is one Stryker actually accepts
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __d, test: __t } = require('node:test');
+  const __assert = require('node:assert/strict');
+  const __fs = require('node:fs');
+  const __path = require('node:path');
+
+  const __ROOT = __path.resolve(__dirname, '..');
+  const __PKG = require(__path.join(__ROOT, 'package.json'));
+  const __SCHEMA = __path.join(
+    __ROOT, 'node_modules', '@stryker-mutator', 'core', 'schema', 'stryker-schema.json',
+  );
+
+  // Stryker's CLI options are generated from its own options schema, so the schema's
+  // property names ARE the accepted long flags. Three commander-level flags have no
+  // schema entry because they are not run options.
+  const __CLI_ONLY = new Set(['files', 'help', 'version']);
+
+  /** Long flags a `stryker …` npm script passes, normalised (`--mutate=x` → `mutate`). */
+  function __strykerFlags(script) {
+    if (!/(^|\s)(npx\s+)?stryker(\s|$)/.test(script)) return null;
+    return script
+      .split(/\s+/)
+      .filter((tok) => tok.startsWith('--'))
+      .map((tok) => tok.slice(2).split('=')[0]);
+  }
+
+  __d('package.json Stryker scripts pass only flags Stryker accepts (#4106)', () => {
+    const accepted = new Set([
+      ...Object.keys(JSON.parse(__fs.readFileSync(__SCHEMA, 'utf-8')).properties || {}),
+      ...__CLI_ONLY,
+    ]);
+
+    // Guard: a moved/renamed schema would otherwise reject every flag for the wrong reason.
+    __assert.ok(
+      accepted.size > 20,
+      `no options schema at ${__SCHEMA} — @stryker-mutator/core may have moved it`,
+    );
+
+    __t('the checker rejects the flag this bug shipped', () => {
+      // `--since` is what `test:mutation:since` carried; Stryker 9.x exits with
+      // "error: unknown option '--since'". Pinning it here keeps this suite honest
+      // if every real invocation later drops its flags.
+      const flags = __strykerFlags('stryker run --incremental --since origin/next');
+      __assert.deepEqual(flags, ['incremental', 'since']);
+      __assert.equal(accepted.has('incremental'), true);
+      __assert.equal(accepted.has('since'), false, '--since is not a Stryker option');
+    });
+
+    __t('every stryker script in package.json is runnable', () => {
+      const offenders = [];
+      let scanned = 0;
+      for (const [name, script] of Object.entries(__PKG.scripts || {})) {
+        const flags = __strykerFlags(script);
+        if (flags === null) continue;
+        scanned += 1;
+        for (const flag of flags) {
+          if (!accepted.has(flag)) offenders.push(`${name}: --${flag}`);
+        }
+      }
+      __assert.ok(scanned > 0, 'no stryker script found — the sweep matched nothing');
+      __assert.deepEqual(
+        offenders,
+        [],
+        `package.json scripts pass flags Stryker does not accept: ${offenders.join(', ')}`,
+      );
+    });
+  });
+}

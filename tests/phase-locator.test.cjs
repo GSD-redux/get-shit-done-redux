@@ -28,6 +28,7 @@ const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
 const planDependencyGraph = require('../gsd-core/bin/lib/plan-dependency-graph.cjs');
 const {
   runGsdTools, createTempProject, createTempDir, cleanup, isolateWorkstreamEnv, restoreWorkstreamEnv,
+  captureFdSync,
 } = require('./helpers.cjs');
 const driftGuard = require('../scripts/lint-phase-enumeration-drift.cjs');
 
@@ -1613,25 +1614,9 @@ describe('sentinel-range boundaries, driven through the new API (#3882 rows D1-D
 // ─── E. Migrated call sites ─────────────────────────────────────────────
 
 describe('migrated exemptions behave identically (#3882 rows E1/E2)', () => {
-  /** Capture whatever a synchronous fn writes to `fd` via fs.writeSync, without touching the real fd. */
+  /** Capture whatever a synchronous fn writes to `fd` via fs.writeSync — delegates to the shared, safe helper (#4306) that always delivers real bytes rather than fabricating a byte count. */
   function captureFdWrite(fd, fn) {
-    const orig = fs.writeSync;
-    let captured = Buffer.alloc(0);
-    fs.writeSync = (writeFd, ...rest) => {
-      if (writeFd !== fd) return orig.call(fs, writeFd, ...rest);
-      const [data, offset = 0, length] = rest;
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset, offset + (length ?? data.length - offset))
-        : Buffer.from(String(data), 'utf8');
-      captured = Buffer.concat([captured, chunk]);
-      return chunk.length;
-    };
-    try {
-      fn();
-    } finally {
-      fs.writeSync = orig;
-    }
-    return captured.toString('utf-8');
+    return captureFdSync(fd, fn);
   }
 
   /**
