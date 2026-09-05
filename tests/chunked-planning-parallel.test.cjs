@@ -7,9 +7,11 @@
  * Design:      .gsd/phase/feat-3777-chunked-parallel-planners/40-design.md
  * Test matrix: .gsd/phase/feat-3777-chunked-parallel-planners/50-test-matrix.md
  *
- * Two real, shipped bash blocks are extracted and EXECUTED (never re-typed):
- *   1. plan-phase.md's `CHUNKED_PARALLEL` resolution (config x dispatch-capacity).
- *   2. chunked-planning-mode.md's `BATCH_PLAN_IDS` dedup guard (§8.5.2 step 1).
+ * Two real, shipped bash blocks are extracted and EXECUTED (never re-typed), both from
+ * chunked-planning-mode.md:
+ *   1. the `CHUNKED_PARALLEL` resolution (config x dispatch-capacity), read once per
+ *      chunked run, ahead of §8.5.1, so a non-chunked run never pays for it.
+ *   2. the `BATCH_PLAN_IDS` dedup guard (§8.5.2 step 1).
  * Wave grouping itself is orchestrator (LLM) comprehension, not a bash block —
  * see the design doc's "Known limits" — so it has no extraction test here.
  */
@@ -31,7 +33,6 @@ const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
-const PLAN_PHASE_MD_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
 const CHUNKED_MODE_MD_PATH = path.join(
   REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase', 'steps', 'chunked-planning-mode.md',
 );
@@ -51,12 +52,12 @@ function extractBashFenceContaining(content, mustInclude, label, filePath) {
 }
 
 function extractChunkedParallelResolution() {
-  const content = readFileNormalized(PLAN_PHASE_MD_PATH);
+  const content = readFileNormalized(CHUNKED_MODE_MD_PATH);
   return extractBashFenceContaining(
     content,
     ['CHUNKED_PARALLEL_CFG', 'DISPATCH_CAPACITY', 'CHUNKED_PARALLEL='],
     '#3777 CHUNKED_PARALLEL resolution',
-    PLAN_PHASE_MD_PATH,
+    CHUNKED_MODE_MD_PATH,
   );
 }
 
