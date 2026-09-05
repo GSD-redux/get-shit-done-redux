@@ -54,6 +54,7 @@
     "planning.pr_strict",
     "planning.search_gitignored",
     "planning.sub_repos",
+    "planning.chunked_parallel",
     "agent_tools",
     "review.default_reviewers",
     "review.max_prompt_tokens",
