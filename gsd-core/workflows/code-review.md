@@ -571,6 +571,12 @@ Match only flags the reviewer-lane roster itself declares — never a hand-maint
 parsed separately, straight from the merged first-party + installed-overlay roster
 (`review-lane-descriptor.cjs`), so a flag with more than one alias (e.g. antigravity's
 `--antigravity`/`--agy`) resolves to its one canonical slug:
+Resolve the roster, then dispatch (repository root, canonical file paths, review depth, and base
+SHA — SAFE-01; canonical file paths travel on stdin, never argv, per `compute_file_scope`). This
+is ONE fence, not two: `EXPLICIT_JOINED`/`EXPLICIT_REVIEWER_SLUGS` are bash-local state that does
+not survive a markdown fence boundary (a prose sentence between two fences is not a guard — see
+the depth-resolution guard's own rule earlier in this file), so the guard and everything that
+reads it must run as a single shell control-flow decision:
 ```bash
 # Resolve the lane-descriptor/capability-loader modules against $GSD_TOOLS's OWN directory
 # (already resolved by the `initialize` step across every supported install location — vendored
@@ -595,30 +601,23 @@ EXPLICIT_JOINED=$(GSD_LIB_DIR="$GSD_LIB_DIR" node -e "
     if (flags.some((f) => args.has(f))) slugs.add(lane.slug);
   }
   process.stdout.write([...slugs].sort().join(','));
-" -- "$@" 2>"$EXPLICIT_JOINED_STDERR")
-# A resolution failure (e.g. an install layout `initialize` didn't anticipate) must be visible,
-# not a silent downgrade to "no reviewer-lane flags were passed" — but it also must not hard-fail
-# the whole `/gsd:code-review` run for users who never asked for a reviewer lane in the first
-# place, so this stays a warning, not a halt.
-if [ -s "$EXPLICIT_JOINED_STDERR" ]; then
+" -- "$@" 2>"$EXPLICIT_JOINED_STDERR") || {
+  # A resolution failure (e.g. an install layout `initialize` didn't anticipate) must be visible,
+  # not a silent downgrade to "no reviewer-lane flags were passed" — but it also must not hard-fail
+  # the whole `/gsd:code-review` run for users who never asked for a reviewer lane in the first
+  # place, so this stays a warning, not a halt. Detected by EXIT STATUS, not by stderr being
+  # non-empty — a benign Node warning on an otherwise-successful resolution writes to stderr too,
+  # and treating that as failure would misreport a run that actually worked.
   echo "Warning: could not resolve the reviewer-lane roster ($(head -1 "$EXPLICIT_JOINED_STDERR")) — treating this run as if no reviewer-lane flags were passed." >&2
-fi
+  EXPLICIT_JOINED=""
+}
 rm -f "$EXPLICIT_JOINED_STDERR"
 
 EXPLICIT_REVIEWER_SLUGS=()
 if [ -n "$EXPLICIT_JOINED" ]; then
   IFS=',' read -ra EXPLICIT_REVIEWER_SLUGS <<< "$EXPLICIT_JOINED"
 fi
-```
 
-If `EXPLICIT_REVIEWER_SLUGS` is empty, set `EXTERNAL_EVIDENCE_BLOCK=""` — the `review-lane
-dispatch-step` call below never runs.
-
-Otherwise, dispatch the shared reviewer-lane interpreter exactly once with the already-resolved
-scope (repository root, canonical file paths, review depth, and base SHA — SAFE-01). Canonical
-file paths travel on stdin, never argv (`REVIEW_FILES`, already scoped and filtered by
-`compute_file_scope`):
-```bash
 EXTERNAL_EVIDENCE_BLOCK=""
 if [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ] && [ -z "$DIFF_BASE" ]; then
   # No prior review and no resolvable phase-start commit (e.g. a phase's very first review):
