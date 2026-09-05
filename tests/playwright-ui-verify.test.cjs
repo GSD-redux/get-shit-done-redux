@@ -160,8 +160,23 @@ function guardedLines(lines) {
 describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
   test('dev-server probe follows redirects and is time-bounded', () => {
     const block = screenshotApproachBlock();
-    const followsRedirects = block.includes('curl -L') || block.includes('fetch(');
-    assert.ok(followsRedirects, 'probe must follow redirects (curl -L or fetch()) — a 307 dev server is not an absent one');
+    const usesCurlL = /curl[\t ]+(-[A-Za-z]{0,10}L|--location)\b/.test(block);
+    const usesFetch = /\bfetch\(/.test(block);
+    assert.ok(usesCurlL || usesFetch, 'probe must issue its request via curl or fetch()');
+    // Redirect-FOLLOWING is the property, and the bare presence of `fetch(` cannot
+    // express it: fetch's own default is already redirect:"follow", so a regression to
+    // redirect:"manual" — which reinstates the 307-read-as-absent bug #4176 is about —
+    // satisfies a `block.includes('fetch(')` check exactly as well as the fix does.
+    // Ban the non-following forms, and require the contract to be stated rather than
+    // inherited from a default a future runtime is free to change.
+    assert.ok(
+      !/redirect[\t ]*:[\t ]*["'](manual|error)["']/.test(block),
+      'probe must not disable redirect following — a redirecting dev server is not an absent one'
+    );
+    assert.ok(
+      usesCurlL || /redirect[\t ]*:[\t ]*["']follow["']/.test(block),
+      'a fetch()-based probe must state redirect:"follow" explicitly, so the redirect contract is pinned rather than inherited'
+    );
     const timeBounded = /--max-time|AbortSignal\.timeout|run-with-timeout|--connect-timeout/.test(block);
     assert.ok(timeBounded, 'probe must be time-bounded — an accepting-but-unresponsive port must not hang the audit');
   });
@@ -171,6 +186,19 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     assert.ok(
       !/=[\s]*"200"/.test(block),
       'probe must not exact-match "200" — that misreads redirects and other 2xx as no-server'
+    );
+    // Banning one literal idiom is not the same as requiring a range. `case "$PROBE" in
+    // 200) ... ;; esac` carries no `=` at all, so it reintroduces the same
+    // 2xx-but-not-200 misread while passing the ban above. Assert positively that a 2xx
+    // RANGE is what the probe accepts.
+    const acceptsRange =
+      /2\?\?\)/.test(block) ||               // case glob:  2??)
+      /2\[0-9\]\[0-9\]\)/.test(block) ||     // case class: 2[0-9][0-9])
+      /-ge[\t ]+200\b/.test(block) ||        // arithmetic lower bound
+      /\br\.ok\b/.test(block);               // fetch's own 2xx predicate
+    assert.ok(
+      acceptsRange,
+      'probe must accept a 2xx RANGE (a 2?? / 2[0-9][0-9] case glob, a >= 200 comparison, or r.ok) — not an enumerated status'
     );
   });
 
@@ -202,11 +230,27 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
   });
 
   test('all three documented ports are tried in the control flow', () => {
-    const block = screenshotApproachBlock();
+    // Self-found, same class as finding 1: `block.includes(port)` is satisfied by a port
+    // named only in a comment. The pre-fix bug WAS a port documented in prose beside code
+    // that hard-coded 3000, so a whole-block substring check cannot distinguish the fix
+    // from the bug it replaced — it can only see that the digits exist somewhere. Read
+    // the iteration line itself.
+    // logicalLines, not guardedLines: a `for ... ; do` line OPENS a scope, so it is
+    // consumed by the guard walker and never appears among the governed lines.
+    const iteration = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .find((l) => /^for[\t ]+PORT[\t ]+in\b/i.test(l));
+    assert.ok(iteration, 'ports must be iterated, not hard-coded to one');
+    // And drop any trailing comment before reading it, or the check regresses to the
+    // whole-block substring form one line down: `for PORT in 3000; do # 5173, 8080 too`
+    // would otherwise satisfy it. (Measured — that mutation passed before this strip.)
+    const iterationCode = iteration.split(/[\t ]#/)[0];
     for (const port of ['3000', '5173', '8080']) {
-      assert.ok(block.includes(port), `port ${port} must appear in the capture control flow, not only in guidance prose`);
+      assert.ok(
+        iterationCode.includes(port),
+        `port ${port} must be in the port iteration itself, not only in guidance prose: ${iterationCode}`
+      );
     }
-    assert.ok(/for PORT in|for port in/.test(block), 'ports must be iterated, not hard-coded to one');
   });
 
   test('the resolved port — not a hard-coded 3000 — is what gets captured', () => {
