@@ -927,11 +927,16 @@ function stateReplaceFieldWithFallback(content: string, primary: string, fallbac
  * Current Position `Phase:` line, milestone-archived layouts) keep today's
  * behavior rather than being newly refused.
  *
- * Returns `{ dir, outstanding }` where `outstanding` is empty when every plan
- * on disk is summarized (vacuously so for a zero-plan phase — #3168's
- * zero-plan-phase posture).
+ * Returns `{ dir, outstanding, planCount, summaryCount }` where `outstanding`
+ * is empty when every plan on disk is summarized (vacuously so for a zero-plan
+ * phase — #3168's zero-plan-phase posture). `planCount`/`summaryCount` are the
+ * countable disk facts behind `outstanding` (live plan files; summaries after
+ * the #3345 blocked filter) — #4093's recovery decline reports them to a
+ * caller whose STATE.md has lost its labeled plan position, so the suggested
+ * repair values are computed from the SAME set `outstanding` was, and can
+ * never disagree with a count-based decision either.
  */
-function scanOutstanding(phasesDir: string, dir: string): { dir: string; outstanding: string[] } | null {
+function scanOutstanding(phasesDir: string, dir: string): { dir: string; outstanding: string[]; planCount: number; summaryCount: number } | null {
   const phaseDirPath = path.join(phasesDir, dir);
   const scan = scanPhasePlans(phaseDirPath);
   if (scan.scope !== SCOPE.COMPLETE) return null;
@@ -942,13 +947,13 @@ function scanOutstanding(phasesDir: string, dir: string): { dir: string; outstan
     (f) => !planDependencyGraphMod.isSummaryFileBlocked(path.join(phaseDirPath, f)),
   );
   const outstanding = coreUtilsMod.findUnsummarizedPlans(scan.planFiles, countableSummaries);
-  return { dir, outstanding };
+  return { dir, outstanding, planCount: scan.planFiles.length, summaryCount: countableSummaries.length };
 }
 
 function unsummarizedPlansForPositionPhase(
   cwd: string,
   positionPhase: string,
-): { dir: string; outstanding: string[] } | null {
+): { dir: string; outstanding: string[]; planCount: number; summaryCount: number } | null {
   const phasesDir = planningPaths(cwd).phases;
   // #3185 (ADR-3180 Decision 1): "which phase directories exist" is owned by
   // listMilestonePhaseDirs — no hand-rolled readdirSync here. The owner
@@ -1003,7 +1008,12 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // named here so the post-lock output path can report it without re-deriving.
   // Holder (not a bare let) so TypeScript's closure-unaware narrowing cannot
   // collapse the post-lock read to `never` — the callback assigns it.
-  const outstandingRef: { value: { dir: string; outstanding: string[] } | null } = { value: null };
+  const outstandingRef: { value: { dir: string; outstanding: string[]; planCount: number; summaryCount: number } | null } = { value: null };
+  // #4093: the position phase token the callback resolved (Current Position
+  // `Phase:` line first, frontmatter `current_phase` as fallback), carried out
+  // so the generic parse-failure decline can derive recovery facts from disk
+  // without re-reading STATE.md outside the lock. Same holder idiom as above.
+  const positionPhaseRef: { value: string | null } = { value: null };
   const wrote = readModifyWriteStateMd(statePath, (content) => {
     // advance-plan has no phase argument of its own — the phase it advances is
     // whatever ## Current Position names. Compare that against the milestone
@@ -1013,6 +1023,18 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     const body = stripFrontmatter(content);
     const positionScope = matchCurrentPositionSection(body) ?? body;
     const positionPhase = parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
+    // #4093: a Current Position section with ZERO labeled fields has no
+    // `Phase:` line either; frontmatter `current_phase` is the documented
+    // survivor of body drift (the reporter's document still carried it, and
+    // `buildStateFrontmatter` re-derives it from the body only when the body
+    // HAS the line). It feeds the recovery DECLINE only — never a write.
+    const fmPhase = positionPhase === null
+      ? (() => {
+          const fmToken = extractFrontmatter(content, statePath)['current_phase'];
+          return typeof fmToken === 'string' && fmToken.trim() !== '' ? fmToken.trim() : null;
+        })()
+      : null;
+    positionPhaseRef.value = positionPhase ?? fmPhase;
     if (positionPhase !== null) {
       milestoneConflict = milestoneLockMod.checkMilestonePosition(cwd, positionPhase);
       if (milestoneConflict) {
@@ -1100,7 +1122,58 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }, raw, undefined);
       return;
     }
-    output({ error: advancePlanShapeError() }, raw, undefined);
+    // #4093: the generic terminus — no accepted labeled plan-position shape
+    // parsed anywhere in the document (the reporter's case: ## Current
+    // Position drifted to pure narrative prose with zero labeled fields).
+    // Every OTHER refusal above carries a machine-readable reason and the
+    // evidence to act on; this one stranded the caller at a bare sentence
+    // with no recovery path. Give it the same posture: a `reason` the caller
+    // can branch on, plus — when the position phase can be resolved and its
+    // directory scanned — the disk-derived facts and the exact labeled lines
+    // to re-insert. Nothing is WRITTEN: STATE.md is returned byte-identical
+    // (the callback already returned the original content for this path),
+    // so the decline is idempotent and no repair is guessed into the file —
+    // the caller (human or agent) applies the suggested lines and re-runs.
+    // Disk is the recovery source per #4067's posture; the values below are
+    // computed from the SAME `scanOutstanding` counts the plans_outstanding
+    // guard uses, so the two declines can never disagree about a phase.
+    const positionToken = positionPhaseRef.value;
+    const diskFacts = positionToken !== null
+      ? unsummarizedPlansForPositionPhase(cwd, positionToken)
+      : null;
+    if (diskFacts === null) {
+      // No resolvable phase (no Phase: line, no current_phase frontmatter, or
+      // no matching phase directory / incomplete scan): keep today's shape
+      // error, plus the reason so callers can tell this refusal from the
+      // ambiguous_* ones without string-matching the sentence.
+      output({ error: advancePlanShapeError(), reason: 'plan_position_unreadable' }, raw, undefined);
+      return;
+    }
+    const planCount = diskFacts.planCount;
+    const summarized = diskFacts.summaryCount;
+    // A summarized count below the plan count means the next plan to execute
+    // is summarized+1; an equal count means the phase is done on disk and the
+    // position line should say so (current = total; the next advance-plan run
+    // takes the #4067-guarded phase-complete branch from it). Zero plan files
+    // means disk has no opinion — suggest nothing rather than `1 of 0`.
+    const payload: Record<string, unknown> = {
+      error: advancePlanShapeError(),
+      reason: 'plan_position_unreadable',
+      phase_dir: diskFacts.dir,
+      disk: { plan_count: planCount, summarized_count: summarized },
+    };
+    if (planCount > 0) {
+      const current = summarized < planCount ? summarized + 1 : planCount;
+      payload['suggested'] = {
+        current_plan: current,
+        total_plans: planCount,
+        lines: [`Current Plan: ${current}`, `Total Plans in Phase: ${planCount}`],
+      };
+      payload['error'] =
+        `${advancePlanShapeError()} Disk for phase ${diskFacts.dir}: ${summarized} of ${planCount} plan(s) summarized. ` +
+        `Re-insert a labeled plan position at the top of ## Current Position (e.g. Current Plan: ${current} with Total Plans in Phase: ${planCount}), then re-run.`;
+    }
+    output(payload, raw, undefined);
     return;
   }
 
