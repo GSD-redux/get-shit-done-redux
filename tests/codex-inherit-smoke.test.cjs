@@ -56,7 +56,7 @@ const { install } = require('../bin/install.js');
 const { checkCodexModelPosture } = require('../gsd-core/bin/lib/agent-install-check.cjs');
 const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
 const { parseCodexAgentToml } = require('../gsd-core/bin/lib/codex-agent-toml.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, captureFdSync } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -149,17 +149,9 @@ function findKeyLine(header, key) {
  * structure, never prose.
  */
 function runEffortSyncDryRun(codexHome) {
-  const origWriteSync = fs.writeSync;
-  let captured = '';
-  fs.writeSync = (fd, data) => {
-    if (fd === 1) { captured += data; return data.length; }
-    return origWriteSync(fd, data);
-  };
-  try {
-    cmdEffortSync(codexHome, false, { dryRun: true, configDir: codexHome, runtime: 'codex' });
-  } finally {
-    fs.writeSync = origWriteSync;
-  }
+  const captured = captureFdSync(1, () =>
+    cmdEffortSync(codexHome, false, { dryRun: true, configDir: codexHome, runtime: 'codex' })
+  );
   return JSON.parse(captured);
 }
 

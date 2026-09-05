@@ -955,7 +955,7 @@ describe('#3885 (ADR-3473 §8.5): runGapAnalysis distinguishes unreadable from a
 describe('#4014 matrix row 15: unreadable-vs-empty identity is consistent across roadmap/gap-checker/init', () => {
   const fs = require('fs');
   const path = require('path');
-  const { createTempProject, cleanup } = require('./helpers.cjs');
+  const { createTempProject, cleanup, captureFdSync } = require('./helpers.cjs');
   const { runGapAnalysis } = require('../gsd-core/bin/lib/gap-checker.cjs');
   const roadmapLib = require('../gsd-core/bin/lib/roadmap.cjs');
   const initMod = require('../gsd-core/bin/lib/init.cjs');
@@ -976,22 +976,7 @@ describe('#4014 matrix row 15: unreadable-vs-empty identity is consistent across
   // `output()` writes via `fs.writeSync(1, ...)`, bypassing console.log — see
   // init.test.cjs's captureFd1 for the identical rationale/pattern.
   function captureFd1(run) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync;
-    fs.writeSync = function patchedWriteSync(fd, data, offset, length) {
-      if (fd !== 1) return origWriteSync.apply(fs, arguments);
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-      const start = offset ?? 0;
-      const len = length ?? (buf.length - start);
-      chunks.push(Buffer.from(buf.subarray(start, start + len)));
-      return len;
-    };
-    try {
-      run();
-    } finally {
-      fs.writeSync = origWriteSync;
-    }
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return JSON.parse(captureFdSync(1, run));
   }
 
   test('the same unreadable phase directory reports SCOPE.UNREADABLE consistently on all three surfaces', (t) => {

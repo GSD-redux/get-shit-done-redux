@@ -4343,7 +4343,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, captureFdSync } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 
@@ -4369,18 +4369,7 @@ function makeTmpDir(prefix) {
 // output() in core.cjs uses fs.writeSync(1, data) — intercept fd=1 writes.
 // Pass raw=false so output() emits JSON (raw=true emits the plain rawValue string).
 function captureOutput(fn) {
-  const origWriteSync = fs.writeSync;
-  let captured = '';
-  fs.writeSync = (fd, data) => {
-    if (fd === 1) captured += data;
-    else origWriteSync(fd, data);
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = origWriteSync;
-  }
-  return JSON.parse(captured);
+  return JSON.parse(captureFdSync(1, fn));
 }
 
 function makeAgentsDir(tmpDir) {

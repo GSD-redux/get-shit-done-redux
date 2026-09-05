@@ -448,6 +448,62 @@ function cmdPhaseMvpMode(cwd: string, args: string[], raw: boolean): void {
   );
 }
 
+/**
+ * `phase.tdd-applicable <plan-file> [--cli-flag]` (#4273, Phase 1 of epic
+ * #4272) — resolves whether the TDD RED/GREEN/REFACTOR gate applies to a
+ * given plan, in strict precedence order: an explicit `--cli-flag` wins over
+ * the plan's own `type: tdd` frontmatter, which wins over any task in the
+ * plan carrying `tdd="true"` (the #4265 mixed-mode shape), which wins over
+ * the project-wide `workflow.tdd_mode` config default. Mirrors
+ * `cmdPhaseMvpMode`'s precedence-cascade shape immediately above.
+ */
+function cmdPhaseTddApplicable(cwd: string, args: string[], raw: boolean): void {
+  const planPath = args[0];
+  if (!planPath) {
+    error('Usage: phase.tdd-applicable <plan-file> [--cli-flag]', ERROR_REASON.USAGE);
+  }
+
+  const resolvedPath = path.isAbsolute(planPath) ? planPath : path.join(cwd, planPath);
+  if (!fs.existsSync(resolvedPath)) {
+    error(`Plan file not found: ${planPath}`, ERROR_REASON.PHASE_NOT_FOUND);
+  }
+
+  const cliFlagPresent = args.includes('--cli-flag');
+  const content = fs.readFileSync(resolvedPath, 'utf-8');
+  const doc = parsePlanDocument(content, resolvedPath);
+  const planType = doc.type;
+  const taskTddAttribute = doc.tasks.some((t) => t.tdd === 'true');
+  const config = loadConfig(cwd);
+  const configTddMode = Boolean(config.tdd_mode);
+
+  let applicable = false;
+  let source = 'none';
+  if (cliFlagPresent) {
+    applicable = true;
+    source = 'cli_flag';
+  } else if (planType === 'tdd') {
+    applicable = true;
+    source = 'plan_frontmatter';
+  } else if (taskTddAttribute) {
+    applicable = true;
+    source = 'task_attribute';
+  } else if (configTddMode) {
+    applicable = true;
+    source = 'config';
+  }
+
+  output(
+    {
+      applicable,
+      source,
+      plan_type: planType,
+      config_tdd_mode: configTddMode,
+      cli_flag_present: cliFlagPresent,
+    },
+    raw,
+  );
+}
+
 function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
   if (!phase) {
     error('phase identifier required');
@@ -4126,16 +4182,35 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           // #1729: `(?:\s*\([^)\n]{0,200}\))?` after the number tolerates a pre-colon
           // ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE) so
           // `### Phase N (Cluster B): X` resolves. Captures are unchanged.
+          //
+          // #4078: the checkbox branch's separator is no longer colon-only. The
+          // canonical phase lookup has accepted the bullet-house dash grammar
+          // (`- [ ] **Phase N — Name**`, em/en-dash/hyphen/colon) since #2199
+          // (`BULLET_PHASE_LINE_PATTERN`, roadmap-parser.cjs), but this scan still
+          // required `:`, so on a roadmap whose original rows use the dash grammar
+          // the ONLY parseable row above N was typically a later phase.add-ingested
+          // colon-form phase — positionally last — and it won the numeric-minimum
+          // vote it should never have been alone in (observed: 18 of 18 selected,
+          // phases 2–17 skipped). The heading branch stays colon-only, mirroring
+          // `findRoadmapPhaseInContent`'s heading grammar exactly; only the
+          // checkbox branch widens, and only to the separators #2199 already
+          // accepts. The two branches keep separate capture groups, normalized
+          // just below the loop.
           const phasePattern = new RegExp(
-            `(?:#{2,4}|-\\s*\\[[ xX]\\])\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n*]+)`,
+            `(?:#{2,4}\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n*]+)` +
+            `|-\\s*\\[[ xX]\\]\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*[—–:\\-]\\s*([^\\n*]+))`,
             'gi'
           );
           let pm: RegExpExecArray | null;
           while ((pm = phasePattern.exec(roadmapForPhases)) !== null) {
+            // #4078: normalize the two alternation branches' captures (heading
+            // branch → groups 1/2, widened checkbox branch → groups 3/4).
+            const pmNum = pm[1] ?? pm[3];
+            const pmName = pm[2] ?? pm[4];
             // #2786: skip sentinel phase ids (999.x backlog, 0.x drafts) — stage 1
             // already skips sentinel dirs on disk via isSentinelPhaseId (#3185);
             // stage 2's heading scan must not advance into backlog headings either.
-            if (isSentinelPhaseId(pm[1])) continue;
+            if (isSentinelPhaseId(pmNum)) continue;
             // #3701 review: the numeric MINIMUM above N, not the first row above N in
             // DOCUMENT order. This scan walks raw roadmap text, and one global regex
             // sweeps both the `## Phases` checklist and the `## Phase Details`
@@ -4150,10 +4225,10 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             // Phase NUMBERS define sequence here, exactly as `comparePhaseNum` does for
             // the disk scan and for #2028's lowest-outstanding override; the roadmap
             // defines which phases EXIST and which milestone they belong to.
-            if (comparePhaseNum(pm[1], phaseNum) > 0
-              && (roadmapNextNum === null || comparePhaseNum(pm[1], roadmapNextNum) < 0)) {
-              roadmapNextNum = pm[1];
-              roadmapNextName = pm[2]
+            if (comparePhaseNum(pmNum, phaseNum) > 0
+              && (roadmapNextNum === null || comparePhaseNum(pmNum, roadmapNextNum) < 0)) {
+              roadmapNextNum = pmNum;
+              roadmapNextName = pmName
                 .replace(/\(INSERTED\)/i, '')
                 .trim()
                 .toLowerCase()
@@ -4215,8 +4290,13 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       if (roadmapContent !== null) {
         try {
           const milestoneScope = extractCurrentMilestone(roadmapContent, cwd);
+          // #4078: the separator class here mirrors stage 2's widened checkbox
+          // branch (and #2199's BULLET_PHASE_LINE_PATTERN): em/en-dash/hyphen/colon.
+          // Without it, this lowest-outstanding override was blind to dash-grammar
+          // rows and could not correct an out-of-order completion on the same
+          // mixed-grammar roadmaps that broke stage 2.
           const cbPattern = new RegExp(
-            `-\\s*\\[(x| )\\]\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n*]+)`,
+            `-\\s*\\[(x| )\\]\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*[—–:\\-]\\s*([^\\n*]+)`,
             'gi'
           );
           let cbm: RegExpExecArray | null;
@@ -4520,6 +4600,7 @@ export = {
   cmdPhaseAdd,
   cmdPhaseAddBatch,
   cmdPhaseMvpMode,
+  cmdPhaseTddApplicable,
   cmdPhaseInsert,
   cmdPhaseRemove,
   cmdPhaseComplete,
