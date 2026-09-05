@@ -238,8 +238,9 @@ Display blocking issues. Proceed to step 9.
 Track `revision_count` (starts at 0).
 
 **If `revision_count` < 2:**
-- Increment `revision_count`
-- Re-spawn gsd-ui-researcher with revision context:
+- Re-spawn gsd-ui-researcher with revision context. `revision_count` is incremented on the
+  researcher's RETURN, not here — a return of `## REVISION_CONFLICT` must not spend an
+  iteration, and an increment made before dispatch cannot be withheld afterwards:
 
 ```markdown
 <revision>
@@ -248,12 +249,32 @@ The UI checker found issues with the current UI-SPEC.md.
 ### Issues to Fix
 {paste blocking issues from checker return}
 
-Read the existing UI-SPEC.md, fix ONLY the listed issues, re-write the file.
+`required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
+smaller or different mechanism reaching the same property resolves the issue in full — say which
+you used. Re-check the user's locked answers, capability guidance (CLAUDE.md, project skills) and
+the constraints this UI-SPEC already encodes BEFORE editing; if a hint would contradict one, or
+the property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict
+and the alternatives rather than applying or working around it — see your `## Revision Conflict`
+section for its shape.
+
+Read the existing UI-SPEC.md, resolve ONLY the listed issues, re-write the file.
 Do NOT re-ask the user questions that are already answered.
 </revision>
 ```
 
-- After researcher returns → re-spawn checker (step 7)
+- **If the researcher returns `## REVISION_CONFLICT`:** do NOT increment `revision_count` and do
+  NOT re-spawn the checker — a conflict is not resolvable by re-running the same loop. Present the
+  conflict and its alternatives to the user and ask which to take: adopt a named alternative /
+  override the named constraint and apply the hint / amend the constraint itself. Every option
+  resolves the conflict — accepting the spec with the BLOCK still open is NOT offered here, because
+  the blocking `required_property` still fails; that choice belongs to the cap escalation below.
+  Re-spawn the researcher with the chosen resolution and return to this step.
+
+  **Bounded:** a conflict naming the SAME `required_property` twice in a row (no successful revision in between) is a stall, and so is
+  the THIRD conflict return of this loop whatever property it names — alternating property names
+  would otherwise never trip the repeat rule. Stop re-spawning and route it to the same cap
+  escalation below, so declining to spend an iteration cannot make this path unbounded.
+- **On any other return:** increment `revision_count`, then re-spawn checker (step 7)
 
 **If `revision_count` >= 2:**
 ```

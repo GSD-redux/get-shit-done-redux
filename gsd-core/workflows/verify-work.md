@@ -890,6 +890,15 @@ ${AGENT_SKILLS_PLANNER}
 
 <instructions>
 Read existing PLAN.md files. Make targeted updates to address checker issues.
+
+`required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
+smaller or different mechanism reaching the same property addresses the issue in full — say which
+you used. Re-check locked decisions, capability guidance (CLAUDE.md, project skills) and the
+constraints these plans already encode BEFORE editing; if a hint would contradict one, or the
+property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict and
+the alternatives rather than applying or working around it. Full contract:
+`gsd-core/references/planner-revision.md`, which you load in revision mode.
+
 Do NOT replan from scratch unless issues are fundamental.
 </instructions>
 """,
@@ -901,7 +910,23 @@ Do NOT replan from scratch unless issues are fundamental.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
-After planner returns → spawn checker again (verify_gap_plans logic)
+**If the planner returns `## REVISION_CONFLICT`:** do NOT increment `iteration_count` and do NOT
+re-spawn the checker — a conflict is not resolvable by re-running the same loop, so it must not
+consume retry budget. Present the conflict table and its alternatives to the user and ask which
+to take: adopt a named alternative / override the named constraint and apply the hint / amend the
+constraint itself. Every option resolves the conflict; accepting the plans with the blocker still
+open is NOT offered here — that choice belongs to the max-iteration escalation below. Re-spawn
+the planner with the chosen resolution and then **re-evaluate its return from the top of this
+handler** — never fall through to the checker spawn below, because a second conflict is still a
+conflict, not a revised plan, and only a NON-conflict return may reach the checker or increment
+`iteration_count`.
+
+**Bounded:** a conflict naming the SAME `required_property` twice in a row (no successful revision in between) is a stall, and so is
+the THIRD conflict return of this loop whatever property it names — alternating property names
+would otherwise never trip the repeat rule. Stop re-spawning and route it to the same
+max-iteration escalation below.
+
+**On any other return** → spawn checker again (verify_gap_plans logic)
 Increment iteration_count
 
 **If iteration_count >= 3:**

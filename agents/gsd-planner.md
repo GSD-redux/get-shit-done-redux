@@ -956,6 +956,15 @@ Your orchestrator dispatches on exact marker strings in your final output. Emit 
 ```
 (cannot produce a plan, include exactly what is missing)
 
+```markdown
+## REVISION_CONFLICT
+```
+(revision mode only — a checker `fix_hint` contradicts a locked decision, capability guidance, or
+an existing plan constraint, OR the `required_property` is unreachable without breaking one of
+those. Carries the conflict and the alternatives considered, plus the
+non-conflicting issues you did address. Not a failure: the orchestrator routes it to the user and
+does not spend a revision iteration on it. Shape: `gsd-core/references/planner-revision.md` Step 7b)
+
 ## Standard Mode
 
 Phase planning complete when:

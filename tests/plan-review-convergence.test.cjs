@@ -812,6 +812,25 @@ describe('plan-review-convergence workflow: escalation gate (#2306)', () => {
       'workflow must support TEXT_MODE for plain-text escalation prompt'
     );
   });
+
+  test('#3771 "Proceed anyway" is withheld at max cycles when a plan-revision conflict is open', () => {
+    const maxCyclesSection = workflow.slice(workflow.indexOf('**Max cycles check:**'));
+    const branchPoint = maxCyclesSection.indexOf('**Otherwise (`OPEN_CONFLICTS` == 0):**');
+    assert.notEqual(branchPoint, -1,
+      'the max-cycles escalation must branch on OPEN_CONFLICTS before offering "Proceed anyway"');
+    const openConflictBranch = maxCyclesSection.slice(0, branchPoint);
+    const noConflictBranch = maxCyclesSection.slice(branchPoint);
+    // Match the actual OFFER shapes (a numbered option or an AskUserQuestion label), not any
+    // sentence that merely mentions the phrase while explaining it is withheld.
+    const offersProceedAnyway = (text) =>
+      /1\.\s*Proceed anyway/.test(text) || /label:\s*"Proceed anyway"/.test(text);
+    assert.ok(!offersProceedAnyway(openConflictBranch),
+      'an open plan-revision conflict is a blocker — the branch reached while OPEN_CONFLICTS > 0 must never offer to accept it silently');
+    assert.match(openConflictBranch, /blocker/i,
+      'the open-conflict branch must tell the user why "Proceed anyway" is unavailable');
+    assert.ok(offersProceedAnyway(noConflictBranch),
+      '"Proceed anyway" must still be offered when there is no open conflict, only HIGH/actionable concerns');
+  });
 });
 
 // ─── Workflow: stall detection — behavioral ───────────────────────────────

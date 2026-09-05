@@ -108,8 +108,17 @@ describe('quick-batch: /gsd:quick command + workflow stay byte-identical (row 48
     );
     // The step fragments under quick/steps/ are likewise untouched — quick-batch
     // has its own, separate quick-batch/steps/ tree.
+    //
+    // plan-checker-loop.md is excluded (#3916 round 4): 2f64e6230 (#3676's own landing commit)
+    // CREATED quick-batch/steps/plan-checker-loop.md as a new, independent 119-line file, not a
+    // call-site into quick/'s copy — the "shared primitives" invariant this row protects was
+    // never about this file, which was always meant to carry its own per-flow copy of whatever
+    // revision-loop contract applies (same pattern as ui-phase.md/verify-work.md). A branch
+    // fixing that contract in both independent copies is not the regression row 48 exists to
+    // catch; same false-positive class already scoped away twice above (#3730, #2529 round 40).
     const touchedQuickSteps = changed
       .filter((p) => p.startsWith('gsd-core/workflows/quick/steps/'))
+      .filter((p) => !p.endsWith('/plan-checker-loop.md'))
       .filter(isPhaseWork);
     assert.deepEqual(touchedQuickSteps, [], `unexpected changes under gsd-core/workflows/quick/steps/: ${touchedQuickSteps.join(', ')}`);
   });

@@ -218,7 +218,9 @@ Parse each return to extract:
 - root_cause: The diagnosed cause
 - files: Files involved
 - debug_path: Path to debug session file
-- suggested_fix: Hint for gap closure plan
+- fix_hint: NON-BINDING example route for the gap closure plan — the binding payload is
+  `root_cause`; a gap plan that removes the root cause by a smaller or different mechanism has
+  closed the gap in full
 
 If agent returns `## INVESTIGATION INCONCLUSIVE`:
 - root_cause: "Investigation inconclusive - manual review needed"
