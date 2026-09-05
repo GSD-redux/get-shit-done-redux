@@ -143,9 +143,15 @@ if [ -n "$DEV_URL" ]; then
   for SHOT in "desktop:1440,900" "mobile:375,812" "tablet:768,1024"; do
     SHOT_NAME="${SHOT%%:*}"
     SHOT_VIEWPORT="${SHOT##*:}"
+    # --timeout is not belt-and-braces here: `playwright screenshot` passes it to
+    # context.setDefaultTimeout() and defaults it to 0 — NO timeout — so this CLI path
+    # drops the 30s bound the Playwright library applies everywhere else. Without it a
+    # hung navigation blocks the audit forever, which is the same failure the probe's
+    # AbortSignal.timeout(5000) closes one step earlier.
     if npx playwright screenshot "$DEV_URL" \
          "$SCREENSHOT_DIR/$SHOT_NAME.png" \
-         --viewport-size="$SHOT_VIEWPORT" >/dev/null 2>&1 \
+         --viewport-size="$SHOT_VIEWPORT" \
+         --timeout=30000 >/dev/null 2>&1 \
        && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
       CAPTURED=$((CAPTURED + 1))
     else

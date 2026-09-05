@@ -281,6 +281,24 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     }
   });
 
+  test('capture invocations are time-bounded, as the probe is', () => {
+    // `playwright screenshot` forwards --timeout to context.setDefaultTimeout() and
+    // defaults it to 0, i.e. NO timeout — so this CLI path drops the bound the
+    // Playwright library applies by default. An unbounded capture reinstates the
+    // hang the probe's own time bound exists to prevent, one step later.
+    // logicalLines, because the invocation spans four physical lines.
+    const captures = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .filter((l) => l.includes('playwright screenshot'));
+    assert.ok(captures.length > 0, 'expected at least one capture invocation');
+    for (const line of captures) {
+      assert.ok(
+        /--timeout[= ]/.test(line),
+        `capture must be time-bounded — playwright screenshot defaults to no timeout: ${line}`
+      );
+    }
+  });
+
   test('a total capture failure removes its stray files, not just an empty directory', () => {
     // rmdir alone cannot honour a "leaves nothing behind" claim: it succeeds only on a
     // genuinely empty directory and its stderr is discarded, so a zero-byte or partial
