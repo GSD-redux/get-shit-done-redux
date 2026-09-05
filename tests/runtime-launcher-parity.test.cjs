@@ -393,7 +393,18 @@ describe('runtime-launcher-parity (#373)', () => {
 
       const r = runHookSeam(scriptPath, [], {
         interpreter: 'bash',
-        env: { ...process.env, PATH: isolatedPath, HOME: base },
+        // Loud-guard requires every runtime-home arm to genuinely miss, not
+        // just PATH (#4205 class: an ambient config-dir var pointing at a
+        // real install would resolve here instead of the hard error).
+        env: {
+          ...process.env, PATH: isolatedPath, HOME: base,
+          CLAUDE_CONFIG_DIR: undefined, HERMES_HOME: undefined, CURSOR_CONFIG_DIR: undefined,
+          CODEX_HOME: undefined, GEMINI_CONFIG_DIR: undefined, COPILOT_CONFIG_DIR: undefined,
+          WINDSURF_CONFIG_DIR: undefined, AUGMENT_CONFIG_DIR: undefined, TRAE_CONFIG_DIR: undefined,
+          QWEN_CONFIG_DIR: undefined, CODEBUDDY_CONFIG_DIR: undefined, CLINE_CONFIG_DIR: undefined,
+          GROK_AGENTS_HOME: undefined, ANTIGRAVITY_CONFIG_DIR: undefined, OPENCODE_CONFIG_DIR: undefined,
+          KILO_CONFIG_DIR: undefined,
+        },
       });
       const threw = r.exitCode !== 0;
       const stderrOutput = r.stderr || '';
@@ -592,7 +603,14 @@ describe('runtime-launcher-parity (#373)', () => {
       }
 
       const stdout = runBashFile(scriptPath, {
-        env: { ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome },
+        // Ambient CLAUDE_CONFIG_DIR/HERMES_HOME/CURSOR_CONFIG_DIR all resolve
+        // arms checked before CODEX_HOME (#4205 class: same env-leak bug, this
+        // time via config-dir vars rather than PATH) — clear them so only
+        // HOME's default $HOME/.codex fallback can win.
+        env: {
+          ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome,
+          CLAUDE_CONFIG_DIR: undefined, HERMES_HOME: undefined, CURSOR_CONFIG_DIR: undefined,
+        },
       });
 
       const normStdout = stdout.replace(/\\/g, '/');
@@ -1002,7 +1020,9 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       }
 
       const stdout = runBashFile(scriptPath, {
-        env: { ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome },
+        // Ambient CLAUDE_CONFIG_DIR would override the $HOME/.claude default
+        // this test relies on (#4205 class: env-leak, not PATH-leak).
+        env: { ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome, CLAUDE_CONFIG_DIR: undefined },
       });
 
       // GSD_TOOLS must point into the fake ~/.claude dir
@@ -1057,7 +1077,18 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
 
       const r = runHookSeam(scriptPath, [], {
         interpreter: 'bash',
-        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
+        // "All three miss" requires every runtime-home arm to genuinely miss,
+        // not just the first (#4205 class: an ambient config-dir var pointing
+        // at a real install would resolve here instead of the hard error).
+        env: {
+          ...process.env, PATH: isolatedPath, HOME: fakeHome,
+          CLAUDE_CONFIG_DIR: undefined, HERMES_HOME: undefined, CURSOR_CONFIG_DIR: undefined,
+          CODEX_HOME: undefined, GEMINI_CONFIG_DIR: undefined, COPILOT_CONFIG_DIR: undefined,
+          WINDSURF_CONFIG_DIR: undefined, AUGMENT_CONFIG_DIR: undefined, TRAE_CONFIG_DIR: undefined,
+          QWEN_CONFIG_DIR: undefined, CODEBUDDY_CONFIG_DIR: undefined, CLINE_CONFIG_DIR: undefined,
+          GROK_AGENTS_HOME: undefined, ANTIGRAVITY_CONFIG_DIR: undefined, OPENCODE_CONFIG_DIR: undefined,
+          KILO_CONFIG_DIR: undefined,
+        },
       });
       const threw = r.exitCode !== 0;
       const stderrOutput = r.stderr || '';
@@ -1096,8 +1127,10 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  *
  * Asserts:
  * (A) Snippet contains all expected non-Claude runtime home probes (structural).
- * (B) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd_run is NOT on
- *     PATH, a stub at ${HERMES_HOME}/gsd-core/bin/gsd-tools.cjs is invoked.
+ * (B0) buildIsolatedPath() co-location invariant (see below).
+ * (B1) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd_run is NOT on
+ *     PATH — including a leaked ambient gsd_run planted on PATH, #4205 — a
+ *     stub at ${HERMES_HOME}/gsd-core/bin/gsd-tools.cjs is invoked.
  * (C) Default Hermes path behavioral: stub at $HOME/.hermes/gsd-core/bin/
  *     gsd-tools.cjs is invoked when HERMES_HOME is not set.
  * (D) Resolution order: non-Claude homes are probed BEFORE the hard error,
@@ -1435,7 +1468,9 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       fs.writeFileSync(scriptPath, scriptContent);
 
       const stdout = runBashFile(scriptPath, {
-        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome, HERMES_HOME: fakeHermesHome },
+        // CLAUDE_CONFIG_DIR resolves before HERMES_HOME; clear it so ambient
+        // leakage can't preempt the arm under test (#4205 class, env vector).
+        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome, HERMES_HOME: fakeHermesHome, CLAUDE_CONFIG_DIR: undefined },
       });
 
       assert.ok(
@@ -1452,59 +1487,6 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       );
     },
   );
-
-  // ── (B) Behavioral: HERMES_HOME stub is resolved ──────────────────────────
-  test('(B) gsd_run resolves ${HERMES_HOME}/gsd-core/bin/ stub when set and local+PATH both miss', () => {
-    const fakeHome       = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-home-b-'));
-    const fakeHermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-hermes-'));
-    const fakeRuntime    = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-rt-'));
-    const { isolatedPath, nodeBinDir } = buildIsolatedPath();
-    try {
-      const hermesBinDir = path.join(fakeHermesHome, 'gsd-core', 'bin');
-      fs.mkdirSync(hermesBinDir, { recursive: true });
-
-      const stubPath = path.join(hermesBinDir, 'gsd-tools.cjs');
-      fs.writeFileSync(
-        stubPath,
-        '#!/usr/bin/env node\nconsole.log("HERMES_HOME_STUB:" + process.argv.slice(2).join(","));\n',
-      );
-      fs.chmodSync(stubPath, 0o755);
-
-      const snippet = fs.readFileSync(SNIPPET_FILE, 'utf8');
-      // Export HOME to an isolated temp dir (no .claude install there) so the
-      // $HOME/.claude arm is skipped and we fall through to the HERMES_HOME arm.
-      const scriptContent =
-        `unset GSD_TOOLS\n` +
-        `export HOME=${JSON.stringify(fakeHome)}\n` +
-        `export RUNTIME_DIR=${JSON.stringify(fakeRuntime)}\n` +
-        `export HERMES_HOME=${JSON.stringify(fakeHermesHome)}\n` +
-        snippet +
-        `\nprintf "GSD_TOOLS=%s\\n" "$GSD_TOOLS"\n` +
-        `gsd_run ping test\n`;
-
-      const scriptPath = path.join(fakeRuntime, 'test-hermes-home.sh');
-      fs.writeFileSync(scriptPath, scriptContent);
-
-      const stdout = runBashFile(scriptPath, {
-        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome, HERMES_HOME: fakeHermesHome },
-      });
-
-      const normStdout = stdout.replace(/\\/g, '/');
-      assert.ok(
-        normStdout.includes('gsd-core/bin/'),
-        `Expected GSD_TOOLS to resolve into hermes gsd-core/bin/, got:\n${stdout.trim()}`,
-      );
-      assert.ok(
-        stdout.includes('HERMES_HOME_STUB:ping,test'),
-        `Expected stub output "HERMES_HOME_STUB:ping,test", got:\n${stdout.trim()}`,
-      );
-    } finally {
-      cleanup(fakeHome);
-      cleanup(fakeHermesHome);
-      cleanup(fakeRuntime);
-      if (nodeBinDir) cleanup(nodeBinDir);
-    }
-  });
 
   // ── (C) Behavioral: default .hermes path used when HERMES_HOME not set ────
   test('(C) gsd_run resolves $HOME/.hermes/gsd-core/bin/ stub when HERMES_HOME is unset', () => {
@@ -1535,7 +1517,11 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       fs.writeFileSync(scriptPath, scriptContent);
 
       const stdout = runBashFile(scriptPath, {
-        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome },
+        // CLAUDE_CONFIG_DIR resolves before the HERMES_HOME arm under test
+        // (#4205 class, env vector); script-level `unset HERMES_HOME` above
+        // already handles that var, but Node's env spread still needs to
+        // clear CLAUDE_CONFIG_DIR before bash ever sees it.
+        env: { ...process.env, PATH: isolatedPath, HOME: fakeHome, CLAUDE_CONFIG_DIR: undefined },
       });
 
       const normStdout = stdout.replace(/\\/g, '/');
