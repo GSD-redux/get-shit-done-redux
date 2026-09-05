@@ -382,7 +382,7 @@ describe('runtime-launcher-parity (#373)', () => {
 
       // Build a PATH that has noToolsBin first (no gsd_run stub there) but retains
       // system paths needed for bash. Exclude any PATH entry that contains a gsd_run
-      // binary (#4205: the resolver's actual PATH-fallback probe target).
+      // binary. See #4205 / buildIsolatedPath() below for why gsd_run.
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
         .filter((p) => {
@@ -580,7 +580,7 @@ describe('runtime-launcher-parity (#373)', () => {
           return false;
         }
       };
-      // #4205: filter on gsd_run, the resolver's actual PATH-fallback probe target.
+      // #4205: filter on gsd_run — see buildIsolatedPath() below for why.
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
         .filter((p) => !hasExecutable(p, 'gsd_run'));
@@ -972,10 +972,10 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       fs.writeFileSync(scriptPath, scriptContent);
 
       // Build a PATH with no gsd_run binary to force the ~/.claude arm.
-      // Filter out directories that contain a gsd_run executable (#4205: the
-      // resolver's actual PATH-fallback probe target, not `gsd-tools`). If node
-      // lives in the same directory as gsd_run, create a dedicated shim dir with
-      // a symlink to node only (no gsd_run there).
+      // Filter out directories that contain a gsd_run executable (#4205; see
+      // buildIsolatedPath() below for why). If node lives in the same directory
+      // as gsd_run, create a dedicated shim dir with a symlink to node only
+      // (no gsd_run there).
       const nodeBinResult = runHookSeam('node', [], { interpreter: 'which' });
       throwIfFailed(nodeBinResult, 'which node');
       const nodeBin = nodeBinResult.stdout.trim();
@@ -1042,7 +1042,7 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       const scriptPath = path.join(fakeRuntime, 'test-allfail.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      // #4205: filter on gsd_run, the resolver's actual PATH-fallback probe target.
+      // #4205: filter on gsd_run — see buildIsolatedPath() below for why.
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
         .filter((p) => {
@@ -1334,8 +1334,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       t.after(() => cleanup(fakeBinDir));
       t.after(() => cleanup(emptyDir));
 
-      // Fake gsd_run shim (executable file) — the resolver's actual PATH-fallback
-      // probe target (#4205: NOT `gsd-tools`).
+      // Fake gsd_run shim (executable file). See #4205 / buildIsolatedPath() above.
       const fakeGsdRun = path.join(fakeBinDir, 'gsd_run');
       fs.writeFileSync(fakeGsdRun, '#!/bin/sh\necho fake-gsd-run\n');
       fs.chmodSync(fakeGsdRun, 0o755);
@@ -1412,7 +1411,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       } finally {
         process.env.PATH = origPath;
       }
-      t.after(() => { if (nodeBinDir) cleanup(nodeBinDir); });
+      t.after(() => cleanup(nodeBinDir));
 
       const hermesBinDir = path.join(fakeHermesHome, 'gsd-core', 'bin');
       fs.mkdirSync(hermesBinDir, { recursive: true });
@@ -1443,10 +1442,13 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
         !stdout.includes('SENTINEL_INVOKED'),
         `Expected the leaked PATH gsd_run to never be invoked, got:\n${stdout.trim()}`,
       );
-      const normStdout = stdout.replace(/\\/g, '/');
       assert.ok(
-        normStdout.includes('gsd-core/bin/') && stdout.includes('HERMES_HOME_STUB:ping,test'),
-        `Expected resolver to fall through to the HERMES_HOME stub despite the leaked PATH gsd_run, got:\n${stdout.trim()}`,
+        stdout.includes('gsd-core/bin/'),
+        `Expected GSD_TOOLS to resolve into hermes gsd-core/bin/, got:\n${stdout.trim()}`,
+      );
+      assert.ok(
+        stdout.includes('HERMES_HOME_STUB:ping,test'),
+        `Expected stub output "HERMES_HOME_STUB:ping,test", got:\n${stdout.trim()}`,
       );
     },
   );
