@@ -110,8 +110,11 @@ describe('#3159: session-survivability executor dispatch', () => {
     assert.match(isolation, /true.*background[\s\S]*false.*synchronously[\s\S]*wait/s);
     assert.doesNotMatch(isolation, /workflow\.session_outlives_turn/);
     const verifierStart = dispatch.indexOf('## verifier Agent dispatch');
+    const verifierEnd = dispatch.indexOf('<!-- end verifier Agent dispatch -->', verifierStart);
     assert.ok(verifierStart !== -1, 'verifier dispatch section must exist');
-    const verifierRegion = dispatch.slice(verifierStart);
+    assert.ok(verifierEnd !== -1, 'verifier dispatch section must have an end marker');
+    assert.ok(verifierStart < verifierEnd, 'verifier dispatch boundaries must be ordered');
+    const verifierRegion = dispatch.slice(verifierStart, verifierEnd);
     const trueAnchor = verifierRegion.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
     const falseAnchor = verifierRegion.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
     assert.ok(trueAnchor !== -1, 'verifier true branch must exist');
@@ -120,12 +123,21 @@ describe('#3159: session-survivability executor dispatch', () => {
 
     const trueBranch = verifierRegion.slice(trueAnchor, falseAnchor);
     const falseBranch = verifierRegion.slice(falseAnchor);
-    assert.match(trueBranch, /subagent_type="gsd-verifier"/);
-    assert.match(trueBranch, /run_in_background\s*=\s*true/);
-    assert.doesNotMatch(trueBranch, /run_in_background\s*=\s*false/);
-    assert.match(falseBranch, /subagent_type="gsd-verifier"/);
-    assert.match(falseBranch, /run_in_background\s*=\s*false/);
-    assert.doesNotMatch(falseBranch, /run_in_background\s*=\s*true/);
+    const trueAgentStart = trueBranch.indexOf('Agent(');
+    const trueAgentEnd = trueBranch.indexOf('\n)', trueAgentStart);
+    const falseAgentStart = falseBranch.indexOf('Agent(');
+    const falseAgentEnd = falseBranch.indexOf('\n)', falseAgentStart);
+    assert.ok(trueAgentStart !== -1 && trueAgentEnd !== -1, 'true verifier Agent() call must exist');
+    assert.ok(falseAgentStart !== -1 && falseAgentEnd !== -1, 'false verifier Agent() call must exist');
+
+    const trueAgent = trueBranch.slice(trueAgentStart, trueAgentEnd);
+    const falseAgent = falseBranch.slice(falseAgentStart, falseAgentEnd);
+    assert.match(trueAgent, /subagent_type="gsd-verifier"/);
+    assert.match(trueAgent, /run_in_background\s*=\s*true/);
+    assert.doesNotMatch(trueAgent, /run_in_background\s*=\s*false/);
+    assert.match(falseAgent, /subagent_type="gsd-verifier"/);
+    assert.match(falseAgent, /run_in_background\s*=\s*false/);
+    assert.doesNotMatch(falseAgent, /run_in_background\s*=\s*true/);
     assert.match(workflow, /literal verifier `Agent\(\)` branch/);
   });
 
