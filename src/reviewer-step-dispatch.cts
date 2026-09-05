@@ -189,6 +189,25 @@ function validatePaths(
 // `!== 0`. See the call site below.
 
 /**
+ * One-line depth definition for an external reviewer lane, condensed from `<depth_levels>` in
+ * `agents/gsd-code-reviewer.md` (#4209 review: a bare `quick`/`standard`/`deep` label means
+ * nothing to a third-party CLI that never sees that agent's system prompt — unlike the internal
+ * reviewer, whose own persona fully defines these three terms).
+ */
+function depthMeaning(depth: string): string {
+  switch (depth) {
+    case 'quick':
+      return 'pattern-scan for common issues only — hardcoded secrets, dangerous functions, debug artifacts; do not read full file contents';
+    case 'standard':
+      return 'read each changed file in context for bugs, security issues, and quality problems';
+    case 'deep':
+      return 'standard, plus cross-file analysis — trace call chains and type consistency across module boundaries';
+    default:
+      return depth;
+  }
+}
+
+/**
  * Build the bounded source-review prompt. Metadata only — repoRoot, paths, depth, base SHA, and
  * the four fixed prohibitions. NEVER embeds file contents.
  */
@@ -211,10 +230,10 @@ export function buildSourceReviewPrompt(input: {
     `Base SHA: ${input.baseSha}`,
     '',
     'Review the changes introduced in each file below relative to the base SHA above, at the',
-    'requested depth. Report every bug, security issue, and code-quality problem you find. For every claim',
-    'you make, cite the exact file path and line number(s) it applies to — a claim with no',
-    'file:line citation cannot be independently re-verified and will be discarded by the',
-    'consolidating reviewer.',
+    `requested depth (${depthMeaning(input.depth)}). Report every bug, security issue, and`,
+    'code-quality problem you find. For every claim you make, cite the exact file path and line',
+    'number(s) it applies to — a claim with no file:line citation cannot be independently',
+    're-verified and will be discarded by the consolidating reviewer.',
     '',
     '### Files in scope',
     fileLines,
