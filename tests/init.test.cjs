@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter } = require('./helpers.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
@@ -3266,19 +3266,7 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
    * it were stdout.
    */
   function captureInitVerifyWork(t, cwd, phase) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    initMod.cmdInitVerifyWork(cwd, phase, false);
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, () => initMod.cmdInitVerifyWork(cwd, phase, false));
     assert.ok(captured.length > 0, 'cmdInitVerifyWork produced no stdout output');
     return captured;
   }
@@ -3379,19 +3367,7 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   });
 
   function captureFd1(t, run) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    run();
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, run);
     assert.ok(captured.length > 0, 'command produced no stdout output');
     return JSON.parse(captured);
   }
