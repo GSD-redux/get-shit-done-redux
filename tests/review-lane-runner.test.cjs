@@ -14,7 +14,7 @@ const path = require('node:path');
 const fc = require('fast-check');
 
 const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
-const { resolveLanePlan, LANE_UNAVAILABLE } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+const { resolveLanePlan, resolveLaneEffort, LANE_UNAVAILABLE } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
 const {
   checkEgressHost,
   probeLane,
@@ -231,6 +231,108 @@ describe('runner — empty-output policy (#2494 / #2605 / #2794)', () => {
       const d = deps();
       assert.equal(writeReviewOrStub(p, '   \n', d).stubbed, true, `${slug} accepted whitespace`);
     }
+  });
+
+  /**
+   * A plan built through the SAME two steps the CLI runs (#4255): resolve the lane's review
+   * effort, then expand it into argv. `plan()` above passes no effort at all, which is the right
+   * default for rows that do not care — but a stub row asserting the effort must not invent it.
+   */
+  function planWithEffort(slug) {
+    const lane = REVIEWER_LANES.find((l) => l.slug === slug);
+    const eff = resolveLaneEffort(lane, () => undefined, (host, level) => ({
+      argv: ['-c', `model_reasoning_effort=${level}`], value: level,
+    }));
+    const r = resolveLanePlan({
+      lane, configGet: () => undefined, runDir: RUN, repoRoot: ROOT,
+      effortArgs: eff.argv, effortValue: eff.value,
+    });
+    assert.equal(r.ok, true, `${slug} failed to resolve`);
+    return r.plan;
+  }
+
+  test('#4255 — the stub names the effort and says the exit was clean', () => {
+    // A crash, a timeout kill and a model that ended its turn without writing a final message all
+    // reach the stub as the same zero bytes. The third is what a too-low reasoning effort produces
+    // on a large source-grounded prompt, and it was indistinguishable from the first two — the
+    // operator read "Codex failed" and went looking for a broken CLI. The stub now names the level
+    // it ran at (the value they would change) and how the process actually ended.
+    const p = planWithEffort('codex');
+    const d = deps();
+    writeReviewOrStub(p, '', d, undefined, { status: 0 });
+    const out = d.files[p.reviewPath];
+    assert.ok(out.includes('failed or returned empty output'),
+      'the header every downstream reader greps for must be untouched');
+    assert.ok(/ran at effort=high/.test(out), 'the stub must name the effort the lane ran at');
+    assert.ok(/exited cleanly inside the timeout/.test(out));
+    assert.ok(/ending its turn without writing a final message/.test(out),
+      'a clean exit with no output must be named as the likeliest cause, not left reading as a crash');
+    assert.ok(/most often/.test(out),
+      'the cause is hedged on purpose: a clean empty exit is consistent with a stopped-short model '
+      + 'AND with a CLI writing its output somewhere this lane did not read');
+  });
+
+  test('#4255 — a timeout kill and a crash are NOT reported as stopping short', () => {
+    // The non-vacuity half: the stopped-short hint must be earned by a clean exit, or it is
+    // advice that sends the operator to raise effort on a lane that was killed or crashed.
+    const timedOut = deps();
+    writeReviewOrStub(planWithEffort('codex'), '', timedOut, undefined, { status: null, errorCode: 'ETIMEDOUT' });
+    const t = timedOut.files[planWithEffort('codex').reviewPath];
+    assert.ok(/killed by the outer timeout/.test(t));
+    assert.ok(!/most often/.test(t), 'a timeout is not a model stopping short');
+
+    const crashed = deps();
+    writeReviewOrStub(planWithEffort('codex'), '', crashed, undefined, { status: 127 });
+    const c = crashed.files[planWithEffort('codex').reviewPath];
+    assert.ok(/exited with status 127/.test(c));
+    assert.ok(!/most often/.test(c), 'a non-zero exit is not a model stopping short');
+
+    // `status` is null for a process that never started or died on a signal, exactly as it is for
+    // a timeout kill. Reporting "status null" named nothing the operator could act on, and the
+    // two must not collapse into one another (Codex review of #4255).
+    for (const [label, out, expect] of [
+      ['binary missing', { status: null, errorCode: 'ENOENT' }, /did not exit normally \(ENOENT\)/],
+      ['killed by a signal', { status: null }, /did not exit normally \(killed by a signal\)/],
+    ]) {
+      const d = deps();
+      writeReviewOrStub(planWithEffort('codex'), '', d, undefined, out);
+      const text = d.files[planWithEffort('codex').reviewPath];
+      assert.match(text, expect, `${label} must be named, not reported as "status null"`);
+      assert.ok(!/status null/.test(text), `${label}: "status null" tells the operator nothing`);
+      assert.ok(!/most often/.test(text), `${label} is not a model stopping short`);
+    }
+  });
+
+  test('#4255 — an HTTP lane is not described as having a reviewer CLI', () => {
+    // ollama is reached directly over HTTP: there is no CLI, so "the CLI's own configuration
+    // applied" would be a lie about what ran (Codex review of #4255).
+    const p = plan('ollama');
+    const d = deps();
+    writeReviewOrStub(p, '', d, undefined, { status: 0 });
+    const out = d.files[p.reviewPath];
+    assert.ok(/HTTP lane/.test(out));
+    assert.ok(!/reviewer CLI/.test(out), 'an HTTP lane has no reviewer CLI to attribute anything to');
+    assert.ok(!/effort=/.test(out), 'no level may be claimed for a transport that carries none');
+  });
+
+  test('#4255 — a lane that sent no effort argument says so, rather than naming a level', () => {
+    // gemini declares no effort channel, so `plan.effort` is null. Printing a level there would
+    // be a lie about what reached the CLI; the stub says the CLI's own configuration applied.
+    const p = plan('gemini');
+    const d = deps();
+    writeReviewOrStub(p, '', d, undefined, { status: 0 });
+    const out = d.files[p.reviewPath];
+    assert.ok(/no effort argument, so the reviewer CLI's own configuration applied/.test(out));
+    assert.ok(!/effort=/.test(out), 'no level may be claimed for a lane that sent none');
+  });
+
+  test('#4255 — the diagnosis is added even when the outcome is unknown', () => {
+    // The HTTP path has no spawn outcome to pass. The effort half still applies, so the line is
+    // still written — just without the exit clause it cannot honestly make.
+    const p = planWithEffort('codex');
+    const d = deps();
+    writeReviewOrStub(p, '', d);
+    assert.ok(/ran at effort=high/.test(d.files[p.reviewPath]));
   });
 
   test('the stub is distinguishable from a real review', () => {

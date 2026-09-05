@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 Package spike experiment findings into a persistent project skill — an implementation blueprint
 for future build conversations. Reads from `.planning/spikes/`, writes skill to

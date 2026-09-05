@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 Cross-AI peer review — invoke external AI CLIs to independently review phase plans.
 Each CLI gets the same prompt (PROJECT.md context, phase plans, requirements) and
@@ -351,6 +353,20 @@ FAILS the parity gate (`checkReviewerLaneParity` → `bespoke_leg_present`). Lan
 declared in the manifest — timeout floor, probe, prompt/output channel, empty-output policy — and
 behaviour that data genuinely cannot express is a named first-party `handler` (ADR-2782 D6), never
 a bespoke block here.
+
+**Effort and model resolution (#4255).** A lane's reasoning effort and model each resolve through
+their own declared key, and the resolution order is inspectable rather than implicit:
+
+| piece | order, highest first |
+|---|---|
+| model | pinned reviewer-instance `--model` → the lane's `modelConfigKey` (`review.models.<slug>`) → the CLI's own default |
+| effort | the lane's `effortConfigKey` (`review.effort.<slug>`) → the lane's declared `defaultEffort` → **nothing emitted**, so the CLI's own configuration applies |
+
+Both come from the LANE. Effort in particular is never read from an agent's execution settings:
+until #4255 it was resolved by querying `gsd-plan-checker`, so every prompt-fed lane ran at that
+verifier's `low` and, because the rendered argument is a CLI config override, it silently beat the
+effort the operator had configured for the reviewer CLI itself. A lane that declares no effort
+emits no argument at all — a value borrowed from an unrelated agent is worse than no value.
 
 **Timeout guidance (#2194):** prompt-fed source-grounded reviews are slow — measured ~570 s for
 Codex at `xhigh` effort and ~525 s for headless Claude on a large plan set. Each lane declares its

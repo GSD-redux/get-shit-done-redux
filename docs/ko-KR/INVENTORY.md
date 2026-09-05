@@ -476,6 +476,7 @@
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 워크트리 루트 외부의 절대 경로로 Edit/Write/MultiEdit를 하드 차단 (PR #579, #260) |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | 프로젝트의 해석된 디스패치 격리가 `harness-worktree`일 때 하네스 격리 매개변수가 누락된 executor `Agent()` 디스패치를 하드 차단 (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | 큐레이션된 `.planning/` 아티팩트(ROADMAP.md, 마일스톤 로드맵, STATE.md)를 치명적으로 축소하는 전체 파일 `Write`를 하드 차단. 일회용 센티널 `.planning/.gsd-allow-shrink`(워크플로 단계) 또는 `GSD_ALLOW_PLANNING_SHRINK=1`(대화형)로 우회 가능 (#2255, #973의 수정 3) |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Read / Grep / Bash로 `.env`, `.env.<suffix>`(`.env.example` 등 템플릿 제외), `.secrets`를 읽는 호출을 하드 차단. 설치 프로그램이 기록하던 `Read(.env*)` deny 규칙을 대체 (#4221) |
 | `gsd-session-state.sh` | `SessionStart` | 셸 기반 런타임을 위한 세션 상태 추적 |
 | `gsd-validate-commit.sh` | `PreToolUse` | 컨벤셔널 커밋 적용을 위한 커밋 검증 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 워크플로우 전환을 위한 단계 경계 감지 |

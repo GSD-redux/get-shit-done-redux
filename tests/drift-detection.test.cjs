@@ -712,6 +712,117 @@ describe('verify codebase-drift CLI', () => {
     assert.ok(data.elements.length >= 3);
   });
 
+  // ─── Regression #4081 — core.quotepath C-quoted non-ASCII paths ──────────
+  //
+  // With git's default core.quotepath=true, `diff --name-status` C-quotes any
+  // path containing non-ASCII bytes: `docs/设计说明/overview.md` arrives as the
+  // literal `"docs/\350\256\276…/overview.md"`. The gate's line parser used to
+  // capture that quoted string verbatim, so (1) `isPathMapped` compared the
+  // quoted prefix `"docs` against STRUCTURE.md and misclassified DOCUMENTED
+  // directories as new_dir, and (2) the garbled string flowed into
+  // elements[].path / affected_paths. Paths must be decoded before use.
+
+  test('non-ASCII path under documented dir is not new_dir and paths decode (#4081)', () => {
+    const structure = path.join(tmp, '.planning', 'codebase', 'STRUCTURE.md');
+    fs.writeFileSync(structure, '# Codebase Structure\n\n- `docs/`\n');
+    writeMappedCommit(structure, git(tmp, 'rev-parse', 'HEAD'), '2026-09-04');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase');
+
+    // Non-ASCII directory + file name under the documented `docs/` prefix.
+    const dir = path.join(tmp, 'docs', '设计说明');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'overview.md'), '# overview\n');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'add non-ascii doc');
+
+    const r = runGsdTools(['verify', 'codebase-drift'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+    // The file lives under a DOCUMENTED directory — it is mapped, not drift:
+    // no element may exist for it, under any path spelling.
+    const garbled = data.elements.filter((el) => String(el.path).includes('docs'));
+    assert.strictEqual(
+      garbled.length, 0,
+      `docs/ file must classify as mapped (no element); got ${JSON.stringify(data.elements)}`,
+    );
+    // And nothing anywhere in the output may carry git's C-quoting artifacts
+    // (a literal leading quote or backslash-octal escapes).
+    const serialized = JSON.stringify([data.affected_paths, data.elements]);
+    assert.ok(!/\\\\3[0-9]{2}/.test(serialized) && !serialized.includes('\\"docs'),
+      `garbled C-quoted path leaked into output: ${serialized}`);
+  });
+
+  test('elements and affected_paths contain decoded repo-relative paths (#4081)', () => {
+    // Threshold 1 so a single drift element flips action_required — the
+    // assertion below depends on the gate triggering, not staying latent
+    // below the default threshold of 3.
+    fs.writeFileSync(
+      path.join(tmp, '.planning', 'config.json'),
+      JSON.stringify({ workflow: { drift_threshold: 1 } }, null, 2),
+    );
+    const structure = path.join(tmp, '.planning', 'codebase', 'STRUCTURE.md');
+    fs.writeFileSync(structure, '# Codebase Structure\n\n- `src/`\n');
+    writeMappedCommit(structure, git(tmp, 'rev-parse', 'HEAD'), '2026-09-04');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase');
+
+    // Undocumented non-ASCII top-level dir: legitimately drift, but the
+    // reported path must be the real repo-relative UTF-8 path — git's
+    // C-quoted form must be decoded, never passed through.
+    const dir = path.join(tmp, '设计资料');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '文件.md'), '# doc\n');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'add non-ascii dir');
+
+    const r = runGsdTools(['verify', 'codebase-drift'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+    assert.strictEqual(data.action_required, true, 'undocumented dir must stay drift');
+    const paths = [
+      ...data.elements.map((el) => el.path),
+      ...(data.affected_paths || []),
+    ];
+    assert.ok(paths.length > 0, 'expected at least one drift element');
+    for (const p of paths) {
+      assert.ok(!p.startsWith('"'),
+        `path must be decoded, not C-quoted: ${JSON.stringify(p)}`);
+      assert.ok(!/\\[0-9]{3}/.test(p),
+        `path must not contain octal escapes: ${JSON.stringify(p)}`);
+    }
+    assert.ok(paths.includes('设计资料/文件.md'),
+      `expected the real UTF-8 path in output; got ${JSON.stringify(paths)}`);
+  });
+
+  test('rename (R100) with non-ASCII target parses and decodes both fields (#4081)', () => {
+    const structure = path.join(tmp, '.planning', 'codebase', 'STRUCTURE.md');
+    fs.writeFileSync(structure, '# Codebase Structure\n\n- `docs/`\n');
+    const seed = path.join(tmp, 'docs', 'old.md');
+    fs.mkdirSync(path.dirname(seed), { recursive: true });
+    fs.writeFileSync(seed, '# seed\n');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'seed ascii file');
+    writeMappedCommit(structure, git(tmp, 'rev-parse', 'HEAD'), '2026-09-04');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase');
+
+    // Rename into a non-ASCII name — diff emits R100\t"docs/\350…" (quoted
+    // second field). The new path must decode and classify as mapped, and no
+    // quoted path may leak into the output.
+    const renamed = path.join(tmp, 'docs', '新名称.md');
+    fs.renameSync(seed, renamed);
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'rename to non-ascii');
+
+    const r = runGsdTools(['verify', 'codebase-drift'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+    const leaked = JSON.stringify(data.elements.map((el) => el.path));
+    assert.ok(!/\\[0-9]{3}/.test(leaked),
+      `quoted path leaked from rename entry: ${leaked}`);
+  });
+
   test('never exits non-zero when git repo is missing (non-blocking)', () => {
     const nonGit = createTempProject('gsd-drift-nongit-');
     try {

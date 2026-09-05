@@ -1322,7 +1322,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const fsx = require('node:fs');
     const os = require('node:os');
     const { REVIEWER_LANES, mergeReviewerLanes } = require('./lib/review-lane-descriptor.cjs');
-    const { resolveLanePlan } = require('./lib/review-lane-invocation.cjs');
+    const { resolveLanePlan, resolveLaneEffort } = require('./lib/review-lane-invocation.cjs');
+    const modelCatalog = require('./lib/model-catalog.cjs');
     const runner = require('./lib/review-lane-runner.cjs');
     const cfgLoader = require('./lib/config-loader.cjs');
     const capabilityLoader = require('./lib/capability-loader.cjs');
@@ -1334,13 +1335,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const sub = args[1];
     // Fail fast on an unrecognized subcommand. Without this check, `sub` fell through
     // to the `sub !== 'invoke'` usage-error branch far below (after loading the
-    // capability registry AND building a per-lane plan for every lane — which itself
-    // spawns one child `query resolve-execution` process per lane via `effortFor`,
-    // up to 12 subprocess spawns for the default lane set) before ever reporting the
-    // error. That made an invalid subcommand slow instead of instant, and under bench
-    // load (many sequential node spawns) `review-lane bogus` could exceed a caller's
-    // spawn timeout and be killed before writing anything to stderr — the CI-observed
-    // failure was empty stdout AND stderr, not the expected usage message (#3148).
+    // capability registry AND building a per-lane plan for every lane) before ever
+    // reporting the error. That made an invalid subcommand slow instead of instant, and
+    // under bench load `review-lane bogus` could exceed a caller's spawn timeout and be
+    // killed before writing anything to stderr — the CI-observed failure was empty stdout
+    // AND stderr, not the expected usage message (#3148). The plan path used to be far
+    // heavier still: it spawned one child `query resolve-execution` process PER LANE to
+    // fetch effort, up to 12 subprocess spawns for the default set. #4255 resolves effort
+    // in-process from the lane's own declaration, so that cost is gone; the fail-fast
+    // check stays because building 12 plans is still work an unrecognized sub should skip.
     // `plan`/`invoke` are the only subs that need the expensive plan-building path
     // below; `sections`/`flags` return earlier still. Anything else errors here, before
     // any of that work starts.
@@ -1427,46 +1430,29 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return;
     }
 
-    // Effort argv is resolved per lane by the host's own execution policy, through the SAME
-    // `resolve-execution` surface the bash legs used (`--host <slug>`), so the host's negotiated
-    // effortSurface still decides whether an argument is emitted and the catalog still owns the
-    // syntax (ADR-1239 #2481, ADR-443's escalation ladder). `cmdResolveExecution` writes to
-    // stdout and exits, so it cannot be called in-process for a value — this spawns the same
-    // bounded query the legs did, once per selected lane. A lane whose slug is not a known host
-    // resolves to no effort argument at all.
+    // Effort argv is resolved from the LANE's own review configuration (#4255), then rendered
+    // through the host's negotiated `effortSurface` so ADR-1239/#2481's trust-boundary invariant
+    // still decides whether an argument is emitted at all and the catalog still owns the syntax.
     //
-    // NOT `--raw` and NOT `--pick` (#2295). `--raw` prints only the resolved EFFORT ('low') with
-    // no host-specific rendering at all. `--pick effort_argv_string` used to be the answer — the
-    // rendered array re-joined into a string ('-c model_reasoning_effort=low') — but the caller
-    // then had to `.split(/\s+/)` that string back apart to get an argv array, and re-splitting a
-    // string the callee just joined is a lossy round trip: any argv element that legitimately
-    // contains a space would come back split into two argv elements, corrupting the very argv it
-    // was rendered to preserve. Reading the UNPICKED object instead gives both `effort_argv` (a
-    // real string array, used verbatim, no re-splitting) and `effort_argv_value` (the bare level,
-    // #2295's `plan.effort`) from the one spawn.
-    const EMPTY_EFFORT = { argv: [], value: null };
-    const effortFor = (slug) => {
+    // What this replaced: a `query resolve-execution gsd-plan-checker --host <slug>` spawn per
+    // lane. The agent id was a hardcoded literal, so the `--host` argument chose only the argv
+    // RENDERING while the LEVEL always came from the installed plan-checker's frontmatter — `low`
+    // under every shipped model profile. Every prompt-fed reviewer therefore ran at a fast
+    // structural verifier's effort, and because the rendered argument is a CLI config override it
+    // silently beat the effort the operator had configured for that CLI. At `low` a large
+    // source-grounded prompt makes a model end its turn with no final message, so the lane came
+    // back empty and the stub read as a crash.
+    //
+    // `resolveLaneEffort` is pure and lives beside the other lane resolution; this closure only
+    // injects the rendering, which needs the registry and the catalog.
+    const renderLaneEffort = (host, level) => {
       try {
-        const r = cp.spawnSync(
-          process.execPath,
-          [__filename, 'query', 'resolve-execution', 'gsd-plan-checker', '--host', slug],
-          { cwd, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
-        );
-        if (r.status !== 0) return EMPTY_EFFORT;
-        let parsed;
-        try {
-          parsed = JSON.parse(String(r.stdout || ''));
-        } catch { return EMPTY_EFFORT; }
-        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return EMPTY_EFFORT;
-        const argv = Array.isArray(parsed.effort_argv)
-          ? parsed.effort_argv.filter((a) => typeof a === 'string' && a !== '')
-          : [];
-        const value = typeof parsed.effort_argv_value === 'string' && parsed.effort_argv_value
-          ? parsed.effort_argv_value
-          : null;
-        return { argv, value };
-      } catch { return EMPTY_EFFORT; }
+        const surface = commands.effortSurfaceForHost(cwd, host);
+        const r = modelCatalog.renderEffortArgv(host, level, surface);
+        return { argv: Array.isArray(r && r.argv) ? r.argv : [], value: (r && r.value) || null };
+      } catch { return { argv: [], value: null }; }
     };
+    const effortFor = (lane) => resolveLaneEffort(lane, configGet, renderLaneEffort);
 
     /**
      * Per-lane prompt budget (#2797 semantics, preserved exactly).
@@ -1498,7 +1484,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       // so losing all of them to one bad manifest is strictly worse. Belt and braces on purpose.
       let r;
       try {
-        const effort = effortFor(slug);
+        const effort = effortFor(lane);
         r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effort.argv, effortValue: effort.value });
       } catch (e) {
         return { slug, ok: false, reason: 'malformed_lane', detail: `resolver threw: ${e && e.message ? e.message : String(e)}` };
@@ -1658,7 +1644,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           `model override (it declares no modelConfigKey). The review will use the CLI's own default.\n`,
         );
       }
-      const instanceEffort = effortFor(entry.slug);
+      const instanceEffort = effortFor(lane);
       const overridden = resolveLanePlan({
         lane,
         configGet: (k) => (key && k === key ? instanceModel : configGet(k)),

@@ -37,6 +37,7 @@ const { getRoadmapPhaseWithFallback } = roadmapModule;
 import gapCheckerModule = require('./gap-checker.cjs');
 const { runGapAnalysis } = gapCheckerModule;
 import { routeProhibitionEnforcement } from './prohibition-enforcement.cjs';
+import { classifyRedEvidence, buildRedEvidenceRecord } from './tdd-red-evidence.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import gatePredicateEval = require('./gate-predicate-evaluator.cjs');
 const { evaluatePredicate } = gatePredicateEval;
@@ -935,6 +936,83 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   output(result, raw, undefined);
 }
 
+// ─── tdd-red-evidence (#3770) ──────────────────────────────────────────────────
+
+/**
+ * tdd-red-evidence: validates a persisted RED-phase test-run record for a
+ * `type: tdd` plan (#3770). Only an INTENTIONAL failure of the target test
+ * (verdict RED_EVIDENCE_OK) may authorize GREEN; zero-test discovery, fixture/
+ * load crashes, nonzero exits without a failing test, unrelated failures, and
+ * unexpected greens are INVALID_RED and block GREEN.
+ *
+ * The record is the JSON the executor persists after running the RED command:
+ *   { command, exitCode, output, targetTest, targetFile?, expected?, actual? }
+ * Fail-closed: a missing/unreadable/unparseable record is INVALID_RED
+ * (reason unreadable_record), never a pass.
+ *
+ * Args: check tdd-red-evidence <record.json>
+ */
+function cmdTddRedEvidence(_projectDir: string, args: string[], raw: boolean): void {
+  const recordPath = typeof args[2] === 'string' ? args[2] : '';
+  if (!recordPath) {
+    error('tdd-red-evidence requires a record path: check tdd-red-evidence <record.json>', ERROR_REASON.SDK_MISSING_ARG);
+    return;
+  }
+  const resolved = path.resolve(recordPath);
+  const text = readIfExists(resolved);
+  const input = ((): Record<string, unknown> | null => {
+    if (!text) return null;
+    try {
+      return (JSON.parse(text) ?? {}) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
+  if (!input) {
+    output(
+      {
+        passed: false,
+        block: true,
+        verdict: 'INVALID_RED',
+        reason: 'unreadable_record',
+        record: resolved,
+        readError: text ? `record is not valid JSON: ${resolved}` : `record not found or unreadable: ${resolved}`,
+      },
+      raw,
+      undefined,
+    );
+    return;
+  }
+  const evidenceInput = {
+    command: input['command'],
+    exitCode: input['exitCode'],
+    output: input['output'],
+    targetTest: input['targetTest'],
+    targetFile: input['targetFile'],
+    expected: input['expected'],
+    actual: input['actual'],
+  };
+  const result = classifyRedEvidence(evidenceInput);
+  const record = buildRedEvidenceRecord(evidenceInput, result);
+  output(
+    {
+      // Uniform gate contract: block = !passed. INVALID_RED blocks GREEN.
+      passed: result.verdict === 'RED_EVIDENCE_OK',
+      block: result.verdict !== 'RED_EVIDENCE_OK',
+      verdict: result.verdict,
+      reason: result.reason,
+      evidence: result.evidence,
+      record,
+      message:
+        result.verdict === 'RED_EVIDENCE_OK'
+          ? `RED evidence verified: target test "${result.evidence.target_test}" failed as expected (exit ${result.evidence.exit_code}). GREEN authorized.`
+          : `INVALID_RED (${result.reason}): GREEN blocked. Fix the RED phase — only an intentional failure of target test "${result.evidence.target_test}" authorizes production edits.`,
+    },
+    raw,
+    undefined,
+  );
+}
+
 /**
  * Resolve a phase argument to an absolute phase directory, or '' when it
  * cannot be resolved. Shared by every `check` arm that probes a phase's
@@ -1701,6 +1779,12 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     cmdTddReviewCheckpoint(cwd, args, raw);
     return;
   }
+  if (subcommand === 'tdd-red-evidence') {
+    // #3770: intentional-RED evidence gate — only a target-test failure may
+    // authorize GREEN. Validates the persisted record; never executes anything.
+    cmdTddRedEvidence(cwd, args, raw);
+    return;
+  }
   if (subcommand === 'ui-safety-gate') {
     cmdUiSafetyGate(cwd, args, raw);
     return;
@@ -1744,7 +1828,7 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     routeProhibitionEnforcement(args, raw);
     return;
   }
-  error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-command-paths, verify-failure-directions, verify-schema-drift, verify-codebase-drift, verify-context-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+  error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-red-evidence, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-command-paths, verify-failure-directions, verify-schema-drift, verify-codebase-drift, verify-context-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);
 }
 
 export = {
@@ -1757,6 +1841,7 @@ export = {
   cmdVerifyCommandPaths,
   cmdVerifyFailureDirections,
   cmdTddReviewCheckpoint,
+  cmdTddRedEvidence,
   cmdCheckPredicate,
   buildPredicateDeps,
   parsePredicateFlags,

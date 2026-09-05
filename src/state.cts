@@ -26,6 +26,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const {
   parsePhaseFromProse,
   PHASE_NUMBER_TOKEN_SOURCE,
+  matchPhaseDirs,
   phaseKeyFromToken,
   phaseKeyFromDir,
   phaseHeadingPrefixSrcFor,
@@ -62,6 +63,10 @@ function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import coreUtilsMod = require('./core-utils.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
 const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -86,7 +91,7 @@ import { findProjectRoot } from './project-root.cjs';
 // it introduces no cycle on this path.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import milestoneLockMod = require('./milestone-lock.cjs');
-const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
+const { transitionCore, applyStatePreservation, sliceCurrentPositionSection, stateReplaceProgressPercent, formatProgressMachineSegment } = stateTransitionMod;
 // #3699: the frontmatter-key <-> body-field routing behind `state update`'s
 // failure explanation, and the classification table it falls back to.
 const { getFieldClassification, getFrontmatterBodySource, frontmatterKeyForBodyField } = stateTransitionMod;
@@ -107,6 +112,7 @@ import {
   shouldPreserveExistingProgress,
   stateExtractField,
   stateFieldValue,
+  toFiniteNumber,
   // #3696: the `last_activity` invariant that `state validate` (S008/S009) now
   // asserts. Both live in the field-semantics owner, not here, so `smart-entry`
   // and `state validate` cannot drift apart about the same field.
@@ -890,6 +896,84 @@ function stateReplaceFieldWithFallback(content: string, primary: string, fallbac
   return content;
 }
 
+/**
+ * #4067: disk-derived plan-completion answer for advance-plan's phase-complete
+ * guard.
+ *
+ * `advancePlanCore` decides "phase complete" purely from STATE.md's scalar plan
+ * counter (`currentPlan >= totalPlans`). That counter cannot represent
+ * wave-parallel execution — a stale counter carried over from the prior phase
+ * (the reported trigger: `Plan: 7 of 7` surviving into a 10-plan phase) or a
+ * counter raced by N concurrent executors both let the phase-complete branch
+ * fire while sibling plans are mid-flight. This helper answers the completion
+ * question from disk instead, exactly the way `state update-progress`
+ * recalculates it: every plan in the Current Position phase's directory has a
+ * SUMMARY.md.
+ *
+ * Single-derivation discipline: plan/summary counting is owned by
+ * `scanPhasePlans` (src/plan-scan.cts, ADR-3180 §7.5) — this helper consumes
+ * it, never re-derives. It deliberately does NOT consult `isPhaseComplete`
+ * (§7.4): that owner answers the *verification* question (passing
+ * `*-VERIFICATION.md`), a different question from "are all plans executed?".
+ * Blocked summaries (#3345) are filtered from the pairing set with the same
+ * shared predicate `scanPhasePlans` uses, so the named outstanding list can
+ * never disagree with the count-based decision.
+ *
+ * FAIL-OPEN contract: returns `null` when the disk answer is UNAVAILABLE — no
+ * readable phases dir, no directory matching the position phase, or a scan
+ * whose scope is not COMPLETE (the scan may be blind to plans it knows exist).
+ * `null` means "the caller must fall back to the counter-derived decision",
+ * NOT "plans are outstanding"; worlds the seam cannot see (STATE.md with no
+ * Current Position `Phase:` line, milestone-archived layouts) keep today's
+ * behavior rather than being newly refused.
+ *
+ * Returns `{ dir, outstanding }` where `outstanding` is empty when every plan
+ * on disk is summarized (vacuously so for a zero-plan phase — #3168's
+ * zero-plan-phase posture).
+ */
+function scanOutstanding(phasesDir: string, dir: string): { dir: string; outstanding: string[] } | null {
+  const phaseDirPath = path.join(phasesDir, dir);
+  const scan = scanPhasePlans(phaseDirPath);
+  if (scan.scope !== SCOPE.COMPLETE) return null;
+  // Blocked summaries (#3345) are filtered with the same shared predicate
+  // scanPhasePlans uses for its own count, so the named outstanding list can
+  // never disagree with a count-based decision.
+  const countableSummaries = scan.summaryFiles.filter(
+    (f) => !planDependencyGraphMod.isSummaryFileBlocked(path.join(phaseDirPath, f)),
+  );
+  const outstanding = coreUtilsMod.findUnsummarizedPlans(scan.planFiles, countableSummaries);
+  return { dir, outstanding };
+}
+
+function unsummarizedPlansForPositionPhase(
+  cwd: string,
+  positionPhase: string,
+): { dir: string; outstanding: string[] } | null {
+  const phasesDir = planningPaths(cwd).phases;
+  // #3185 (ADR-3180 Decision 1): "which phase directories exist" is owned by
+  // listMilestonePhaseDirs — no hand-rolled readdirSync here. The owner
+  // handles an absent phasesDir as a real empty and refuses sentinels.
+  //
+  // Two passes, narrowest first: the CURRENT-MILESTONE window (so an archived
+  // milestone's stale `01-*` directory cannot shadow the live one), then —
+  // only when the window cannot answer (no bounded ROADMAP, or the position
+  // phase is simply not in it) — an unscoped read, which the owner documents
+  // as a real answer. This is a lookup of ONE phase token STATE.md names, not
+  // a milestone enumeration, so the unscoped retry is in-contract.
+  const convention = resolvePhaseIdConvention(cwd);
+  const windowed = listMilestonePhaseDirs(phasesDir, { cwd, phaseIdConvention: convention });
+  const candidateDirs = windowed.scope === SCOPE.COMPLETE ? windowed.value : [];
+  // Canonical phase-token → directory matching (phase-id owner, #2562): both
+  // sides of the comparison derived by the same function, never a local regex.
+  const { matches } = matchPhaseDirs(candidateDirs, positionPhase, convention);
+  if (matches.length > 0) return scanOutstanding(phasesDir, matches[0]);
+  const unscoped = listMilestonePhaseDirs(phasesDir);
+  if (unscoped.scope !== SCOPE.COMPLETE) return null;
+  const retry = matchPhaseDirs(unscoped.value, positionPhase, convention);
+  if (retry.matches.length === 0) return null;
+  return scanOutstanding(phasesDir, retry.matches[0]);
+}
+
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -915,6 +999,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // STATE.md lock, so the position read and the claim read cannot interleave
   // with another session's Current Position write.
   let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+  // #4067: set when the disk-derived guard declines the phase-complete branch —
+  // named here so the post-lock output path can report it without re-deriving.
+  // Holder (not a bare let) so TypeScript's closure-unaware narrowing cannot
+  // collapse the post-lock read to `never` — the callback assigns it.
+  const outstandingRef: { value: { dir: string; outstanding: string[] } | null } = { value: null };
   const wrote = readModifyWriteStateMd(statePath, (content) => {
     // advance-plan has no phase argument of its own — the phase it advances is
     // whatever ## Current Position names. Compare that against the milestone
@@ -931,10 +1020,57 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }
     }
     const result = transitionCore(content, intent, deps);
+    // #4067: the transform's phase-complete branch is decided by STATE.md's
+    // scalar plan counter, which can neither carry a stale value across phases
+    // nor represent wave-parallel execution. Before letting that branch write
+    // "Phase complete — ready for verification", re-decide from disk (the same
+    // source state.update-progress recalculates from): every plan in the
+    // position phase's directory must have a SUMMARY.md. A non-empty
+    // outstanding list declines the ENTIRE write — STATE.md is returned
+    // byte-identical, so the decline is idempotent and safe for any number of
+    // concurrent callers (the disk answer is re-read under the STATE.md lock
+    // each call; the counter stays display-only). `null` (disk answer
+    // unavailable) fails open to the counter-derived decision, so every
+    // world this seam cannot see keeps today's behavior.
+    if (
+      result.data?.['advanced'] === false
+      && result.data?.['reason'] === 'last_plan'
+      && positionPhase !== null
+    ) {
+      const diskAnswer = unsummarizedPlansForPositionPhase(cwd, positionPhase);
+      if (diskAnswer !== null && diskAnswer.outstanding.length > 0) {
+        outstandingRef.value = diskAnswer;
+        resultData = result.data;
+        precomputedUpdated = [];
+        return content;
+      }
+    }
     resultData = result.data;
     precomputedUpdated = result.updated;
     return result.content;
   }, cwd, { divergedFields, preWriteState });
+
+  // #4067 decline path: plans remain unexecuted on disk. Shaped like the
+  // existing `last_plan` decline (advanced:false + machine-readable reason,
+  // exit 0) rather than a hard error — the caller did nothing wrong and
+  // STATE.md needs no repair; the remaining plans' executors will re-run this
+  // command, and the final one finds a fully-summarized phase and completes it.
+  const plansOutstanding = outstandingRef.value;
+  if (plansOutstanding !== null) {
+    declineNoOp(
+      raw,
+      'advanced',
+      'plans_outstanding',
+      `state advance-plan skipped — phase-complete declined: ${plansOutstanding.outstanding.length} plan(s) in .planning/phases/${plansOutstanding.dir} have no SUMMARY.md (${plansOutstanding.outstanding.join(', ')}). STATE.md was left unchanged; re-run once every plan has executed and written its summary.`,
+      {
+        advanced: false,
+        phase_dir: plansOutstanding.dir,
+        outstanding_plans: plansOutstanding.outstanding,
+        milestone_conflict: milestoneConflict,
+      },
+    );
+    return;
+  }
 
   // `!resultData` is a type guard, not a second failure mode: the callback
   // above assigns it unconditionally and only runs once STATE.md is known to
@@ -1310,41 +1446,15 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     return;
   }
   const { percent, completedPlans: fmCompletedPlans, totalPlans: fmTotalPlans } = preview;
-  const barWidth = 10;
-  const filled = Math.round(percent / 100 * barWidth);
-  const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-  const progressStr = `[${bar}] ${percent}%`;
+  const progressStr = formatProgressMachineSegment(percent);
 
   let updated = false;
 
   readModifyWriteStateMd(statePath, (content) => {
-    // #2177: match against the BODY only. With /i the patterns below would
-    // otherwise hit the YAML frontmatter `progress:` key first (and `\s*` would
-    // eat its newline, mangling the nested block), while the body Progress: line
-    // — which frontmatter `percent` is re-derived from on every write — stays
-    // stale and silently reverts the update.
-    const body = stripFrontmatter(content);
-    const fmPrefix = content.slice(0, content.length - body.length);
-
-    // Swap only the machine segment ("[bar] NN%" or bare "NN%"), preserving any
-    // descriptive suffix an agent authored, e.g. "(2/4 plans done; blocked on…)".
-    const machineSegment = /(?:\[[^\]\r\n]*\][ \t]*)?\d{1,3}%/;
-    const replaceValue = (value: string) => machineSegment.test(value)
-      ? value.replace(machineSegment, progressStr)
-      : progressStr;
-
-    // Try **Progress:** bold format first, then plain Progress: format.
-    const boldProgressPattern = /(\*\*Progress:\*\*[ \t]*)([^\r\n]*)/i;
-    const plainProgressPattern = /^(Progress:[ \t]*)([^\r\n]*)/im;
-    const pattern = boldProgressPattern.test(body)
-      ? boldProgressPattern
-      : plainProgressPattern.test(body)
-        ? plainProgressPattern
-        : null;
-    if (!pattern) return content;
-
+    const result = stateReplaceProgressPercent(content, percent);
+    if (result === null) return content;
     updated = true;
-    return fmPrefix + body.replace(pattern, (_match, prefix: string, value: string) => `${prefix}${replaceValue(value)}`);
+    return result;
   }, cwd);
 
   if (updated) {
@@ -3955,6 +4065,8 @@ function applyPostSyncPreservation(
     }
   }
 
+  let finalContent = syncedContent;
+
   if (preservation.mutated || authoritativeReasserted) {
     // #3742: preservation RESTORES frontmatter keys the body-derived rebuild
     // could not produce (e.g. `current_phase` on a layout with no body
@@ -3975,9 +4087,16 @@ function applyPostSyncPreservation(
     }
     const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
     const body = stripFrontmatter(syncedContent);
-    return `---\n${yamlStr}\n---\n\n${body}`;
+    finalContent = `---\n${yamlStr}\n---\n\n${body}`;
   }
-  return syncedContent;
+  const persistedPercent = toFiniteNumber(
+    preservation.postFm['progress'] && (preservation.postFm['progress'] as Record<string, unknown>)['percent'],
+  );
+  if (persistedPercent !== null) {
+    const reconciled = stateReplaceProgressPercent(finalContent, persistedPercent);
+    if (reconciled !== null) finalContent = reconciled;
+  }
+  return finalContent;
 }
 
 /**

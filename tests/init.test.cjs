@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter } = require('./helpers.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
@@ -3266,19 +3266,7 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
    * it were stdout.
    */
   function captureInitVerifyWork(t, cwd, phase) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    initMod.cmdInitVerifyWork(cwd, phase, false);
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, () => initMod.cmdInitVerifyWork(cwd, phase, false));
     assert.ok(captured.length > 0, 'cmdInitVerifyWork produced no stdout output');
     return captured;
   }
@@ -3379,19 +3367,7 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   });
 
   function captureFd1(t, run) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    run();
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, run);
     assert.ok(captured.length > 0, 'command produced no stdout output');
     return JSON.parse(captured);
   }
@@ -5153,5 +5129,102 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     assert.ok(r.success, r.error);
     const out = JSON.parse(r.output);
     assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4040: partial-init routing signal (interrupted bootstrap detection)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4040 partial-init completeness fields', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('#4040 init.progress: interrupted bootstrap (PROJECT.md only) is flagged init_incomplete', () => {
+    // Issue repro: bootstrap died after PROJECT.md + config.json, before
+    // REQUIREMENTS.md / ROADMAP.md / STATE.md.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.planning_exists, true);
+    assert.strictEqual(output.project_exists, true);
+    assert.strictEqual(output.requirements_exists, false);
+    assert.strictEqual(output.roadmap_exists, false);
+    assert.strictEqual(output.state_exists, false);
+    assert.strictEqual(output.milestones_exists, false);
+    assert.strictEqual(output.init_incomplete, true,
+      'interrupted bootstrap must be distinguishable from new project / between milestones');
+  });
+
+  test('#4040 init.progress: complete project is not init_incomplete', () => {
+    writePlanningDocs(tmpDir); // STATE.md + ROADMAP.md + REQUIREMENTS.md
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_exists, true);
+    assert.strictEqual(output.init_incomplete, false);
+  });
+
+  test('#4040 init.progress: between-milestones archive state is not init_incomplete', () => {
+    // milestone.complete archives ROADMAP (and REQUIREMENTS) but leaves
+    // MILESTONES.md + STATE.md — Route F territory, NOT a partial bootstrap.
+    writePlanningDocs(tmpDir, { roadmap: false, requirements: false });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'MILESTONES.md'), '# Milestones\n\n## v1.0\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.milestones_exists, true);
+    assert.strictEqual(output.init_incomplete, false,
+      'an archived milestone (MILESTONES.md present) must keep the between-milestones route');
+  });
+
+  test('#4040 init.progress: empty .planning (config only) is init_incomplete, not "no planning"', () => {
+    // Bootstrap that died before even PROJECT.md: .planning/ exists, so the
+    // workflow must not claim "no planning structure found".
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.planning_exists, true);
+    assert.strictEqual(output.project_exists, false);
+    assert.strictEqual(output.init_incomplete, true);
+  });
+
+  test('#4040 init.resume: interrupted bootstrap flagged init_incomplete', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init resume', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_exists, false);
+    assert.strictEqual(output.init_incomplete, true,
+      'resume must route to initialization recovery, not STATE.md reconstruction');
+  });
+
+  test('#4040 init.new-project: interrupted bootstrap flagged init_incomplete', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init new-project', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.init_incomplete, true,
+      'new-project gate must resume a partial bootstrap instead of erroring');
   });
 });

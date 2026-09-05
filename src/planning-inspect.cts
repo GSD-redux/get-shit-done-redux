@@ -303,7 +303,7 @@ function readDocument(filePath: string, root: string): { text: string | null; ex
 function containmentEnforcingVerificationFs(planningRoot: string): {
   readdirSync(dir: string): string[];
   readFileSync(filePath: string, encoding: 'utf-8'): string;
-  statSync(filePath: string): { mtimeMs: number };
+  statSync(filePath: string): { mtimeMs: number; isFile(): boolean };
 } {
   function assertContained(target: string): void {
     if (!isPathContained(target, planningRoot)) {
@@ -319,7 +319,7 @@ function containmentEnforcingVerificationFs(planningRoot: string): {
       assertContained(filePath);
       return fs.readFileSync(filePath, encoding);
     },
-    statSync(filePath: string): { mtimeMs: number } {
+    statSync(filePath: string): { mtimeMs: number; isFile(): boolean } {
       assertContained(filePath);
       return fs.statSync(filePath);
     },
