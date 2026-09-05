@@ -126,5 +126,7 @@ be replaced, since the additive-envelope shape already accommodates new keys.
 ## Out of scope
 
 `gate-predicate-evaluator.cts` already accepts a `--phase-dir` value on the
-unrelated `check predicate` command and does not validate it. Pre-existing,
-not introduced or fixed by this ADR; left as-is.
+unrelated `check predicate` command and does not confine it to the project, so
+a blocking gate can pass on a file outside it. Pre-existing, not introduced or
+fixed by this ADR — this ADR removes its own caller-supplied path rather than
+adding one — and tracked separately as #4354.
