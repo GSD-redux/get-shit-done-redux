@@ -229,8 +229,7 @@ describe('ADR-857 Phase 6 capstone conformance (#1139)', () => {
     // is threaded too and got SMALLER (98258 -> 96149): #3916 had left it 46 bytes
     // under the XL hard cap, so #4030 took the remedy that cap's own message
     // prescribes and extracted step 12.5's body to a lazily-read step file.
-    const { lfByteCount } = require('../scripts/workflow-size.cjs');
-    const PRE_PHASE6 = { 'plan-phase.md': 98300, 'execute-phase.md': 93700 };
+    const { lfByteCount, PRE_PHASE6_CEILINGS: PRE_PHASE6 } = require('../scripts/workflow-size.cjs');
     const notShrunk = [];
     for (const [file, frozen] of Object.entries(PRE_PHASE6)) {
       const now = lfByteCount(path.join(ROOT, 'gsd-core', 'workflows', file));

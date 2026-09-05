@@ -1377,6 +1377,30 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     assert.match(result.stderr, /Missing value for --phase/);
   });
 
+  // #4030 extracted the four render-hooks value flags onto one dual-form parser.
+  // --runtime and --phase already had covered error paths; these two did not, so
+  // the shared parser could have changed them silently.
+  for (const [flag, pattern] of [
+    ['--config-dir', /Missing value for --config-dir/],
+    ['--active-cap', /Missing value for --active-cap/],
+  ]) {
+    test(`[negative] bare ${flag} with no value still exits non-zero with its own usage text`, (t) => {
+      const dir = makePhaseProject('05-widgets');
+      t.after(() => cleanup(dir));
+      const result = renderWithPhase(dir, 'plan:pre', [flag]);
+      assert.notStrictEqual(result.exitCode, 0);
+      assert.match(result.stderr, pattern);
+    });
+
+    test(`[negative] ${flag}= empty equals-form still exits non-zero with its own usage text`, (t) => {
+      const dir = makePhaseProject('05-widgets');
+      t.after(() => cleanup(dir));
+      const result = renderWithPhase(dir, 'plan:pre', [`${flag}=`]);
+      assert.notStrictEqual(result.exitCode, 0);
+      assert.match(result.stderr, pattern);
+    });
+  }
+
   test('[bva] --phase=05 equals-form parses identically to the space-separated form', (t) => {
     const dir = makePhaseProject('05-widgets');
     t.after(() => cleanup(dir));

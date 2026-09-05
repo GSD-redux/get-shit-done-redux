@@ -89,8 +89,28 @@ function measureWorkflows(dir = WORKFLOWS_DIR) {
   return measureMdFiles(dir);
 }
 
+/**
+ * ADR-857 Phase 6's shrink-only lines, per host-loop workflow (LF bytes).
+ *
+ * These are NOT the tier hard caps (`tests/workflow-size-budget.test.cjs`, a red
+ * line that is never raised). They are the frozen pre-phase-6 sizes the host loop
+ * must stay under so optional-feature logic keeps migrating out to capabilities;
+ * a raise is legitimate only for privileged host machinery, and each one is
+ * argued at its raise site.
+ *
+ * Lives here, beside `lfByteCount`, because three separate tests assert against
+ * these same two numbers and previously hardcoded them independently — a
+ * lockstep-bump hazard that #4030 tripped (two copies raised, the third missed
+ * until the full suite caught it). One owner per invariant, ADR-3473.
+ */
+const PRE_PHASE6_CEILINGS = Object.freeze({
+  'plan-phase.md': 98300,
+  'execute-phase.md': 93700,
+});
+
 module.exports = {
   WORKFLOWS_DIR,
+  PRE_PHASE6_CEILINGS,
   lfByteCount,
   listWorkflowStems,
   measureMdFiles,

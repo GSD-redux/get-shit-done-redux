@@ -428,7 +428,7 @@ Auto-invoke code review and fix chain. Autonomous mode chains both review and fi
 
 **Capability dispatch:**
 ```bash
-EXECUTE_POST_HOOKS_JSON=$(gsd_run loop render-hooks execute:post --raw)
+EXECUTE_POST_HOOKS_JSON=$(gsd_run loop render-hooks execute:post --raw --phase "${PHASE_NUM}")
 ```
 
 Resolve active step hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "step"` and `ref.skill == "code-review"`.
