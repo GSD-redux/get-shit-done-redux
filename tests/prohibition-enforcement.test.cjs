@@ -509,7 +509,7 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
   // (#4105), whose non-exit relies on unstated runtime behavior.
   const HANGS_BODY =
     "const { test } = require('node:test');\n" +
-    "test('hangs forever', () => { while (true) {} });\n";
+    "test('hangs forever', () => new Promise((resolve) => { setTimeout(resolve, 10_000); }));\n";
 
   test('a genuine non-vacuous passing node-test proven fail-first greens via the real runner + real prover', (t) => {
     const enforce = require(ENFORCEMENT_LIB);
