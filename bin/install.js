@@ -12101,8 +12101,18 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     //   require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so all four must be
     //   installed/refreshed together for every profile, or Codex is wired to a dependency
     //   chain the same installer never delivers.
-    // We deliberately do *not* copy gsd-graphify-update.sh or hooks/lib/ for Codex
-    // in this change (graphify auto-update support for Codex is out of scope for #3579).
+    // We deliberately do *not* copy gsd-graphify-update.sh for Codex in this
+    // change (graphify auto-update support for Codex is out of scope for #3579).
+    // hooks/lib/ WAS excluded here for the same reason, and that stopped being
+    // correct when #3911 (2ea5efc15) gave gsd-context-monitor.js a real
+    // `require('./lib/hook-exit.js')`: the allowlist below is flat and never
+    // recursed, so the hook shipped without its helper and died with
+    // MODULE_NOT_FOUND at load, before its own try/catch, on every registered
+    // event (#4087, #4098). The libs are now derived from what the staged
+    // scripts actually require rather than hand-listed — see the
+    // stageTransitiveHookLibs call after the copy loop. The #3579 boundary is
+    // preserved: helpers no staged Codex hook requires (graphify tooling among
+    // them) are still not shipped.
     const CODEX_HOOKS_TO_COPY = [
       'gsd-check-update.js',
       'gsd-check-update-worker.js',
@@ -12118,6 +12128,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // is not the same as an allowlisted file landing in it — see the marker
       // gate below.
       let codexStagedHooks = false;
+      // The entries THIS invocation actually staged. Seeding the lib scan from
+      // `existsSync` over the destination instead would also pick up a file
+      // left by a PREVIOUS install whose source is no longer staged — e.g. a
+      // name dropped from the allowlist — and derive helpers for a hook that is
+      // no longer shipped (review of #4087).
+      const codexStagedEntries = [];
       for (const entry of fs.readdirSync(codexHooksSrc)) {
         if (!CODEX_HOOKS_TO_COPY.includes(entry)) continue;
         const srcFile = path.join(codexHooksSrc, entry);
@@ -12152,8 +12168,43 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
         }
         codexStagedHooks = true;
+        codexStagedEntries.push(entry);
+      }
+      // Stage the hooks/lib/ helpers the staged scripts require, transitively
+      // (#4087, #4098). Shares writeCursorHooksJson's walker rather than a
+      // second copy: both reduced bundles hand-pick SCRIPTS, and the identical
+      // MODULE_NOT_FOUND was already fixed once for Cursor in 704859e9c. A flat
+      // list of today's three helpers would re-break the next time a
+      // Codex-bundled hook grows a lib dependency, which is exactly how this
+      // regressed. Gated on codexStagedHooks for the same reason the CommonJS
+      // marker below is: hooks/ is shared space, and staging nothing must not
+      // leave a GSD-owned lib/ behind in a directory GSD created but did not
+      // fill (#2544). Seeded from the copies staged by THIS invocation, so the
+      // scan sees the same bytes Node will load and never derives helpers for a
+      // hook left behind by an earlier install.
+      let codexStagedLibs = [];
+      if (codexStagedHooks) {
+        codexStagedLibs = hooksSurface.stageTransitiveHookLibs({
+          seedSources: codexStagedEntries
+            .map((entry) => fs.readFileSync(path.join(codexHooksDest, entry), 'utf8')),
+          srcLibDir: path.join(codexHooksSrc, 'lib'),
+          destLibDir: path.join(codexHooksDest, 'lib'),
+          runtimeLabel: 'Codex',
+          // Same substitutions the .js branch above applies to hook scripts, so
+          // a helper that ever gains a runtime path or version token is
+          // rewritten identically instead of shipping a Claude-shaped path.
+          // No-ops on today's helpers, which carry neither.
+          transform: (content) => content
+            .replace(/'\.claude'/g, configDirReplacement)
+            .replace(/\/\.claude\//g, `/${getDirName(runtime)}/`)
+            .replace(/\.claude\//g, `${getDirName(runtime)}/`)
+            .replace(/\{\{GSD_VERSION\}\}/g, pkg.version),
+        });
       }
       console.log(`  ${green}✓${reset} Installed hooks (Codex)`);
+      if (codexStagedLibs.length > 0) {
+        console.log(`  ${green}✓${reset} Installed hooks/lib/ helpers (${codexStagedLibs.join(', ')})`);
+      }
       // #2717: write the CommonJS marker into hooks/ alongside the staged .js
       // scripts. Codex is excluded from installSharedHooksBundle by the
       // !isCodex gate, so it never received the marker the shared-bundle path

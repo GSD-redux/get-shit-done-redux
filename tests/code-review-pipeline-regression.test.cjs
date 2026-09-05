@@ -991,6 +991,59 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
   );
 
   test(
+    'root commit: fallow phase scope uses a resolvable root SHA',
+    SKIP_WIN32,
+    () => {
+      const repo = createTempDir('gsd-4183-fallow-root-');
+      try {
+        gitOrThrow(['init', '-b', 'main'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['config', 'user.name', 'Test'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+
+        const phaseFile = path.join(repo, '.planning', 'phases', '06-ctx', 'PLAN.md');
+        fs.mkdirSync(path.dirname(phaseFile), { recursive: true });
+        fs.writeFileSync(phaseFile, '# phase context\n');
+        gitOrThrow(['add', '.planning'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['commit', '-m', 'docs(06): initial phase context'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        const rootSha = gitOrThrow(['rev-parse', 'HEAD'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim();
+
+        fs.writeFileSync(path.join(repo, 'index.js'), 'module.exports = 1;\n');
+        gitOrThrow(['add', 'index.js'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['commit', '-m', 'feat: add source'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+
+        const result = runDerivation(repo, extractFallowDerivation(), '06');
+        assert.equal(result.status, 0, `snippet exited ${result.status}; stderr=${result.stderr}`);
+        const fallowBase = parseSentinel(result.stdout, 'FALLOW_BASE');
+        assert.deepStrictEqual(
+          fallowBase,
+          [rootSha],
+          `root-parent FALLOW_BASE regression: expected ${rootSha}, got ${JSON.stringify(fallowBase)}`,
+        );
+        assert.equal(
+          gitOrThrow(['rev-parse', '--verify', `${fallowBase[0]}^{commit}`], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim(),
+          rootSha,
+          'FALLOW_BASE must resolve to the root commit',
+        );
+
+        if (process.env.CI) {
+          const { requireFallowBinary } = require('../gsd-core/bin/lib/fallow-runner.cjs');
+          const { execTool } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
+          const audit = execTool(
+            requireFallowBinary({ cwd: ROOT, envPath: '' }),
+            ['audit', '--changed-since', fallowBase[0], '--format', 'json'],
+            { cwd: repo, timeout: 120000 },
+          );
+          assert.ok([0, 1].includes(audit.exitCode), `fallow root audit exit=${audit.exitCode}; stderr=${audit.stderr}`);
+          console.log(`fallow-root-audit normal-exit=${audit.exitCode}`);
+        }
+      } finally {
+        cleanup(repo);
+      }
+    },
+  );
+
+  test(
     'T5: with no genuine phase scope commit, every derivation yields NO base (fail-closed preserved)',
     SKIP_WIN32,
     () => {

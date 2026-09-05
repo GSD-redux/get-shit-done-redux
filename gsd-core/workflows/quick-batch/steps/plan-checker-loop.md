@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 **Step 4.5: Plan-checker loop (only when `$VALIDATE_MODE`, called from planner-wave.md)**
 
 Runs once per DAG layer, for every item in that layer that produced a
