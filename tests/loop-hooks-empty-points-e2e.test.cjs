@@ -27,7 +27,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, installSpawnEnv } = require('./helpers.cjs');
 
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
@@ -54,12 +54,21 @@ function makeBareDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-loop-bare-'));
 }
 
-/** Spawn gsd-tools via raw spawnSync; returns { status, stdout, stderr } */
+/**
+ * Spawn gsd-tools via raw spawnSync; returns { status, stdout, stderr }.
+ *
+ * #4291: env: installSpawnEnv() sandboxes HOME so capability-loader's
+ * overlayRoots (which falls back to os.homedir()) never reaches the real
+ * machine — without it, a capability genuinely installed on the host
+ * running the suite (e.g. beads, markdown-linting) leaked into these
+ * empty-point/exact-shape assertions.
+ */
 function spawnGsd(args, cwd) {
   return spawnSync(process.execPath, [GSD_TOOLS, ...args], {
     cwd: cwd || os.tmpdir(),
     encoding: 'utf8',
     timeout: 60000,
+    env: installSpawnEnv(),
   });
 }
 
