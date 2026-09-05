@@ -78,27 +78,35 @@ function restatesCycle(text) {
 //     or list-marker shape. This is what makes the signal non-evadable by a
 //     compact, reworded restatement: shortening or dropping list markers does
 //     nothing to manufacture a citation that was never there.
-//   - Trailing window: the EARLIER of 500 characters past the REFACTOR
-//     anchor, or the next markdown HEADING line (`\n#`) — never further.
+//   - Trailing window: the EARLIEST of (a) 500 characters past the REFACTOR
+//     anchor, (b) the next markdown HEADING line (`\n#`), or (c) the next
+//     blank line whose FOLLOWING line does not continue a markdown list
+//     (`- `, `* `, `N. `/`N) `) — never further.
 //     #4302: a flat char count with no structural boundary let a
 //     citation-free restatement borrow an UNRELATED later section's tdd.md
 //     citation (on the real gsd-executor.md, the very next section after the
 //     cycle pointer — "## Plan-Level TDD Gate Enforcement" — has its own,
 //     independent tdd.md citation 82 chars past the pointer's REFACTOR
-//     anchor, well inside a flat 500-char window). A first attempt bounded at
-//     the next blank line instead of a heading, but that broke the real
-//     execute-plan.md pointer: its FIRST RED/GREEN/REFACTOR occurrence is the
-//     list's own intro sentence ("For `type: tdd` plans — RED-GREEN-REFACTOR:"),
-//     separated by a genuine blank line from the numbered list item that
-//     actually carries the citation — a blank line is not reliably "still the
-//     same statement" the way it is in gsd-executor.md's prose form. A
-//     heading is the unambiguous boundary both real files actually use to
-//     start a new, unrelated statement (confirmed: no heading appears between
-//     either real pointer's cycle mention and its own citation; a heading
-//     does appear before the next, unrelated section in gsd-executor.md).
-//     500 chars remains the OUTER cap when no heading appears at all, short
-//     of the whole-file scan the #4228 postmortem (see comment above
-//     restatesCycle()) warns against.
+//     anchor, well inside a flat 500-char window). A first attempt bounded
+//     ONLY at the next heading; an orthogonal review then constructed a
+//     narrower variant of the same evasion — a citation-free restatement
+//     followed by a blank line and an unrelated PROSE paragraph (no heading)
+//     that cites tdd.md — and confirmed by execution that heading-only
+//     bounding still misses it. Bounding on EVERY blank line unconditionally
+//     was tried and rejected earlier for a different reason: the real
+//     execute-plan.md pointer's FIRST RED/GREEN/REFACTOR occurrence is a
+//     numbered list's own intro sentence, separated by a genuine blank line
+//     from the list item that carries the citation — a blank line is not
+//     reliably "still the same statement" UNLESS what follows it is a list
+//     continuation. The list-continuation exception is what reconciles both:
+//     a blank line followed by a list-marker line is skipped (same block); a
+//     blank line followed by anything else — prose, a heading, or the end of
+//     the section — is the boundary. Confirmed against both real files (no
+//     boundary before either one's own citation), the heading-borrowing
+//     fixture, and the narrower prose-borrowing fixture the review
+//     constructed. 500 chars remains the OUTER cap when no boundary appears
+//     at all, short of the whole-file scan the #4228 postmortem (see comment
+//     above restatesCycle()) warns against.
 //   - SECONDARY signals (defense in depth, OR-ed in, kept from the original
 //     design): span > 200 chars, or three DISTINCT markdown list-marker
 //     lines (`- `, `* `, or `N. `/`N) `) each carrying one of RED/GREEN/
@@ -108,6 +116,18 @@ function restatesCycle(text) {
 //     Threshold 200 and the list-marker shape are unchanged from the
 //     original measurement: real pointers span 10-14 chars; a realistic
 //     paraphrased restatement spans 424 chars.
+// Limitation (stated honestly, not resolved by this design): a citation
+// belonging to an unrelated LATER statement that is itself only ONE
+// list-marker hop away from the restatement (e.g. the restatement's own
+// paragraph is immediately followed by a blank line, then a list item, then
+// ANOTHER blank line, then the unrelated citation) would still be found,
+// because the list-continuation exception does not distinguish "the same
+// list the restatement belongs to" from "a different list that happens to
+// start right after it." This is narrower than the gap #4302 closed (it
+// requires the coincidence of an intervening list, not just any adjacent
+// prose or heading) and is judged acceptable residual risk rather than
+// grounds for a third boundary rule; a stronger fix would need to identify
+// list membership by shared indentation/enumeration, not presence alone.
 const RESTATEMENT_SPAN_THRESHOLD = 200;
 const DEFERRAL_WINDOW_TRAILING = 500;
 const DEFERRAL_MARKER_RE = /tdd\.md|references\/tdd|canonical/;
@@ -138,18 +158,41 @@ function measureCycleSpan(text) {
   return { redIdx, greenIdx, refactorIdx, refactorEndIdx, span: refactorIdx - redIdx };
 }
 
+// Find the first blank line (at or after `fromIdx`, within `[fromIdx, capIdx)`)
+// whose immediately following line is NOT a list-marker continuation.
+// Returns the absolute index of that blank line, or -1 if none qualifies
+// before `capIdx`. A blank-line-then-list-item is skipped (same block) so a
+// numbered list's intro sentence can still reach a citation carried by one
+// of its own later items (the real execute-plan.md shape); any other blank
+// line is a genuine boundary. Linear scan via a global regex + manual
+// advance — no backtracking risk even on a large region.
+function findListAwareBlankBoundary(text, fromIdx, capIdx) {
+  const region = text.slice(fromIdx, capIdx);
+  const BLANK_RE = /\n[ \t]*\n/g;
+  let m;
+  while ((m = BLANK_RE.exec(region))) {
+    const afterBlank = region.slice(m.index + m[0].length);
+    const nextLine = afterBlank.slice(0, afterBlank.indexOf('\n') === -1 ? undefined : afterBlank.indexOf('\n'));
+    if (LIST_MARKER_RE.test(nextLine)) continue;
+    return fromIdx + m.index;
+  }
+  return -1;
+}
+
 function hasNearbyDeferralMarker(text, cycle) {
   const cappedEnd = Math.min(text.length, cycle.refactorEndIdx + DEFERRAL_WINDOW_TRAILING);
-  // #4302: stop at the next markdown heading line (`\n#`) at or after the
-  // REFACTOR anchor, whichever comes first against the flat char cap above —
-  // a citation belonging to a LATER, unrelated section must not count as
-  // this restatement's own deferral. A heading, not a blank line, is the
-  // boundary: a legitimate citation can sit past a blank line WITHIN the
-  // same enclosing section (e.g. a numbered list's intro sentence followed
-  // by the list item that carries the citation), so bounding on blank lines
-  // alone produces a false positive on that real shape.
-  const headingMatch = text.slice(cycle.refactorEndIdx, cappedEnd).match(/\n#/);
-  const windowEnd = headingMatch ? cycle.refactorEndIdx + headingMatch.index : cappedEnd;
+  // #4302 (+ review-found narrower variant): stop at the EARLIEST of a
+  // markdown heading or a list-aware blank-line boundary, at or after the
+  // REFACTOR anchor — a citation belonging to a LATER, unrelated statement
+  // must not count as this restatement's own deferral. See the design
+  // comment above for why a blank line alone is not always a valid
+  // boundary (a numbered list's intro sentence vs. its own later item).
+  const region = text.slice(cycle.refactorEndIdx, cappedEnd);
+  const headingMatch = region.match(/\n#/);
+  const headingEnd = headingMatch ? cycle.refactorEndIdx + headingMatch.index : cappedEnd;
+  const blankBoundary = findListAwareBlankBoundary(text, cycle.refactorEndIdx, cappedEnd);
+  const blankEnd = blankBoundary === -1 ? cappedEnd : blankBoundary;
+  const windowEnd = Math.min(headingEnd, blankEnd);
   const window = text.slice(cycle.redIdx, windowEnd);
   return DEFERRAL_MARKER_RE.test(window);
 }
@@ -350,7 +393,7 @@ describe('#4268 — reworded restatement detection (structural, not literal)', (
   // evades detection. This fixture reproduces the same shape: a restatement
   // paragraph with NO citation of its own, followed by a blank line and an
   // unrelated section that does cite tdd.md within the 500-char window.
-  test('does not borrow a citation from an unrelated LATER section (paragraph-bounded window)', () => {
+  test('does not borrow a citation from an unrelated LATER heading-bounded section', () => {
     const fixture = [
       'RED: write a failing test proving the bug exists and record it with a test-scoped commit.',
       'GREEN: implement the smallest change that makes the test pass and record that with a',
@@ -363,6 +406,40 @@ describe('#4268 — reworded restatement detection (structural, not literal)', (
       'different purpose and must not be borrowed by the restatement above.',
     ].join('\n');
     assert.ok(restatesCycleStructurally(fixture),
-      "a citation belonging to a different, later paragraph/section must not count as this restatement's own deferral");
+      "a citation belonging to a different, later heading-bounded section must not count as this restatement's own deferral");
+  });
+
+  // #4302 follow-up (orthogonal review): heading-only bounding still missed a
+  // NARROWER variant — a citation-free restatement followed by a blank line
+  // and an unrelated PROSE paragraph (no heading at all) that cites tdd.md
+  // for an unrelated reason. Confirmed by execution that the heading-only
+  // fix from the first commit misses this; closed by treating any blank line
+  // NOT followed by a list continuation as a boundary too (see the design
+  // comment above hasNearbyDeferralMarker).
+  test('does not borrow a citation from an unrelated LATER paragraph with no heading at all', () => {
+    const fixture = [
+      'RED: write a failing test. GREEN: make it pass. REFACTOR: clean it up.',
+      '',
+      'This unrelated paragraph mentions the canonical tdd.md reference for a totally different reason.',
+    ].join('\n');
+    assert.ok(restatesCycleStructurally(fixture),
+      "a citation belonging to an unrelated later paragraph (no heading) must not count as this restatement's own deferral");
+  });
+
+  // Negative-space companion to the above: a blank line immediately followed
+  // by a LIST ITEM (not a new unrelated paragraph) must still be treated as
+  // the SAME statement, matching the real execute-plan.md shape (a numbered
+  // list's intro sentence, then a blank line, then the list item that
+  // carries the citation) — this is exactly what the first #4302 fix attempt
+  // (a flat blank-line boundary) got wrong.
+  test('does not treat a blank-line-then-list-item as a boundary (the execute-plan.md shape)', () => {
+    const fixture = [
+      'For `type: tdd` plans — RED-GREEN-REFACTOR:',
+      '',
+      '1. Some unrelated setup step.',
+      '2. Execute the cycle exactly as the canonical `references/tdd.md` reference specifies.',
+    ].join('\n');
+    assert.ok(!restatesCycleStructurally(fixture),
+      'a citation carried by a later item of the SAME list (reached via a blank-line-then-list-item hop) must still count as this restatement\'s own deferral');
   });
 });
