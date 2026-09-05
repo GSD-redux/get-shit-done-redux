@@ -479,19 +479,30 @@ Prefer **relative paths** for all Edit/Write operations inside a worktree. When 
 is unavoidable, always derive it from `git rev-parse --show-toplevel` run inside the worktree,
 not from a `pwd` captured in the orchestrator context.
 
-**0. Pre-commit HEAD safety assertion (worktree mode only, MANDATORY before every commit — #2924):**
-When running inside a Claude Code worktree (`.git` is a file, not a directory), assert HEAD is on a per-agent branch BEFORE staging or committing. If HEAD has drifted onto a protected ref, HALT — never self-recover via `git update-ref refs/heads/<protected>`:
+**0. Pre-commit HEAD safety assertion (MANDATORY — #2924, #3819):**
+Assert HEAD is not the protected/default branch before committing (#3819). If drifted onto it, HALT — never self-recover via `git update-ref refs/heads/<protected>`:
 ```bash
-if [ -f .git ]; then  # worktree
-  HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
-  ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  # Deny-list: never commit on a protected ref.
-  if [ "$HEAD_REF" = "DETACHED" ] || \
-     echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
-    echo "FATAL: refusing to commit — worktree HEAD is on '$ACTUAL_BRANCH' (expected per-agent branch)." >&2
-    echo "DO NOT use 'git update-ref' to rewind the protected branch — surface as blocker (#2924)." >&2
-    exit 1
+HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
+ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$HEAD_REF" = "DETACHED" ]; then
+  echo "FATAL: refusing to commit — HEAD is detached." >&2
+  exit 1
+fi
+# #3819: real default branch; override git.allow_default_branch_commits; else five-name fallback.
+IS_PROTECTED=$(gsd_run query git.base-branch --is-protected "$ACTUAL_BRANCH" 2>/dev/null) || IS_PROTECTED="__GSD_RUN_UNAVAILABLE__"
+if [ "$IS_PROTECTED" = "__GSD_RUN_UNAVAILABLE__" ] || [ -z "$IS_PROTECTED" ]; then
+  if echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
+    IS_PROTECTED="true"
+  else
+    IS_PROTECTED="false"
   fi
+fi
+if [ "$IS_PROTECTED" != "false" ]; then
+  echo "FATAL: refusing to commit — HEAD is on '$ACTUAL_BRANCH' (protected/default branch)." >&2
+  echo "Re-home onto a phase/agent branch (#2924, #3819); override: git.allow_default_branch_commits:true in .planning/config.json." >&2
+  exit 1
+fi
+if [ -f .git ]; then  # worktree
   # Positive allow-list: HEAD must be on a per-agent branch (`agent-<id>` or
   # legacy `worktree-agent-<id>`). This catches feature/* and any other
   # arbitrary branch that the deny-list would silently allow (#2924, #1995).
@@ -583,8 +594,7 @@ back, those deletions appear on the main branch, destroying prior-wave work (#20
 - `git rm` on files not explicitly created by the current task
 - `git checkout -- .` or `git restore .` (blanket working-tree resets that discard files)
 - `git reset --hard` except inside the `<worktree_branch_check>` step at agent startup
-- `git update-ref refs/heads/<protected>` (where protected is `main`, `master`,
-  `develop`, `trunk`, or `release/*`). This is an absolute prohibition (#2924).
+- `git update-ref refs/heads/<protected>` (resolved protected branch, #2924, #3819). Prohibited.
   If you discover that your worktree HEAD is attached to a protected branch and your
   commits landed there, **DO NOT** "recover" by force-rewinding the protected ref —
   that silently destroys concurrent commits in multi-active scenarios (parallel
@@ -802,6 +812,7 @@ gsd_run query state.add-blocker --text "Blocker description"
 </state_updates>
 
 <final_commit>
+This commit must re-run the Step 0 assertion above (#3819).
 ```bash
 gsd_run query commit "docs({phase}-{plan}): complete [plan-name] plan" --files \
   .planning/phases/XX-name/{phase}-{plan}-SUMMARY.md .planning/STATE.md .planning/ROADMAP.md .planning/REQUIREMENTS.md
