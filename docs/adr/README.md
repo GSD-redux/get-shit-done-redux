@@ -80,6 +80,12 @@ If A declares either relation toward B, **B must record the reciprocal.** A one-
 
 Only an `Accepted` ADR is owed the back-link. A `Proposed` ADR's claim is **prospective**: it has not taken effect, so its target is not marked. On ratification, the check begins demanding the back-links.
 
+### 3a. Amendment is symmetric too — but not yet gated
+
+A same-file `## Amendment (YYYY-MM-DD): <topic>` section (see `docs/contributor-standards.md`'s "Amending an accepted ADR") needs no back-link — there is only one file. A **separate** ADR that amends another is the same relation as Supersedes/Subsumes and follows the same rule: if A declares `**Amends:** [ADR-B]`, B **must** carry the reciprocal `**Amended by:** [ADR-A]` in the same PR. [ADR-2782](2782-reviewer-lane-capability-surface.md)'s single `Amends` field names four targets — [ADR-857](857-capability-system.md), [ADR-894](894-capability-declaration-format.md), [ADR-1016](1016-runtime-capability-descriptor.md), [ADR-1244](1244-capability-ecosystem.md) — and all four carry the reciprocal `Amended by` back-link.
+
+Unlike `Supersedes`/`Subsumes`, this is not yet enforced by `scripts/gen-adr-index.cjs` — `relationSections()` only recognizes `## Supersedes` / `## Subsumes` headings, and the header-field parity check does not walk `Amends`. Get the back-link right by review until that gap closes.
+
 ### 4. The declared id matches the filename
 
 An H1 of `# ADR-0175: …` in a file named `218-*.md` is a rename that never finished. The id in the title must match the filename's prefix.

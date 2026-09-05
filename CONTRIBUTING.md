@@ -102,6 +102,8 @@ An ADR (Architecture Decision Record) documents a significant architectural deci
 
 **Rejection reasons:** Issue not approved before file was created, filename uses local-compute sequential number instead of issue#, multiple decisions bundled in one PR, file placed in wrong directory (`docs/adr/` vs `docs/prd/`).
 
+**This process is for a *new* ADR file.** An accepted ADR is never rewritten from scratch — check `docs/adr/` first for a broader ADR that already owns the area. Amending one is a separate, lighter-weight path: see **[`docs/contributor-standards.md` — "Amending an accepted ADR"](docs/contributor-standards.md#amending-an-accepted-adr)** for the two established patterns (an in-place dated section, or a new ADR that declares `Amends`/gets the reciprocal `Amended by` back-link).
+
 ---
 
 ## The Issue-First Rule — No Exceptions
