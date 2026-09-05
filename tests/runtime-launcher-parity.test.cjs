@@ -403,7 +403,7 @@ describe('runtime-launcher-parity (#373)', () => {
           WINDSURF_CONFIG_DIR: undefined, AUGMENT_CONFIG_DIR: undefined, TRAE_CONFIG_DIR: undefined,
           QWEN_CONFIG_DIR: undefined, CODEBUDDY_CONFIG_DIR: undefined, CLINE_CONFIG_DIR: undefined,
           GROK_AGENTS_HOME: undefined, ANTIGRAVITY_CONFIG_DIR: undefined, OPENCODE_CONFIG_DIR: undefined,
-          KILO_CONFIG_DIR: undefined,
+          KILO_CONFIG_DIR: undefined, XDG_CONFIG_HOME: undefined,
         },
       });
       const threw = r.exitCode !== 0;
@@ -603,13 +603,15 @@ describe('runtime-launcher-parity (#373)', () => {
       }
 
       const stdout = runBashFile(scriptPath, {
-        // Ambient CLAUDE_CONFIG_DIR/HERMES_HOME/CURSOR_CONFIG_DIR all resolve
-        // arms checked before CODEX_HOME (#4205 class: same env-leak bug, this
-        // time via config-dir vars rather than PATH) — clear them so only
-        // HOME's default $HOME/.codex fallback can win.
+        // Ambient CLAUDE_CONFIG_DIR/HERMES_HOME/CURSOR_CONFIG_DIR resolve arms
+        // checked before CODEX_HOME, and an ambient CODEX_HOME overrides the
+        // $HOME/.codex default this test asserts (#4205 class: same env-leak
+        // bug, this time via config-dir vars rather than PATH) — clear all
+        // four so only HOME's default $HOME/.codex fallback can win.
         env: {
           ...process.env, PATH: systemPaths.join(path.delimiter), HOME: fakeHome,
           CLAUDE_CONFIG_DIR: undefined, HERMES_HOME: undefined, CURSOR_CONFIG_DIR: undefined,
+          CODEX_HOME: undefined,
         },
       });
 
@@ -1087,7 +1089,7 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
           WINDSURF_CONFIG_DIR: undefined, AUGMENT_CONFIG_DIR: undefined, TRAE_CONFIG_DIR: undefined,
           QWEN_CONFIG_DIR: undefined, CODEBUDDY_CONFIG_DIR: undefined, CLINE_CONFIG_DIR: undefined,
           GROK_AGENTS_HOME: undefined, ANTIGRAVITY_CONFIG_DIR: undefined, OPENCODE_CONFIG_DIR: undefined,
-          KILO_CONFIG_DIR: undefined,
+          KILO_CONFIG_DIR: undefined, XDG_CONFIG_HOME: undefined,
         },
       });
       const threw = r.exitCode !== 0;
@@ -1413,6 +1415,65 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       );
     },
   );
+
+
+  // ── (B) Behavioral: HERMES_HOME stub is resolved ──────────────────────────
+  test('(B) gsd_run resolves ${HERMES_HOME}/gsd-core/bin/ stub when set and local+PATH both miss', () => {
+    const fakeHome       = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-home-b-'));
+    const fakeHermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-hermes-'));
+    const fakeRuntime    = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-rt-'));
+    const { isolatedPath, nodeBinDir } = buildIsolatedPath();
+    try {
+      const hermesBinDir = path.join(fakeHermesHome, 'gsd-core', 'bin');
+      fs.mkdirSync(hermesBinDir, { recursive: true });
+
+      const stubPath = path.join(hermesBinDir, 'gsd-tools.cjs');
+      fs.writeFileSync(
+        stubPath,
+        '#!/usr/bin/env node\nconsole.log("HERMES_HOME_STUB:" + process.argv.slice(2).join(","));\n',
+      );
+      fs.chmodSync(stubPath, 0o755);
+
+      const snippet = fs.readFileSync(SNIPPET_FILE, 'utf8');
+      // Export HOME to an isolated temp dir (no .claude install there) so the
+      // $HOME/.claude arm is skipped and we fall through to the HERMES_HOME arm.
+      const scriptContent =
+        `unset GSD_TOOLS\n` +
+        `export HOME=${JSON.stringify(fakeHome)}\n` +
+        `export RUNTIME_DIR=${JSON.stringify(fakeRuntime)}\n` +
+        `export HERMES_HOME=${JSON.stringify(fakeHermesHome)}\n` +
+        snippet +
+        `\nprintf "GSD_TOOLS=%s\\n" "$GSD_TOOLS"\n` +
+        `gsd_run ping test\n`;
+
+      const scriptPath = path.join(fakeRuntime, 'test-hermes-home.sh');
+      fs.writeFileSync(scriptPath, scriptContent);
+
+      const stdout = runBashFile(scriptPath, {
+        // CLAUDE_CONFIG_DIR resolves before HERMES_HOME; clear it so ambient
+        // leakage cannot preempt the arm under test (#4205 class, env vector).
+        env: {
+          ...process.env, PATH: isolatedPath, HOME: fakeHome,
+          HERMES_HOME: fakeHermesHome, CLAUDE_CONFIG_DIR: undefined,
+        },
+      });
+
+      const normStdout = stdout.replace(/\\/g, '/');
+      assert.ok(
+        normStdout.includes('gsd-core/bin/'),
+        `Expected GSD_TOOLS to resolve into hermes gsd-core/bin/, got:\n${stdout.trim()}`,
+      );
+      assert.ok(
+        stdout.includes('HERMES_HOME_STUB:ping,test'),
+        `Expected stub output "HERMES_HOME_STUB:ping,test", got:\n${stdout.trim()}`,
+      );
+    } finally {
+      cleanup(fakeHome);
+      cleanup(fakeHermesHome);
+      cleanup(fakeRuntime);
+      if (nodeBinDir) cleanup(nodeBinDir);
+    }
+  });
 
   // ── (B1) Regression #4205: a leaked/installed gsd_run reachable on PATH ──
   //        must be filtered by buildIsolatedPath so the resolver still falls
