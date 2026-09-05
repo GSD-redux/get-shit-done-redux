@@ -1284,10 +1284,6 @@ if ! CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_converg
   exit 1
 fi
 REVIEWS_FILE="${REVIEWS_PATH}"
-# #3916: a phase's first-ever revision cycle can hit REVISION_CONFLICT before any REVIEWS.md
-# exists — REVIEWS_PATH is then legitimately empty, not a corrupt/deleted file. Only hard-block
-# when a path WAS resolved but isn't a regular file; an empty path just means "nothing to persist
-# into yet" and falls through to the shared Conflict Return protocol without this record channel.
 if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ] && [ ! -f "${REVIEWS_FILE}" ]; then
   echo "BLOCKED: cannot persist plan-revision conflict because REVIEWS_PATH is not a regular file: ${REVIEWS_FILE}" >&2
   exit 1
@@ -1295,15 +1291,14 @@ fi
 ```
 
 - Counter not spent: `iteration_count`, and `prev_issue_count` is left unchanged.
-- Record channel: the writer-owned delimiter pair in `$REVIEWS_FILE`, under
-  `## Plan-Revision Conflicts`, when `CONVERGENCE_ENABLED` is `true` and `$REVIEWS_FILE` is
-  non-empty. plan-phase wrote the line, so plan-phase closes it.
-- After re-spawning, re-evaluate the return here — do not fall through to the checker spawn below.
+- Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section, when
+  `CONVERGENCE_ENABLED` is `true` and `$REVIEWS_FILE` is non-empty. plan-phase wrote the
+  line, so plan-phase closes it.
+- After re-spawning, return to this step — never fall through to the checker spawn below.
 - Escalation uses the same gate as the iteration cap below — on a repeated `required_property`,
   and on the THIRD conflict return of this loop whatever property it names.
 - Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (which
-  decodes agent text's literal `\n` into a real newline). Export the row's
-  `CONFLICT_DIMENSION/_PLAN/_PROPERTY/_CONSTRAINT/_ALTERNATIVES`, then run:
+  decodes literal `\n` as a real newline). Then run:
 
 ```bash
 if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
