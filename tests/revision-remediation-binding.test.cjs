@@ -1097,6 +1097,7 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
       const after = fs.readFileSync(file, 'utf-8');
       assert.ok(after.startsWith('# Cross-AI Plan Review — Phase 7\r\n'),
         'a pre-existing line must keep its original CRLF ending');
+      assert.match(after, /- \[ \] REVISION_CONFLICT d\/p1/, 'the record must actually be inserted');
     });
   });
 
