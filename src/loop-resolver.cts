@@ -542,6 +542,48 @@ function cmdLoopRenderHooks(
     return;
   }
 
+  // ── #4030: optional --phase <token> → derived context: { phase, phaseDir } ─────
+  // Resolves the SAME way `init.*` already does — guardedFindPhase, not bare
+  // findPhaseInternal — so a project_code-scoped repo gets the identical
+  // #2237 foreign-prefix guard `init.*` applies, rather than reopening that
+  // bug for this new call site. A phase-scoped step/gate/contribution handler
+  // gets the task-local phase instead of inferring it from STATE.current_phase
+  // or an ambient shell variable. Never accepts a caller-supplied directory —
+  // phaseDir is always the literal on-disk directory name findPhaseInternal
+  // matched, so there is no path string to validate. A missing or ambiguous
+  // phase degrades to "no context" plus a warning (mirroring cmdInitPhaseOp's
+  // #2237 handling of the identical found:false/ambiguous_matches shape)
+  // rather than a hard error.
+  const phaseArg = typeof options['phase'] === 'string' ? options['phase'] : undefined;
+  if (phaseArg === '') {
+    coreError('--phase requires a <token> value (e.g. --phase 05)');
+    return;
+  }
+  let phaseContext: { phase: string; phaseDir: string } | undefined;
+  const phaseWarnings: string[] = [];
+  if (phaseArg !== undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { guardedFindPhase } = require('./phase-locator.cjs') as {
+      guardedFindPhase: (cwd: string, phase: string, projectCode: unknown) => {
+        found: boolean;
+        directory: string;
+        phase_number: string;
+        ambiguous_matches?: string[];
+      } | null;
+    };
+    const phaseResult = guardedFindPhase(cwd, phaseArg, config['project_code']);
+    if (phaseResult?.found) {
+      phaseContext = { phase: phaseResult.phase_number, phaseDir: phaseResult.directory };
+    } else if (phaseResult?.ambiguous_matches?.length) {
+      phaseWarnings.push(
+        `--phase ${JSON.stringify(phaseArg)} is ambiguous: ${phaseResult.ambiguous_matches.length} ` +
+        `directories match (${phaseResult.ambiguous_matches.map((m) => `"${m}"`).join(', ')}); context omitted.`,
+      );
+    } else {
+      phaseWarnings.push(`--phase ${JSON.stringify(phaseArg)} did not match a phase directory; context omitted.`);
+    }
+  }
+
   // ── ADR-1244 D2: load-failed capability gates FAIL OPEN with a loud warning ────
   // Decision (#2009): a capability that failed to LOAD must not block the loop.
   // The prior behavior injected a BLOCKING synthetic gate (blocking:true,
@@ -605,15 +647,20 @@ function cmdLoopRenderHooks(
     activeHooks: ActiveHook[];
     rendered: string;
     warnings?: string[];
+    context?: { phase: string; phaseDir: string };
   } = {
     point: resolved.point,
     activeHooks: resolved.activeHooks,
     rendered,
   };
-  // Surface capability-state warnings and the #2009 load-failure fail-open
-  // warnings together in the structured `warnings` channel (in addition to the
-  // stderr emission above, which is the channel host workflows actually see).
-  const combinedWarnings = [...(state.warnings || []), ...loadFailWarnings];
+  if (phaseContext) {
+    envelope.context = phaseContext;
+  }
+  // Surface capability-state warnings, the #2009 load-failure fail-open
+  // warnings, and #4030 phase-resolution warnings together in the structured
+  // `warnings` channel (in addition to the stderr emission above, which is
+  // the channel host workflows actually see).
+  const combinedWarnings = [...(state.warnings || []), ...loadFailWarnings, ...phaseWarnings];
   if (combinedWarnings.length > 0) {
     envelope.warnings = combinedWarnings;
   }

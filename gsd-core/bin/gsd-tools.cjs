@@ -2785,10 +2785,27 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
               }
               loopRuntime = value;
             }
+            // --phase <token> (#4030): task-local phase for the invocation.
+            // Mirrors the --runtime dual-form parsing above.
+            let loopPhase = undefined;
+            const phaseEqArg = args.find(arg => arg.startsWith('--phase='));
+            const phaseIdx = args.indexOf('--phase');
+            if (phaseEqArg) {
+              const value = phaseEqArg.slice('--phase='.length).trim();
+              if (!value) error('Missing value for --phase (e.g. --phase 05)', ERROR_REASON ? ERROR_REASON.USAGE : undefined);
+              loopPhase = value;
+            } else if (phaseIdx !== -1) {
+              const value = args[phaseIdx + 1];
+              if (!value || value.startsWith('--')) {
+                error('Missing value for --phase (e.g. --phase 05)', ERROR_REASON ? ERROR_REASON.USAGE : undefined);
+              }
+              loopPhase = value;
+            }
             loopResolver.cmdLoopRenderHooks(cwd, args[2], raw, {
               configDir: loopConfigDir ? path.resolve(loopConfigDir) : undefined,
               activeCap: loopActiveCap,
               runtime: loopRuntime,
+              phase: loopPhase,
             });
           } else {
             error(
