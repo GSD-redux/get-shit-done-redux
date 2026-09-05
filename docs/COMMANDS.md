@@ -2349,6 +2349,14 @@ Enable with:
 { "hooks": { "community": true } }
 ```
 
+`gsd-validate-commit.sh` accepts the 10 Conventional Commits types (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`) by default. Extend the list with `hooks.commit_types` — an array of extra type names, added to (never replacing) the built-in ten:
+
+```json
+{ "hooks": { "community": true, "commit_types": ["enhance", "enh", "revert"] } }
+```
+
+Each entry must match `^[a-z][a-z0-9-]*$` (lowercase letters, digits, hyphens); non-conforming or non-string entries are dropped rather than blocking the hook.
+
 ---
 
 ### Community Invite

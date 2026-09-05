@@ -18,3 +18,4 @@ group: v1.32 Features
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `hooks.community` | boolean | `false` | Enable optional community hooks for commit validation, session state, and phase boundaries |
+| `hooks.commit_types` | array of strings | `[]` | Extra Conventional Commits types `gsd-validate-commit.sh` accepts, in addition to the built-in `feat, fix, docs, style, refactor, perf, test, build, ci, chore` — never replaces them. Each entry must match `^[a-z][a-z0-9-]*$` (lowercase letters, digits, hyphens); non-conforming or non-string entries are dropped. Example: `{ "hooks": { "community": true, "commit_types": ["enhance", "enh", "revert"] } }`. |

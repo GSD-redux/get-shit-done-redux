@@ -24,13 +24,38 @@ cleanup_temp_files() {
 }
 trap cleanup_temp_files EXIT
 
+# The 10 built-in Conventional Commits types — the SINGLE declaration (#3811
+# review finding: this was previously hand-typed a second time inside the
+# node -e script below, a generative-fix-divergence risk per CLAUDE.md's
+# known-defect list). Threaded into node via an env var; reused directly by
+# bash below when building COMMIT_TYPES.
+BUILTIN_COMMIT_TYPES=(feat fix docs style refactor perf test build ci chore)
+
 # Check opt-in config — exit silently if not enabled
 if [ -f .planning/config.json ]; then
   ENABLED_ERR=$(mktemp)
-  ENABLED=$(node -e "
+  # Single node invocation reads BOTH hooks.community (line 1: '1'/'0') and
+  # hooks.commit_types (remaining lines: one sanitized extra type per line) —
+  # see #3811. Sanitizing here, not in bash, keeps the safe-token check in one
+  # place and guarantees only [a-z][a-z0-9-]* strings ever reach the regex
+  # built below, so a configured value can never alter the compiled pattern's
+  # structure.
+  BUILTIN_COMMIT_TYPES_CSV=$(IFS=,; echo "${BUILTIN_COMMIT_TYPES[*]}")
+  CONFIG_OUT=$(GSD_BUILTIN_COMMIT_TYPES="$BUILTIN_COMMIT_TYPES_CSV" node -e "
     try{
       const c=require('./.planning/config.json');
       process.stdout.write(c.hooks?.community===true?'1':'0');
+      process.stdout.write('\n');
+      const raw=c.hooks?.commit_types;
+      const list=Array.isArray(raw)?raw:[];
+      const seen=new Set((process.env.GSD_BUILTIN_COMMIT_TYPES||'').split(',').filter(Boolean));
+      for (const t of list){
+        if (typeof t!=='string') continue;
+        if (!/^[a-z][a-z0-9-]*\$/.test(t)) continue;
+        if (seen.has(t)) continue;
+        seen.add(t);
+        process.stdout.write(t+'\n');
+      }
     }catch(e){
       process.stderr.write('CONFIG_READ_FAILED: '+(e&&e.message?e.message:String(e)));
       process.exit(3);
@@ -44,7 +69,16 @@ if [ -f .planning/config.json ]; then
     echo "gsd-validate-commit.sh: could not read .planning/config.json (opt-in check) — validator disabled for this call. $(cat "$ENABLED_ERR")" >&2
     exit 0
   fi
+  ENABLED=$(printf '%s\n' "$CONFIG_OUT" | head -1)
   if [ "$ENABLED" != "1" ]; then exit 0; fi
+  # Remaining lines (if any) are the sanitized, deduped configured commit
+  # types beyond the 10 built-ins (#3811). Read into a bash-3.2-safe array —
+  # `mapfile`/`readarray` are bash 4+ only and this hook is tested against
+  # bash 3.2.57 (macOS default).
+  EXTRA_COMMIT_TYPES=()
+  while IFS= read -r _extra_type; do
+    [ -n "$_extra_type" ] && EXTRA_COMMIT_TYPES+=("$_extra_type")
+  done < <(printf '%s\n' "$CONFIG_OUT" | tail -n +2)
 else
   exit 0
 fi
@@ -491,11 +525,37 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
     else
       SUBJECT=$(echo "$MSG" | head -1)
     fi
+    # Single source of truth for the accepted commit-type list (#3811): the
+    # 10 built-ins plus whatever passed the safe-token filter above. Both the
+    # regex alternation and the human-readable error text below are derived
+    # from this ONE array — no hand-synced second copy.
+    #
+    # The `"${EXTRA_COMMIT_TYPES[@]+"${EXTRA_COMMIT_TYPES[@]}"}"` form (not
+    # plain `"${EXTRA_COMMIT_TYPES[@]}"`) is required: on bash 3.2.57 (this
+    # repo's macOS test target), expanding `[@]` on an array that is declared
+    # but has zero elements throws "unbound variable" under `set -u` (which
+    # this script has via `set -euo pipefail`). Verified directly against
+    # /bin/bash 3.2.57 on macOS. The `${arr[@]+word}` form is the
+    # nounset-safe idiom for "expand if set, empty otherwise" on empty arrays.
+    COMMIT_TYPES=("${BUILTIN_COMMIT_TYPES[@]}" "${EXTRA_COMMIT_TYPES[@]+"${EXTRA_COMMIT_TYPES[@]}"}")
+    COMMIT_TYPE_ALT=$(IFS='|'; echo "${COMMIT_TYPES[*]}")
+    COMMIT_TYPE_LIST=$(printf '%s, ' "${COMMIT_TYPES[@]}")
+    COMMIT_TYPE_LIST="${COMMIT_TYPE_LIST%, }"
+    # Typed `valid_types` array (#3811 review finding): CONTRIBUTING.md bans
+    # substring/prose matching on `reason` in tests — a test needing to
+    # verify the accepted-type set must have a typed field, not grep prose.
+    # Safe to build with a bare printf (no JSON-escaping needed): every
+    # element of COMMIT_TYPES has already passed the `^[a-z][a-z0-9-]*$`
+    # safe-token filter (or is a literal built-in), so none can contain `"`
+    # or `\`.
+    COMMIT_TYPES_JSON=$(printf '"%s",' "${COMMIT_TYPES[@]}")
+    COMMIT_TYPES_JSON="[${COMMIT_TYPES_JSON%,}]"
     # Validate Conventional Commits format
-    if ! [[ "$SUBJECT" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?:[[:space:]].+ ]]; then
-      # Emit a typed `code` field alongside `reason` (#2974). Tests assert
-      # on the stable code string; the reason is the human-readable copy.
-      echo '{"decision": "block", "code": "CONVENTIONAL_COMMITS_VIOLATION", "reason": "Commit message must follow Conventional Commits: <type>(<scope>): <subject>. Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore. Subject must be <=72 chars, lowercase, imperative mood, no trailing period."}'
+    if ! [[ "$SUBJECT" =~ ^($COMMIT_TYPE_ALT)(\(.+\))?:[[:space:]].+ ]]; then
+      # Emit typed `code` and `valid_types` fields alongside `reason` (#2974,
+      # #3811). Tests assert on the stable code string and the typed array;
+      # the reason is the human-readable copy, never grepped by tests.
+      echo "{\"decision\": \"block\", \"code\": \"CONVENTIONAL_COMMITS_VIOLATION\", \"valid_types\": $COMMIT_TYPES_JSON, \"reason\": \"Commit message must follow Conventional Commits: <type>(<scope>): <subject>. Valid types: $COMMIT_TYPE_LIST. Subject must be <=72 chars, lowercase, imperative mood, no trailing period.\"}"
       exit 2
     fi
     if [ ${#SUBJECT} -gt 72 ]; then
