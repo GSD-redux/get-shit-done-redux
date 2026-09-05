@@ -396,7 +396,7 @@ node gsd-tools.cjs progress [json|table|bar]
 node gsd-tools.cjs progress --json
 
 # TODO を完了にする
-node gsd-tools.cjs todo complete <filename>
+node gsd-tools.cjs todo complete <filename> [--dry-run]
 
 # UAT 監査 — 全フェーズの未解決項目をスキャン
 node gsd-tools.cjs audit-uat
