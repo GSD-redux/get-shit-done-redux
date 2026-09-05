@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 # PRD Express Path — generate CONTEXT.md from a PRD
 
 Runs when `--prd <filepath>` is provided (§3.5 of `plan-phase.md`).
