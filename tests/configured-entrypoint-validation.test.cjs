@@ -152,6 +152,41 @@ test('configured entrypoint validation aggregates file and interpreter failures 
   ]);
 });
 
+test('an interpreter-invoked script that exists but has no read permission is reported unreadable, not ok (#4249 agy review)', (t) => {
+  // statSync only needs search (+x) permission on the parent directories, so
+  // it succeeds on a chmod-000 file even though `node <script>` would fail
+  // with EACCES at hook-fire time. Only the interpreterCandidates branch is
+  // exercised here — the candidate-less/shebang branch already has its own
+  // X_OK gate, proven by the 'not-executable' case in the aggregate test above.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-unreadable-interp-'));
+  t.after(() => helpers.cleanup(root));
+  const scriptPath = path.join(root, 'hook.js');
+  fs.writeFileSync(scriptPath, '// unreadable to the invoking user at hook-fire time\n');
+
+  const result = hooksSurface.validateConfiguredEntrypoints([
+    {
+      runtime: 'claude',
+      configPath: path.join(root, 'settings.json'),
+      scriptPath,
+      interpreterCandidates: ['/usr/bin/node'],
+    },
+  ], {
+    resolveExecutableBinary: () => '/usr/bin/node',
+    accessSync: (p, mode) => {
+      if (p === scriptPath && mode === fs.constants.R_OK) {
+        const err = new Error('EACCES: permission denied');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return fs.accessSync(p, mode);
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.invalid.map(({ role, reason }) => [role, reason]), [
+    ['script', 'unreadable'],
+  ]);
+});
 
 test('runtime config writers expose the exact configured entrypoints they emit', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-writers-'));

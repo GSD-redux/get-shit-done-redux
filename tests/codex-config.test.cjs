@@ -7339,6 +7339,21 @@ describe('#4249 — install() exposes the full snapshot restore, not just migrat
 
       const versionPath = path.join(codexHome, 'gsd-core', 'VERSION');
       assert.strictEqual(fs.existsSync(versionPath), false, 'rollback must remove gsd-core/VERSION');
+
+      // #4249 (agy adversarial review): the whole point of this describe block
+      // is that rollback covers the full pre-install snapshot, not just
+      // installer migrations — config.toml/hooks.json must revert too. Both
+      // were absent before this fresh install, so rollback must remove them.
+      assert.strictEqual(
+        fs.existsSync(path.join(codexHome, 'config.toml')),
+        false,
+        'rollback must remove config.toml (absent before this fresh install)'
+      );
+      assert.strictEqual(
+        fs.existsSync(path.join(codexHome, 'hooks.json')),
+        false,
+        'rollback must remove hooks.json (absent before this fresh install)'
+      );
     } finally {
       process.chdir(previousCwd);
       if (previousHome === undefined) delete process.env.HOME;

@@ -3395,9 +3395,22 @@ function validateConfiguredEntrypoints(
       scriptOk = statSync(entry.scriptPath).isFile();
       if (!scriptOk) {
         invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'wrong-file-type' });
+      } else if (entry.interpreterCandidates) {
+        // #4249: statSync only needs search permission on the parent dirs, so
+        // it succeeds even for a chmod-000 file — the EACCES catch below
+        // never fires for that case, and an interpreter-invoked entry has no
+        // other readability gate (unlike the candidate-less/X_OK branch
+        // below). Read permission on the file itself must be checked
+        // explicitly to catch a genuinely unreadable script.
+        try {
+          accessSync(entry.scriptPath, fs.constants.R_OK);
+        } catch {
+          scriptOk = false;
+          invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'unreadable' });
+        }
       }
     } catch (statErr) {
-      // #4249 Nit: EACCES means the file exists but couldn't be inspected —
+      // #4249 Nit: EACCES means a parent directory couldn't be searched —
       // a real (if rare) permission problem, distinct from ENOENT's "missing".
       const reason = (statErr as NodeJS.ErrnoException)?.code === 'EACCES' ? 'unreadable' : 'missing';
       invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
