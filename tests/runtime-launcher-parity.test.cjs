@@ -1130,7 +1130,9 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  * Asserts:
  * (A) Snippet contains all expected non-Claude runtime home probes (structural).
  * (B0) buildIsolatedPath() co-location invariant (see below).
- * (B1) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd_run is NOT on
+ * (B) HERMES_HOME behavioral, cross-platform: the ${HERMES_HOME} stub is
+ *     resolved when local and PATH both miss.
+ * (B1) HERMES_HOME behavioral, POSIX-only: when RUNTIME_DIR misses and gsd_run is NOT on
  *     PATH — including a leaked ambient gsd_run planted on PATH, #4205 — a
  *     stub at ${HERMES_HOME}/gsd-core/bin/gsd-tools.cjs is invoked.
  * (C) Default Hermes path behavioral: stub at $HOME/.hermes/gsd-core/bin/
@@ -1894,26 +1896,21 @@ function runBashFile(scriptPath, options = {}) {
 const LOCAL_CLAUDE_PROBE = '_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/';
 
 /**
- * Build a PATH that strips gsd_run but keeps node and system binaries.
- * Accepts additional bin dirs to prepend.
+ * Return the full system PATH with extra bin dirs prepended. Deliberately does
+ * NOT filter gsd_run — unlike buildIsolatedPath() above, which does.
  *
- * We cannot simply remove the whole directory that contains gsd_run because
- * that directory may also contain node (e.g. /opt/homebrew/bin on macOS).
- * Instead, we keep the system PATH as-is and rely on the test's RUNTIME_DIR
- * having no gsd-core/bin/ sub-path, so the resolver's first two checks
- * (RUNTIME_DIR/gsd-core/bin/ and RUNTIME_DIR/.claude/gsd-core/bin/)
- * are the only ones exercised before we hit our stub.
+ * The isolation here comes from resolution ORDER, not from the PATH contents.
+ * Callers give RUNTIME_DIR a .claude/gsd-core/bin/ stub, and the resolver
+ * checks RUNTIME_DIR/gsd-core/bin/ then RUNTIME_DIR/.claude/gsd-core/bin/
+ * before it ever reaches `command -v gsd_run`, so an ambient gsd_run on PATH
+ * is unreachable for these tests. Keeping PATH whole is what keeps node
+ * resolvable when node co-locates with a global gsd_run (e.g. /opt/homebrew/bin).
  *
- * The extra extraBefore dirs (e.g. noToolsBin) sit first but have no gsd_run
- * binary, so command -v gsd_run still falls back to PATH lookup. However,
- * the snippet's elif arm that uses `command -v gsd_run` will find the real
- * installed one unless we mask it. To mask it without losing node, we create
- * a noToolsBin dir that shadows gsd_run with a sentinel that must NOT be
- * called — and we only call makeIsolatedPath for tests where the .claude stub
- * must win before PATH is consulted (i.e. the elif PATH arm is never reached).
+ * That makes this helper safe ONLY for tests whose stub wins before the PATH
+ * arm. Any test that must prove the PATH arm itself misses needs
+ * buildIsolatedPath(), which excludes gsd_run-bearing directories outright.
  *
- * For B: stub is at RUNTIME_DIR/.claude/... so resolver picks it at elif-1 (before command -v).
- * For C: same — local .claude/ is checked before command -v and before $HOME/.claude.
+ * For B and C: the stub sits at RUNTIME_DIR/.claude/..., picked at elif-1.
  */
 function makeIsolatedPath(extraBefore = []) {
   // Keep full system PATH so node remains accessible.
@@ -1993,7 +1990,8 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
       const scriptPath = path.join(fakeRoot, 'test-local-claude.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      // Keep node in PATH (needed to run the .cjs stub); remove gsd-tools
+      // Keep node in PATH (needed to run the .cjs stub); the .claude arm
+      // resolves before the PATH arm, so gsd_run is never probed here.
       const isolatedPath = makeIsolatedPath([noToolsBin]);
 
       const stdout = runBashFile(scriptPath, {
