@@ -808,11 +808,11 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Orchestrator-managed worktree dispatch** (`ISOLATION=orchestrator-worktree`): read and execute `execute-phase/steps/executor-isolation-dispatch.md`. GSD creates each worktree (`worktree create`) and spawns the executor into it; the orchestrator performs every git operation. Merge-back and cleanup are the existing manifest-scoped gauntlet, unchanged.
 
-   **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is `false` — either project-level `USE_WORKTREES=false`, or per-plan submodule intersection forced it false in step 2.5):
+   **Sequential mode** (`USE_WORKTREES_FOR_PLAN=false` project-wide or from step 2.5's submodule check):
 
-   Omit `isolation="worktree"`. For this sequential prompt only, replace `<required_reading>`'s
-   `PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)` with the literal value of
-   `$ORCHESTRATOR_WT`, and replace the `<parallel_execution>` block with:
+   Omit `isolation="worktree"`. In this prompt, replace
+   `PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)` in `<required_reading>` with
+   `$ORCHESTRATOR_WT`'s literal value; then replace `<parallel_execution>` with:
 
    ```
        <sequential_execution>
@@ -824,7 +824,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        <project_root_pin>{literal ORCHESTRATOR_WT value}</project_root_pin>
    ```
 
-   The sequential mode Agent prompt uses the same structure as worktree mode but with these differences in success_criteria — since there is only one agent writing at a time, there are no shared-file conflicts:
+   Also replace `success_criteria` with:
 
    ```
        <success_criteria>
@@ -836,7 +836,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </success_criteria>
    ```
 
-   When worktrees are disabled for a plan (per-plan or project-level), that plan's executor runs on the main working tree. If **any** plan in the current wave dropped to sequential mode, execute the affected plan(s) **one at a time** to avoid concurrent writes to the main working tree — plans in the same wave that retained worktree isolation can still run in parallel alongside the sequential ones, but two non-worktree plans in the same wave must serialize. When the project-level `USE_WORKTREES=false`, all plans in the wave serialize regardless of the `PARALLELIZATION` setting.
+   Serialize non-worktree plans on the main tree; isolated plans may still run in parallel.
+   Project-level `USE_WORKTREES=false` serializes the whole wave regardless of `PARALLELIZATION`.
 
 4. **Wait for all agents in wave to complete.**
 

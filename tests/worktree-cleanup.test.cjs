@@ -35,6 +35,7 @@ const QUICK_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'quick.md');
 const EXECUTOR_AGENT_PATH = path.join(REPO_ROOT, 'agents', 'gsd-executor.md');
 const GIT_INTEGRATION_PATH = path.join(REPO_ROOT, 'gsd-core', 'references', 'git-integration.md');
 const WORKTREE_BRANCH_CHECK_FRAGMENT = path.join(REPO_ROOT, 'gsd-core', 'references', 'worktree-branch-check.md');
+const WORKTREE_PATH_SAFETY_REFERENCE = path.join(REPO_ROOT, 'gsd-core', 'references', 'worktree-path-safety.md');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -404,15 +405,21 @@ describe('bug #2924: worktree HEAD attachment + destructive recovery', () => {
   });
 
   describe('gsd-executor.md task_commit_protocol enforces worktree-agent-* allow-list', () => {
-    const content = fs.readFileSync(EXECUTOR_AGENT_PATH, 'utf-8');
-    const block = extractNamedBlock(content, 'task_commit_protocol');
+    const agentContent = fs.readFileSync(EXECUTOR_AGENT_PATH, 'utf-8');
+    const block = extractNamedBlock(agentContent, 'task_commit_protocol');
+    const safetyReference = fs.readFileSync(WORKTREE_PATH_SAFETY_REFERENCE, 'utf-8');
 
     test('task_commit_protocol block exists', () => {
       assert.ok(block, 'gsd-executor.md must contain a <task_commit_protocol> block');
     });
 
     test('step 0 enforces positive worktree-agent-* allow-list (#2924 hardening)', () => {
-      const codeBlocks = extractFencedCodeBlocks(block);
+      assert.match(
+        agentContent,
+        /@~\/.claude\/gsd-core\/references\/worktree-path-safety\.md/,
+        'gsd-executor.md must load the canonical path-safety reference'
+      );
+      const codeBlocks = extractFencedCodeBlocks(safetyReference);
       const scripts = codeBlocks.map(({ body }) => body).join('\n');
       const allowListRe = /grep\s+-Eq?\s+'\^\(\(worktree-\)\?agent-\|worktree-wf_/;
       assert.ok(
