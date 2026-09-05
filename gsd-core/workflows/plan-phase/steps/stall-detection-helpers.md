@@ -48,6 +48,15 @@ min), real, bounded call that reliably hands control back — the outer
 threshold is enforced by `dispatch_ts` accumulating across calls, not by one
 call's own duration.
 
+**Never a wake-up call between cycles (#4079):** while the orchestrator waits
+between `gsd_stall_watch` cycles, it must NOT call `ScheduleWakeup` (or any
+host wake/sleep-scheduling tool, e.g. the `/loop` pacing surface) to
+literalize "I'll wait". The `gsd_stall_watch` bash call IS the wait mechanism;
+wake-up scheduling is never part of it, and a partial-args `ScheduleWakeup`
+call surfaces the host's red validation error (`prompt` is required when
+`stop` is not true). Just issue the next watch call (or let the blocking
+Agent() return) — nothing else.
+
 **Disclosed tradeoff:** the first cycle always sleeps a full
 `PLANNER_STALL_INTERVAL_MINUTES` before its first check, so a planner that
 completes in seconds is not observed by this path until that interval

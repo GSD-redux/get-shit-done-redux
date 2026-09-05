@@ -664,7 +664,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre --raw)
    ```
 
-   **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none); one naming an alternate wave dispatch replaces step 3's inline loop. Then proceed to step 3.
+   **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none); one naming an alternate wave dispatch replaces step 3's inline loop.
+
+   **Step dispatch:** `kind == "step"` per @gsd-core/references/loop-hook-dispatch.md; never blocks or redirects executor spawning. ⚠ Validate `ref.command` in-context before any shell use.
 
 3. **Spawn executor agents:**
 
@@ -676,6 +678,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
    Pass paths only — executors read files themselves.
 
    **Executor routing (#1689/#3370).** Per plan, run `gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md` to set `EXECUTOR_TYPE` for `subagent_type="{EXECUTOR_TYPE}"` below.
+
+   **TDD-applicability resolution (#4266/#4272).** Run `gsd-core/workflows/execute-phase/steps/tdd-applicability-resolution.md`.
 
    **Worktree mode** (`USE_WORKTREES` and `USE_WORKTREES_FOR_PLAN` not `false`):
 
@@ -757,7 +761,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        - `~/.claude/gsd-core/workflows/execute-plan.md`
        - `~/.claude/gsd-core/templates/summary.md`
        - `~/.claude/gsd-core/references/checkpoints.md`
-       ${TDD_APPLICABLE ? '- `~/.claude/gsd-core/references/tdd.md`' : ''}  # #3990: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or TDD_MODE=true)
+       ${TDD_APPLICABLE ? '- `~/.claude/gsd-core/references/tdd.md`' : ''}  # #3990/#4265: type: tdd, tdd="true", or workflow.tdd_mode
        - `~/.claude/gsd-core/references/worktree-path-safety.md`
        ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
        </execution_context>

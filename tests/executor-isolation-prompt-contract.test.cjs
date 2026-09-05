@@ -91,6 +91,17 @@ test('#3637: embed PERFORMANCE is gated — an un-embedded template halts before
   );
 });
 
+test('#4266: embed PERFORMANCE is gated — an un-substituted TDD_APPLICABLE marker halts before spawn', () => {
+  // Matches the ${AGENT_SKILLS} gate immediately above: a third performance gate for
+  // the #4266/#4272 TDD-applicability predicate, halting before worktree creation
+  // when the marker survives composition.
+  assert.match(
+    content,
+    /grep -q '\\\$\{TDD_APPLICABLE'[\s\S]{0,300}exit 1/,
+    'an un-substituted TDD_APPLICABLE marker means the TDD-applicability decision was not resolved into the prompt — halt',
+  );
+});
+
 test('#3637: the gsd-executor ROLE DEFINITION is a mandatory embed with provenance', () => {
   // The agent-skills query alone is conditional (its block is a skills list
   // whenever the project configures agent_skills; only unconfigured
