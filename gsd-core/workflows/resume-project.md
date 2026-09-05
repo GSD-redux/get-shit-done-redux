@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <trigger>
 Use this workflow when:
 - Starting a new session on an existing project
@@ -25,10 +27,12 @@ INIT=$(gsd_run query init.resume)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
 
-Parse JSON for: `state_exists`, `roadmap_exists`, `project_exists`, `planning_exists`, `has_interrupted_agent`, `interrupted_agent_id`, `commit_docs`.
+Parse JSON for: `state_exists`, `roadmap_exists`, `project_exists`, `planning_exists`, `requirements_exists`, `init_incomplete`, `has_interrupted_agent`, `interrupted_agent_id`, `commit_docs`.
+
+**If `init_incomplete` is true (#4040 — interrupted bootstrap):** `.planning/` exists but initialization never finished — one or more of `REQUIREMENTS.md`, `ROADMAP.md`, `STATE.md` were never created. This is NOT a STATE.md-reconstruction case (there is no project history to reconstruct from). Route to initialization recovery: resume `/gsd:new-project`, which continues from the first missing artifact and keeps the existing PROJECT.md and any already-created artifacts. Do not proceed to load_state.
 
 **If `state_exists` is true:** Proceed to load_state
-**If `state_exists` is false but `roadmap_exists` or `project_exists` is true:** Offer to reconstruct STATE.md
+**If `state_exists` is false but `roadmap_exists` or `project_exists` is true (and `init_incomplete` is false):** Offer to reconstruct STATE.md
 **If `planning_exists` is false:** This is a new project - route to /gsd:new-project
 </step>
 

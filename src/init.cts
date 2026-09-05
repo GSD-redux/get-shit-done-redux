@@ -908,8 +908,6 @@ function cmdInitExecutePhase(
     : null;
   const phase_req_ids = reqExtracted && reqExtracted !== 'TBD' ? reqExtracted : null;
 
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
-
   // #3188: these paths are null when the file is absent, matching the contract
   // the conditional sibling fields (context_path, patterns_path, ...) already
   // honour and that ultraplan-phase.md / execute-phase.md gate on. Hoisted so
@@ -922,7 +920,7 @@ function cmdInitExecutePhase(
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
 
-    tdd_mode: options['tdd'] || Boolean(wf['tdd_mode']) || false,
+    tdd_mode: options['tdd'] || Boolean(config.tdd_mode) || false,
     commit_docs: config.commit_docs,
     sub_repos: config.sub_repos,
     parallelization: config.parallelization,
@@ -1088,8 +1086,6 @@ function cmdInitPlanPhase(
   assertValidGranularityOverride(granularityOverride, error);
   const granularity = resolveGranularityInternal(cwd, 'planning', granularityOverride || undefined);
 
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
-
   // #3188: see cmdInitExecutePhase — null when absent, parity with the
   // conditional sibling fields in this same result object.
   const statePath = path.join(planningDir(cwd), 'STATE.md');
@@ -1101,11 +1097,11 @@ function cmdInitPlanPhase(
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
     checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
 
-    tdd_mode: options['tdd'] || Boolean(wf['tdd_mode']) || false,
+    tdd_mode: options['tdd'] || Boolean(config.tdd_mode) || false,
     granularity,
-    research_enabled: wf['research'],
+    research_enabled: config.research,
     plan_checker_enabled: config.plan_checker,
-    nyquist_validation_enabled: wf['nyquist_validation'],
+    nyquist_validation_enabled: config.nyquist_validation,
     commit_docs: config.commit_docs,
     text_mode: config.text_mode,
     auto_advance: !!(config.auto_advance),
@@ -1303,6 +1299,36 @@ function cmdInitPlanPhase(
   output(withProjectRoot(cwd, result), raw);
 }
 
+// #4040: shared partial-init discriminator for the init.progress / init.resume /
+// init.new-project payloads. A bootstrap interrupted before the core quartet
+// (PROJECT.md / REQUIREMENTS.md / ROADMAP.md / STATE.md) all landed is a
+// DISTINCT routing state from "new project" and from "between milestones";
+// pre-#4040 the payloads could not express it, so progress.md mis-routed it to
+// Route F and resume-project.md offered STATE.md reconstruction.
+//
+// Negative-space guard: `milestone.complete` archives ROADMAP.md (and
+// REQUIREMENTS.md) but always leaves MILESTONES.md behind — so MILESTONES.md
+// present proves missing core files are archival (between-milestones), never an
+// unfinished bootstrap. REQUIREMENTS.md is written by new-project BEFORE
+// ROADMAP/STATE, so its absence also proves init never finished.
+function buildInitCompletenessFields(cwd: string): Record<string, boolean> {
+  const dir = planningDir(cwd);
+  const planningExists = fs.existsSync(dir);
+  const requirementsExists = fs.existsSync(path.join(dir, 'REQUIREMENTS.md'));
+  const milestonesExists = fs.existsSync(path.join(dir, 'MILESTONES.md'));
+  const coreComplete =
+    fs.existsSync(path.join(dir, 'PROJECT.md')) &&
+    requirementsExists &&
+    fs.existsSync(path.join(dir, 'ROADMAP.md')) &&
+    fs.existsSync(path.join(dir, 'STATE.md'));
+  return {
+    planning_exists: planningExists,
+    requirements_exists: requirementsExists,
+    milestones_exists: milestonesExists,
+    init_incomplete: planningExists && !coreComplete && !milestonesExists,
+  };
+}
+
 function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
 
@@ -1328,6 +1354,12 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
     roadmapper_model: resolveModelInternal(cwd, 'gsd-roadmapper'),
 
     commit_docs: config.commit_docs,
+
+    // #4040: partial-init discriminator (see buildInitCompletenessFields).
+    // Spread BEFORE this literal's own planning_exists so the existing
+    // root-scoped (`pathExistsInternal(cwd, '.planning')`) semantics for that
+    // one key stay byte-identical for existing consumers.
+    ...buildInitCompletenessFields(cwd),
 
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     has_codebase_map: hasCodebaseMap,
@@ -1376,15 +1408,13 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
   // window filter (which also never excluded sentinels, unlike the owner).
   const phaseDirCount = listMilestonePhaseDirs(phasesDir, { cwd }).value.length;
 
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
-
   const result: Record<string, unknown> = {
     researcher_model: resolveModelInternal(cwd, 'gsd-project-researcher'),
     synthesizer_model: resolveModelInternal(cwd, 'gsd-research-synthesizer'),
     roadmapper_model: resolveModelInternal(cwd, 'gsd-roadmapper'),
 
     commit_docs: config.commit_docs,
-    research_enabled: wf['research'],
+    research_enabled: config.research,
 
     // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
     // the key with an explicit `null` rather than letting JSON.stringify drop
@@ -1610,12 +1640,11 @@ function cmdInitOnboard(
   options: Record<string, unknown> = {},
 ): void {
   const config = loadConfig(cwd);
-  const workflowConfig = (config.workflow ?? {}) as Record<string, unknown>;
   const result = {
     ...buildOnboardProjection(cwd, {
       commitDocs: !!config.commit_docs,
       fast: options['fast'] === true,
-      textMode: options['text'] === true || !!config.text_mode || !!workflowConfig['text_mode'],
+      textMode: options['text'] === true || !!config.text_mode,
     }),
     ...getInitGitState(cwd),
   };
@@ -1633,6 +1662,12 @@ function cmdInitResume(cwd: string, raw: boolean): void {
   if (agentIdRaw !== null) interruptedAgentId = agentIdRaw.trim();
 
   const result: Record<string, unknown> = {
+    // #4040: partial-init discriminator (see buildInitCompletenessFields).
+    // Spread FIRST so this literal's own root-scoped planning_exists
+    // (planningRoot) keeps its existing semantics; init_incomplete itself
+    // keys off the artifact dir (planningDir) where the core docs live.
+    ...buildInitCompletenessFields(cwd),
+
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
@@ -3034,7 +3069,7 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
  *   location has one source instead of two kept in sync by hand.
  * - `debugger_model` — `resolveModelInternal`, which IS what `query
  *   resolve-model --pick model` returns (`cmdResolveModel`, src/commands.cts).
- * - `tdd_mode` — the `Boolean(wf['tdd_mode'])` idiom `cmdInitExecutePhase` and
+ * - `tdd_mode` — the `Boolean(config.tdd_mode)` idiom `cmdInitExecutePhase` and
  *   `cmdInitPlanPhase` already use. `/gsd:debug` has no `--tdd` flag, so the
  *   sibling handlers' `options['tdd'] ||` disjunct is deliberately omitted
  *   rather than carried as a phantom.
@@ -3052,7 +3087,6 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
  */
 function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
@@ -3061,7 +3095,7 @@ function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown
     // own cwd may differ from the orchestrator's.
     debug_dir: toPosixPath(planningPaths(cwd).debug),
     debugger_model: resolveModelInternal(cwd, 'gsd-debugger'),
-    tdd_mode: Boolean(wf['tdd_mode']),
+    tdd_mode: Boolean(config.tdd_mode),
     diagnose: options['diagnose'] === true,
   };
 
@@ -3337,6 +3371,10 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
+    // #4040: partial-init discriminator (see buildInitCompletenessFields) —
+    // also adds planning_exists / requirements_exists / milestones_exists so
+    // progress.md's init_context routing never has to fall back to Glob.
+    ...buildInitCompletenessFields(cwd),
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
     state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
