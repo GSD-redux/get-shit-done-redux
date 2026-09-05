@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
-const { normalizePhaseName, matchPhaseDirs, phaseNumberForMatch, isSentinelPhaseId, comparePhaseNum } = phaseIdModule;
+const { normalizePhaseName, matchPhaseDirs, phaseNumberForMatch, isSentinelPhaseId, comparePhaseNum, isForeignPrefixedPhaseQuery } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsModule = require('./core-utils.cjs');
 const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath, findUnsummarizedPlans } = coreUtilsModule;
@@ -557,9 +557,44 @@ function getAllArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
   return out;
 }
 
+/**
+ * #2056 / #2105: `findPhaseInternal` matches a phase token against on-disk
+ * directories with no notion of project scope, so a token carrying a FOREIGN
+ * project-code prefix (`OTHER-05` in a `project_code: "MINE"` project) would
+ * otherwise resolve to this project's same-numbered directory — bug #2237.
+ * This is the guarded form every phase-token consumer must use; the bare
+ * `findPhaseInternal` above is the unscoped primitive it wraps.
+ *
+ * Lives here, beside the primitive it guards, rather than in a caller: #4030
+ * added a second consumer (`loop render-hooks --phase`, `loop-resolver.cts`)
+ * and routing that through the first consumer (`init.cts`) would have inverted
+ * the dependency tree and closed a require cycle.
+ */
+function phaseInfoMatchesExactPrefix(
+  phaseInfo: Record<string, unknown> | null,
+  phase: string,
+): boolean {
+  const num = phaseInfo?.['phase_number'];
+  const numStr = typeof num === 'string' ? num : (typeof num === 'number' ? String(num) : '');
+  return numStr.toUpperCase() === phase.toUpperCase();
+}
+
+function guardedFindPhase(
+  cwd: string,
+  phase: string,
+  projectCode: unknown,
+): Record<string, unknown> | null {
+  let phaseInfo = findPhaseInternal(cwd, phase) as unknown as Record<string, unknown> | null;
+  if (isForeignPrefixedPhaseQuery(phase, projectCode) && !phaseInfoMatchesExactPrefix(phaseInfo, phase)) {
+    phaseInfo = null;
+  }
+  return phaseInfo;
+}
+
 export = {
   searchPhaseInDir,
   findPhaseInternal,
+  guardedFindPhase,
   getArchivedPhaseDirs,
   getAllArchivedPhaseDirs,
   listMilestonePhaseDirs,
