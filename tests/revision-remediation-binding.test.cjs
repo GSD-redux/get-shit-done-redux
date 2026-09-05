@@ -46,7 +46,6 @@ const { execFileSync } = require('child_process');
 // Project rules: temp dirs and their removal go through the shared helpers (cleanup carries the
 // Windows-EBUSY retry budget), and every synchronous spawn is bounded.
 const { createTempDir, cleanup } = require('./helpers.cjs');
-const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 // runConflictGate()/withReviews() spawn bash against a Node-native temp path built by
 // createTempDir(); on win32 that path is backslash-separated and handed to Git Bash, which
@@ -75,6 +74,7 @@ const REVISION_LOOP = read('gsd-core', 'references', 'revision-loop.md');
 const FEW_SHOT = read('gsd-core', 'references', 'few-shot-examples', 'plan-checker.md');
 const PLAN_PHASE = read('gsd-core', 'workflows', 'plan-phase.md');
 const QUICK_LOOP = read('gsd-core', 'workflows', 'quick', 'steps', 'plan-checker-loop.md');
+const QUICK_BATCH_LOOP = read('gsd-core', 'workflows', 'quick-batch', 'steps', 'plan-checker-loop.md');
 const UI_PHASE = read('gsd-core', 'workflows', 'ui-phase.md');
 const DIAGNOSE = read('gsd-core', 'workflows', 'diagnose-issues.md');
 const CONVERGENCE = read('gsd-core', 'workflows', 'plan-review-convergence.md');
@@ -174,19 +174,22 @@ function runWriterGate(reviewsFile, fields) {
 }
 
 /**
- * The close-on-resolve gate (#3916 adversarial-review fix), extracted from plan-phase.md's
- * `**Otherwise (revised plans...` branch and RUN. Located by content (the fence assigning
- * `CLOSED="- [x]${PENDING_CONFLICT`).
+ * The close-on-resolve gate (#3916 adversarial-review fix, redesigned in round 4 to match by
+ * CONFLICT_DIMENSION/CONFLICT_PLAN identity instead of the full sanitized line -- an agent
+ * re-deriving five sanitized fields byte-for-byte across a multi-minute subagent dispatch is far
+ * more failure-prone than re-supplying two short identifiers it already tracks), extracted from
+ * plan-phase.md's `**Otherwise (revised plans...` branch and RUN. Located by content (the fence
+ * assigning `PREFIX="- [ ] REVISION_CONFLICT`).
  */
 function extractCloseGate() {
   const fences = PLAN_PHASE.split(/```/);
-  const block = fences.find((f) => /^bash\r?\n/.test(f) && /CLOSED="- \[x\]\$\{PENDING_CONFLICT/.test(f));
+  const block = fences.find((f) => /^bash\r?\n/.test(f) && /PREFIX="- \[ \] REVISION_CONFLICT/.test(f));
   assert.ok(block, 'could not find the bash fence containing the close-on-resolve gate');
   return block.replace(/^bash\r?\n/, '');
 }
 
-/** Run the close gate against `reviewsFile`, closing `pendingConflict` with `resolution`. */
-function runCloseGate(reviewsFile, pendingConflict, resolution) {
+/** Run the close gate against `reviewsFile`, closing the open `dimension`/`plan` conflict with `resolution`. */
+function runCloseGate(reviewsFile, dimension, plan, resolution) {
   const dir = createTempDir('gsd-3916-close-');
   try {
     const script = path.join(dir, 'close.sh');
@@ -195,8 +198,10 @@ function runCloseGate(reviewsFile, pendingConflict, resolution) {
       execFileSync('bash', [script], {
         env: {
           ...process.env,
+          CONVERGENCE_ENABLED: 'true',
           REVIEWS_FILE: reviewsFile,
-          PENDING_CONFLICT: pendingConflict,
+          CONFLICT_DIMENSION: dimension,
+          CONFLICT_PLAN: plan,
           CONFLICT_RESOLUTION: resolution ?? '',
         },
         encoding: 'utf-8',
@@ -542,6 +547,22 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       });
     });
 
+    // Adversarial-review regression (agy/gemini-3.8-flash-high, #3916 round 4): a blank line
+    // before the delimiter is already tolerated; the heading was not, so a formatter (Prettier,
+    // markdownlint) or an LLM writer inserting one would hard-abort convergence on a well-formed
+    // file.
+    test('a blank line between the opening delimiter and the heading is tolerated', () => {
+      const spaced = reviewsArtifact(`${OPEN('a/1')}\n`).replace(
+        `${CONFLICTS_BEGIN}\n## Plan-Revision Conflicts\n`,
+        `${CONFLICTS_BEGIN}\n\n## Plan-Revision Conflicts\n`
+      );
+      withReviews(spaced, (f) => {
+        const r = runConflictGate(f);
+        assert.equal(r.status, 0, `a blank line before the heading must not block: ${r.stderr}`);
+        assert.equal(r.stdout, '1');
+      });
+    });
+
     test('a missing or altered canonical heading fails CLOSED', () => {
       for (const replacement of ['', '## Altered Conflict Heading\n']) {
         const malformed = reviewsArtifact(`${OPEN('a/1')}\n`).replace(
@@ -610,6 +631,10 @@ describe('#3771 generic revision pattern carries the same separation', () => {
 const ORCHESTRATORS = [
   ['plan-phase', PLAN_PHASE, 'iteration_count'],
   ['quick plan-checker-loop', QUICK_LOOP, 'iteration_count'],
+  // quick-batch's per-item loop was missed in the initial pass (agy/gemini-3.8-flash-high
+  // adversarial review, #3916 round 4) -- it hands <revision_context> to gsd-planner exactly
+  // like quick's single-task loop, but had none of this contract until that review caught it.
+  ['quick-batch plan-checker-loop', QUICK_BATCH_LOOP, 'iteration_count'],
   ['ui-phase', UI_PHASE, 'revision_count'],
   // verify-work's gap-plan revision hands <revision_context> to gsd-planner, so it inherits the
   // contract whether or not it states it. It was missed in the first pass (#3771 round-2 review).
@@ -1039,10 +1064,7 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
       const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
       assert.equal(runWriterGate(file, fields).status, 0);
       assert.equal(runConflictGate(file).stdout, '1');
-      const body = fs.readFileSync(file, 'utf-8');
-      const openLine = splitLines(body).find((l) => l.startsWith('- [ ] REVISION_CONFLICT'));
-      assert.ok(openLine, 'fixture must carry the just-written open line');
-      const result = runCloseGate(file, openLine, 'adopted alternative');
+      const result = runCloseGate(file, fields.dimension, fields.plan, 'adopted alternative');
       assert.equal(result.status, 0, result.stderr);
       const after = fs.readFileSync(file, 'utf-8');
       assert.match(after, /^- \[x\] REVISION_CONFLICT .*\| resolved: adopted alternative$/m);
@@ -1053,12 +1075,27 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
     });
   });
 
+  // Adversarial-review regression (agy/gemini-3.8-flash-high, #3916 round 4): with more than one
+  // conflict open at once, closing by identity must touch only the matching record -- a design
+  // that closed by a single remembered full-line string would drop whichever conflict it
+  // overwrote last.
+  test('the close gate with two open conflicts closes only the matching one', { skip: IS_WINDOWS }, () => {
+    withReviews(reviewsArtifact(`${OPEN('a/1')}\n${OPEN('b/2')}\n`), (file) => {
+      const result = runCloseGate(file, 'a', '1', 'adopted alternative');
+      assert.equal(result.status, 0, result.stderr);
+      const after = fs.readFileSync(file, 'utf-8');
+      assert.match(after, /^- \[x\] REVISION_CONFLICT a\/1 .*\| resolved: adopted alternative$/m);
+      assert.match(after, /^- \[ \] REVISION_CONFLICT b\/2 /m, 'the unrelated open conflict must survive untouched');
+      assert.equal(runConflictGate(file).stdout, '1', 'exactly one conflict must remain open');
+    });
+  });
+
   test('the close gate fails closed when the pending conflict line is not found',
     { skip: IS_WINDOWS }, () => {
     withReviews(reviewsArtifact(`${OPEN('a/1')}\n`), (file) => {
       const before = fs.readFileSync(file, 'utf-8');
-      const result = runCloseGate(file, '- [ ] REVISION_CONFLICT never-written', 'x');
-      assert.notEqual(result.status, 0, 'closing a line that was never recorded must not silently succeed');
+      const result = runCloseGate(file, 'never', 'written', 'x');
+      assert.notEqual(result.status, 0, 'closing a conflict that was never recorded must not silently succeed');
       assert.equal(fs.readFileSync(file, 'utf-8'), before,
         'a failed close must never partially mutate REVIEWS.md');
     });
@@ -1080,7 +1117,7 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
   test('the close gate matches the pending conflict line on a CRLF REVIEWS.md', { skip: IS_WINDOWS }, () => {
     const crlf = (content) => content.replace(/\n/g, '\r\n');
     withReviews(crlf(reviewsArtifact(`${OPEN('a/1')}\n`)), (file) => {
-      const result = runCloseGate(file, OPEN('a/1'), 'adopted alternative');
+      const result = runCloseGate(file, 'a', '1', 'adopted alternative');
       assert.equal(result.status, 0, `close gate must match a CRLF-terminated open line: ${result.stderr}`);
       assert.equal(runConflictGate(file).stdout, '0');
     });

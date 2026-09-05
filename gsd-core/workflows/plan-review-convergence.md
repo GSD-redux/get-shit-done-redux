@@ -420,6 +420,7 @@ if OPEN_CONFLICTS=$(awk '
     exit 2
   }
   in_owned && $0 == "<!-- gsd:plan-revision-conflicts:begin -->" { exit 2 }
+  in_owned && !saw_heading && $0 == "" { next }
   in_owned && !saw_heading && $0 == "## Plan-Revision Conflicts" { saw_heading = 1; next }
   in_owned && !saw_heading { exit 2 }
   in_owned && $0 == "<!-- gsd:plan-revision-conflicts:end -->" {

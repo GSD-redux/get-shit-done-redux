@@ -921,9 +921,10 @@ handler** — never fall through to the checker spawn below, because a second co
 conflict, not a revised plan, and only a NON-conflict return may reach the checker or increment
 `iteration_count`.
 
-**Bounded:** a conflict naming the SAME `required_property` twice in a row is a stall, and so is
+**Bounded:** a conflict naming the SAME `required_property` twice in a row (no successful revision in between) is a stall, and so is
 the THIRD conflict return of this loop whatever property it names — alternating property names
-would otherwise never trip the repeat rule. Stop re-spawning and escalate as a stall.
+would otherwise never trip the repeat rule. Stop re-spawning and route it to the same
+max-iteration escalation below.
 
 **On any other return** → spawn checker again (verify_gap_plans logic)
 Increment iteration_count

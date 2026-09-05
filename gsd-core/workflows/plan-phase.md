@@ -622,8 +622,7 @@ UI_SPEC_PATH="${UI_SPEC_FILE}"
 **If plans exist AND the `--reviews` flag is set:** Before replanning from `--reviews`, scan
 `REVIEWS_PATH` for open plan-revision conflicts inside the writer-owned delimiter pair. Go
 straight to replanning with those records included, and flip the matching line to `- [x]` once
-the chosen resolution is applied. The purpose of `--reviews` is to replan with review feedback,
-not orphan blocking state.
+the chosen resolution is applied, using the SAME close gate as step 12 below.
 
 ## 7.5. Verify Nyquist Artifacts
 
@@ -1248,8 +1247,6 @@ ${AGENT_SKILLS_PLANNER}
 </revision_context>
 
 <instructions>
-Make targeted updates to address checker issues.
-
 `required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
 smaller or different mechanism reaching the same property resolves it — say which. Re-check CONTEXT.md's locked decisions, capability guidance, and existing plan constraints
 BEFORE editing; if a hint would contradict one, or the
@@ -1257,8 +1254,7 @@ property is unreachable without breaking one, return `## REVISION_CONFLICT` with
 the alternatives rather than applying or working around it. Full contract:
 `gsd-core/references/planner-revision.md`.
 
-Do NOT replan from scratch unless issues are fundamental.
-Return what changed.
+Do NOT replan from scratch unless fundamental. Return what changed.
 </instructions>
 ```
 
@@ -1275,25 +1271,25 @@ Agent(
 **ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
 
 **If the planner returns `## REVISION_CONFLICT`:** follow the shared Conflict Return protocol in
-`gsd-core/references/revision-loop.md` (@-imported above), with this workflow's bindings:
+`gsd-core/references/revision-loop.md`, with this workflow's bindings:
 
 ```bash
 if ! CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence --raw 2>/dev/null); then
-  echo "BLOCKED: cannot read workflow.plan_review_convergence; refusing to drop persisted conflict state." >&2
+  echo "BLOCKED: cannot read workflow.plan_review_convergence." >&2
   exit 1
 fi
 REVIEWS_FILE="${REVIEWS_PATH}"
 if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ] && [ ! -f "${REVIEWS_FILE}" ]; then
-  echo "BLOCKED: cannot persist plan-revision conflict because REVIEWS_PATH is not a regular file: ${REVIEWS_FILE}" >&2
+  echo "BLOCKED: cannot persist plan-revision conflict -- REVIEWS_PATH not a regular file: ${REVIEWS_FILE}" >&2
   exit 1
 fi
 ```
 
 - Counter not spent: `iteration_count`.
-- Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section (when enabled and
-  non-empty). plan-phase wrote the line, so plan-phase closes it.
-- After re-spawning, return to this step, not the checker spawn below.
-- Escalates via the iteration cap on a repeated `required_property`, and on the THIRD conflict
+- Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section. plan-phase wrote the
+  line, so plan-phase closes it.
+- After re-spawning, return to this step, not the checker.
+- Escalates via the iteration cap on repeated `required_property`, and on the THIRD conflict
   return of this loop whatever property it names.
 - Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (decodes
   literal `\n` as a real newline). Export the row's
@@ -1313,35 +1309,35 @@ if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
     END { if (!ins) exit 2 }
   ' "${REVIEWS_FILE}" > "${TMP}"; then
     rm -f "${TMP}"
-    echo "BLOCKED: no writer-owned end delimiter in '${REVIEWS_FILE}'." >&2
+    echo "BLOCKED: no end delimiter in '${REVIEWS_FILE}'." >&2
     exit 1
   fi
   mv "${TMP}" "${REVIEWS_FILE}"
-  PENDING_CONFLICT="$LINE"
 fi
 ```
 
 **Otherwise (revised plans, not `## REVISION_CONFLICT`):** if this re-spawn followed a
-resolved conflict, close its record — nothing persists across fences: export `REVIEWS_FILE`,
-`PENDING_CONFLICT` (the open line), and `CONFLICT_RESOLUTION` (a one-line summary). Then run:
+resolved conflict, close its record — nothing persists across fences, so export `REVIEWS_FILE`,
+the same `CONFLICT_DIMENSION`/`CONFLICT_PLAN` used to open it, and `CONFLICT_RESOLUTION` (a
+one-line summary). Then run:
 
 ```bash
-if [ -n "${PENDING_CONFLICT:-}" ]; then
+if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
+  san() { printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/^[[:space:]]*[#|`-]+[[:space:]]*//'; }
+  PREFIX="- [ ] REVISION_CONFLICT $(san "${CONFLICT_DIMENSION}")/$(san "${CONFLICT_PLAN}") — "
   RES=$(printf '%s' "${CONFLICT_RESOLUTION}" | tr '\r\n\t' '   ')
-  CLOSED="- [x]${PENDING_CONFLICT#- \[ \]} | resolved: ${RES}"
   TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
-  if ! OLD="$PENDING_CONFLICT" NEW="$CLOSED" awk '
+  if ! PREFIX="$PREFIX" RES="$RES" awk '
     { cur = $0; sub(/\r$/, "", cur) }
-    cur == ENVIRON["OLD"] && !d { print ENVIRON["NEW"]; d = 1; next }
+    !d && index(cur, ENVIRON["PREFIX"]) == 1 { print "- [x]" substr(cur, 6) " | resolved: " ENVIRON["RES"]; d = 1; next }
     { print }
     END { if (!d) exit 2 }
   ' "${REVIEWS_FILE}" > "${TMP}"; then
     rm -f "${TMP}"
-    echo "BLOCKED: conflict line not found in '${REVIEWS_FILE}'." >&2
+    echo "BLOCKED: no open conflict '${CONFLICT_DIMENSION}/${CONFLICT_PLAN}' in '${REVIEWS_FILE}'." >&2
     exit 1
   fi
   mv "${TMP}" "${REVIEWS_FILE}"
-  unset PENDING_CONFLICT
 fi
 ```
 

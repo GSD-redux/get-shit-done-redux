@@ -392,9 +392,9 @@ not spend a revision iteration on it.
 ```
 
 **Every field is one line of plain text.** No newlines inside a cell, and never begin a field with
-`#`, `-`, `|` or a code fence. These fields are appended to a shared markdown file that a later
-reader scans by heading; a field that starts a heading truncates that scan and hides conflicts
-below it.
+`#`, `-`, `|` or a code fence. This table is presented directly to the user in ui-phase's revision
+step, not persisted to a shared file; a field that opens a heading, list item, table cell, or
+fence would corrupt that presentation.
 
 ## UI-SPEC Blocked
 

@@ -129,10 +129,11 @@ Re-spawn the planner with the chosen resolution, then **re-evaluate its return f
 this handler** — do not fall through to the checker spawn below. A second conflict is still a
 conflict, not a revised plan.
 
-**Bounded:** A conflict naming the SAME `required_property` twice in a row is a stall, and so is the
+**Bounded:** A conflict naming the SAME `required_property` twice in a row (no successful revision in between) is a stall, and so is the
 THIRD conflict return of this loop whatever property it names — alternating property names
-would otherwise never trip the repeat rule and the path would be unbounded. Stop re-spawning and escalate as a stall, so declining to
-spend an iteration cannot make this path unbounded.
+would otherwise never trip the repeat rule and the path would be unbounded. Stop re-spawning and
+route it to the same iteration-count check below, so declining to spend an iteration cannot make
+this path unbounded.
 
 **Otherwise (the planner returns a revised plan, not `## REVISION_CONFLICT`):** spawn checker again, increment `iteration_count`.
 
