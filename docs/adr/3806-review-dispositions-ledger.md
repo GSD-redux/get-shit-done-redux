@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-05
 - **Issue:** #3806
-- **Implementation:** this PR
+- **Implementation:** PR #4345
 
 ## Context
 
