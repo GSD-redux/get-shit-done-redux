@@ -45,8 +45,11 @@ const MANAGER_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'manager.md')
 
 // The phase6 shrink-only line for plan-phase.md (tests/phase6-capstone-
 // conformance.test.cjs PRE_PHASE6) — mirrored here so a guard sentence can
-// never quietly push the file past it.
-const PLAN_PHASE_PHASE6_LINE = 94519;
+// never quietly push the file past it. #3771/#3916 raised the authoritative
+// PRE_PHASE6 value (94519 -> 96700 -> 98300) for the REVISION_CONFLICT
+// persistence/routing gate before this file's own next-merge landed; keep
+// this mirror equal to that constant, not a stale snapshot of it.
+const PLAN_PHASE_PHASE6_LINE = 98300;
 
 function lfByteCount(p) {
   return Buffer.byteLength(readFileNormalized(p), 'utf-8');
