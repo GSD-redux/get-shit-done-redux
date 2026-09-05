@@ -22,6 +22,8 @@ const {
   parseUatItemsWithStats,
   DEFERRED_MARKER_ALT,
   DEFERRED_BULLET_MARKERS,
+  parseVerificationItems,
+  parsedEntriesFor,
 } = require('../gsd-core/bin/lib/uat.cjs');
 const { iterateBullets } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
@@ -814,6 +816,128 @@ All checks passed.
       const output = JSON.parse(result.output);
       assert.strictEqual(output.summary.total_items, 0);
       assert.strictEqual(output.summary.total_files, 0);
+    });
+
+    // ─── #3879 review round 4, Major: `status:` is authoritative ──────────────
+    //
+    // A `resolution:` note beside a status that is not `resolved` is an
+    // authoring mistake, not a closure assertion — the rule `validateResolution`
+    // (probe-core.cts) already applies to this same field pair, where it rejects
+    // the combination outright rather than counting the item as closed. A
+    // reporter cannot throw, so the fail-safe equivalent is to SURFACE the item.
+    // Dropping it would be the silently-vanishing-item defect #3850 exists to
+    // close, reached by field COMBINATION instead of file STATUS.
+
+    test('a human_verification entry whose status contradicts its resolution still surfaces', () => {
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "Retry the upload"
+    status: failed
+    resolution: "attempted retry, still failing"
+---
+`, 'human_needed');
+      assert.strictEqual(items.length, 1);
+    });
+
+    test('a gaps entry carrying only a resolution note surfaces — gaps closes on status alone', () => {
+      // `parseGapsItems`, the `## Gaps` markdown reader, closes on
+      // `status: resolved` and nothing else. This frontmatter reader takes that
+      // rule verbatim so the same authored entry cannot read closed in one and
+      // open in the other.
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "The widget renders"
+    resolution: "a note, not a closure assertion"
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].result, 'unknown');
+    });
+
+    test('a gaps entry whose status contradicts its resolution still surfaces', () => {
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "The widget renders"
+    status: failed
+    resolution: "attempted retry, still failing"
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].result, 'failed');
+    });
+
+    // ─── #3879 review round 4, Minor 2: the alignment guard ──────────────────
+    //
+    // `parsedEntriesFor` pairs the display array with the parsed array BY INDEX
+    // and degrades to all-null if their lengths disagree, so a mis-paired index
+    // can never close the wrong row. That branch is unreachable through the two
+    // readers — both parsers share `frontmatterRegion`, and the display step is
+    // 1:1 — so it is asserted against the function directly. Called with the
+    // real content the readers pass, plus a `flattened` array of the wrong
+    // length, which is exactly the drift the guard exists to catch.
+
+    describe('parsedEntriesFor: index pairing and its degradation', () => {
+      const doc = `---
+status: gaps_found
+gaps:
+  - truth: "first"
+    status: failed
+  - truth: "second"
+    status: resolved
+---
+`;
+
+      test('pairs each display entry with its own parsed object', () => {
+        const paired = parsedEntriesFor(doc, 'gaps', ['first-display', 'second-display']);
+        assert.equal(paired.length, 2);
+        assert.equal(paired[0].truth, 'first');
+        assert.equal(paired[1].truth, 'second');
+      });
+
+      test('a length disagreement degrades to all-null — no entry is skipped as closed', () => {
+        // Over-reporting is the correct degradation: a wrong index would name a
+        // DIFFERENT entry's fields and close the wrong row.
+        const shorter = parsedEntriesFor(doc, 'gaps', ['only-one']);
+        assert.deepEqual(shorter, [null]);
+        const longer = parsedEntriesFor(doc, 'gaps', ['a', 'b', 'c']);
+        assert.deepEqual(longer, [null, null, null]);
+      });
+
+      test('a non-object entry is null at its own index, not dropped', () => {
+        const mixed = `---
+gaps:
+  - truth: "an object"
+  - a bare scalar
+---
+`;
+        const paired = parsedEntriesFor(mixed, 'gaps', ['x', 'y']);
+        assert.equal(paired.length, 2);
+        assert.equal(paired[0].truth, 'an object');
+        assert.equal(paired[1], null);
+      });
+
+      test('an absent key degrades to all-null rather than throwing', () => {
+        assert.deepEqual(parsedEntriesFor('---\nother: 1\n---\n', 'gaps', ['a', 'b']), [null, null]);
+      });
+    });
+
+    test('both closure spellings still close a human_verification entry', () => {
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "Answered"
+    resolution: "RESOLVED"
+  - test: "Also answered"
+    status: resolved
+  - test: "Still open"
+    status: partial
+---
+`, 'human_needed');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].test, 3, 'the surfaced entry keeps its original row');
     });
   });
 
@@ -8287,5 +8411,516 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
     assert.equal(ack.status, 'ok');
     assert.equal(ack.content, '## Deferred Items\n\n- alpha\n  status: acknowledged\n',
       'the pre-existing headless splice shape must be untouched');
+  });
+});
+
+// ─── #3850: gaps_found VERIFICATION files ────────────────────────────────────
+//
+// cmdAuditUat admits `human_needed` OR `gaps_found`, but parseVerificationItems
+// honoured only the first and returned [] for the second. Because cmdAuditUat
+// pushes a file into `results` only when `items.length > 0`, a `gaps_found`
+// report did not under-report — the whole file, and its phase's `by_phase` row,
+// VANISHED. Every test below fails on base: the gate returns [] regardless of
+// what the frontmatter holds.
+describe('#3850 gaps_found VERIFICATION files', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  /** Write one VERIFICATION file and return the parsed audit-uat payload. */
+  const auditWith = (body, phase = '01-demo') => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', phase);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, `${phase.split('-')[0]}-VERIFICATION.md`), body);
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  };
+
+  const HV_TWO = `---
+phase: 01-demo
+status: gaps_found
+human_verification:
+  - test: "Confirm the widget renders on a physical device"
+    expected: "Widget appears within 2s"
+    why_human: "Needs real hardware"
+  - test: "Confirm the audible alert fires"
+    expected: "Alert is audible"
+    why_human: "Needs a human ear"
+---
+
+# Verification
+`;
+
+  test('surfaces a gaps_found file\'s human_verification array (the #3850 defect)', () => {
+    const output = auditWith(HV_TWO);
+    assert.strictEqual(output.summary.total_items, 2);
+    assert.strictEqual(output.summary.total_files, 1);
+    assert.strictEqual(output.results[0].type, 'verification');
+    assert.strictEqual(output.results[0].status, 'gaps_found');
+    assert.strictEqual(output.results[0].items[0].category, 'human_uat');
+    // by_phase carries the phase — the omission mechanism this issue is about.
+    assert.strictEqual(output.summary.by_phase['01'], 2);
+  });
+
+  test('the SAME file under human_needed and gaps_found yields identical human_verification items', () => {
+    // The status token alone decided visibility; it must now decide nothing
+    // about the human_verification reading itself.
+    const asGaps = parseVerificationItems(HV_TWO, 'gaps_found');
+    const asHuman = parseVerificationItems(HV_TWO.replace('status: gaps_found', 'status: human_needed'), 'human_needed');
+    assert.deepStrictEqual(asGaps, asHuman);
+    assert.strictEqual(asGaps.length, 2);
+  });
+
+  test('surfaces a gaps_found file\'s frontmatter gaps array', () => {
+    const output = auditWith(`---
+phase: 02-gaps
+status: gaps_found
+gaps:
+  - truth: "The widget renders"
+    status: partial
+    reason: "Only observed on one platform"
+    test: 7
+---
+
+# Verification
+`, '02-gaps');
+    assert.strictEqual(output.summary.total_items, 1);
+    const item = output.results[0].items[0];
+    assert.strictEqual(item.name, 'The widget renders');
+    assert.strictEqual(item.result, 'partial');
+    assert.strictEqual(item.reason, 'Only observed on one platform');
+    // No `test:` number (#3879 review round 4, Minor 4). A `gaps:` entry has no
+    // `test:` in its vocabulary, and reading one collided with the 1..N row
+    // numbers `parseHumanVerificationItems` assigns by array position — two
+    // items numbered 1 in a single file's combined list.
+    assert.strictEqual(item.test, undefined);
+  });
+
+  test('a gaps entry with no parseable status surfaces as unknown, never dropped (fail-safe)', () => {
+    const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Garbled entry"
+---
+`, 'gaps_found');
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].result, 'unknown');
+  });
+
+  test('folded >- scalars inside an entry do not break the entry (real verifier shape)', () => {
+    const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Gate is fail-open on absence of information"
+    status: partial
+    reason: >-
+      The hub learns a collection's schema version only from a push carrying
+      rows, so a zero-row collection is invisible and the RAM-only hub
+      re-blinds itself on every host restart.
+---
+`, 'gaps_found');
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].name, 'Gate is fail-open on absence of information');
+    assert.strictEqual(items[0].result, 'partial');
+  });
+
+  describe('closed entries are excluded on the gaps_found path', () => {
+    test('skips resolution:-marked human_verification entries, keeping original 1-based positions', () => {
+      const items = parseVerificationItems(`---
+status: gaps_found
+human_verification:
+  - test: "Already answered"
+    resolution: "RESOLVED 2026-01-01 by the phase 4 rig run"
+  - test: "Still outstanding"
+    why_human: "Needs real hardware"
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      // Entry 2 keeps position 2 so a surfaced item still names its row.
+      assert.strictEqual(items[0].test, 2);
+      assert.match(items[0].name, /Still outstanding/);
+    });
+
+    test('skips status: resolved gaps entries', () => {
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Open"
+    status: partial
+  - truth: "Closed"
+    status: resolved
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].name, 'Open');
+    });
+
+    test('a resolution:-shaped substring MID-LINE is not a closure marker', () => {
+      // extractGapEntryFields anchors a field to the start of its own trimmed
+      // line; a quoted value mentioning "resolution:" must never close an entry.
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Deferred until the resolution: pending owner ruling"
+    status: partial
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+    });
+
+    test('closed entries are excluded on the human_needed path too', () => {
+      // #3850 review m8: an earlier revision skipped closed entries only on
+      // `gaps_found`, citing an acceptance criterion the issue does not
+      // contain. #3850 has no AC section; its suggested fix (2) states the skip
+      // unconditionally, and the file it cites — 14 of 16 entries resolved — is
+      // a `human_needed` one. The asymmetry left the reporter's own scenario
+      // over-reporting by 14. One rule, both statuses.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "Already answered"
+    resolution: "RESOLVED 2026-01-01"
+  - test: "Still outstanding"
+---
+`, 'human_needed');
+      assert.strictEqual(items.length, 1);
+      // The display name keeps `extractFrontmatter`'s flattened shape verbatim
+      // (`normalizeHumanVerificationEntry` strips wrapping quotes only) — this
+      // fix derives the SAME string from the raw slice, it does not prettify it.
+      assert.match(items[0].name, /Still outstanding/);
+      // The surfaced entry keeps its ORIGINAL 1-based row, so it still names
+      // its position in the file after a closed sibling was skipped.
+      assert.strictEqual(items[0].test, 2);
+    });
+
+    test('B2: a nested block sequence at key indent does not drop an OPEN entry', () => {
+      // The review's executed repro. `parseYamlRegion` is indent-blind and
+      // `splitGapsEntries` is indent-anchored, so pairing them by ordinal
+      // position made entry B inherit entry C's `resolution:` and disappear.
+      // Both readings now come from one parse, so there is no index to skew.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "A"
+    steps:
+    - s1
+  - test: "B"
+  - test: "C"
+    resolution: "done"
+---
+`, 'human_needed');
+      const names = items.map((i) => i.name).join(' | ');
+      // The display rendering comes from `flattenObjectListItem`, which emits
+      // `test: B` — unquoted — where the pre-#3881 flattener emitted `test: "B`.
+      assert.match(names, /\btest: B\b/, `open entry "B" must survive; got ${JSON.stringify(names)}`);
+      assert.ok(!/\btest: C\b/.test(names), `closed entry "C" must be skipped; got ${JSON.stringify(names)}`);
+    });
+
+    test('B2: a bare bullet does not skew the entry list', () => {
+      // Round-3 Blocker. The original assertion matched `test: B` anywhere in a
+      // joined name string, so it passed while "B" was reported at position 2 —
+      // and would still have passed had the bare bullet been dropped entirely.
+      // The defect was never about the NAME surviving; it was about the ROW
+      // number and the row count. Assert both.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "A"
+  - 
+  - test: "B"
+---
+`, 'human_needed');
+      assert.deepStrictEqual(
+        items.map((i) => [i.test, i.name]),
+        [[1, 'test: A'], [2, ''], [3, 'test: B']],
+        'every row surfaces at its own 1-based position, bare bullet included',
+      );
+    });
+
+    test('B2b: a mixed object/non-object list keeps every row at its true position', () => {
+      // The reviewer's own 6-entry fixture, verbatim. Against the filtered
+      // implementation this returned THREE items — "A", "D", "F" numbered
+      // 1, 2, 3 — with rows 2, 3 and 5 gone and no trace that anything had
+      // been dropped. That is #3850's defect reached through entry SHAPE
+      // rather than file STATUS, so it is pinned on `gaps_found` where the
+      // union path runs.
+      const items = parseVerificationItems(`---
+status: gaps_found
+human_verification:
+  - test: "A"
+  -
+  - bare scalar
+  - test: "D"
+  -
+    - nested
+  - test: "F"
+---
+`, 'gaps_found');
+      assert.deepStrictEqual(
+        items.map((i) => [i.test, i.name]),
+        [
+          [1, 'test: A'],
+          [2, ''],
+          [3, 'bare scalar'],
+          [4, 'test: D'],
+          [5, '[nested]'],
+          [6, 'test: F'],
+        ],
+        'all six rows surface, each at its own position, named as base named them',
+      );
+    });
+
+    test('B2c: skipped-because-resolved rows leave the survivors numbered by FILE row', () => {
+      // The property the positional index exists for, and the one a count-only
+      // assertion cannot see: rows 2 and 4 are closed, so 1, 3 and 5 surface
+      // with their own numbers rather than being renumbered 1, 2, 3.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "A"
+  - test: "B"
+    resolution: done
+  -
+  - test: "D"
+    status: resolved
+  - test: "E"
+---
+`, 'human_needed');
+      assert.deepStrictEqual(
+        items.map((i) => [i.test, i.name]),
+        [[1, 'test: A'], [3, ''], [5, 'test: E']],
+        'closed rows are skipped and the survivors keep their file positions',
+      );
+    });
+
+    test('B2d: a non-object gaps entry surfaces instead of vanishing', () => {
+      // Same class, other reader. `gaps:` entries carry their own status, so a
+      // non-object one has none to read — this module's documented fail-safe
+      // (`parseGapsItems`' 'unknown' fallback) is to surface it rather than
+      // drop it. It is named by the same renderer every other reader uses, so
+      // a YAML null reads '' and not the string "null".
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "G1"
+    status: failed
+  -
+  - bare gap
+  - truth: "G3"
+    status: resolved
+---
+`, 'gaps_found');
+      assert.deepStrictEqual(
+        items.map((i) => [i.name, i.result]),
+        [['G1', 'failed'], ['', 'unknown'], ['bare gap', 'unknown']],
+        'every unresolved gaps row surfaces; the resolved one is skipped',
+      );
+    });
+
+    test('B1: a BOM does not make a gaps_found report vanish', () => {
+      // #2977's defect class. A hand-rolled fence regex re-asserts the byte-0
+      // rule and slices nothing, which is this issue's symptom verbatim on the
+      // platform the repo already has a named class for.
+      const items = parseVerificationItems(`\uFEFF---
+status: gaps_found
+gaps:
+  - truth: "G1"
+    status: partial
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1, 'a BOM-prefixed report must still surface its gaps');
+      assert.strictEqual(items[0].name, 'G1');
+    });
+
+    test('M4: CRLF frontmatter surfaces gaps', () => {
+      const crlf = ['---', 'status: gaps_found', 'gaps:', '  - truth: "G1"', '    status: partial', '---', ''].join('\r\n');
+      const items = parseVerificationItems(crlf, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].name, 'G1');
+    });
+  });
+
+  describe('array-population boundaries', () => {
+    const build = (hv, gaps) => [
+      '---', 'status: gaps_found',
+      ...(hv === null ? [] : ['human_verification:', ...hv.map((t) => `  - test: "${t}"`)]),
+      ...(gaps === null ? [] : ['gaps:', ...gaps.map((t) => `  - truth: "${t}"\n    status: partial`)]),
+      '---', '',
+    ].join('\n');
+
+    test('empty human_verification + populated gaps still surfaces the gaps', () => {
+      const items = parseVerificationItems(build([], ['G1']), 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].name, 'G1');
+    });
+
+    test('populated human_verification + no gaps key surfaces only the hv entries', () => {
+      const items = parseVerificationItems(build(['H1'], null), 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].category, 'human_uat');
+    });
+
+    test('both arrays populated surfaces the union, human_verification first', () => {
+      const items = parseVerificationItems(build(['H1', 'H2'], ['G1']), 'gaps_found');
+      assert.strictEqual(items.length, 3);
+      assert.strictEqual(items[0].category, 'human_uat');
+      assert.strictEqual(items[2].name, 'G1');
+    });
+
+    test('neither key present yields zero items', () => {
+      assert.strictEqual(parseVerificationItems(build(null, null), 'gaps_found').length, 0);
+    });
+
+    test('a single entry (N=1) surfaces', () => {
+      assert.strictEqual(parseVerificationItems(build(['H1'], null), 'gaps_found').length, 1);
+    });
+
+    test('every entry closed yields zero items, so the file is omitted — intended, not the #3850 bug', () => {
+      // The omission this issue reports is a file with OUTSTANDING items
+      // vanishing. A file whose every entry is closed has nothing outstanding,
+      // so `items.length > 0` correctly drops it. Pinned to keep the two cases
+      // distinguishable.
+      const output = auditWith(`---
+phase: 03-allclosed
+status: gaps_found
+human_verification:
+  - test: "Answered"
+    resolution: "RESOLVED"
+gaps:
+  - truth: "Closed"
+    status: resolved
+---
+`, '03-allclosed');
+      assert.strictEqual(output.summary.total_items, 0);
+      assert.strictEqual(output.summary.total_files, 0);
+    });
+  });
+
+  describe('property: the closed/open partition', () => {
+    // Text that can never be mistaken for a field line or a closure marker.
+    const bodyArb = fc.string({ minLength: 1, maxLength: 24 })
+      .map((s) => s.replace(/["\\\r\n:]/g, ''))
+      .filter((s) => s.trim().length > 0);
+
+    // Closure is PER KEY (#3879 review round 4, Major), so the property is too.
+    // `gaps:` takes `parseGapsItems`' rule verbatim — `status: resolved` and
+    // nothing else — while `human_verification:` also honours a bare
+    // `resolution:`. Generating one spelling set for both keys is what let the
+    // old universal rule read green.
+    //
+    // `contradiction` is the round-4 Major itself: a `status:` that is not
+    // `resolved` sitting beside a `resolution:` note. It is OPEN under both
+    // keys — `status:` is authoritative wherever it is readable.
+    const OPEN_SPELLINGS = {
+      gaps: {
+        plain: ['    status: partial'],
+        // No `status:` at all. Under the gaps rule this is not closure, and
+        // `parseGapsItems` already surfaces it via its 'unknown' fallback.
+        resolutionOnly: ['    resolution: "a note, not a closure assertion"'],
+        contradiction: ['    status: failed', '    resolution: "attempted retry, still failing"'],
+      },
+      human_verification: {
+        plain: ['    status: partial'],
+        contradiction: ['    status: failed', '    resolution: "attempted retry, still failing"'],
+      },
+    };
+    const CLOSED_SPELLINGS = {
+      gaps: {
+        status: ['    status: resolved'],
+      },
+      human_verification: {
+        status: ['    status: resolved'],
+        resolutionOnly: ['    resolution: "closed upstream"'],
+      },
+    };
+
+    const entryArb = (key) => fc.record({
+      body: bodyArb,
+      closed: fc.boolean(),
+      openSpelling: fc.constantFrom(...Object.keys(OPEN_SPELLINGS[key])),
+      closedSpelling: fc.constantFrom(...Object.keys(CLOSED_SPELLINGS[key])),
+    });
+
+    const renderEntry = (key, e) => {
+      const nameLine = key === 'gaps' ? `  - truth: "${e.name}"` : `  - test: "${e.name}"`;
+      const fields = e.closed
+        ? CLOSED_SPELLINGS[key][e.closedSpelling]
+        : OPEN_SPELLINGS[key][e.openSpelling];
+      return [nameLine, ...fields];
+    };
+
+    test('property: a gaps entry surfaces iff its own status is not resolved; surfaced + skipped == total', () => {
+      fc.assert(
+        fc.property(
+          fc.array(entryArb('gaps'), { maxLength: 12 }),
+          (raw) => {
+            // Index-prefix so surfaced names map back unambiguously even when
+            // the generated bodies collide.
+            const entries = raw.map((e, i) => ({ ...e, name: `E${i}_${e.body}` }));
+            const lines = ['---', 'status: gaps_found', 'gaps:'];
+            for (const e of entries) lines.push(...renderEntry('gaps', e));
+            lines.push('---', '');
+
+            const items = parseVerificationItems(lines.join('\n'), 'gaps_found');
+            const surfaced = new Set(items.map((it) => it.name));
+            const open = entries.filter((e) => !e.closed);
+            const closed = entries.filter((e) => e.closed);
+
+            // Partition: surfaced count is exactly the open count...
+            assert.strictEqual(items.length, open.length);
+            // ...every open entry surfaces, INCLUDING the two spellings the old
+            // universal rule swallowed (a bare `resolution:`, and a
+            // `resolution:` beside a non-resolved `status:`)...
+            for (const e of open) assert.ok(surfaced.has(e.name), `open entry missing: ${e.name}`);
+            // ...no closed entry ever does...
+            for (const e of closed) assert.ok(!surfaced.has(e.name), `closed entry surfaced: ${e.name}`);
+            // ...and the two parts account for the whole.
+            assert.strictEqual(open.length + closed.length, entries.length);
+          },
+        ),
+      );
+    });
+
+    test('property: a human_verification entry surfaces iff no readable status contradicts its closure', () => {
+      fc.assert(
+        fc.property(
+          fc.array(entryArb('human_verification'), { maxLength: 12 }),
+          (raw) => {
+            const entries = raw.map((e, i) => ({ ...e, name: `E${i}_${e.body}` }));
+            const lines = ['---', 'status: human_needed', 'human_verification:'];
+            for (const e of entries) lines.push(...renderEntry('human_verification', e));
+            lines.push('---', '');
+
+            const items = parseVerificationItems(lines.join('\n'), 'human_needed');
+            const open = entries.filter((e) => !e.closed);
+
+            // Counts only: this reader names items through
+            // `normalizeHumanVerificationEntry`'s display rendering, so asserting
+            // the partition by NAME would pin that renderer rather than the
+            // closure rule under test.
+            assert.strictEqual(items.length, open.length);
+            // Numbering stays the entry's ORIGINAL 1-based row even when a
+            // closed sibling was skipped (the #3850 round-3 Blocker).
+            const expectedRows = entries
+              .map((e, i) => (e.closed ? null : i + 1))
+              .filter((n) => n !== null);
+            assert.deepStrictEqual(items.map((it) => it.test), expectedRows);
+          },
+        ),
+      );
+    });
+
+    test('property: an all-open array surfaces every entry (no silent cap)', () => {
+      fc.assert(
+        fc.property(fc.array(bodyArb, { minLength: 1, maxLength: 20 }), (bodies) => {
+          const names = bodies.map((b, i) => `E${i}_${b}`);
+          const content = ['---', 'status: gaps_found', 'gaps:',
+            ...names.map((n) => `  - truth: "${n}"\n    status: partial`), '---', ''].join('\n');
+          assert.strictEqual(parseVerificationItems(content, 'gaps_found').length, names.length);
+        }),
+      );
+    });
   });
 });

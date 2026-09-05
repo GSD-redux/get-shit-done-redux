@@ -261,6 +261,50 @@ function routeMergeOutcome(outcome: MergeOutcomeKind): MergeRouting {
   }
 }
 
+// ─── Crash-window duplicate-dispatch guard (#3677, epic #3344 Phase 5) ─────
+
+interface FilterAlreadyExecutedResult {
+  /** Eligible ids NOT known to have already finished executing — safe to spawn this round. */
+  spawnEligible: string[];
+  /**
+   * Eligible ids whose `SUMMARY.md` already exists on disk — the CALLER
+   * determines this via its own filesystem check (this function performs
+   * no I/O). NEVER re-dispatch one of these into a second worktree:
+   * `merge-wave.md`'s own on-disk `SUMMARY.md` criterion already picks
+   * each of them up independently of this eligible/spawn list.
+   */
+  alreadyExecuted: string[];
+}
+
+/**
+ * Crash-window duplicate-dispatch guard
+ * (`.gsd/phase/feat-3677-quick-batch-hardening-acceptance/40-design.md` §1).
+ * `quick-batch resume`'s `eligible` is purely status/dependency-derived —
+ * it has no awareness that an item already finished executing (a real
+ * commit, `SUMMARY.md` written) before a coordinator crash left
+ * `BATCH.json` at `pending` (the STATE.md-row crash-window detection
+ * inside `resumeBatch` only fires once Step 9 has run). This mirrors the
+ * file-existence exclusion `planner-wave.md` already applies one layer
+ * earlier for `PLAN.md`, extracted as its own pure decision (rather than
+ * left as workflow prose only) so it is independently testable: given the
+ * eligible ids for this round and the subset the CALLER has already
+ * determined finished executing, splits them into ids safe to spawn now
+ * and ids that must never be re-dispatched.
+ */
+function filterAlreadyExecuted(eligibleIds: string[], executedIds: string[] | Set<string>): FilterAlreadyExecutedResult {
+  const executedSet = executedIds instanceof Set ? executedIds : new Set(executedIds);
+  const spawnEligible: string[] = [];
+  const alreadyExecuted: string[] = [];
+  for (const id of eligibleIds) {
+    if (executedSet.has(id)) {
+      alreadyExecuted.push(id);
+    } else {
+      spawnEligible.push(id);
+    }
+  }
+  return { spawnEligible, alreadyExecuted };
+}
+
 // ─── Cleanup-wave manifest entry construction (design row 26, Open Q2) ─────
 
 interface CleanupEntryInput {
@@ -319,6 +363,7 @@ const quickBatchDispatch = {
   routeVerificationOutcome,
   routeMergeOutcome,
   buildCleanupManifestEntry,
+  filterAlreadyExecuted,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -334,6 +379,7 @@ declare namespace quickBatchDispatch {
     MergeRouting,
     CleanupEntryInput,
     CleanupManifestEntry,
+    FilterAlreadyExecutedResult,
   };
 }
 

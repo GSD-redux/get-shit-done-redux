@@ -7714,4 +7714,54 @@ describe('#3738: antigravity global artifacts install under ~/.gemini/config', (
     }
 
   });
+
+  // ── #3747: pin the CLI-ONLY probe branch ────────────────────────────────────
+  // The #3738 tests above hand installRuntimeArtifacts an arbitrary configDir.
+  // The reporter's machine resolved the configHome to ~/.gemini/antigravity-cli
+  // (the only sibling present, carrying the gsd-core/VERSION marker). This test
+  // reproduces exactly that resolution and asserts global skills/agents still
+  // land under ~/.gemini/config — the dir `agy` scans — and NOTHING lands under
+  // the resolved configHome. This is the "path-asserting test pinned to the CLI
+  // branch" the issue asked for: a regression that re-couples the global skills
+  // root to the resolved config home goes red here.
+  test('#3747: CLI-only install (configHome resolves to ~/.gemini/antigravity-cli) still lands global skills/agents under ~/.gemini/config', (t) => {
+    const { resolveAntigravityGlobalDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    const home = createTempDir('gsd-3747-antigravity-cli-');
+    t.after(() => cleanup(home));
+    sandboxHome(t, home);
+
+    // CLI-only environment: ~/.gemini/antigravity-cli is the sole sibling and
+    // carries the GSD marker — resolution must pick it (not the IDE default).
+    const cliConfigHome = path.join(home, '.gemini', 'antigravity-cli');
+    fs.mkdirSync(path.join(cliConfigHome, 'gsd-core'), { recursive: true });
+    fs.writeFileSync(path.join(cliConfigHome, 'gsd-core', 'VERSION'), '1.12.0\n');
+    for (const sibling of ['antigravity', 'antigravity-ide']) {
+      assert.ok(
+        !fs.existsSync(path.join(home, '.gemini', sibling)),
+        `test premise: ~/.gemini/${sibling} must not exist (CLI-only install)`,
+      );
+    }
+    const resolved = resolveAntigravityGlobalDir({ home, env: {}, existsSync: fs.existsSync });
+    assert.strictEqual(resolved, cliConfigHome, 'configHome must resolve to the CLI dir (CLI-only probe branch)');
+
+    installRuntimeArtifacts('antigravity', resolved, 'global', RESOLVED_CORE);
+
+    const discoveryHome = path.join(home, '.gemini', 'config');
+    assert.ok(
+      fs.existsSync(path.join(discoveryHome, 'skills', 'gsd-help', 'SKILL.md')),
+      'a gsd-* skill must exist under ~/.gemini/config/skills (the dir agy scans, #3747)'
+    );
+    assert.ok(
+      fs.readdirSync(path.join(discoveryHome, 'agents')).some((n) => n.startsWith('gsd-')),
+      'at least one gsd-* agent must exist under ~/.gemini/config/agents'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(resolved, 'skills')),
+      'no skills dir may be created under the CLI configHome — agy never reads it (#3747 silent drop)'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(resolved, 'agents')),
+      'no agents dir may be created under the CLI configHome — agy never reads it (#3747 silent drop)'
+    );
+  });
 });
