@@ -395,7 +395,7 @@ export function fileRefPrompt(promptPath: string, repoRoot: string): string {
 }
 
 /** Run-dir artifact paths. POSIX-joined: these are workflow-visible strings, not OS paths. */
-function artifactPaths(runDir: string, slug: string): {
+export function artifactPaths(runDir: string, slug: string): {
   promptPath: string;
   reviewPath: string;
   errPath: string;

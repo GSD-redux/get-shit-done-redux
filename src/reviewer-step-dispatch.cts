@@ -1,22 +1,17 @@
 /**
  * Reviewer Step Dispatch (#4209 Phase 1 Plan 2, ADR-2782 seam).
  *
- * ONE interpreter for "a step declares `supportsReviewerLanes: true`" (the trait plan 01-01
- * projects onto `activeHooks` — see `src/loop-resolver.cts`). This module trusts `trait` exactly
- * as given: it is the CALLER's job to have derived it correctly. `gsd-core/bin/gsd-tools.cjs`'s
- * `review-lane dispatch-step` is the one production caller, and it re-derives `trait` itself —
- * given `--cap-id`/`--point`, it calls `resolveActiveHooksForPoint` (`src/loop-resolver.cts`,
- * the same in-process resolver `loop render-hooks` itself uses) and checks whether that capId's
- * active hook carries `supportsReviewerLanes: true` — rather than trusting a caller-passed
- * boolean, so ANY workflow can reuse this same seam by declaring the trait on its own capability
- * step and passing `--cap-id`/`--point`, with zero bespoke trait-resolution code of its own. Every
- * direct or lifecycle caller routes through `dispatchReviewerLanes` so selection/plan/invoke logic
- * is owned once, not re-derived per feature. This module owns NONE of those primitives — it wires
- * `resolveReviewerSelection` (selection) and `resolveLanePlan` (planning), the same building
- * blocks `gsd-core/bin/gsd-tools.cjs`'s `review-lane plan` subcommand uses. Invocation
- * (`runLane`) needs OS-aware spawn/probe plumbing this module does not own, so `deps.invoke`
- * is the one required, caller-supplied seam (wired for real in `gsd-core/bin/gsd-tools.cjs`'s
- * `review-lane dispatch-step` route).
+ * ONE interpreter for "a step declares `supportsReviewerLanes: true`" — see
+ * `gsd-core/references/loop-hook-dispatch.md` for the canonical explanation of the trait and how
+ * `review-lane dispatch-step` re-derives it. This module trusts `trait` exactly as given: it is
+ * the CALLER's job to have derived it correctly. Every direct or lifecycle caller routes through
+ * `dispatchReviewerLanes` so selection/plan/invoke logic is owned once, not re-derived per
+ * feature. This module owns NONE of those primitives — it wires `resolveReviewerSelection`
+ * (selection) and `resolveLanePlan` (planning), the same building blocks
+ * `gsd-core/bin/gsd-tools.cjs`'s `review-lane plan` subcommand uses. Invocation (`runLane`) needs
+ * OS-aware spawn/probe plumbing this module does not own, so `deps.invoke` is the one required,
+ * caller-supplied seam (wired for real in `gsd-core/bin/gsd-tools.cjs`'s `review-lane
+ * dispatch-step` route).
  *
  * Fail-closed contract:
  * - Trait not exactly `true`, or nothing selected → inert. Zero plan/invoke calls.
@@ -39,7 +34,7 @@ import path from 'node:path';
 
 import { estimateTokens } from './prompt-budget.cjs';
 import type { LanePlan, ResolveResult } from './review-lane-invocation.cjs';
-import { resolveLaneBudget } from './review-lane-invocation.cjs';
+import { resolveLaneBudget, artifactPaths } from './review-lane-invocation.cjs';
 import type { ReviewerLane } from './review-lane-descriptor.cjs';
 import type {
   ReviewerSelectionInput,
@@ -55,6 +50,7 @@ export const DISPATCH_REASON = Object.freeze({
   INVALID_PATHS: 'invalid_paths',
   PATH_ESCAPES_REPO_ROOT: 'path_escapes_repo_root',
   MISSING_PROVENANCE: 'missing_provenance',
+  PROMPT_WRITE_FAILED: 'prompt_write_failed',
 } as const);
 export type DispatchReason = (typeof DISPATCH_REASON)[keyof typeof DISPATCH_REASON];
 
@@ -65,6 +61,12 @@ export const SOURCE_REVIEW_PROHIBITIONS: readonly string[] = Object.freeze([
   'Do not start background processes.',
   'Do not poll or wait — return findings from a single read-only pass.',
 ]);
+
+// #4209 RQ-04: a control character (newline, CR, NUL, ...) in ANY string this module embeds
+// into the external prompt (`buildSourceReviewPrompt`) lets it inject a fabricated section —
+// not just via `paths` (agy-F1's original finding), since `depth`, `baseSha`, and `repoRoot` land
+// in that same markdown. Every embedded string is checked against this ONE shared boundary.
+const CONTROL_CHAR = /[\x00-\x1f\x7f\u2028\u2029]/;
 
 export interface ReviewerStepDispatchInput {
   /**
@@ -127,7 +129,7 @@ export interface ReviewerStepDispatchDeps {
    * REQUIRED. `runLane` needs OS-aware spawn/probe plumbing (`RunnerDeps`) this module does not
    * own — the caller (`review-lane dispatch-step`) wires the real one; tests inject a spy.
    */
-  invoke: (lane: ReviewerLane, plan: LanePlan, identity: string) => Promise<InvokeOutcome> | InvokeOutcome;
+  invoke: (lane: ReviewerLane, plan: LanePlan) => Promise<InvokeOutcome> | InvokeOutcome;
   /** Defaults to `node:fs`'s `writeFileSync`. */
   writePromptFile?: (filePath: string, content: string) => void;
 }
@@ -142,7 +144,7 @@ export interface ReviewerLaneDispatchResult {
 }
 
 export interface ReviewerStepDispatchResult {
-  /** True iff at least one lane was actually planned. False means zero plan/invoke calls. */
+  /** True iff at least one lane was actually planned. False means the dispatch was inert. */
   dispatched: boolean;
   /** Aggregate success: `dispatched` lanes all `ok`. */
   ok: boolean;
@@ -171,7 +173,6 @@ function validatePaths(
   // named repo file inject a fabricated section into the markdown prompt built from `paths`
   // below (buildSourceReviewPrompt) — reject it here, at the shared trust boundary, rather than
   // relying on the incidental quoting `git diff --name-only` happens to apply upstream.
-  const CONTROL_CHAR = /[\x00-\x1f\x7f\u2028\u2029]/;
   for (const p of paths) {
     if (typeof p !== 'string' || p.length === 0 || CONTROL_CHAR.test(p)) {
       return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
@@ -192,18 +193,24 @@ function validatePaths(
  * One-line depth definition for an external reviewer lane, condensed from `<depth_levels>` in
  * `agents/gsd-code-reviewer.md` (#4209 review: a bare `quick`/`standard`/`deep` label means
  * nothing to a third-party CLI that never sees that agent's system prompt — unlike the internal
- * reviewer, whose own persona fully defines these three terms).
+ * reviewer, whose own persona fully defines these three terms). Every category named here must
+ * stay a strict subset of what `<depth_levels>` actually does — `tests/reviewer-step-dispatch
+ * .test.cjs`'s "depthMeaning tracks depth_levels" tests assert each case against the real agent
+ * file, not just against this function, so the two cannot silently drift again. An unrecognised
+ * depth normalizes to `standard`'s text, matching `agents/gsd-code-reviewer.md`'s own "if depth
+ * is not one of quick/standard/deep, default to standard" rule — the raw label is not repeated
+ * here since `buildSourceReviewPrompt` already states it once, verbatim, earlier in the prompt.
  */
 function depthMeaning(depth: string): string {
   switch (depth) {
     case 'quick':
-      return 'pattern-scan for common issues only — hardcoded secrets, dangerous functions, debug artifacts; do not read full file contents';
+      return 'pattern-scan without reading full file contents: hardcoded secrets, dangerous functions, debug artifacts, empty catch blocks, commented-out code';
     case 'standard':
-      return 'read each changed file in context for bugs, security issues, and quality problems';
+      return 'read each changed file in context for bugs, security, and quality problems; cross-reference imports and exports';
     case 'deep':
-      return 'standard, plus cross-file analysis — trace call chains and type consistency across module boundaries';
+      return 'standard, plus cross-file analysis: trace call chains, check type consistency at API boundaries, verify error propagation, check state mutation consistency, detect circular dependencies';
     default:
-      return depth;
+      return depthMeaning('standard');
   }
 }
 
@@ -233,7 +240,9 @@ export function buildSourceReviewPrompt(input: {
     `requested depth (${depthMeaning(input.depth)}). Report every bug, security issue, and`,
     'code-quality problem you find. For every claim you make, cite the exact file path and line',
     'number(s) it applies to — a claim with no file:line citation cannot be independently',
-    're-verified and will be discarded by the consolidating reviewer.',
+    're-verified and will be discarded by the consolidating reviewer. Performance issues',
+    '(O(n²), memory leaks) are out of scope unless also correctness issues (e.g. an infinite',
+    'loop) — do not flag them otherwise.',
     '',
     '### Files in scope',
     fileLines,
@@ -270,8 +279,14 @@ export async function dispatchReviewerLanes(
   if (!pathCheck.ok) {
     return { dispatched: false, ok: false, reason: pathCheck.reason, selection, results: [] };
   }
-  if (typeof input.depth !== 'string' || input.depth.length === 0
-    || typeof input.baseSha !== 'string' || input.baseSha.length === 0) {
+  // #4209 RQ-04: depth/baseSha/repoRoot/runDir land in the SAME markdown prompt `paths` does
+  // (buildSourceReviewPrompt, `dispatchReviewerLanes`'s `runDir`-derived promptPath write) — a
+  // control character in any of them is the identical injection vector agy-F1 found in `paths`,
+  // so this trust boundary must reject it here too, not just for the file list.
+  if (typeof input.depth !== 'string' || input.depth.length === 0 || CONTROL_CHAR.test(input.depth)
+    || typeof input.baseSha !== 'string' || input.baseSha.length === 0 || CONTROL_CHAR.test(input.baseSha)
+    || typeof input.repoRoot !== 'string' || input.repoRoot.length === 0 || CONTROL_CHAR.test(input.repoRoot)
+    || typeof input.runDir !== 'string' || input.runDir.length === 0 || CONTROL_CHAR.test(input.runDir)) {
     return { dispatched: false, ok: false, reason: DISPATCH_REASON.MISSING_PROVENANCE, selection, results: [] };
   }
 
@@ -280,6 +295,19 @@ export async function dispatchReviewerLanes(
 
   const prompt = buildSourceReviewPrompt(input);
   const estimatedTokens = estimateTokens(prompt);
+  // Written once, before any lane's plan() runs: `promptPath` is derived from `runDir` alone
+  // (see `artifactPaths`), constant across every lane in this dispatch by construction — there
+  // is no per-lane variance to defend against, so writing it per-lane (as an earlier version of
+  // this function did) was pure redundancy, not a real safeguard.
+  // A hoisted, whole-dispatch write (see the doc comment above) that throws must not escape as
+  // an uncaught exception — no lane can succeed anyway if the shared prompt file was never
+  // written, so this is a dispatch-level halt like `validatePaths`/`MISSING_PROVENANCE` above,
+  // not a per-lane failure.
+  try {
+    writePromptFile(artifactPaths(input.runDir, '').promptPath, prompt);
+  } catch {
+    return { dispatched: false, ok: false, reason: DISPATCH_REASON.PROMPT_WRITE_FAILED, selection, results: [] };
+  }
 
   const results: ReviewerLaneDispatchResult[] = [];
   // Never narrow the requested set: an explicit reviewer the selector could not resolve is
@@ -314,8 +342,6 @@ export async function dispatchReviewerLanes(
       anyFailed = true;
       continue;
     }
-    planned = true;
-
     const budget = resolveLaneBudget(lane, configGet);
     if (budget !== null && budget !== 0 && estimatedTokens > budget) {
       results.push({
@@ -327,15 +353,11 @@ export async function dispatchReviewerLanes(
       anyFailed = true;
       continue;
     }
+    planned = true;
 
     let invokeOutcome: InvokeOutcome;
     try {
-      // Idempotent: `prompt` is loop-invariant, so writing it again per lane is harmless and
-      // avoids coupling this lane's write to whatever another lane's `plan()` happened to
-      // resolve as `promptPath` (#4209 R1 — a `deps.plan` override that ever varies promptPath
-      // per lane would otherwise silently invoke a later lane against a file no one wrote).
-      writePromptFile(planOutcome.plan.promptPath, prompt);
-      invokeOutcome = await deps.invoke(lane, planOutcome.plan, slug);
+      invokeOutcome = await deps.invoke(lane, planOutcome.plan);
     } catch (e) {
       results.push({ slug, ok: false, reason: 'invoke_failed', detail: e instanceof Error ? e.message : String(e) });
       anyFailed = true;
