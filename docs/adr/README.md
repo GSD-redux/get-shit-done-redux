@@ -266,6 +266,7 @@ These govern the system as it stands. Cite these.
 | [ADR-3625](3625-vetted-spawn-library-evaluation.md) | The platform seam keeps its own Windows binary resolution rather than adopting a spawn library | Accepted | — |
 | [ADR-3626](3626-context-md-seam-claim-gate.md) | CONTEXT.md seam claims carry a checkable enforcement pointer | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |
+| [ADR-3806](3806-review-dispositions-ledger.md) | Review Dispositions Ledger canonizes where and how reviews-mode records incorporate/defer decisions in PLAN.md | Accepted | — |
 
 ### Proposed
 

@@ -785,7 +785,10 @@ ${AGENT_SKILLS_PLANNER}
 
 For each current actionable finding in REVIEWS.md, the planner MUST either:
 - incorporate it into a PLAN.md task, `<action>`, `<acceptance_criteria>`, `<verify>`, `must_haves`, threat model, or artifact list; or
-- explicitly document a deferral/rejection rationale in the relevant PLAN.md so the executor and reviewer can see the decision.
+- explicitly document a deferral/rejection rationale in the relevant PLAN.md, using the canonical
+  **Review Dispositions Ledger** — see `references/planner-reviews.md` for its exact section name,
+  round-scoping, and `L##@{sha}` anchor format (#3806). Do not invent a different section name or
+  line-reference format; the shape is stated once, there, not restated here.
 
 Historical findings already incorporated, explicitly deferred/rejected in PLAN.md, or marked fully resolved do not require new plan changes.
 </review_incorporation_contract>
