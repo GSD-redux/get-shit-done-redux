@@ -28,7 +28,7 @@ GRADUATION_WINDOW=$(gsd_run query config-get features.graduation_window --raw 2>
 GRADUATION_THRESHOLD=$(gsd_run query config-get features.graduation_threshold --raw 2>/dev/null || echo "3")
 ```
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 **Skip silently (print nothing) if:**
 - `features.graduation` is `false`

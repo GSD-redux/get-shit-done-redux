@@ -31,7 +31,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const helpers = require('./helpers.cjs');
-const { runGsdTools, createTempProject, cleanup, TOOLS_PATH } = helpers;
+const { runGsdTools, createTempProject, cleanup, TOOLS_PATH, captureFdSync } = helpers;
 const processSeam = require('./helpers/process-seam.cjs');
 const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
@@ -552,24 +552,16 @@ describe('#3311 guard: phase.complete does not lose a concurrent STATE.md write'
         },
       });
 
-      // Swallow fd-1 writes (io.output writes JSON straight to fd 1).
-      const origWriteSync = fs.writeSync;
+      // Capture fd-1 writes (io.output writes JSON straight to fd 1).
+      // Delegates to the shared, safe fd-capture helper (#4306) — see
+      // tests/helpers.cjs's captureFdSync.
       const captured = [];
-      fs.writeSync = function patchedWriteSync(fd, data, ...rest) {
-        if (fd === 1) {
-          captured.push(String(data));
-          return String(data).length;
-        }
-        return origWriteSync(fd, data, ...rest);
-      };
-
       let threw = null;
       try {
-        phaseMod.cmdPhaseComplete(tmpDir, '1', true);
+        captured.push(captureFdSync(1, () => phaseMod.cmdPhaseComplete(tmpDir, '1', true)));
       } catch (e) {
         threw = e;
       } finally {
-        fs.writeSync = origWriteSync;
         stateMod._resetStateLockTestHooks();
         stateMod._resetLockProbes();
       }

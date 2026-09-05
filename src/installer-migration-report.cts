@@ -50,6 +50,7 @@ export const BUNDLED_GSD_HOOK_FILES: ReadonlySet<string> = Object.freeze(new Set
   'hooks/gsd-prompt-guard.js',
   'hooks/gsd-read-guard.js',
   'hooks/gsd-read-injection-scanner.js',
+  'hooks/gsd-secret-read-guard.js',
   'hooks/gsd-session-state.sh',
   'hooks/gsd-statusline.js',
   'hooks/gsd-update-banner.js',
