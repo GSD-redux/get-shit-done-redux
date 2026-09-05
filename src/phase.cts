@@ -4228,7 +4228,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             if (comparePhaseNum(pmNum, phaseNum) > 0
               && (roadmapNextNum === null || comparePhaseNum(pmNum, roadmapNextNum) < 0)) {
               roadmapNextNum = pmNum;
-              roadmapNextName = pmName!
+              roadmapNextName = pmName
                 .replace(/\(INSERTED\)/i, '')
                 .trim()
                 .toLowerCase()
