@@ -135,7 +135,7 @@ describe('#3783: audit-uat summary self-segments current-milestone vs archived d
   });
 
   test('mixed active + multiple archived milestones segments per version', () => {
-    writeActivePhaseUat(tmpDir, '02-current', '01-UAT.md', [
+    writeActivePhaseUat(tmpDir, '02-current', '02-UAT.md', [
       { name: 'Active Item', result: 'pending' },
     ]);
     writeArchivedPhaseUat(tmpDir, 'v0.1.0', '01-foundation', '01-UAT.md', [
