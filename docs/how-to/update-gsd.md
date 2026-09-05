@@ -30,6 +30,12 @@ Restart your runtime after the update to pick up new commands and agents.
 
 ---
 
+## If the update target cannot be resolved
+
+`UPDATE_TARGET_UNRESOLVED` means GSD could not identify an installed runtime to update. No update, cache clear, or installer run occurred. Rerun `/gsd-update` from a valid installed runtime, or use the [standard installer](install-on-your-runtime.md#standard-install) for a fresh install.
+
+---
+
 ## Flags
 
 | Flag | What it does |

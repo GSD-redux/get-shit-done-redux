@@ -233,6 +233,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "antigravity"
     },
     "config": {
@@ -650,6 +652,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
+      "effortConfigKey": "review.effort.claude",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -667,6 +671,11 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -1093,6 +1102,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -1252,6 +1263,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
+      "effortConfigKey": "review.effort.codex",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -1269,6 +1282,11 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -1524,6 +1542,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": "review.models.cursor",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -1645,7 +1665,7 @@ const capabilities = {
     "role": "feature",
     "version": "1.12.0",
     "title": "Async external-job scheduler adapter",
-    "description": "Default-off producer of the async external-job manifest (#1164). At execute:wave:post an executor can externalize long-running compute (SLURM first, scheduler-pluggable), commit a .planning/async-jobs/<job>.json manifest, defer SUMMARY.md, and return external_job_waiting. The core loop (#1165) consumes the manifest; this capability is the only thing that writes it. NOTE on contribution point: #1164 specifies execute:wave:pre, but execute-phase.md only dispatches execute:wave:post today (wave:pre is declared in the loop host contract but not rendered); wiring wave:pre dispatch is a core-loop change #1164 explicitly puts out of scope, so this capability registers at wave:post and the executor honors the runtime_budget classification guidance before running any tagged task. The adapter (scripts/slurm-adapter.cjs) reads external_job.submit_timeout_ms / poll_timeout_ms / artifact_dir through the canonical capability-config seam (env override > config > registry default).",
+    "description": "Default-off producer of the async external-job manifest (#1164). At execute:wave:post an executor can externalize long-running compute (SLURM first, scheduler-pluggable), commit a .planning/async-jobs/<job>.json manifest, defer SUMMARY.md, and return external_job_waiting. The core loop (#1165) consumes the manifest; this capability is the only thing that writes it. NOTE on contribution point: #1164 specifies classification at execute:wave:pre and recording at execute:wave:post. This capability still contributes executor guidance at wave:post; execute-phase now renders wave:pre entries and dispatches generic step hooks there independently. Moving external-job classification to wave:pre is a separate capability change, not part of #4148. The adapter (scripts/slurm-adapter.cjs) reads external_job.submit_timeout_ms / poll_timeout_ms / artifact_dir through the canonical capability-config seam (env override > config > registry default).",
     "tier": "full",
     "requires": [],
     "engines": {
@@ -1697,7 +1717,7 @@ const capabilities = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-post.md",
-          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     Why wave:post, not wave:pre (#1164 refinement A): execute-phase.md only\n     dispatches execute:wave:post today — wave:pre is declared in the loop host\n     contract but not rendered. Wiring wave:pre dispatch is a core-loop change\n     #1164 puts out of scope. The executor therefore honors this classification\n     guidance BEFORE running any task tagged <runtime_budget>long_compute</runtime_budget>,\n     whether in the current or a subsequent wave, and externalizes rather than\n     blocking the turn. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
+          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     #1164 specifies classification at wave:pre and recording at wave:post. This\n     capability still contributes executor guidance at wave:post; execute-phase\n     now renders wave:pre entries and dispatches generic step hooks there. Moving\n     external-job classification is a separate capability change, not part of\n     #4148. Until then, this guidance cannot classify the wave that already ran. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
         },
         "produces": [
           ".planning/async-jobs/<job>.json"
@@ -1805,6 +1825,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
       "modelConfigKey": "review.models.gemini",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -2259,7 +2281,8 @@ const capabilities = {
         "verificationStyle": "kimi",
         "agentManifestStyle": "kimi-nested",
         "doneBannerStyle": "kimi-agent-file",
-        "skipSharedHooksInstall": true
+        "skipSharedHooksInstall": true,
+        "noPathRewrite": true
       }
     }
   },
@@ -2408,6 +2431,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -2520,6 +2545,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
       "modelConfigKey": "review.models.llama_cpp",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2584,6 +2611,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
       "modelConfigKey": "review.models.lm_studio",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2872,6 +2901,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
       "modelConfigKey": "review.models.ollama",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -3065,6 +3096,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
+      "effortConfigKey": "review.effort.opencode",
+      "defaultEffort": "high",
       "handler": "opencode"
     },
     "config": {
@@ -3082,6 +3115,11 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -3424,6 +3462,8 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -4616,7 +4656,7 @@ const byLoopPoint = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-post.md",
-          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     Why wave:post, not wave:pre (#1164 refinement A): execute-phase.md only\n     dispatches execute:wave:post today — wave:pre is declared in the loop host\n     contract but not rendered. Wiring wave:pre dispatch is a core-loop change\n     #1164 puts out of scope. The executor therefore honors this classification\n     guidance BEFORE running any task tagged <runtime_budget>long_compute</runtime_budget>,\n     whether in the current or a subsequent wave, and externalizes rather than\n     blocking the turn. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
+          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     #1164 specifies classification at wave:pre and recording at wave:post. This\n     capability still contributes executor guidance at wave:post; execute-phase\n     now renders wave:pre entries and dispatches generic step hooks there. Moving\n     external-job classification is a separate capability change, not part of\n     #4148. Until then, this guidance cannot classify the wave that already ran. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
         },
         "produces": [
           ".planning/async-jobs/<job>.json"
@@ -4868,6 +4908,7 @@ const configKeys = {
   "review.models.claude": "claude",
   "review.max_prompt_tokens_per_reviewer.claude": "claude",
   "review.timeouts.claude": "claude",
+  "review.effort.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
@@ -4878,6 +4919,7 @@ const configKeys = {
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
   "review.timeouts.codex": "codex",
+  "review.effort.codex": "codex",
   "review.models.cursor": "cursor",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
@@ -4927,6 +4969,7 @@ const configKeys = {
   "review.models.opencode": "opencode",
   "review.max_prompt_tokens_per_reviewer.opencode": "opencode",
   "review.timeouts.opencode": "opencode",
+  "review.effort.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
   "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
@@ -5006,6 +5049,12 @@ const configSchema = {
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
+  "review.effort.claude": {
+    "owner": "claude",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
+  },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
     "type": "boolean",
@@ -5079,6 +5128,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.effort.codex": {
+    "owner": "codex",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
   },
   "review.models.cursor": {
     "owner": "cursor",
@@ -5390,6 +5445,12 @@ const configSchema = {
     "default": -1,
     "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
+  "review.effort.opencode": {
+    "owner": "opencode",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
+  },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
     "type": "boolean",
@@ -5637,6 +5698,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "antigravity"
     },
     "config": {
@@ -5925,6 +5988,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
+      "effortConfigKey": "review.effort.claude",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -5942,6 +6007,11 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -6305,6 +6375,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
+      "effortConfigKey": "review.effort.codex",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -6322,6 +6394,11 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -6577,6 +6654,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": "review.models.cursor",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -6933,7 +7012,8 @@ const runtimes = {
         "verificationStyle": "kimi",
         "agentManifestStyle": "kimi-nested",
         "doneBannerStyle": "kimi-agent-file",
-        "skipSharedHooksInstall": true
+        "skipSharedHooksInstall": true,
+        "noPathRewrite": true
       }
     }
   },
@@ -7082,6 +7162,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -7270,6 +7352,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
+      "effortConfigKey": "review.effort.opencode",
+      "defaultEffort": "high",
       "handler": "opencode"
     },
     "config": {
@@ -7287,6 +7371,11 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
@@ -7498,6 +7587,8 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {

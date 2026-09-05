@@ -20,7 +20,7 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, captureFdSync } = require('./helpers.cjs');
 
 const AGENT_INSTALL_CHECK_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'agent-install-check.cjs'
@@ -1183,7 +1183,7 @@ describe('cmdValidateAgents surfaces the Codex posture result (#3242 row 20)', (
     cleanup(tmpDir);
   });
 
-  test('row 20: validate agents output carries the posture result for a violating install', (t) => {
+  test('row 20: validate agents output carries the posture result for a violating install', () => {
     const { cmdValidateAgents } = require(
       path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'verify.cjs'),
     );
@@ -1193,22 +1193,9 @@ describe('cmdValidateAgents surfaces the Codex posture result (#3242 row 20)', (
       `name = "${EXPECTED_AGENTS[0]}"\nmodel = "sonnet"\ndeveloper_instructions = '''\nWork.\n'''\n`,
     );
 
-    const written = [];
-    const realWriteSync = fs.writeSync;
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd !== 1) {
-        return realWriteSync.call(fs, fd, data, offset, length);
-      }
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
+    const written = captureFdSync(1, () => cmdValidateAgents(tmpDir, false));
 
-    cmdValidateAgents(tmpDir, false);
-
-    const parsed = JSON.parse(written.join(''));
+    const parsed = JSON.parse(written);
     assert.ok(
       parsed.codex_posture,
       `expected cmdValidateAgents output to carry a codex_posture key, got keys: ${Object.keys(parsed).join(', ')}`,

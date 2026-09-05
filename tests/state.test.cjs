@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, captureFdSync } = require('./helpers.cjs');
 const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
 // ADR-3473 §8.7 (#3872): git-fixture spawns for the state_head rows (10/11)
 // go through the throw-preserving wrapper, never a raw execFileSync.
@@ -125,22 +125,7 @@ function bodyProgressPercent(stateMdContent) {
  * subprocess would not observe the parent process's mock).
  */
 function captureStdout(fn) {
-  const chunks = [];
-  const original = fs.writeSync;
-  fs.writeSync = (fd, data, offset, length) => {
-    if (fd !== 1) return original(fd, data, offset, length);
-    const chunk = Buffer.isBuffer(data)
-      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-      : String(data);
-    chunks.push(chunk);
-    return Buffer.byteLength(chunk, 'utf8');
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = original;
-  }
-  return chunks.join('');
+  return captureFdSync(1, fn);
 }
 
 function readShippedStateTemplateBody(replacements) {
@@ -1985,6 +1970,131 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     assert.ok(updated.includes('Phase complete'), 'Status should contain Phase complete');
+  });
+
+  // #4067: advance-plan's phase-complete decision must be derived from disk
+  // state (every plan in the phase directory has a SUMMARY.md, via the
+  // scanPhasePlans single owner) rather than from STATE.md's scalar plan
+  // counter. A serial counter cannot represent wave-parallel execution — a
+  // stale counter from the prior phase (the reported trigger) or a racing
+  // counter under N concurrent executors both let `X >= Y` fire the
+  // phase-complete branch while sibling plans are mid-flight.
+  describe('cmdStateAdvancePlan #4067 wave-parallel phase-complete guard', () => {
+    const waveFixture = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 2 — Build out',
+      'Plan: 7 of 7',
+      'Status: Executing',
+      'Last Activity: 2026-09-01',
+      '',
+    ].join('\n');
+
+    const seedPhaseDir = (dir, planCount, summaryCount) => {
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= planCount; i++) {
+        fs.writeFileSync(path.join(phaseDir, `02-0${i}-PLAN.md`), `# plan ${i}\n`);
+      }
+      for (let i = 1; i <= summaryCount; i++) {
+        fs.writeFileSync(path.join(phaseDir, `02-0${i}-SUMMARY.md`), `# summary ${i}\n`);
+      }
+      return phaseDir;
+    };
+
+    test('declines phase-complete while plans lack summaries (stale counter)', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), waveFixture);
+      seedPhaseDir('02-second', 3, 1);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.advanced, false, 'advanced should be false');
+      assert.strictEqual(out.reason, 'plans_outstanding',
+        `reason should be plans_outstanding; got: ${JSON.stringify(out)}`);
+      assert.ok(Array.isArray(out.outstanding_plans) && out.outstanding_plans.length === 2,
+        `outstanding_plans should name the 2 unsummarized plans; got: ${JSON.stringify(out.outstanding_plans)}`);
+
+      const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(!updated.includes('Phase complete'),
+        'STATE.md must NOT say Phase complete while plans are unsummarized');
+      assert.ok(updated.includes('Status: Executing'),
+        'STATE.md Status must be left unchanged by the decline');
+    });
+
+    test('fires phase-complete when every plan on disk has a summary', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), waveFixture);
+      seedPhaseDir('02-second', 3, 3);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.advanced, false);
+      assert.strictEqual(out.reason, 'last_plan',
+        `a fully-summarized phase must still take the phase-complete branch; got: ${JSON.stringify(out)}`);
+
+      const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(updated.includes('Phase complete'), 'Status should contain Phase complete');
+    });
+
+    test('keeps counter-derived phase-complete when the phase directory cannot be determined', () => {
+      // No phase directory matching Current Position's "Phase: 2" exists —
+      // the disk answer is unavailable, so the guard fails open to the
+      // counter-derived decision (existing pinned fixtures exercise the
+      // no-Current-Position spelling; this one pins the no-matching-dir one).
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), waveFixture);
+      seedPhaseDir('09-unrelated', 3, 0);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'last_plan',
+        `unresolvable phase dir must keep legacy counter behavior; got: ${JSON.stringify(out)}`);
+
+      const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(updated.includes('Phase complete'), 'Status should contain Phase complete');
+    });
+
+    test('is idempotent when re-run while plans are outstanding', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), waveFixture);
+      seedPhaseDir('02-second', 3, 1);
+
+      const first = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(first.success, `First call failed: ${first.error}`);
+      const afterFirst = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+
+      const second = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(second.success, `Second call failed: ${second.error}`);
+      const out = JSON.parse(second.output);
+      assert.strictEqual(out.reason, 'plans_outstanding',
+        `re-run must decline identically; got: ${JSON.stringify(out)}`);
+
+      const afterSecond = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.strictEqual(afterSecond, afterFirst,
+        'a declined advance-plan must leave STATE.md byte-identical (idempotent, race-safe)');
+    });
+
+    test('normal advance is untouched by the disk guard', () => {
+      const midPhase = waveFixture.replace('Plan: 7 of 7', 'Plan: 1 of 3');
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), midPhase);
+      seedPhaseDir('02-second', 3, 0);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.advanced, true,
+        `counter below total must still advance (display-only counter); got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.current_plan, 2);
+
+      const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(updated.includes('Plan: 2 of 3'), 'Plan counter should advance to 2 of 3');
+    });
   });
 });
 
@@ -19380,26 +19490,16 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
    * subprocess-based runGsdTools drops stderr on a clean exit.
    */
   function captureCliIO(fn) {
-    const originalWriteSync = fs.writeSync;
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
     let stdout = '';
     let stderr = '';
-    fs.writeSync = (fd, data, offset, length) => {
-      if (fd !== 1) return originalWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      stdout += chunk;
-      return Buffer.byteLength(chunk, 'utf8');
-    };
     process.stderr.write = (chunk) => {
       stderr += String(chunk);
       return true;
     };
     try {
-      fn();
+      stdout = captureFdSync(1, fn);
     } finally {
-      fs.writeSync = originalWriteSync;
       process.stderr.write = originalStderrWrite;
     }
     return { stdout, stderr };

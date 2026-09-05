@@ -29,6 +29,7 @@ const GUARD_HOOKS = [
   'gsd-write-guard.js',
   'gsd-agent-isolation-guard.js',
   'gsd-worktree-path-guard.js',
+  'gsd-secret-read-guard.js',
 ];
 
 // Every quoted absolute-node token (POSIX-form as emitted, .exe for win32

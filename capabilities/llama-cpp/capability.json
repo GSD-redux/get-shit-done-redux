@@ -37,6 +37,8 @@
     "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
     "modelConfigKey": "review.models.llama_cpp",
+    "effortConfigKey": null,
+    "defaultEffort": null,
     "handler": "openai-compatible"
   },
   "config": {

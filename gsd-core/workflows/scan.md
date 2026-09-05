@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 Lightweight codebase assessment. Spawns a single gsd-codebase-mapper agent for one focus area,
 producing targeted documents in `.planning/codebase/`.
