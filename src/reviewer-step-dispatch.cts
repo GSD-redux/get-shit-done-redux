@@ -39,9 +39,8 @@ import path from 'node:path';
 
 import { estimateTokens } from './prompt-budget.cjs';
 import type { LanePlan, ResolveResult } from './review-lane-invocation.cjs';
-import { resolveLanePlan, resolveLaneBudget } from './review-lane-invocation.cjs';
+import { resolveLaneBudget } from './review-lane-invocation.cjs';
 import type { ReviewerLane } from './review-lane-descriptor.cjs';
-import { REVIEWER_LANES } from './review-lane-descriptor.cjs';
 import type {
   ReviewerSelectionInput,
   ReviewerSelectionResult,
@@ -105,12 +104,25 @@ export interface InvokeOutcome {
 export interface ReviewerStepDispatchDeps {
   /** Defaults to the real `resolveReviewerSelection`. Overridden by tests with a spy. */
   resolveSelection?: (input: ReviewerSelectionInput) => ReviewerSelectionResult;
-  /** Defaults to a first-party-only lookup over `REVIEWER_LANES`. */
-  getLane?: (slug: string) => ReviewerLane | undefined;
-  /** Defaults to a function returning `undefined` for every key (no config overrides). */
-  configGet?: (key: string) => unknown;
-  /** Defaults to the real, PURE `resolveLanePlan`. Overridden by tests with a spy. */
-  plan?: (lane: ReviewerLane, ctx: PlanContext) => ResolveResult;
+  /**
+   * REQUIRED (#4209 R4). The one production caller always injects an overlay-merged lookup
+   * (`gsd-tools.cjs`'s `laneBySlug`); a first-party-only default would silently diverge from
+   * what actually ships, so there is no safe default to fall back to.
+   */
+  getLane: (slug: string) => ReviewerLane | undefined;
+  /**
+   * REQUIRED (#4209 R3). A `configGet` that always returns `undefined` silently disables
+   * `resolveLaneBudget`'s overflow guard (a missing config key and an explicitly-unbounded
+   * config key are indistinguishable to it) — a safety-relevant gate must not fail open on a
+   * missing dependency, so this has no default.
+   */
+  configGet: (key: string) => unknown;
+  /**
+   * REQUIRED (#4209 R4). The one production caller always injects a per-host effort-aware plan
+   * function; a simpler default that skips effort resolution would silently strip that behavior
+   * if `plan` were ever omitted, so there is no safe default to fall back to.
+   */
+  plan: (lane: ReviewerLane, ctx: PlanContext) => ResolveResult;
   /**
    * REQUIRED. `runLane` needs OS-aware spawn/probe plumbing (`RunnerDeps`) this module does not
    * own — the caller (`review-lane dispatch-step`) wires the real one; tests inject a spy.
@@ -137,21 +149,6 @@ export interface ReviewerStepDispatchResult {
   reason?: DispatchReason;
   selection?: ReviewerSelectionResult;
   results: ReviewerLaneDispatchResult[];
-}
-
-function defaultGetLane(slug: string): ReviewerLane | undefined {
-  return REVIEWER_LANES.find((l) => l.slug === slug);
-}
-
-function defaultPlan(lane: ReviewerLane, ctx: PlanContext): ResolveResult {
-  return resolveLanePlan({
-    lane,
-    configGet: ctx.configGet,
-    runDir: ctx.runDir,
-    repoRoot: ctx.repoRoot,
-    effortArgs: [],
-    effortValue: undefined,
-  });
 }
 
 function defaultWritePromptFile(filePath: string, content: string): void {
@@ -259,9 +256,7 @@ export async function dispatchReviewerLanes(
     return { dispatched: false, ok: false, reason: DISPATCH_REASON.MISSING_PROVENANCE, selection, results: [] };
   }
 
-  const configGet = deps.configGet ?? (() => undefined);
-  const getLane = deps.getLane ?? defaultGetLane;
-  const plan = deps.plan ?? defaultPlan;
+  const { configGet, getLane, plan } = deps;
   const writePromptFile = deps.writePromptFile ?? defaultWritePromptFile;
 
   const prompt = buildSourceReviewPrompt(input);
