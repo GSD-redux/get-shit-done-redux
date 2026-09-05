@@ -14413,6 +14413,233 @@ still to be determined by the roadmap.
   });
 });
 
+describe('phase complete lowest-outstanding vs positional-last (#4078)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4078-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const statePath = () => path.join(tmpDir, '.planning', 'STATE.md');
+  const roadmapPath = () => path.join(tmpDir, '.planning', 'ROADMAP.md');
+
+  /** Scaffold a phase dir with one executed plan (PLAN + SUMMARY). */
+  function scaffoldPhase(slug, planNum) {
+    const dir = path.join(tmpDir, '.planning', 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const padded = String(planNum).padStart(2, '0');
+    fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '# Plan');
+    fs.writeFileSync(path.join(dir, `${padded}-01-SUMMARY.md`), '# Summary');
+  }
+
+  /**
+   * #4078 fixture shape: the original roadmap's phase rows (2–17) use the
+   * bullet-house em-dash grammar the canonical lookup has accepted since #2199
+   * (`- [ ] **Phase N — Name**`), while the later phase.add-ingested Phase 18
+   * uses the colon grammar both the template and the scaffold emit. Only the
+   * colon rows parse under the pre-fix next-phase scan, so the positionally
+   * LAST parseable phase (18) won over the lowest outstanding phase (2).
+   */
+  function writeMixedGrammarRoadmap() {
+    const summaryRows = [
+      '- [ ] **Phase 1: Bootstrap**',
+      '- [ ] **Phase 2 — Python 3.14 Source and CI Compatibility**',
+      '- [ ] **Phase 3 — Packaging Refresh**',
+      '- [ ] **Phase 17 — Docs Sweep**',
+      '- [ ] **Phase 18: Codex Automation Disposition**',
+    ];
+    fs.writeFileSync(
+      roadmapPath(),
+      [
+        '# Roadmap',
+        '',
+        '## Phases',
+        ...summaryRows,
+        '',
+        '### Phase 18: Codex Automation Disposition',
+        '**Requirements**: TBD',
+        '',
+        '1. TBD — run /gsd:plan-phase 18 to break down.',
+        '',
+      ].join('\n'),
+    );
+    scaffoldPhase('01-bootstrap', 1);
+  }
+
+  /** Uniform em-dash grammar (no colon rows at all) — phases 1..5, complete N. */
+  function writeDashRoadmap({ completeBox = null } = {}) {
+    const names = ['Bootstrap', 'Source Compat', 'Packaging', 'Release', 'Docs Sweep'];
+    let rows = names.map((n, i) => `- [ ] **Phase ${i + 1} — ${n}**`);
+    if (completeBox !== null) rows[completeBox - 1] = rows[completeBox - 1].replace('- [ ]', '- [x]');
+    fs.writeFileSync(
+      roadmapPath(),
+      ['# Roadmap', '', '## Phases', ...rows, ''].join('\n'),
+    );
+  }
+
+  function writeExplicitState(phaseNum, phaseName) {
+    fs.writeFileSync(
+      statePath(),
+      [
+        '# State',
+        '',
+        `**Current Phase:** ${phaseNum}`,
+        `**Current Phase Name:** ${phaseName}`,
+        '**Status:** In progress',
+        '**Current Plan:** 01-01',
+        '**Last Activity:** 2025-01-01',
+        '**Last Activity Description:** Working',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  function parseFrontmatterField(content, key) {
+    const m = content.match(new RegExp(`^${key}:\\s*(.*)$`, 'm'));
+    return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+  }
+
+  test('mixedGrammarLowestOutstandingNotPositionalLast', () => {
+    // Row 1 (failing-first regression from the issue): completing Phase 1 of an
+    // 18-phase roadmap whose original rows use the em-dash bullet grammar must
+    // advance to the lowest outstanding phase (2), NOT the positionally-last
+    // colon-form row (18) merely because it is the only row the pre-fix scan
+    // could parse.
+    writeMixedGrammarRoadmap();
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.completed_phase, '1');
+    assert.strictEqual(output.is_last_phase, false, 'phases 2–18 remain — not last');
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      2,
+      `lowest outstanding phase 2 must be next_phase, not the positionally-last phase 18 (got ${output.next_phase})`,
+    );
+    assert.match(String(output.next_phase_name), /python[- ]3\.14-source-and-ci-compatibility/i);
+  });
+
+  test('mixedGrammarStateMovesToPhaseTwo', () => {
+    // Row 2: the resolved next phase must actually be PERSISTED — body Current
+    // Phase and frontmatter current_phase/current_phase_name all describe 2.
+    writeMixedGrammarRoadmap();
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 2);
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    assert.ok(/\*\*Current Phase:\*\*\s*2\b/.test(state), `body Current Phase must be 2, got: ${state.match(/\*\*Current Phase:\*\*.*/)?.[0]}`);
+    const fmPhase = parseFrontmatterField(state, 'current_phase');
+    const fmName = parseFrontmatterField(state, 'current_phase_name');
+    assert.strictEqual(parseInt(fmPhase, 10), 2, `frontmatter current_phase must be 2 (got ${fmPhase})`);
+    assert.match(fmName, /python 3\.14/i, `frontmatter current_phase_name must name phase 2 (got ${fmName})`);
+  });
+
+  test('uniformDashGrammarStillResolvesNext', () => {
+    // Row 3: uniform em-dash grammar — no colon rows exist, so the pre-fix scan
+    // found NO next phase at all; completing 1 must still resolve phase 2.
+    writeDashRoadmap();
+    scaffoldPhase('01-bootstrap', 1);
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      2,
+      `next phase 2 must resolve from em-dash rows (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('dashGrammarAllCompleteStillEndsMilestone', () => {
+    // Row 4 (negative space): completing the highest phase with every lower box
+    // checked is still a legitimate milestone end — the widened grammar must not
+    // manufacture an outstanding phase.
+    writeDashRoadmap({ completeBox: 1 });
+    scaffoldPhase('01-bootstrap', 1);
+    scaffoldPhase('02-source-compat', 2);
+    scaffoldPhase('03-packaging', 3);
+    scaffoldPhase('04-release', 4);
+    scaffoldPhase('05-docs-sweep', 5);
+    const rp = roadmapPath();
+    let roadmap = fs.readFileSync(rp, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 2 — Source Compat**', '- [x] **Phase 2 — Source Compat**')
+      .replace('- [ ] **Phase 3 — Packaging**', '- [x] **Phase 3 — Packaging**')
+      .replace('- [ ] **Phase 4 — Release**', '- [x] **Phase 4 — Release**');
+    fs.writeFileSync(rp, roadmap);
+    writeExplicitState(5, 'Docs Sweep');
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'everything checked — milestone completes');
+    assert.strictEqual(output.next_phase, null);
+  });
+
+  test('dashGrammarLowerOutstandingWins', () => {
+    // Row 5 (#2028 through the widened grammar): completing 5 with 3 still
+    // unchecked must fall BACK to the lowest outstanding phase 3. Phases 1, 2
+    // and 4 are checked so 3 is genuinely the lowest outstanding box.
+    writeDashRoadmap();
+    const rp = roadmapPath();
+    let roadmap = fs.readFileSync(rp, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 1 — Bootstrap**', '- [x] **Phase 1 — Bootstrap**')
+      .replace('- [ ] **Phase 2 — Source Compat**', '- [x] **Phase 2 — Source Compat**')
+      .replace('- [ ] **Phase 4 — Release**', '- [x] **Phase 4 — Release**');
+    fs.writeFileSync(rp, roadmap);
+    scaffoldPhase('03-packaging', 3);
+    scaffoldPhase('05-docs-sweep', 5);
+    writeExplicitState(5, 'Docs Sweep');
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `out-of-order completion must point at the lowest outstanding phase 3 (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('dashGrammarSentinelStillExcluded', () => {
+    // Row 6 (#2949 through the widened grammar): an unchecked 0.x backlog row in
+    // the dash grammar never becomes next_phase.
+    writeDashRoadmap();
+    scaffoldPhase('01-bootstrap', 1);
+    scaffoldPhase('02-source-compat', 2);
+    const rp = roadmapPath();
+    fs.writeFileSync(
+      rp,
+      '- [ ] **Phase 0.1 — Backlog sentinel item**\n' + fs.readFileSync(rp, 'utf-8'),
+    );
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      2,
+      `real phase 2 (not the 0.1 sentinel) is next_phase (got ${output.next_phase})`,
+    );
+  });
+});
+
 // ─── #3572: phase remove must not prepend a second frontmatter block ──────────
 
 describe('bug #3572: phase remove must not corrupt STATE.md into two frontmatter blocks', () => {

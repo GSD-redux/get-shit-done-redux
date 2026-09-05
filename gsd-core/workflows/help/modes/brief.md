@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 <purpose>
 One-liner refresher for returning users. Output ONLY the `<reference>` content below. No additions.
 </purpose>

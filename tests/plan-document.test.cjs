@@ -61,6 +61,99 @@ describe('plan-document: tracker-id attribute', () => {
   });
 });
 
+describe('plan-document: tdd attribute (#4273)', () => {
+  test('row 1 — tdd="true" is read verbatim', () => {
+    const doc = parsePlanDocument(`
+<task type="auto" tdd="true">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(doc.tasks.length, 1);
+    assert.equal(doc.tasks[0].tdd, 'true');
+  });
+
+  test('row 2 — no tdd attribute yields tdd: null', () => {
+    const doc = parsePlanDocument(`
+<task type="auto">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(doc.tasks.length, 1);
+    assert.equal(doc.tasks[0].tdd, null);
+  });
+
+  test('row 3 — tdd="" (empty string) normalises to null', () => {
+    const doc = parsePlanDocument(`
+<task type="auto" tdd="">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(doc.tasks.length, 1);
+    assert.equal(doc.tasks[0].tdd, null);
+  });
+
+  test('row 4 — tdd="TRUE" and tdd="1" are read verbatim, never coerced to a boolean', () => {
+    const docUpper = parsePlanDocument(`
+<task type="auto" tdd="TRUE">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(docUpper.tasks[0].tdd, 'TRUE');
+    assert.notEqual(docUpper.tasks[0].tdd, 'true');
+
+    const docNumeric = parsePlanDocument(`
+<task type="auto" tdd="1">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(docNumeric.tasks[0].tdd, '1');
+  });
+
+  test('row 5 — checkpoint tasks never read tdd, even when present', () => {
+    const doc = parsePlanDocument(`
+<task type="checkpoint:decision" tdd="true">
+<decision>Ship it</decision>
+</task>
+`);
+    assert.equal(doc.tasks.length, 1);
+    assert.equal(doc.tasks[0].kind, 'checkpoint');
+    assert.equal(doc.tasks[0].tdd, null);
+  });
+});
+
+describe('plan-document: frontmatter type (#4273)', () => {
+  test('row 6 — frontmatter type: tdd is read verbatim onto doc.type', () => {
+    const doc = parsePlanDocument(`---
+type: tdd
+---
+<task type="auto">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(doc.type, 'tdd');
+  });
+
+  test('row 7 — frontmatter type: standard is read verbatim, not coerced to a boolean', () => {
+    const doc = parsePlanDocument(`---
+type: standard
+---
+<task type="auto">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(doc.type, 'standard');
+  });
+
+  test('row 8 — no frontmatter type yields doc.type: null', () => {
+    const doc = parsePlanDocument(`
+<task type="auto">
+<name>Do a thing</name>
+</task>
+`);
+    assert.equal(doc.type, null);
+  });
+});
+
 describe('plan-document: regression — legacy behaviour unchanged', () => {
   test('legacy `## Task N` markdown fallback still parses with trackerId: null', () => {
     const doc = parsePlanDocument(`
