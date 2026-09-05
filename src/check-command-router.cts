@@ -329,12 +329,15 @@ function cmdDecisionCoveragePlan(projectDir: string, args: string[], raw: boolea
       uncovered: [],
       message: partialParse
         ? 'Decision coverage gate: decisions could not be fully parsed — one or more ' +
-          '`- **D-NN ...**` bullets appear malformed (missing `:` or ` — ` separator). ' +
-          'Fix the bullet format so all D-NN decisions can be read before re-running the gate.'
+          '`- **D-NN ...**` bullets appear malformed (missing `:` or ` — ` separator, or a phase ' +
+          'prefix that is not a digit run, e.g. `D4x-01`). Fix the bullet format so all decisions ' +
+          'can be read before re-running the gate.'
         : 'Decision coverage gate: could not parse decisions — possible format mismatch. ' +
           'The CONTEXT.md appears to be decision-shaped (has a <decisions> block, a decisions heading, ' +
-          'or D- tokens) but no D-NN bullets could be extracted. Check the formatting of the decisions ' +
-          'block and ensure bullets follow the `- **D-NN:** text` or `- **D-NN — title** body` form.',
+          'or D- tokens) but no decision bullets could be extracted. Check the formatting of the decisions ' +
+          'block and ensure bullets follow the `- **D-NN:** text`, `- **D4-NN:** text` (phase-prefixed), ' +
+          'or `- **D-NN — title** body` form. An ID grammar the parser does not support (e.g. `DEC-01`) ' +
+          'also lands here.',
     }, raw, undefined);
     return;
   }
@@ -433,9 +436,11 @@ function cmdDecisionCoverageVerify(projectDir: string, args: string[], raw: bool
       not_honored: [],
       message: partialParse
         ? 'Decision coverage verify (warning): decisions could not be fully parsed — one or more ' +
-          '`- **D-NN ...**` bullets appear malformed. Fix the bullet format in the CONTEXT.md decisions block.'
+          '`- **D-NN ...**` bullets appear malformed (missing `:` or ` — ` separator, or a phase ' +
+          'prefix that is not a digit run). Fix the bullet format in the CONTEXT.md decisions block.'
         : 'Decision coverage verify (warning): could not parse decisions — possible format mismatch. ' +
-          'Check the formatting of the CONTEXT.md decisions block.',
+          'Check the formatting of the CONTEXT.md decisions block (accepted forms: `- **D-NN:** text`, ' +
+          '`- **D4-NN:** text` (phase-prefixed), `- **D-NN — title** body`).',
     }, raw, undefined);
     return;
   }
