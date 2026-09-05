@@ -49,6 +49,43 @@ test('finishInstall rejects an invalid configured entrypoint before Done output'
   assert.equal(logs.some(line => line.includes('Done!')), false);
 });
 
+test('entrypointsAlreadyValidated skips finishInstall re-validating what its caller already checked (#4249: avoid the double statSync/accessSync pass every install/update pays)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-skip-revalidate-'));
+  t.after(() => helpers.cleanup(root));
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    // Same broken entry as the test above — proves the skip is real, not
+    // that this entry happens to validate fine.
+    let caught;
+    try {
+      finishInstall(null, null, null, false, 'cline', false, root, {
+        entrypointsAlreadyValidated: true,
+        configuredEntrypoints: [{ runtime: 'cline', configPath: path.join(root, 'config'), scriptPath: path.join(root, 'missing.js') }],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(
+      !caught || !/Configured entrypoint validation failed/.test(caught.message),
+      `entrypointsAlreadyValidated must skip the entrypoint check entirely, got: ${caught && caught.message}`,
+    );
+  } finally {
+    console.log = originalLog;
+    restoreConfigLocationEnv();
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+  }
+});
+
 test('a hook already registered under a stale command is still tracked for validation on re-install (#4154 Blocker)', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-stale-'));
   t.after(() => helpers.cleanup(root));
