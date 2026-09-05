@@ -19,11 +19,14 @@
  *     `gsd_run` shim-discovery preamble, then the `TDD_APPLICABLE_RAW=...` /
  *     `TDD_APPLICABLE_RC=$?` / fail-closed check / `TDD_APPLICABLE=` assignment.
  *   - `gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md`
- *     ("worktree" backend) — the shim preamble lives in an EARLIER fenced
- *     block than the `_TDD_APPLICABLE_RAW=...` resolution (which sits inside
- *     a LATER fenced block, ahead of the `EXECUTOR_PROMPT=` composition this
- *     harness does not need). A standalone execution must concatenate the
- *     preamble block with just the resolution lines.
+ *     ("worktree" backend) — the `gsd_run` shim-discovery preamble lives in
+ *     the file's FIRST fenced block, which is not just the shim: it is the
+ *     whole ISOLATION resolution (its own independent fail-closed branches),
+ *     ahead of a LATER fenced block that contains the `_TDD_APPLICABLE_RAW=...`
+ *     resolution followed by the `EXECUTOR_PROMPT=` composition this harness
+ *     does not need. A standalone execution must concatenate the first block
+ *     (for its `gsd_run` definition) with just the TDD resolution lines
+ *     sliced out of the second.
  *
  * This module extracts each backend's real bash via `indexOf`/`slice` on the
  * fenced-code markers (NEVER a backtracking regex over the whole file — see
@@ -37,7 +40,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { createTempProject, cleanup, runGsdTools, readFileNormalized } = require('../helpers.cjs');
+const { createTempProject, cleanup, runGsdTools, readFileNormalized, TEST_ENV_BASE } = require('../helpers.cjs');
 
 /** Absolute real repo root — NOT the temp fixture's own root. */
 const REPO_ROOT = path.join(__dirname, '..', '..');
@@ -200,9 +203,19 @@ function parseResultSentinel(stdout) {
  */
 function executeBackendScript(script, cwd) {
   try {
+    // #4298 Standards+Spec review: `runGsdTools` (tests/helpers.cjs) scrubs
+    // SESSION_IDENTITY_ENV_KEYS + config-location env vars before spawning,
+    // because an ambient developer/CI value (e.g. a real ~/.gsd/config.json
+    // location override) can silently change what a gsd-tools child resolves
+    // — documented there as #2665. This harness spawns `gsd_run` the exact
+    // same way (indirectly, via the extracted resolution script), so it needs
+    // the same hermeticity: spread the exported `TEST_ENV_BASE` (every
+    // scrub-listed key set to '') AFTER `...process.env` but BEFORE the two
+    // intentional overrides below, so ambient state is blanked and only
+    // RUNTIME_DIR/GSD_TEST_MODE are deliberately set.
     const stdout = execFileSync('bash', ['-c', script], {
       cwd,
-      env: { ...process.env, RUNTIME_DIR: REPO_ROOT, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, RUNTIME_DIR: REPO_ROOT, GSD_TEST_MODE: '1' },
       encoding: 'utf8',
       timeout: 30000,
     });

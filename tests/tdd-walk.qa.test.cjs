@@ -104,16 +104,23 @@ describe('tdd-walk harness', () => {
     assert.equal(harnessPlain.value, 'false');
   });
 
-  test('row 5 — fail-closed: missing plan file exits non-zero with FATAL on stderr (worktree backend)', (t) => {
+  test('row 5 — fail-closed: missing plan file exits non-zero with the TDD-resolution FATAL on stderr (worktree backend)', (t) => {
     const walk = TddWalk.create();
     t.after(() => walk.cleanup());
     // Deliberately no writePlan() call — {phase_dir}/{plan_file} points at a
     // plan that does not exist on disk.
     const result = walk.resolveViaBackend('worktree');
     assert.equal(result.success, false);
+    // #4298 Standards+Spec review: a bare `.includes('FATAL')` would also
+    // pass if the file's OTHER fail-closed guard (the unrelated ISOLATION
+    // resolution, which shares the same first fenced block and can emit its
+    // own differently-worded FATAL) fired instead of the TDD-applicability
+    // one — silently proving the wrong guard. Assert the exact TDD-resolution
+    // FATAL text (from executor-isolation-dispatch.md's own echo line) so a
+    // future edit that changes which guard fires here is caught.
     assert.ok(
-      result.stderr.includes('FATAL'),
-      `expected stderr to contain FATAL, got: ${result.stderr}`,
+      result.stderr.includes("could not resolve TDD-applicability for plan"),
+      `expected stderr to contain the TDD-applicability FATAL message, got: ${result.stderr}`,
     );
   });
 
