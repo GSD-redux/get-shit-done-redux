@@ -157,6 +157,22 @@ function guardedLines(lines) {
   return rows;
 }
 
+// Capture INVOCATIONS, not every line that mentions one. The block documents its own flags in
+// comments, and a comment naming `playwright screenshot` — the one explaining --timeout does
+// exactly this — is prose, not a call site. Reading it as one inflates the invocation count and,
+// worse, lets an assertion pass on the DOCUMENTATION of a property instead of the property: the
+// --timeout check below was satisfied in part by a comment containing the string `--timeout`.
+// That is the same class as the whole-block substring defect the port assertion names, which is
+// why the exclusion lives here once rather than in each caller.
+// logicalLines first: the invocation spans four physical lines, so its flags are only all on one
+// line after continuations are joined.
+function captureInvocations(lines) {
+  return logicalLines(lines)
+    .map((l) => l.trim())
+    .filter((l) => !l.startsWith('#'))
+    .filter((l) => l.includes('playwright screenshot'));
+}
+
 describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
   test('dev-server probe follows redirects and is time-bounded', () => {
     const block = screenshotApproachBlock();
@@ -278,13 +294,21 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
   });
 
   test('the resolved port — not a hard-coded 3000 — is what gets captured', () => {
-    const block = screenshotApproachBlock();
-    const captureLines = block.split('\n').filter((l) => l.includes('playwright screenshot'));
+    const captureLines = captureInvocations(screenshotApproachLines());
     assert.ok(captureLines.length > 0, 'expected at least one capture invocation');
     for (const line of captureLines) {
+      // Negative-only was the hole, and it is the SAME defect class the test above names:
+      // banning the one literal `localhost:3000` leaves a hard-coded `localhost:5173` or
+      // `localhost:8080` passing, while the defect #4176 names is "the capture targets a
+      // hard-coded port", not "the capture targets 3000". Ban the shape, then require the
+      // resolved variable positively — a ban alone cannot say what the line SHOULD contain.
       assert.ok(
-        !line.includes('localhost:3000'),
-        `capture must use the resolved port variable, not a literal localhost:3000: ${line.trim()}`
+        !/localhost:\d+/.test(line),
+        `capture must not hard-code any port: ${line.trim()}`
+      );
+      assert.ok(
+        line.includes('$DEV_URL'),
+        `capture must use the resolved URL variable: ${line.trim()}`
       );
     }
   });
@@ -294,10 +318,10 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // defaults it to 0, i.e. NO timeout — so this CLI path drops the bound the
     // Playwright library applies by default. An unbounded capture reinstates the
     // hang the probe's own time bound exists to prevent, one step later.
-    // logicalLines, because the invocation spans four physical lines.
-    const captures = logicalLines(screenshotApproachLines())
-      .map((l) => l.trim())
-      .filter((l) => l.includes('playwright screenshot'));
+    // captureInvocations, not a bare filter: the comment four lines above the call site names
+    // both `playwright screenshot` and `--timeout`, so a bare filter counted it as an invocation
+    // and it satisfied this assertion by quoting the flag rather than passing it.
+    const captures = captureInvocations(screenshotApproachLines());
     assert.ok(captures.length > 0, 'expected at least one capture invocation');
     for (const line of captures) {
       assert.ok(
@@ -329,10 +353,21 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
   });
 
   test('report surfaces can express partial capture', () => {
+    // Was a whole-FILE substring check — the same defect class as the Major finding and as the
+    // port check above, and shipped by this PR rather than inherited. The template prose alone
+    // satisfied it, so deleting the block's partial branch outright would not have failed it.
+    // Pin both ends positively instead: the block must PRODUCE a partial status, and a report
+    // surface outside the block must CONSUME the variable — a status computed and never
+    // rendered is not a surface that can express anything.
+    const block = screenshotApproachBlock();
     const content = fs.readFileSync(AUDITOR_PATH, 'utf-8');
     assert.ok(
-      /partially captured/i.test(content),
-      'the Screenshots field must be able to say partial — full/none alone cannot describe 2 of 3'
+      /CAPTURE_STATUS=["']?partially captured/i.test(block),
+      'the capture block must PRODUCE a partial status — full/none alone cannot describe 2 of 3'
+    );
+    assert.ok(
+      /\$CAPTURE_STATUS/.test(content.replace(block, '')),
+      'a report surface outside the block must render $CAPTURE_STATUS, or the status is computed and dropped'
     );
   });
 });
