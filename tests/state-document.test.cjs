@@ -1809,6 +1809,17 @@ describe('#4094 milestone-unbounded withhold — all four progress counters', ()
   const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
   const { runNode } = require('./helpers/process-seam.cjs');
   const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+  const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+
+  /** Seed `.planning/phases/<padded>-phase-<n>` — local copy (the block-scoped seeder at the top of this file is not reachable from here). */
+  function seedPhaseDirs(dir, nums) {
+    for (const n of nums) {
+      const padded = String(n).padStart(2, '0');
+      const phaseDir = path.join(dir, '.planning', 'phases', `${padded}-phase-${n}`);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan\n');
+    }
+  }
 
   let tmpDir;
 
@@ -1864,12 +1875,15 @@ describe('#4094 milestone-unbounded withhold — all four progress counters', ()
   /** Read the PERSISTED progress block values straight out of STATE.md. */
   function persistedProgress(dir) {
     const raw = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
-    const m = raw.match(/^progress:\n((?: {2}.*\n?)+)/m);
-    if (!m) return {};
+    const lines = splitLines(raw);
     const out = {};
-    for (const line of m[1].split('\n')) {
+    let inProgress = false;
+    for (const line of lines) {
+      if (/^progress:\s*$/.test(line)) { inProgress = true; continue; }
+      if (!inProgress) continue;
       const kv = line.match(/^ {2}(\w+): (.+)$/);
-      if (kv) out[kv[1]] = kv[2].trim();
+      if (!kv) break; // progress block ended
+      out[kv[1]] = kv[2].trim();
     }
     return out;
   }
@@ -2051,6 +2065,8 @@ describe('#4094 milestone-unbounded withhold — all four progress counters', ()
       buildStateMdWithCounters({ counters: { totalPhases: 2, completedPhases: 0, totalPlans: 2, completedPlans: 0 } }),
     );
     seedPhaseDirs(tmpDir, [1, 2]);
+    // Removing a FIXTURE subdirectory (a phase dir), not the temp dir itself.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- deliberate fixture mutation inside tmpDir, not a temp-dir teardown
     fs.rmSync(path.join(tmpDir, '.planning', 'phases', '02-phase-2'), { recursive: true });
 
     const rec = recordSession(tmpDir);
