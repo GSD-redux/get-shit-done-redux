@@ -50,6 +50,7 @@ export const DISPATCH_REASON = Object.freeze({
   INVALID_PATHS: 'invalid_paths',
   PATH_ESCAPES_REPO_ROOT: 'path_escapes_repo_root',
   MISSING_PROVENANCE: 'missing_provenance',
+  INVALID_PROVENANCE: 'invalid_provenance',
   PROMPT_WRITE_FAILED: 'prompt_write_failed',
 } as const);
 export type DispatchReason = (typeof DISPATCH_REASON)[keyof typeof DISPATCH_REASON];
@@ -169,6 +170,15 @@ function validatePaths(
     return { ok: false, reason: DISPATCH_REASON.INVALID_PATHS };
   }
   const root = path.resolve(String(repoRoot ?? ''));
+  // repoRoot itself may be a symlink (e.g. a `/tmp`-based worktree on macOS, where `/tmp` is
+  // itself a symlink to `/private/tmp`) — realpath it once so the per-path comparison below
+  // compares like with like, not a resolved child path against an unresolved root.
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(root);
+  } catch {
+    realRoot = root;
+  }
   // #4209 agy-F1: a control character (newline, CR, NUL, ...) in a path lets a maliciously
   // named repo file inject a fabricated section into the markdown prompt built from `paths`
   // below (buildSourceReviewPrompt) — reject it here, at the shared trust boundary, rather than
@@ -179,6 +189,20 @@ function validatePaths(
     }
     const resolved = path.resolve(root, p);
     if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return { ok: false, reason: DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT };
+    }
+    // #4209 WR-05: `path.resolve` is lexical only — a symlink whose OWN path sits inside
+    // repoRoot can still point outside it, passing the check above while listing an
+    // out-of-repo file for the external lane to read. `fs.realpathSync` follows the link;
+    // ENOENT is expected and benign here (a `git diff --name-only` path can legitimately name
+    // a file already deleted in a stale worktree) and is not itself an escape.
+    let real: string;
+    try {
+      real = fs.realpathSync(resolved);
+    } catch {
+      continue;
+    }
+    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
       return { ok: false, reason: DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT };
     }
   }
@@ -283,12 +307,27 @@ export async function dispatchReviewerLanes(
   // (buildSourceReviewPrompt, `dispatchReviewerLanes`'s `runDir`-derived promptPath write) — a
   // control character in any of them is the identical injection vector agy-F1 found in `paths`,
   // so this trust boundary must reject it here too, not just for the file list.
-  if (typeof input.depth !== 'string' || input.depth.length === 0 || CONTROL_CHAR.test(input.depth)
-    || typeof input.baseSha !== 'string' || input.baseSha.length === 0 || CONTROL_CHAR.test(input.baseSha)
-    || typeof input.repoRoot !== 'string' || input.repoRoot.length === 0 || CONTROL_CHAR.test(input.repoRoot)
-    || typeof input.runDir !== 'string' || input.runDir.length === 0 || CONTROL_CHAR.test(input.runDir)) {
+  if (typeof input.depth !== 'string' || input.depth.length === 0
+    || typeof input.baseSha !== 'string' || input.baseSha.length === 0
+    || typeof input.repoRoot !== 'string' || input.repoRoot.length === 0
+    || typeof input.runDir !== 'string' || input.runDir.length === 0) {
     return { dispatched: false, ok: false, reason: DISPATCH_REASON.MISSING_PROVENANCE, selection, results: [] };
   }
+  // #4209 WR-04: a present-but-malicious field (control character) is a different failure mode
+  // than an absent one — MISSING_PROVENANCE above means "the caller never supplied this"; this
+  // branch means "the caller supplied something and it's an injection attempt," which a caller
+  // handling the two reasons differently (e.g. surfacing one as a config problem, the other as
+  // a security event) must be able to tell apart.
+  if (CONTROL_CHAR.test(input.depth) || CONTROL_CHAR.test(input.baseSha)
+    || CONTROL_CHAR.test(input.repoRoot) || CONTROL_CHAR.test(input.runDir)) {
+    return { dispatched: false, ok: false, reason: DISPATCH_REASON.INVALID_PROVENANCE, selection, results: [] };
+  }
+  // #4209 WR-03 (considered, declined): gating `depth` to code-review's quick/standard/deep
+  // enum here would reject the deliberately capability-neutral case this function supports —
+  // see "a second, unrelated synthetic step context dispatches through the same function
+  // identically" below, which passes a wholly different depth vocabulary on purpose to prove
+  // this dispatcher has no code-review-specific special-casing. `depthMeaning()`'s `standard`
+  // fallback for an off-enum value is accepted, not a bug, for that reason.
 
   const { configGet, getLane, plan } = deps;
   const writePromptFile = deps.writePromptFile ?? defaultWritePromptFile;
@@ -326,8 +365,8 @@ export async function dispatchReviewerLanes(
       continue;
     }
 
-    // A single throwing plan()/writePromptFile()/invoke() must not take down every sibling lane
-    // already collected in `results` — same rationale as gsd-tools.cjs's resolveLanePlan guard
+    // A single throwing plan()/invoke() must not take down every sibling lane already collected
+    // in `results` — same rationale as gsd-tools.cjs's resolveLanePlan guard
     // (#2494/#2605/#1698/#1936/#2073/#2176/#2589/#2794): belt and braces on purpose.
     let planOutcome: ResolveResult;
     try {
