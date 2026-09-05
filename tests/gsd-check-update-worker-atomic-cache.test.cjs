@@ -86,7 +86,7 @@ describe('gsd-check-update-worker.js: atomic cache publish (#4091)', () => {
     );
     assert.match(
       src,
-      /cacheFile\s*\+\s*['"][^'"]*\bpid\b|process\.pid/,
+      /cacheFile\s*\+\s*['"][^'"]*['"]\s*\+\s*process\.pid/,
       'temp stage name must be unique per process (process.pid) so concurrent workers never share a stage path',
     );
   });

@@ -166,13 +166,12 @@ if (cacheFile) {
   // record, never a partial one), then renameSync into place. Failure policy
   // is unchanged (#3582 degrade): any error is swallowed and the temp, if
   // left behind, is best-effort removed.
+  const tmp = cacheFile + '.tmp-' + process.pid;
   try {
-    const tmp = cacheFile + '.tmp-' + process.pid;
     fs.writeFileSync(tmp, JSON.stringify(result));
     fs.renameSync(tmp, cacheFile);
   } catch (e) {
     try {
-      fs.rmSync(cacheFile + '.tmp-' + process.pid, { force: true });
+      fs.rmSync(tmp, { force: true });
     } catch (e2) {}
-  }
-}
+  }}
