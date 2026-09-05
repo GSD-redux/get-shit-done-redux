@@ -1,5 +1,9 @@
 'use strict';
 
+// docs-guard-exempt: 'docs/spec.md' below is a synthetic, never-read path string used to prove
+// dispatchReviewerLanes has no code-review-specific special-casing — this file never reads any
+// docs/ path from disk.
+
 /**
  * Reviewer Step Dispatch — the interpreter for "a step declares
  * `supportsReviewerLanes: true`" (#4209 Phase 1 Plan 2, ADR-2782 seam).

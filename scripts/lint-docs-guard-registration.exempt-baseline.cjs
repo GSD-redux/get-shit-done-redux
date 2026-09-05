@@ -80,6 +80,7 @@ const DOCS_GUARD_EXEMPT_BASELINE = [
   'repo-invariants.test.cjs',
   'require-issue-link-policy.test.cjs',
   'reviewer-manifest-body.test.cjs',
+  'reviewer-step-dispatch.test.cjs',
   'run-tests-harness.test.cjs',
   'runtime-name-policy.test.cjs',
   'security-prompt-injection.security.test.cjs',
@@ -187,6 +188,9 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'repo-invariants.test.cjs': ['docs/FEATURES.md', 'docs/workflows/README'],
   'require-issue-link-policy.test.cjs': ['docs/-prefixed', 'docs/CONFIGURATION.md', 'docs/a.md', 'docs/b.md', 'docs/guide.md'],
   'reviewer-manifest-body.test.cjs': ['docs/how-to/ship-a-reviewer-lane.md'],
+  // #4209: 'docs/spec.md' is a synthetic, never-read fake path proving dispatchReviewerLanes
+  // has no code-review-specific special-casing; the file never reads any docs/ file.
+  'reviewer-step-dispatch.test.cjs': ['docs/spec.md'],
   'run-tests-harness.test.cjs': ['docs/TESTING-SUITES.md'],
   'runtime-name-policy.test.cjs': ['docs/customize/skills'],
   'security-prompt-injection.security.test.cjs': ['docs/notes.md'],
