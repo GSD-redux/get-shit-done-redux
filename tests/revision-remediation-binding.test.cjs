@@ -1086,4 +1086,18 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
     });
   });
 
+  // Adversarial-review regression (#3916): the CRLF fix above must compare a CR-stripped COPY,
+  // not mutate `$0` in place -- `sub(/\r$/, "")` on `$0` itself silently rewrites every
+  // passed-through line's ending to LF on any insert or close, corrupting an unrelated file.
+  test('the writer gate on a CRLF REVIEWS.md leaves unrelated lines CRLF-terminated', { skip: IS_WINDOWS }, () => {
+    const crlf = (content) => content.replace(/\n/g, '\r\n');
+    withReviews(crlf(reviewsArtifact()), (file) => {
+      const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
+      assert.equal(runWriterGate(file, fields).status, 0);
+      const after = fs.readFileSync(file, 'utf-8');
+      const headerLine = after.split('\n')[0];
+      assert.ok(headerLine.endsWith('\r'), 'a pre-existing line must keep its original CRLF ending');
+    });
+  });
+
 });

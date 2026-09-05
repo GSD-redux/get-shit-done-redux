@@ -1293,8 +1293,8 @@ fi
 - Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section (when enabled and
   non-empty). plan-phase wrote the line, so plan-phase closes it.
 - After re-spawning, return to this step, not the checker spawn below.
-- Escalates via the iteration cap's gate on a repeated `required_property`, and on the THIRD
-  conflict return of this loop whatever property it names.
+- Escalates via the iteration cap on a repeated `required_property`, and on the THIRD conflict
+  return of this loop whatever property it names.
 - Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (decodes
   literal `\n` as a real newline). Export the row's
   `CONFLICT_DIMENSION/_PLAN/_PROPERTY/_CONSTRAINT/_ALTERNATIVES`, then run:
@@ -1306,9 +1306,9 @@ if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
   END='<!-- gsd:plan-revision-conflicts:end -->'
   TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
   if ! LINE="$LINE" END="$END" awk '
-    { sub(/\r$/, "") }
-    $0 == ENVIRON["LINE"] { seen = 1 }
-    $0 == ENVIRON["END"] && !ins { if (!seen) print ENVIRON["LINE"]; ins = 1 }
+    { cur = $0; sub(/\r$/, "", cur) }
+    cur == ENVIRON["LINE"] { seen = 1 }
+    cur == ENVIRON["END"] && !ins { if (!seen) print ENVIRON["LINE"]; ins = 1 }
     { print }
     END { if (!ins) exit 2 }
   ' "${REVIEWS_FILE}" > "${TMP}"; then
@@ -1322,9 +1322,8 @@ fi
 ```
 
 **Otherwise (revised plans, not `## REVISION_CONFLICT`):** if this re-spawn followed a
-resolved conflict, close its record — nothing persists across fences, so recompute
-`REVIEWS_FILE`/`PENDING_CONFLICT` as above and set `CONFLICT_RESOLUTION` to a one-line summary.
-Then run:
+resolved conflict, close its record — nothing persists across fences: export `REVIEWS_FILE`,
+`PENDING_CONFLICT` (the open line), and `CONFLICT_RESOLUTION` (a one-line summary). Then run:
 
 ```bash
 if [ -n "${PENDING_CONFLICT:-}" ]; then
@@ -1332,8 +1331,8 @@ if [ -n "${PENDING_CONFLICT:-}" ]; then
   CLOSED="- [x]${PENDING_CONFLICT#- \[ \]} | resolved: ${RES}"
   TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
   if ! OLD="$PENDING_CONFLICT" NEW="$CLOSED" awk '
-    { sub(/\r$/, "") }
-    $0 == ENVIRON["OLD"] && !d { print ENVIRON["NEW"]; d = 1; next }
+    { cur = $0; sub(/\r$/, "", cur) }
+    cur == ENVIRON["OLD"] && !d { print ENVIRON["NEW"]; d = 1; next }
     { print }
     END { if (!d) exit 2 }
   ' "${REVIEWS_FILE}" > "${TMP}"; then
