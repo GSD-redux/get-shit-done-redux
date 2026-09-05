@@ -78,13 +78,27 @@ function restatesCycle(text) {
 //     or list-marker shape. This is what makes the signal non-evadable by a
 //     compact, reworded restatement: shortening or dropping list markers does
 //     nothing to manufacture a citation that was never there.
-//   - Trailing window: 500 characters past the REFACTOR anchor. Measured
-//     empirically against the real files (2026-09-04): execute-plan.md's
-//     citation of `~/.claude/gsd-core/references/tdd.md` sits 228 chars past
-//     the REFACTOR anchor; gsd-executor.md's citation of
-//     `gsd-core/references/tdd.md` sits 82 chars past it. 500 clears both
-//     with wide margin while staying well short of the whole-file scan the
-//     #4228 postmortem (see comment above restatesCycle()) warns against.
+//   - Trailing window: the EARLIER of 500 characters past the REFACTOR
+//     anchor, or the next markdown HEADING line (`\n#`) — never further.
+//     #4302: a flat char count with no structural boundary let a
+//     citation-free restatement borrow an UNRELATED later section's tdd.md
+//     citation (on the real gsd-executor.md, the very next section after the
+//     cycle pointer — "## Plan-Level TDD Gate Enforcement" — has its own,
+//     independent tdd.md citation 82 chars past the pointer's REFACTOR
+//     anchor, well inside a flat 500-char window). A first attempt bounded at
+//     the next blank line instead of a heading, but that broke the real
+//     execute-plan.md pointer: its FIRST RED/GREEN/REFACTOR occurrence is the
+//     list's own intro sentence ("For `type: tdd` plans — RED-GREEN-REFACTOR:"),
+//     separated by a genuine blank line from the numbered list item that
+//     actually carries the citation — a blank line is not reliably "still the
+//     same statement" the way it is in gsd-executor.md's prose form. A
+//     heading is the unambiguous boundary both real files actually use to
+//     start a new, unrelated statement (confirmed: no heading appears between
+//     either real pointer's cycle mention and its own citation; a heading
+//     does appear before the next, unrelated section in gsd-executor.md).
+//     500 chars remains the OUTER cap when no heading appears at all, short
+//     of the whole-file scan the #4228 postmortem (see comment above
+//     restatesCycle()) warns against.
 //   - SECONDARY signals (defense in depth, OR-ed in, kept from the original
 //     design): span > 200 chars, or three DISTINCT markdown list-marker
 //     lines (`- `, `* `, or `N. `/`N) `) each carrying one of RED/GREEN/
@@ -94,14 +108,6 @@ function restatesCycle(text) {
 //     Threshold 200 and the list-marker shape are unchanged from the
 //     original measurement: real pointers span 10-14 chars; a realistic
 //     paraphrased restatement spans 424 chars.
-// Limitation (stated honestly, not resolved by this design): a restatement
-// that is BOTH compact/no-list-marker AND happens to mention "tdd.md" (or
-// "canonical") somewhere within the 500-char trailing window — without that
-// mention actually deferring the procedure to it — would still pass. The
-// deferral check is a presence check on the marker text, not a semantic
-// check that the marker is doing deferral work. Closing that gap needs a
-// stronger check (e.g. requiring the marker to sit in the same sentence/
-// clause as the cycle words) that is not implemented here.
 const RESTATEMENT_SPAN_THRESHOLD = 200;
 const DEFERRAL_WINDOW_TRAILING = 500;
 const DEFERRAL_MARKER_RE = /tdd\.md|references\/tdd|canonical/;
@@ -133,7 +139,17 @@ function measureCycleSpan(text) {
 }
 
 function hasNearbyDeferralMarker(text, cycle) {
-  const windowEnd = Math.min(text.length, cycle.refactorEndIdx + DEFERRAL_WINDOW_TRAILING);
+  const cappedEnd = Math.min(text.length, cycle.refactorEndIdx + DEFERRAL_WINDOW_TRAILING);
+  // #4302: stop at the next markdown heading line (`\n#`) at or after the
+  // REFACTOR anchor, whichever comes first against the flat char cap above —
+  // a citation belonging to a LATER, unrelated section must not count as
+  // this restatement's own deferral. A heading, not a blank line, is the
+  // boundary: a legitimate citation can sit past a blank line WITHIN the
+  // same enclosing section (e.g. a numbered list's intro sentence followed
+  // by the list item that carries the citation), so bounding on blank lines
+  // alone produces a false positive on that real shape.
+  const headingMatch = text.slice(cycle.refactorEndIdx, cappedEnd).match(/\n#/);
+  const windowEnd = headingMatch ? cycle.refactorEndIdx + headingMatch.index : cappedEnd;
   const window = text.slice(cycle.redIdx, windowEnd);
   return DEFERRAL_MARKER_RE.test(window);
 }
