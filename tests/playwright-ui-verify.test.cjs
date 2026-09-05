@@ -172,8 +172,15 @@ function guardedLines(lines) {
 // the assertions over it pass on an empty selection. Filtering first makes that shape impossible
 // rather than merely unlikely. (A trailing comment on a real code line is still selected; that
 // direction over-fires, which is the safe one.)
+// Inline comments are stripped too, not just whole-line ones. `--timeout=30000` moved into a
+// trailing comment is an ordinary edit, not sabotage, and it would otherwise keep satisfying the
+// time-bound assertion while no longer being passed to the command. Strip from an unquoted ` #`
+// to end of line BEFORE joining, which also closes the splice via a trailing comment.
+function stripComment(line) {
+  return line.replace(/\s+#.*$/, '');
+}
 function captureInvocations(lines) {
-  return logicalLines(lines.filter((l) => !/^[\t ]*#/.test(l)))
+  return logicalLines(lines.map(stripComment).filter((l) => !/^[\t ]*#/.test(l) && l.trim() !== ''))
     .map((l) => l.trim())
     .filter((l) => l.includes('playwright screenshot'));
 }
