@@ -142,6 +142,12 @@ describe('#3159: session-survivability executor dispatch', () => {
     assert.match(falseAgent, /run_in_background\s*=\s*false/);
     assert.doesNotMatch(falseAgent, /run_in_background\s*=\s*true/);
     assert.match(workflow, /literal verifier `Agent\(\)` branch/);
+
+    const wfVerifierStart = workflow.indexOf('<step name="verify_phase_goal">');
+    const wfVerifierEnd = workflow.indexOf('</step>', wfVerifierStart);
+    assert.ok(wfVerifierStart !== -1 && wfVerifierEnd !== -1, 'verifier step in workflow must exist');
+    const wfVerifier = workflow.slice(wfVerifierStart, wfVerifierEnd);
+    assert.match(wfVerifier, /run_in_background=\{SESSION_OUTLIVES_TURN_BOOL\}/);
   });
 
   test('uses foreground dispatch when a session-survivability config read is malformed or fails', () => {

@@ -104,9 +104,8 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
 SESSION_OUTLIVES_TURN=$(gsd_run query config-get workflow.session_outlives_turn --raw 2>/dev/null || echo "false")
-# Configuration-read failure fails closed to foreground dispatch. The registered
-# default still preserves background execution when the key is absent.
 [ "$SESSION_OUTLIVES_TURN" = "true" ] || SESSION_OUTLIVES_TURN="false"
+SESSION_OUTLIVES_TURN_BOOL="$SESSION_OUTLIVES_TURN"
 EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes --raw 2>/dev/null || echo "5")
 EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes --raw 2>/dev/null || echo "10")
 
@@ -801,10 +800,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is `false` — either project-level `USE_WORKTREES=false`, or per-plan submodule intersection forced it false in step 2.5):
 
-   Apply the already-resolved `SESSION_OUTLIVES_TURN` mode here too: use
-   `run_in_background=false` and wait when it is `false`; otherwise retain the
-   normal background dispatch. Sequential describes main-worktree ownership,
-   not whether the parent session may outlive the child executor.
+   Apply the already-resolved `SESSION_OUTLIVES_TURN` mode: use `run_in_background=false`
+   and wait when `false`; otherwise retain background dispatch.
 
    Omit `isolation="worktree"` from the Agent call. Replace the `<parallel_execution>` block with:
 
@@ -862,10 +859,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
    default: the completion signal may never arrive. Verify, never wait.
    If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
 
-   **This fallback applies to all runtimes.** Claude Code's default background
-   Agent() dispatch may not return a completion signal, so verify rather than
-   waiting indefinitely. When `SESSION_OUTLIVES_TURN` is `false`, use the foreground
-   result directly and only fallback to spot-checks if no result is returned.
+   **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by
+   default: the completion signal may never arrive. Verify, never wait.
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
@@ -1277,8 +1272,37 @@ VERIFIER_SKILLS=$(gsd_run query agent-skills gsd-verifier)
 
 Read `execute-phase/steps/session-survivability-dispatch.md` and use its
 literal verifier `Agent()` branch for the already-resolved
-`SESSION_OUTLIVES_TURN` value. The `false` branch is foreground and must
-return before this step reads verification status.
+`SESSION_OUTLIVES_TURN` value. When `false`, the verifier runs in the
+foreground (`run_in_background=false`) and must return before reading status.
+
+```
+Agent(
+  description="Verify phase {phase_number} goal achievement",
+  prompt="Verify phase {phase_number} goal achievement.
+Phase directory: {phase_dir}
+Phase goal: {goal from ROADMAP.md}
+Phase requirement IDs: {phase_req_ids}
+Check must_haves against actual codebase.
+Cross-reference requirement IDs from PLAN frontmatter against REQUIREMENTS.md — every ID MUST be accounted for.
+Create VERIFICATION.md.
+
+<required_reading>
+Read these files before verification:
+- {phase_dir}/*-PLAN.md (All plans — understand intent, check must_haves)
+- {phase_dir}/*-SUMMARY.md (All summaries — cross-reference claimed vs actual)
+- {requirements_path} (Requirement traceability)
+${CONTEXT_WINDOW >= 500000 ? `- {phase_dir}/*-CONTEXT.md (User decisions — verify they were honored)
+- {phase_dir}/*-RESEARCH.md (Known pitfalls — check for traps)
+- Prior VERIFICATION.md files from earlier phases (regression check)
+` : ''}
+</required_reading>
+
+${VERIFIER_SKILLS}",
+  subagent_type="gsd-verifier",
+  model="{verifier_model}",
+  run_in_background={SESSION_OUTLIVES_TURN_BOOL}
+)
+```
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available. If the session ends abnormally (`turn_aborted`), reconcile via the `verification.status` query below — the session's terminal state is not evidence of failure (#4217).
 
