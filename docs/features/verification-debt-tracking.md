@@ -11,7 +11,9 @@ group: Infrastructure Features
 **Components:**
 
 **1. Cross-Phase Health Check** (progress.md Step 1.6)
-Every `/gsd-progress` call scans ALL phases in the current milestone for outstanding items (pending, skipped, blocked, human_needed). Displays a non-blocking warning section with actionable links.
+Every `/gsd-progress` call scans ALL phases in the current milestone for outstanding items (pending, skipped, blocked, human_needed, gaps_found). Displays a non-blocking warning section with actionable links.
+
+A verification report counts as outstanding under EITHER terminal non-passing status: `human_needed` contributes its `human_verification:` entries, and `gaps_found` contributes both its `human_verification:` and its `gaps:` entries, excluding any already closed. What counts as closed is per key: a `gaps:` entry closes on `status: resolved` and nothing else — the same rule the `## Gaps` markdown reader applies, so one authored entry cannot read closed in one reader and open in the other — while a `human_verification:` entry also closes on a bare `resolution:` field, provided no `status:` contradicts it (#3850).
 
 **2. `status: partial`** (verify-work.md, UAT.md)
 New UAT status that distinguishes between "session ended" and "all tests resolved". Prevents `status: complete` when tests are still pending, blocked, or skipped without reason.

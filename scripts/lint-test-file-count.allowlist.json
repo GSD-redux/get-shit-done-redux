@@ -81,6 +81,7 @@
         "phase-dependency-levels.test.cjs",
         "phase-resolution-parity.test.cjs",
         "phase-structure.test.cjs",
+        "phase-tdd-applicable.test.cjs",
         "phase.test.cjs"
       ],
       "issue": "3186"
