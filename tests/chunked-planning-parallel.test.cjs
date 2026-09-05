@@ -36,6 +36,7 @@ const REPO_ROOT = path.join(__dirname, '..');
 const CHUNKED_MODE_MD_PATH = path.join(
   REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase', 'steps', 'chunked-planning-mode.md',
 );
+const RUNTIME_LAUNCHER_SNIPPET_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', '_runtime-launcher.snippet.sh');
 
 // ─── extraction (source-text-is-the-product) ──────────────────────────────
 
@@ -51,14 +52,32 @@ function extractBashFenceContaining(content, mustInclude, label, filePath) {
   throw new Error(`extractBashFenceContaining: no fence matching ${label} found in ${filePath} (looked for ${JSON.stringify(mustInclude)})`);
 }
 
+/**
+ * The canonical runtime-launcher preamble (source of truth for
+ * scripts/sync-runtime-launcher.cjs) sits as the first line of the
+ * CHUNKED_PARALLEL resolution fence in production (tests/runtime-launcher-parity.test.cjs
+ * owns verifying its placement/uniqueness). Strip it here so this suite tests
+ * only the resolution logic it's actually about, not the preamble's own
+ * gsd_run-shim-resolution behavior (which would stomp this file's `gsd_run`
+ * stub — see #3777 investigation).
+ */
+function stripRuntimeLauncherPreamble(block) {
+  const preamble = readFileNormalized(RUNTIME_LAUNCHER_SNIPPET_PATH).replace(/\n+$/, '');
+  if (!block.includes(preamble)) {
+    throw new Error('stripRuntimeLauncherPreamble: canonical preamble not found in extracted block — extraction anchor or preamble content may have drifted');
+  }
+  return block.split(preamble).join('').replace(/^\s+/, '');
+}
+
 function extractChunkedParallelResolution() {
   const content = readFileNormalized(CHUNKED_MODE_MD_PATH);
-  return extractBashFenceContaining(
+  const block = extractBashFenceContaining(
     content,
     ['CHUNKED_PARALLEL_CFG', 'DISPATCH_CAPACITY', 'CHUNKED_PARALLEL='],
     '#3777 CHUNKED_PARALLEL resolution',
     CHUNKED_MODE_MD_PATH,
   );
+  return stripRuntimeLauncherPreamble(block);
 }
 
 function extractBatchPlanIdsDedup() {
