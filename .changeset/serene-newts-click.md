@@ -1,6 +1,6 @@
 ---
 type: Added
-pr: 0
+pr: 4336
 ---
 **`query audit-uat` now segments its summary by milestone.** The JSON output adds `summary.current_milestone: {files, items}` and `summary.archived: {files, items, by_milestone}`, so a consumer can read current-vs-archived UAT/verification debt directly instead of re-deriving the `archived_milestone` filter itself. Existing fields (`total_items`, `total_files`, `parse_gap_files`, `by_category`, `by_phase`) are unchanged. (#3783)
 
