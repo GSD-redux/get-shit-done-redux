@@ -660,7 +660,7 @@ issue:
 issue:
   dimension: pattern_compliance
   severity: warning
-  required_property: "Every new file names its closest PATTERNS.md analog"
+  required_property: "Every new file names its closest PATTERNS.md analog, or cites RESEARCH.md if none exists"
   description: "Plan 01-03 creates src/controllers/auth.ts but does not reference analog src/controllers/users.ts from PATTERNS.md"
   file: "01-03-PLAN.md"
   expected_analog: "src/controllers/users.ts"

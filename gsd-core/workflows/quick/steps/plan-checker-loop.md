@@ -134,7 +134,7 @@ THIRD conflict return of this loop whatever property it names — alternating pr
 would otherwise never trip the repeat rule and the path would be unbounded. Stop re-spawning and escalate as a stall, so declining to
 spend an iteration cannot make this path unbounded.
 
-After planner returns → spawn checker again, increment iteration_count.
+**Otherwise (the planner returns a revised plan, not `## REVISION_CONFLICT`):** spawn checker again, increment `iteration_count`.
 
 **If iteration_count >= 2:**
 

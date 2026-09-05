@@ -916,11 +916,10 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
     assert.match(flat(REVISION_LOOP), /reuse the existing open line instead of appending a duplicate/i,
       'identical open state needs idempotency, not a second event identity');
     assert.match(flat(PLAN_PHASE), /before replanning from `--reviews`, scan `REVIEWS_PATH` for open plan-revision conflicts/i);
-    assert.ok(
-      PLAN_PHASE.indexOf('REVIEWS_PATH=$(_gsd_field "$INIT" reviews_path)') <
-        PLAN_PHASE.indexOf('**If plans exist AND the `--reviews` flag is set:**'),
-      'REVIEWS_PATH must be initialized before reviews-mode scans it'
-    );
+    const initAt = PLAN_PHASE.indexOf('REVIEWS_PATH=$(_gsd_field "$INIT" reviews_path)');
+    const scanAt = PLAN_PHASE.indexOf('**If plans exist AND the `--reviews` flag is set:**');
+    assert.ok(initAt > 0 && scanAt > 0, 'both REVIEWS_PATH initialization and reviews-mode scan must exist');
+    assert.ok(initAt < scanAt, 'REVIEWS_PATH must be initialized before reviews-mode scans it');
     assert.match(flat(PLAN_PHASE), /flip the matching line to `- \[x\]` once the chosen resolution is applied/i);
   });
 
@@ -1062,6 +1061,28 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
       assert.notEqual(result.status, 0, 'closing a line that was never recorded must not silently succeed');
       assert.equal(fs.readFileSync(file, 'utf-8'), before,
         'a failed close must never partially mutate REVIEWS.md');
+    });
+  });
+
+  // Adversarial-review regression (#3916): the reader gate strips a trailing \r before
+  // comparing lines; both writer-side awk gates did not, so a CRLF REVIEWS.md (a Windows
+  // checkout) made every `$0 == ENVIRON[...]` comparison miss and fail closed forever.
+  test('the writer gate matches the owned end delimiter on a CRLF REVIEWS.md', { skip: IS_WINDOWS }, () => {
+    const crlf = (content) => content.replace(/\n/g, '\r\n');
+    withReviews(crlf(reviewsArtifact()), (file) => {
+      const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
+      const result = runWriterGate(file, fields);
+      assert.equal(result.status, 0, `writer gate must match a CRLF end delimiter: ${result.stderr}`);
+      assert.equal(runConflictGate(file).stdout, '1');
+    });
+  });
+
+  test('the close gate matches the pending conflict line on a CRLF REVIEWS.md', { skip: IS_WINDOWS }, () => {
+    const crlf = (content) => content.replace(/\n/g, '\r\n');
+    withReviews(crlf(reviewsArtifact(`${OPEN('a/1')}\n`)), (file) => {
+      const result = runCloseGate(file, OPEN('a/1'), 'adopted alternative');
+      assert.equal(result.status, 0, `close gate must match a CRLF-terminated open line: ${result.stderr}`);
+      assert.equal(runConflictGate(file).stdout, '0');
     });
   });
 

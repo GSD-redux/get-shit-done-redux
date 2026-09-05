@@ -1251,12 +1251,11 @@ ${AGENT_SKILLS_PLANNER}
 Make targeted updates to address checker issues.
 
 `required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
-smaller or different mechanism reaching the same property addresses the issue in full — say which
-you used. Re-check locked decisions in CONTEXT.md, capability guidance (CLAUDE.md, project skills) and the
-constraints these plans already encode BEFORE editing; if a hint would contradict one, or the
+smaller or different mechanism reaching the same property resolves it — say which. Re-check CONTEXT.md's locked decisions, capability guidance, and existing plan constraints
+BEFORE editing; if a hint would contradict one, or the
 property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict and
 the alternatives rather than applying or working around it. Full contract:
-`gsd-core/references/planner-revision.md`, which you load in revision mode.
+`gsd-core/references/planner-revision.md`.
 
 Do NOT replan from scratch unless issues are fundamental.
 Return what changed.
@@ -1290,15 +1289,15 @@ if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ] && [ ! -f "
 fi
 ```
 
-- Counter not spent: `iteration_count`, and `prev_issue_count` is left unchanged.
-- Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section, when
-  `CONVERGENCE_ENABLED` is `true` and `$REVIEWS_FILE` is non-empty. plan-phase wrote the
-  line, so plan-phase closes it.
-- After re-spawning, return to this step — never fall through to the checker spawn below.
-- Escalation uses the same gate as the iteration cap below — on a repeated `required_property`,
-  and on the THIRD conflict return of this loop whatever property it names.
-- Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (which
-  decodes literal `\n` as a real newline). Then run:
+- Counter not spent: `iteration_count`.
+- Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section (when enabled and
+  non-empty). plan-phase wrote the line, so plan-phase closes it.
+- After re-spawning, return to this step, not the checker spawn below.
+- Escalates via the iteration cap's gate on a repeated `required_property`, and on the THIRD
+  conflict return of this loop whatever property it names.
+- Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (decodes
+  literal `\n` as a real newline). Export the row's
+  `CONFLICT_DIMENSION/_PLAN/_PROPERTY/_CONSTRAINT/_ALTERNATIVES`, then run:
 
 ```bash
 if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
@@ -1307,6 +1306,7 @@ if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
   END='<!-- gsd:plan-revision-conflicts:end -->'
   TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
   if ! LINE="$LINE" END="$END" awk '
+    { sub(/\r$/, "") }
     $0 == ENVIRON["LINE"] { seen = 1 }
     $0 == ENVIRON["END"] && !ins { if (!seen) print ENVIRON["LINE"]; ins = 1 }
     { print }
@@ -1322,7 +1322,9 @@ fi
 ```
 
 **Otherwise (revised plans, not `## REVISION_CONFLICT`):** if this re-spawn followed a
-resolved conflict, close its record first — nothing else in this session revisits it:
+resolved conflict, close its record — nothing persists across fences, so recompute
+`REVIEWS_FILE`/`PENDING_CONFLICT` as above and set `CONFLICT_RESOLUTION` to a one-line summary.
+Then run:
 
 ```bash
 if [ -n "${PENDING_CONFLICT:-}" ]; then
@@ -1330,6 +1332,7 @@ if [ -n "${PENDING_CONFLICT:-}" ]; then
   CLOSED="- [x]${PENDING_CONFLICT#- \[ \]} | resolved: ${RES}"
   TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
   if ! OLD="$PENDING_CONFLICT" NEW="$CLOSED" awk '
+    { sub(/\r$/, "") }
     $0 == ENVIRON["OLD"] && !d { print ENVIRON["NEW"]; d = 1; next }
     { print }
     END { if (!d) exit 2 }

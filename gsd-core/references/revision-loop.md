@@ -41,6 +41,8 @@ LOOP:
            Else: previous_conflict_property = current required_property
              resolve it (see "Conflict Return" below) and go to step e.
              Do NOT increment iteration -- the conflict was not a failed attempt.
+        Else: previous_conflict_property = null (a normal revision ends the conflict chain --
+             a LATER, unrelated conflict on the same property must not be misread as a repeat)
      g. iteration += 1
      h. After revision completes, go to LOOP
 

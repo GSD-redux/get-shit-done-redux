@@ -18,7 +18,7 @@ last_calibrated: 2026-03-24
 > issues:
 >   - dimension: task_completeness
 >     severity: blocker
->     required_property: "Every task action names its target files and the functions to create"
+>     required_property: "Every task action names its target files, and any functions it creates"
 >     description: "Task T1 action says 'implement the authentication feature' without naming target files, functions to create, or middleware to apply. Executor cannot determine what to build."
 >     fix_hint: "Specify: create authMiddleware in src/middleware/auth.js, apply to routes in src/routes/api.js lines 12-45, verify with integration test"
 > ```
