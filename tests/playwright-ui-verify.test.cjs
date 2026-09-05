@@ -177,7 +177,15 @@ function guardedLines(lines) {
 // time-bound assertion while no longer being passed to the command. Strip from an unquoted ` #`
 // to end of line BEFORE joining, which also closes the splice via a trailing comment.
 function stripComment(line) {
-  return line.replace(/\s+#.*$/, '');
+  const stripped = line.replace(/\s+#.*$/, '');
+  if (stripped === line) return line; // nothing removed — leave real continuations alone
+  // A `\` that the removed text was hiding did NOT continue the line in bash, so this reader
+  // must not treat it as one. Driven: `echo one \ # x` followed by `--timeout=30000` runs the
+  // second line as its OWN command (`--timeout=30000: command not found`) — bash never joins
+  // them. Stripping the comment and keeping the backslash would make logicalLines() join what
+  // bash does not, so a flag on the following line would satisfy an assertion the real command
+  // never receives. That is a bypass this stripping would have CREATED, not one it inherited.
+  return stripped.replace(/\\+$/, '');
 }
 function captureInvocations(lines) {
   return logicalLines(lines.map(stripComment).filter((l) => !/^[\t ]*#/.test(l) && l.trim() !== ''))
