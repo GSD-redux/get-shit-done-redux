@@ -2677,9 +2677,35 @@ describe('#3159: runtime conversion and projection of session-survivability disp
     assert.doesNotMatch(isolationSource, /if\s*\[\s*"\$RUNTIME"|case\s*"\$RUNTIME"|RUNTIME\s*===/);
 
     // Verifier dispatch carries session survivability guidance
-    const verifierStep = executeWorkflow.slice(executeWorkflow.indexOf('<step name="verify_phase_goal">'));
+    const verifierStepStart = executeWorkflow.indexOf('<step name="verify_phase_goal">');
+    const verifierStepEnd = executeWorkflow.indexOf('</step>', verifierStepStart);
+    assert.ok(verifierStepStart !== -1 && verifierStepEnd !== -1, 'verifier step must exist');
+    const verifierStep = executeWorkflow.slice(verifierStepStart, verifierStepEnd);
     assert.match(verifierStep, /SESSION_OUTLIVES_TURN/);
-    assert.match(verifierStep, /run_in_background:\s*false/);
+    assert.match(verifierStep, /session-survivability-dispatch\.md/);
+
+    // Verifier dispatch section in sessionSource preserves literal branches across all runtimes
+    const verifierDispatchStart = sessionSource.indexOf('## verifier Agent dispatch');
+    assert.ok(verifierDispatchStart !== -1, 'verifier dispatch section must exist in sessionSource');
+    const verifierSource = sessionSource.slice(verifierDispatchStart);
+    for (const rt of ALL_RUNTIMES) {
+      const out = conversion._applyRuntimeRewrites(verifierSource, rt, `$HOME/.${rt}/`, true, undefined);
+      const trueIdx = out.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
+      const falseIdx = out.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+      assert.ok(trueIdx !== -1, `${rt}: must have true branch in verifier dispatch`);
+      assert.ok(falseIdx !== -1, `${rt}: must have false branch in verifier dispatch`);
+      assert.ok(trueIdx < falseIdx, `${rt}: true branch must precede false branch`);
+
+      const trueChunk = out.slice(trueIdx, falseIdx);
+      assert.match(trueChunk, /subagent_type="gsd-verifier"/);
+      assert.match(trueChunk, /run_in_background\s*=\s*true/);
+      assert.doesNotMatch(trueChunk, /run_in_background\s*=\s*false/);
+
+      const falseChunk = out.slice(falseIdx);
+      assert.match(falseChunk, /subagent_type="gsd-verifier"/);
+      assert.match(falseChunk, /run_in_background\s*=\s*false/);
+      assert.doesNotMatch(falseChunk, /run_in_background\s*=\s*true/);
+    }
 
     // Isolation and worktree ownership remain intact
     assert.match(isolationSource, /worktree/i);

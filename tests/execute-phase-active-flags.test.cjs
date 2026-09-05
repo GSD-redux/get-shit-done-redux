@@ -79,12 +79,15 @@ describe('#3159: session-survivability executor dispatch', () => {
     assert.match(workflow, /session-survivability-dispatch\.md/);
     const trueAnchor = dispatch.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
     const falseAnchor = dispatch.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+    const nextSectionAnchor = dispatch.indexOf('## orchestrator-worktree process dispatch');
     assert.ok(trueAnchor !== -1, 'true anchor must exist in dispatch fragment');
     assert.ok(falseAnchor !== -1, 'false anchor must exist in dispatch fragment');
+    assert.ok(nextSectionAnchor !== -1, 'next section anchor must exist in dispatch fragment');
     assert.ok(trueAnchor < falseAnchor, 'true branch precedes false branch');
+    assert.ok(falseAnchor < nextSectionAnchor, 'false branch precedes next section');
 
     const trueRegion = dispatch.slice(trueAnchor, falseAnchor);
-    const falseRegion = dispatch.slice(falseAnchor);
+    const falseRegion = dispatch.slice(falseAnchor, nextSectionAnchor);
 
     assert.match(trueRegion, /run_in_background\s*=\s*true/);
     assert.doesNotMatch(trueRegion, /run_in_background\s*=\s*false/);
