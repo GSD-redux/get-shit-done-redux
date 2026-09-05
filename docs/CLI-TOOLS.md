@@ -1161,8 +1161,17 @@ active window are still outstanding.
 
 ```bash
 # Complete a todo
-node gsd-tools.cjs todo complete <filename>
+node gsd-tools.cjs todo complete <filename> [--dry-run]
+```
 
+`--dry-run` previews the completion (a `dry_run`/`would_*` JSON payload naming
+the source, the destination, and the frontmatter keys it would set) without
+moving the file or touching anything on disk. A real completion moves the todo
+from `todos/pending/` to `todos/completed/` and upserts `completed:` and
+`status: completed` inside the file's frontmatter block. Unknown flags are
+rejected loudly.
+
+```bash
 # UAT audit — scan all phases for unresolved items
 node gsd-tools.cjs audit-uat
 
