@@ -125,7 +125,10 @@ for PORT in 3000 5173 8080; do
   PROBE=${PROBE:-000}
   case "$PROBE" in
     2??)     DEV_URL="http://localhost:$PORT"; break ;;
-    401|403) DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
+    # First gated port wins, matching the documented port PRECEDENCE below. An
+    # unguarded assignment here reports whichever gated port was tried LAST, so
+    # with 3000 and 8080 both auth-gated the reason would name 8080.
+    401|403) [ -n "$DEV_GATED" ] || DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
   esac
 done
 

@@ -253,6 +253,22 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     }
   });
 
+  test('the auth-gated port is recorded first-wins, matching the documented precedence', () => {
+    // The ports carry a documented ORDER, and the reported reason should name the same
+    // port that order would have picked. An unguarded assignment inside the loop reports
+    // whichever gated port was tried last.
+    const assignments = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
+    assert.ok(assignments.length > 0, 'expected the port loop to record an auth-gated server');
+    for (const line of assignments) {
+      assert.ok(
+        /\[[\t ]+-[nz][\t ]+"?\$DEV_GATED"?[\t ]+\]/.test(line),
+        `the auth-gated port must be recorded first-wins, or the reason names the LAST gated port: ${line}`
+      );
+    }
+  });
+
   test('the resolved port — not a hard-coded 3000 — is what gets captured', () => {
     const block = screenshotApproachBlock();
     const captureLines = block.split('\n').filter((l) => l.includes('playwright screenshot'));
