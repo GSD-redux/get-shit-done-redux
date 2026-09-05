@@ -2703,11 +2703,12 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             // and plumbed (mirroring routeMilestone / #2118), and any OTHER
             // flag fails loudly instead of being silently ignored — an
             // accepted-but-ignored safety flag converts a deliberate preview
-            // into the mutation it was meant to avoid. `--raw` is a global
-            // passthrough the dispatcher leaves in argv.
+            // into the mutation it was meant to avoid. (`--raw` is spliced by
+            // the dispatcher before routing; it stays in the set as a guard
+            // against that splice ever moving.)
             const TODO_COMPLETE_KNOWN_FLAGS = new Set(['--dry-run', '--raw']);
             for (const a of args.slice(3)) {
-              if (typeof a === 'string' && a.startsWith('--') && !TODO_COMPLETE_KNOWN_FLAGS.has(a)) {
+              if (typeof a === 'string' && a.startsWith('-') && !TODO_COMPLETE_KNOWN_FLAGS.has(a)) {
                 error(`Unknown flag for todo complete: ${a}`, ERROR_REASON.USAGE);
               }
             }
