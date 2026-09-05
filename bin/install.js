@@ -10170,19 +10170,57 @@ function saveLocalPatches(configDir, pristineCtx) {
   const modified = [];
   const pristineHashes = {};
 
+  // #4086: skills/ manifest keys may live OUTSIDE configDir at the runtime's
+  // ACTUAL skills root — codex global installs to $HOME/.agents/skills (the
+  // ADR-1239 skills-kind `home` override), which writeManifest() already
+  // hashes from via _resolveSkillsRootDir (#2088/#3738). Resolving every key
+  // against configDir alone made every skills/ key miss here, so user
+  // modifications to Codex skills were never hash-compared, never backed up,
+  // and were silently overwritten by the next update. configDir stays FIRST
+  // (Postel: runtimes whose skills genuinely live under configDir resolve
+  // byte-identically to before); the skills root is a fallback, only for keys
+  // under the SAME descriptor-driven manifest prefix writeManifest uses, and
+  // only when that root resolves outside configDir. Containment + symlink
+  // guards apply to the alternate root too (resolveInstallRelativePath).
+  const patchRuntime = (pristineCtx && pristineCtx.runtime) || manifest.runtime || null;
+  const patchScope = manifest.scope === 'local' ? 'local' : 'global';
+  let skillsRedirect = null;
+  if (patchRuntime) {
+    const skillsRoot = _resolveSkillsRootDir(patchRuntime, configDir, patchScope);
+    const resolvedConfig = path.resolve(configDir);
+    if (
+      skillsRoot &&
+      skillsRoot !== resolvedConfig &&
+      !skillsRoot.startsWith(resolvedConfig + path.sep)
+    ) {
+      const prefix = _hostBehaviors(patchRuntime).skillsManifestPrefix || 'skills/';
+      skillsRedirect = { root: skillsRoot, prefix };
+    }
+  }
+
   for (const [relPath, originalHash] of Object.entries(manifest.files || {})) {
     const safeRef = resolveInstallRelativePath(configDir, relPath);
     if (!safeRef) continue;
     const { relPath: safeRelPath, fullPath } = safeRef;
-    if (!fs.existsSync(fullPath)) continue;
-    const currentHash = fileHash(fullPath);
+    let installedPath = fullPath;
+    if (!fs.existsSync(installedPath) && skillsRedirect && safeRelPath.startsWith(skillsRedirect.prefix)) {
+      const altRef = resolveInstallRelativePath(
+        skillsRedirect.root,
+        safeRelPath.slice(skillsRedirect.prefix.length)
+      );
+      if (altRef && fs.existsSync(altRef.fullPath)) {
+        installedPath = altRef.fullPath;
+      }
+    }
+    if (!fs.existsSync(installedPath)) continue;
+    const currentHash = fileHash(installedPath);
     if (currentHash !== originalHash) {
       // Back up the user's modified version
       const backupRef = resolveInstallRelativePath(patchesDir, safeRelPath);
       if (!backupRef) continue;
       const backupPath = backupRef.fullPath;
       fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-      fs.copyFileSync(fullPath, backupPath);
+      fs.copyFileSync(installedPath, backupPath);
       modified.push(safeRelPath);
       pristineHashes[safeRelPath] = originalHash;
     }
