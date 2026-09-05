@@ -399,26 +399,19 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run (MUST fail), commit: `test({phase}-{plan}): add failing test for [feature]`
+**2-4. RED → GREEN → REFACTOR (#3990: stated ONCE; #4267: cited correctly):** execute the
+cycle exactly as the canonical `gsd-core/references/tdd.md` reference specifies (embedded when
+TDD applies) — the "Red-Green-Refactor Cycle" section's commit-scope contract, the "Gate
+Enforcement Rules" section's "Fail-Fast Rules" subsection, and the "Error Handling" section.
+The reference is the single source; do not improvise a variant.
 
-**3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
+## Plan-Level TDD Gate Enforcement (type: tdd plans, #4269: stated ONCE)
 
-**4. REFACTOR (if needed):** Clean up, run tests (MUST still pass), commit only if changes: `refactor({phase}-{plan}): clean up [feature]`
-
-**Error handling:** RED doesn't fail ��� investigate. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
-
-## Plan-Level TDD Gate Enforcement (type: tdd plans)
-
-When the plan frontmatter has `type: tdd`, the entire plan follows the RED/GREEN/REFACTOR cycle as a single feature. Gate sequence is mandatory:
-
-**Fail-fast rule:** If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
-
-**Gate sequence validation:** After completing the plan, verify in git log:
-1. A `test(...)` commit exists (RED gate)
-2. A `feat(...)` commit exists after it (GREEN gate)
-3. Optionally a `refactor(...)` commit exists after GREEN (REFACTOR gate)
-
-If RED or GREEN gate commits are missing, add a warning to SUMMARY.md under a `## TDD Gate Compliance` section.
+When the plan frontmatter has `type: tdd`, the mandatory RED/GREEN/REFACTOR gate sequence,
+its fail-fast rules (including the #3770 INVALID_RED / intentional-RED-evidence requirement
+enforced via `gsd_run check tdd-red-evidence`), and the `## TDD Gate Compliance` SUMMARY.md contract are
+specified in the canonical `gsd-core/references/tdd.md` "Gate Enforcement Rules" section
+(embedded when TDD applies). The reference is the single source; do not improvise a variant.
 </tdd_execution>
 
 ## MVP+TDD Gate

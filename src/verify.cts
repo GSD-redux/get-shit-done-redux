@@ -1200,15 +1200,22 @@ function cmdVerifyArtifacts(cwd: string, planFilePath: string, raw: boolean): vo
   }
 
   const passed = results.filter((r) => r['passed']).length;
+  // Positive-evidence floor (#3956): a non-empty artifacts block whose items are
+  // all bare strings / path-less objects is item-by-item skipped, leaving results
+  // empty; `passed === results.length` would then be `0 === 0` → a vacuous GREEN
+  // over zero checks. Require at least one checked artifact, mirroring the
+  // no-vacuous-pass rule at src/uat-predicate.cts. The fully-empty block is still
+  // caught earlier by the `artifacts.length === 0` guard and returns its error.
+  const allPassed = results.length > 0 && passed === results.length;
   output(
     {
-      all_passed: passed === results.length,
+      all_passed: allPassed,
       passed,
       total: results.length,
       artifacts: results,
     },
     raw,
-    passed === results.length ? 'valid' : 'invalid',
+    allPassed ? 'valid' : 'invalid',
   );
 }
 
@@ -1417,7 +1424,17 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
   // A pending link (from: file promised by a same-or-later-wave plan) is not a
   // hard failure — it should not count against the all_verified gate (#1202).
   const hardFailed = results.filter((r) => !r['verified'] && !r['pending']).length;
-  const allVerified = hardFailed === 0;
+  // Positive-evidence floor (#3956): an all-bare-string key_links block skips
+  // every item (only `typeof link === 'string'` items are continue-skipped
+  // above), leaving results empty; `hardFailed === 0` would then be a vacuous
+  // GREEN over zero checks. Require at least one checked link. (A `from:`-less
+  // object is NOT skipped, unlike a path-less object on the artifacts side — it
+  // falls through to a `verified: false` result and hard-fails, so it was never
+  // part of the vacuous-pass surface; only the all-bare-string case is.) A
+  // pending link IS pushed to results (with pending: true), so an all-pending
+  // block still satisfies results.length > 0 and its #1202 non-hard-failing
+  // semantics are unchanged — the floor only rejects the zero-result case.
+  const allVerified = results.length > 0 && hardFailed === 0;
   output(
     {
       all_verified: allVerified,
