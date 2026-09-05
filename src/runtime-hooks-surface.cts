@@ -1521,6 +1521,135 @@ interface WriteCursorHooksJsonOpts {
   managedHookEvents?: readonly string[];
 }
 
+/**
+ * Stage the `hooks/lib/` helpers a set of staged hook scripts require, walking
+ * the require graph TRANSITIVELY to a fixed point.
+ *
+ * Extracted from writeCursorHooksJson (#3911 review, commit 704859e9c) so the
+ * reduced Codex hook bundle can share one implementation instead of growing a
+ * second, divergent copy (#4087 / #4098). Both reduced bundles hand-pick which
+ * hook SCRIPTS they ship, and neither can hand-pick their helpers correctly for
+ * long: `hooks/lib/hook-exit.js` requires `./cli-exit.js`, which requires
+ * `./exit-code-registry.js` — with NO `./lib/` prefix, because from inside
+ * `lib/` the sibling is already local. A single-pass scan for the `./lib/…`
+ * spelling used FROM a hook script stages hook-exit.js and stops, and the
+ * installed hook then dies on MODULE_NOT_FOUND at load, before its own
+ * try/catch, on every event it is registered for.
+ *
+ * Scans CONTENT rather than paths so a caller can seed from whatever it staged,
+ * transformed or not, without this helper knowing the caller's layout.
+ *
+ * @returns the lib filenames actually staged, in staging order.
+ */
+function stageTransitiveHookLibs(opts: {
+  seedSources: string[];
+  srcLibDir: string;
+  destLibDir: string;
+  runtimeLabel: string;
+  transform?: (content: string) => string;
+}): string[] {
+  const { seedSources, srcLibDir, destLibDir, runtimeLabel, transform } = opts;
+  const requiredLibFiles = new Set<string>();
+  const scannedLibFiles = new Set<string>();
+  const staged: string[] = [];
+  // `./X` means DIFFERENT things depending on where the scanned file lives, and
+  // conflating them stages the wrong file. From a hook SCRIPT in hooks/, a bare
+  // `./X` is a sibling hook-level artifact — Codex's gsd-check-update-worker.js
+  // requires `./managed-hooks-registry.cjs`, which lives in hooks/, not
+  // hooks/lib/ — so only the explicit `./lib/X` spelling is a lib requirement.
+  // From inside a LIB file, the sibling is already local, so `./X` IS a lib
+  // requirement (hook-exit.js -> ./cli-exit.js -> ./exit-code-registry.js); that
+  // is the case 704859e9c added and it must keep working. Cursor never exposed
+  // the difference because none of its staged scripts has a bare sibling
+  // require; Codex's does, and the fail-loud guard below caught it immediately
+  // by demanding managed-hooks-registry.cjs out of hooks/dist/lib.
+  // Fresh per call: a module-level /g regex carries lastIndex across calls and
+  // would silently skip matches on the second install in one process.
+  const seedRequireRe = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
+  const libRequireRe = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
+  // A NESTED helper path is outside the flat layout hooks/lib/ has and the
+  // build emits, and the character classes above cannot express it — so it
+  // would be a SILENT miss, staging nothing and shipping a hook that dies at
+  // load. Detected separately and refused loudly instead: a silent miss is the
+  // failure mode this whole function exists to remove (review of #4087).
+  const nestedRequireRe = /require\(\s*['"]\.\/lib\/[A-Za-z0-9._-]+\/[^'"]*['"]\s*\)/;
+
+  const scanForLibRequires = (source: string, fromLib: boolean): void => {
+    if (nestedRequireRe.test(source)) {
+      throw new Error(
+        `A staged ${runtimeLabel} hook requires a NESTED hooks/lib path. hooks/lib/ is flat and `
+        + 'this stager only resolves flat helper names, so the nested helper would never be '
+        + 'staged and the hook would throw MODULE_NOT_FOUND at load. Flatten the helper or '
+        + 'extend this stager deliberately.',
+      );
+    }
+    const re = fromLib ? libRequireRe : seedRequireRe;
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source)) !== null) {
+      const candidate = m[1];
+      // A capture with no alphanumeric character is not a module name — it is
+      // prose. This scan reads whole file text, comments included, and
+      // hooks/lib/injection-patterns.js's own header documents this mechanism
+      // with the literal string `require('./lib/...')`, which captures `...`
+      // and would send the resolver hunting for `hooks/lib/...` and fail the
+      // install (measured; that helper is not staged for either reduced bundle
+      // today, so it is latent rather than live).
+      //
+      // KNOWN LIMIT, disclosed rather than papered over: this does NOT make the
+      // scan comment-aware. A comment naming a REAL helper — `require(
+      // './lib/git-cmd.js')` in prose — still registers it and would over-stage
+      // that helper. Closing that needs a comment-stripping pass; the
+      // line-based stripper in scripts/lint-hooks-runtime-build-seam.cjs is the
+      // precedent (its header explains why the naive two-regex strip corrupts
+      // these very files), but promoting a lint-script helper into installer
+      // runtime code is a larger change than this fix.
+      if (!/[A-Za-z0-9]/.test(candidate)) continue;
+      requiredLibFiles.add(candidate);
+    }
+  };
+
+  for (const source of seedSources) scanForLibRequires(source, false);
+  if (requiredLibFiles.size === 0) return staged;
+
+  fs.mkdirSync(destLibDir, { recursive: true });
+  // Iterate to a fixed point: staging a lib file can add MORE required lib
+  // files (its own requires), which must themselves be staged and scanned.
+  let libFile: string | undefined = [...requiredLibFiles].find((f) => !scannedLibFiles.has(f));
+  while (libFile !== undefined) {
+    scannedLibFiles.add(libFile);
+    // Node's own extension resolution: `require('./lib/x')` is a valid, working
+    // CommonJS spelling today, and matching only the extension-bearing form
+    // resolved `x` literally, found nothing, and failed the install on a
+    // legitimate require (review of #4087). Try the bare name first so an
+    // extension-bearing capture still wins, then .js/.cjs.
+    let resolvedName: string | undefined;
+    for (const candidate of [libFile, `${libFile}.js`, `${libFile}.cjs`]) {
+      if (fs.existsSync(path.join(srcLibDir, candidate))) { resolvedName = candidate; break; }
+    }
+    const libSrc = path.join(srcLibDir, resolvedName ?? libFile);
+    if (resolvedName === undefined) {
+      // FAIL LOUD. Skipping here would ship hook scripts whose top-level
+      // require() throws before their own try/catch, wedging every session —
+      // and the install would still exit 0, so nobody would know until a user
+      // hit it. A missing helper source is a packaging bug; surface it.
+      throw new Error(
+        `hooks/lib/${libFile} is required by a staged ${runtimeLabel} hook but is missing from ${srcLibDir}. `
+        + 'Installing would ship a hook that throws MODULE_NOT_FOUND at load.',
+      );
+    }
+    let libContent = fs.readFileSync(libSrc, 'utf8');
+    if (transform) libContent = transform(libContent);
+    // Written under its RESOLVED name so an extensionless require still lands a
+    // file Node can resolve at the destination.
+    fs.writeFileSync(path.join(destLibDir, resolvedName), libContent);
+    staged.push(resolvedName);
+    scanForLibRequires(libContent, true);
+    libFile = [...requiredLibFiles].find((f) => !scannedLibFiles.has(f));
+  }
+  return staged;
+}
+
 function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursorHooksJsonOpts): { hooksJsonPath: string; changed: boolean } {
   opts = opts || {};
   const hooksDir = path.join(targetDir, 'hooks');
@@ -1557,47 +1686,13 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
   // "./lib/X" requires, and every lib file staged is itself scanned for further
   // "./lib/X" OR bare "./X" (sibling-within-lib) requires, so the requirement
   // graph is derived to a fixed point instead of one hand-tuned level deep.
-  const requiredLibFiles = new Set<string>();
-  const scannedLibFiles = new Set<string>();
-  const libRequireRe = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
-
-  function scanForLibRequires(source: string): void {
-    libRequireRe.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = libRequireRe.exec(source)) !== null) requiredLibFiles.add(m[1]);
-  }
-
-  for (const script of installedScripts) {
-    scanForLibRequires(fs.readFileSync(path.join(hooksDir, script), 'utf8'));
-  }
-
-  if (requiredLibFiles.size > 0) {
-    const srcLibDir = path.join(srcHooksDir, 'lib');
-    const destLibDir = path.join(hooksDir, 'lib');
-    fs.mkdirSync(destLibDir, { recursive: true });
-    // Iterate to a fixed point: staging a lib file can add MORE required lib
-    // files (its own requires), which must themselves be staged and scanned.
-    let libFile: string | undefined = [...requiredLibFiles].find((f) => !scannedLibFiles.has(f));
-    while (libFile !== undefined) {
-      scannedLibFiles.add(libFile);
-      const libSrc = path.join(srcLibDir, libFile);
-      if (!fs.existsSync(libSrc)) {
-        // FAIL LOUD. Skipping here would ship hook scripts whose top-level
-        // require() throws before their own try/catch, wedging every session —
-        // and the install would still exit 0, so nobody would know until a user
-        // hit it. A missing helper source is a packaging bug; surface it.
-        throw new Error(
-          `hooks/lib/${libFile} is required by a staged Cursor hook but is missing from ${srcLibDir}. `
-          + 'Installing would ship a hook that throws MODULE_NOT_FOUND at load.',
-        );
-      }
-      let libContent = fs.readFileSync(libSrc, 'utf8');
-      libContent = libContent.replace(/gsd:/gi, 'gsd-');
-      fs.writeFileSync(path.join(destLibDir, libFile), libContent);
-      scanForLibRequires(libContent);
-      libFile = [...requiredLibFiles].find((f) => !scannedLibFiles.has(f));
-    }
-  }
+  stageTransitiveHookLibs({
+    seedSources: [...installedScripts].map((script) => fs.readFileSync(path.join(hooksDir, script), 'utf8')),
+    srcLibDir: path.join(srcHooksDir, 'lib'),
+    destLibDir: path.join(hooksDir, 'lib'),
+    runtimeLabel: 'Cursor',
+    transform: (content) => content.replace(/gsd:/gi, 'gsd-'),
+  });
 
   // #2717: write the CommonJS marker into hooks/ alongside the staged .js
   // scripts. Cursor sets skipSharedHooksInstall, so it never reaches
@@ -1819,6 +1914,27 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
       installedScripts.add(script);
     }
   }
+
+  // Stage the hooks/lib/ helpers these scripts require (#4087 review). Windsurf
+  // sets hostBehaviors.skipSharedHooksInstall, so like Cursor it never reaches
+  // installSharedHooksBundle — the only other stager of hooks/lib — and it was
+  // staging neither. Both Cascade guards require helpers at module load:
+  // gsd-windsurf-pre-write.js requires ./lib/hook-exit.js and ./lib/git-probe.js,
+  // gsd-windsurf-pre-command.js requires ./lib/hook-exit.js. Measured against a
+  // real `--windsurf --global` install before this call existed: the installer
+  // exited 0, hooks/ held only the two scripts, and running either one exited 1
+  // with "Cannot find module './lib/hook-exit.js'" — the same failure #4087
+  // reports for Codex, on every pre_write_code / pre_run_command event.
+  //
+  // The transform matches the one applied to the scripts above: a helper must be
+  // rewritten the same way as its caller or the two disagree on the spelling.
+  stageTransitiveHookLibs({
+    seedSources: [...installedScripts].map((script) => fs.readFileSync(path.join(hooksDir, script), 'utf8')),
+    srcLibDir: path.join(srcHooksDir, 'lib'),
+    destLibDir: path.join(hooksDir, 'lib'),
+    runtimeLabel: 'Windsurf',
+    transform: (content) => content.replace(/gsd:/gi, 'gsd-'),
+  });
 
   // #2717: write the CommonJS marker into hooks/ alongside the staged .js
   // scripts. Windsurf sets skipSharedHooksInstall, so it never reaches
@@ -2063,6 +2179,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       'gsd-worktree-path-guard',
       'gsd-agent-isolation-guard',
       'gsd-write-guard',
+      'gsd-secret-read-guard',
       'gsd-validate-commit',
     ];
     for (const entries of Object.values(settings.hooks as Record<string, HookGroup[]>)) {
@@ -2351,6 +2468,35 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       console.log(`  ${green}✓${reset} Configured write guard hook (catastrophic-shrink protection)`);
     } else if (!hasWriteGuardHook && !fs.existsSync(writeGuardFile)) {
       console.warn(`  ${yellow}⚠${reset}  Skipped write guard hook — gsd-write-guard.js not found at target`);
+    }
+
+    // Configure PreToolUse hook for secret-file read protection (#4221).
+    // Hard-blocks Read/Grep/Bash reads of .env, .env.<suffix> and .secrets.
+    // Replaces the Read(.env*) permission deny rules the installer used to
+    // write (#768): on Claude Code >= 2.1.259 ANY Read() deny rule makes every
+    // `cd DIR && grep …` compound prompt for approval, even in auto mode; a
+    // hook denial is not a permission rule and never arms that check.
+    const secretReadGuardCommand = isGlobal
+      ? buildHookCommand(targetDir, 'gsd-secret-read-guard.js', hookOpts)
+      : localCmd('gsd-secret-read-guard.js');
+    const hasSecretReadGuardHook = settings.hooks[preToolEvent].some((entry: HookGroup) =>
+      entry.hooks && entry.hooks.some((h: HookEntry) => referencesHook(h as Record<string, unknown>, 'gsd-secret-read-guard'))
+    );
+    const secretReadGuardFile = path.join(targetDir, 'hooks', 'gsd-secret-read-guard.js');
+    if (!hasSecretReadGuardHook && fs.existsSync(secretReadGuardFile) && secretReadGuardCommand) {
+      settings.hooks[preToolEvent].push({
+        matcher: 'Read|Grep|Bash',
+        hooks: [
+          {
+            type: 'command',
+            command: secretReadGuardCommand,
+            timeout: BLOCKING_GUARD_TIMEOUT_S
+          }
+        ]
+      });
+      console.log(`  ${green}✓${reset} Configured secret read guard hook (.env / .secrets read protection)`);
+    } else if (!hasSecretReadGuardHook && !fs.existsSync(secretReadGuardFile)) {
+      console.warn(`  ${yellow}⚠${reset}  Skipped secret read guard hook — gsd-secret-read-guard.js not found at target`);
     }
 
     // Configure commit validation hook (Conventional Commits enforcement, opt-in)
@@ -2716,6 +2862,7 @@ function buildKimiHooksTomlBlock(targetDir: string, opts: { hookOpts: BuildHookC
     { event: 'PreToolUse', command: cmd('gsd-read-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-worktree-path-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-write-guard.js'), matcher: 'WriteFile', timeout: 5 },
+    { event: 'PreToolUse', command: cmd('gsd-secret-read-guard.js'), matcher: 'ReadFile|Grep|Shell', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-workflow-guard.js'), matcher: 'Shell|WriteFile|StrReplaceFile', timeout: 5 },
     { event: 'PreToolUse', command: cmd('gsd-validate-commit.sh'), matcher: 'Shell', timeout: 5 },
 
@@ -2937,6 +3084,7 @@ export = {
   KIMI_HOOKS_TOML_MARKER_END,
 
   // Shared
+  stageTransitiveHookLibs,
   buildHookCommand,
   applySettingsJsonHooks,
   referencesHook,

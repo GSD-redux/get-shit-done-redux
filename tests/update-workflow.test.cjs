@@ -30,6 +30,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { extractFencedBlock } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const UPDATE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md');
 
@@ -38,6 +39,92 @@ function codeOnly(file) {
   // but ignore markdown comment prose by only matching shell-assignment forms.
   return fs.readFileSync(file, 'utf8');
 }
+
+describe('#4153 regression: unresolved update targets stop before later workflow steps', () => {
+  const src = codeOnly(UPDATE_MD);
+  const start = src.indexOf('<step name="get_installed_version">');
+  const end = src.indexOf('</step>', start);
+
+  test('the unresolved path is explicit, ordered, and contains no mutation', () => {
+    assert.ok(start >= 0, 'get_installed_version step must exist');
+    assert.ok(end > start, 'get_installed_version step must close');
+    const step = src.slice(start, end);
+    const unresolved = step.indexOf('UPDATE_TARGET_UNRESOLVED');
+    const exit = step.indexOf('Exit.', unresolved);
+
+    assert.ok(unresolved >= 0, 'unresolved target must have a typed result');
+    assert.match(step, /TARGET_RUNTIME=""/);
+    assert.match(step, /GSD_DIR=""/);
+    assert.match(
+      step,
+      /otherwise leave (?:it )?empty/,
+      'an unrecognized execution_context path must not infer Claude',
+    );
+    assert.match(step, /`\/\.claude\/` -> `claude`/);
+    assert.match(step, /`\/\.windsurf\/`, `\/\.devin\/` -> `windsurf`/);
+    assert.doesNotMatch(step, /otherwise `?claude`?\./);
+    assert.match(step, /INSTALL_SCOPE` is `UNKNOWN`, `TARGET_RUNTIME` is empty, or `GSD_DIR` is empty/);
+    assert.match(step, /rerun from a valid installed runtime/i);
+    assert.match(step, /Rerun from a valid installed runtime: `\/gsd:update`\./);
+    assert.match(step, /npx -y --package=@opengsd\/gsd-core@latest -- gsd-core --global/);
+    assert.match(step, /target runtime \(`claude`, `opencode`, `kilo`, `codex`, `antigravity`, `windsurf`\)/);
+    assert.ok(exit > unresolved, 'unresolved target must exit before the next step');
+
+    const versionMissing = step.indexOf('VERSION file missing');
+    assert.ok(versionMissing >= 0, 'VERSION-missing bullet must exist');
+    assert.ok(
+      unresolved < versionMissing,
+      'unresolved-target gate must precede the VERSION-missing bullet, or the ' +
+        'fully-unresolved case (version 0.0.0 AND unresolved target) can fall ' +
+        'through to "proceed to install" instead of exiting',
+    );
+    assert.match(
+      step,
+      /Otherwise, if VERSION file missing.*but the target above resolved/,
+      'VERSION-missing bullet must be explicitly scoped to exclude the unresolved-target case',
+    );
+
+    const mutationSpies = [
+      { name: 'version check', text: src, needle: 'check-latest-version.cjs', after: end },
+      { name: 'custom-file detection', text: src, needle: 'detect-custom-files --config-dir', after: end },
+      { name: 'resolved installer', text: src, needle: 'npx -y --package=@opengsd/gsd-core@"$TAG" -- gsd-core "$RUNTIME_FLAG"', after: end },
+      { name: 'update-cache removal', text: src, needle: 'rm -f "$HOME/.cache/gsd/gsd-update-check"', after: end },
+      { name: 'restore apply', text: src, needle: 'restore-custom-files --config-dir "$GSD_DIR" --apply', after: end },
+      { name: 'patch check', text: src, needle: 'check_local_patches', after: end },
+    ];
+    for (const { name, text, needle, after } of mutationSpies) {
+      assert.equal(step.indexOf(needle), -1, `unresolved path reaches ${name}`);
+      assert.ok(text.indexOf(needle, after) >= after, `${name} must remain after the exit`);
+    }
+  });
+
+  test('latest-result parsing stays Node-only and preserves the false default', () => {
+    const latestStart = src.indexOf('<step name="check_latest_version">');
+    const latestEnd = src.indexOf('</step>', latestStart);
+
+    assert.ok(latestStart >= 0, 'check_latest_version step must exist');
+    assert.ok(latestEnd > latestStart, 'check_latest_version step must close');
+    const latest = src.slice(latestStart, latestEnd);
+    const latestBash = extractFencedBlock(latest, 'bash');
+
+    assert.ok(latestBash, 'check_latest_version must contain a bash block');
+    assert.doesNotMatch(latestBash, /\bjq\b/, 'latest-result parsing must not invoke jq');
+    assert.match(
+      latestBash,
+      /uc_field\(\)\s*\{/,
+      'check_latest_version must define its JSON parser in the same shell block that invokes it',
+    );
+    assert.match(
+      latest,
+      /if LATEST_RESULT="\$\(node [^\n]+\)"; then\s+LATEST_STATUS=0\s+else\s+LATEST_STATUS=\$\?\s+fi/,
+      'latest-version failure must be captured when errexit is active',
+    );
+    assert.match(latest, /LATEST_OK="\$\(uc_field ok "\$LATEST_RESULT"\)"/);
+    assert.match(latest, /LATEST_OK="\$\{LATEST_OK:-false\}"/);
+    assert.match(latest, /LATEST_VERSION="\$\(uc_field version "\$LATEST_RESULT"\)"/);
+    assert.match(latest, /LATEST_REASON="\$\(uc_field reason "\$LATEST_RESULT"\)"/);
+  });
+});
 
 describe('#498 regression: update.md backup uses GSD_DIR, not the removed LOCAL_DIR/GLOBAL_DIR', () => {
   const src = codeOnly(UPDATE_MD);
@@ -108,10 +195,14 @@ test('issue #815: version check threads the tag through check-latest-version.cjs
 
 test('issue #815: install uses the selected tag, not a hardcoded @latest', () => {
   const robust = WF.match(/npx -y --package=@opengsd\/gsd-core@"\$TAG" -- gsd-core/g) || [];
-  assert.ok(robust.length >= 3, `expected >=3 tag-parameterized npx invocations, found ${robust.length}`);
-  assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
+  const runUpdateStart = WF.indexOf('<step name="run_update">');
+  const runUpdateEnd = WF.indexOf('</step>', runUpdateStart);
+  assert.ok(runUpdateStart >= 0 && runUpdateEnd > runUpdateStart, 'run_update step must exist');
+  const runUpdate = WF.slice(runUpdateStart, runUpdateEnd);
+  assert.ok(robust.length >= 2, `expected >=2 tag-parameterized npx invocations, found ${robust.length}`);
+  assert.doesNotMatch(runUpdate, /--package=@opengsd\/gsd-core@latest -- gsd-core/,
     'install lines must not hardcode @latest once --next exists');
-  assert.doesNotMatch(WF, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,
+  assert.doesNotMatch(runUpdate, /--package=@opengsd\/gsd-core@(?:latest|next|beta|canary|rc) -- gsd-core/,
     'install lines must use the $TAG variable, never a hardcoded dist-tag literal');
 });
 
@@ -223,14 +314,62 @@ __t3130('bug #3130: update.md contains no bare npx invocations (cache-stale form
   );
 });
 
-__t3130('bug #3130: update.md has >=3 robust npx invocations (--package= + -- separator)', () => {
-  // Three sibling invocations: local, global, and unknown/fallback.
-  // The tag is now a $TAG variable (latest by default, next under --next/--rc).
-  const robust = (src3130.match(/npx -y --package=@opengsd\/gsd-core@\S+ -- gsd-core/g) || []);
-  assert3130.ok(
-    robust.length >= 3,
-    `Expected >=3 robust npx invocations in update.md, found ${robust.length}`,
+__t3130('bug #3130: update.md has exactly two robust resolved-install invocations', () => {
+  const start = src3130.indexOf('<step name="run_update">');
+  const end = src3130.indexOf('</step>', start);
+  assert3130.ok(start >= 0 && end > start, 'run_update step must exist');
+  const robust = (src3130.slice(start, end).match(/npx -y --package=@opengsd\/gsd-core@\S+ -- gsd-core/g) || []);
+  assert3130.strictEqual(
+    robust.length,
+    2,
+    `Expected two resolved-install npx invocations in update.md, found ${robust.length}`,
   );
 });
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// #4153 review nit: update.md's PREFERRED_RUNTIME prose table and
+// src/update-context.cts's RUNTIME_DIRS constant are two independently
+// maintained representations of the same runtime -> dir mapping. Nothing
+// enforced they stay in sync; this parity check does.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { test: __t4153parity } = require('node:test');
+  const assert4153parity = require('node:assert/strict');
+  const path4153parity = require('node:path');
+  const fs4153parity = require('node:fs');
+  const { RUNTIME_DIRS: RUNTIME_DIRS_4153 } = require(
+    path4153parity.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'update-context.cjs'),
+  );
+  const { splitLines: splitLines4153parity } = require('../gsd-core/bin/lib/text-lines.cjs');
+
+  __t4153parity('update.md PREFERRED_RUNTIME table matches RUNTIME_DIRS', () => {
+    const src = fs4153parity.readFileSync(
+      path4153parity.join(__dirname, '..', 'gsd-core', 'workflows', 'update.md'),
+      'utf8',
+    );
+    const line = splitLines4153parity(src).find((l) => l.includes('Infer `PREFERRED_RUNTIME` from the path'));
+    assert4153parity.ok(line, 'PREFERRED_RUNTIME inference line must exist');
+
+    // Each clause: one or more backtick-quoted `/dir/` tokens, `->`, a
+    // backtick-quoted runtime name. The trailing "otherwise leave it empty"
+    // clause has no `->` and is intentionally skipped.
+    const docPairs = new Set();
+    for (const clause of line.split(';')) {
+      const arrow = clause.indexOf('->');
+      if (arrow === -1) continue;
+      const dirs = [...clause.slice(0, arrow).matchAll(/`\/([^`]+)\/`/g)].map((m) => m[1]);
+      const runtime = clause.slice(arrow + 2).match(/`([a-z]+)`/)?.[1];
+      assert4153parity.ok(runtime, `clause must name a runtime: ${clause}`);
+      for (const dir of dirs) docPairs.add(`${runtime}:${dir}`);
+    }
+
+    const tablePairs = new Set(RUNTIME_DIRS_4153.map(([runtime, dir]) => `${runtime}:${dir}`));
+    assert4153parity.deepEqual(
+      [...docPairs].sort(),
+      [...tablePairs].sort(),
+      'update.md PREFERRED_RUNTIME prose and RUNTIME_DIRS must list the same runtime -> dir pairs',
+    );
   });
 }
