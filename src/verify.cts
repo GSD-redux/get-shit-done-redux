@@ -28,6 +28,11 @@ const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- worktree-safety.cjs is an export= CommonJS module
+import worktreeSafetyMod = require('./worktree-safety.cjs');
+// Single owner of git C-quoted-path decoding (see #4081 note at the
+// codebase-drift --name-status parse loop).
+const { decodeGitQuotedPath } = worktreeSafetyMod;
 import { execGit, platformReadSync as safeReadFile } from './shell-command-projection.cjs';
 import { validatePath } from './security.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
@@ -2309,7 +2314,16 @@ function cmdVerifyCodebaseDrift(cwd: string, raw: boolean): void {
       const m = line.match(/^([A-Z])\d*\t(.+?)(?:\t(.+))?$/);
       if (!m) continue;
       const status = m[1];
-      const file = m[3] || m[2];
+      // execGit sets no core.quotepath config, so git's default `true` applies:
+      // any path containing non-ASCII bytes (or `"`, `\`, control bytes) is
+      // C-quoted — `"docs/\350\256\276…/overview.md"`. Capturing that verbatim
+      // garbles affected_paths/elements and makes isPathMapped compare the
+      // quoted prefix (`"docs`) against STRUCTURE.md, misclassifying DOCUMENTED
+      // directories as new_dir (#4081). Decode with the single owner of the
+      // git C-quote seam (worktree-safety.cjs); a non-quoted value — the plain
+      // ASCII common case — passes through untouched. Both capture groups are
+      // decoded: R/C lines carry old AND new paths, either may be quoted.
+      const file = decodeGitQuotedPath(m[3] || m[2]);
       if (status === 'A' || status === 'R' || status === 'C') added.push(file);
       else if (status === 'M') modified.push(file);
       else if (status === 'D') deleted.push(file);

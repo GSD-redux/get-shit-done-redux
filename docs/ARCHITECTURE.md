@@ -294,6 +294,7 @@ Runtime hooks that integrate with the host AI agent:
 | `gsd-prompt-guard.js` | `PreToolUse` | Scans `.planning/` writes for prompt injection patterns (advisory) |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Scans Read tool output for injected instructions in untrusted content |
 | `gsd-workflow-guard.js` | `PreToolUse` | Detects file edits outside GSD workflow context (advisory, opt-in via `hooks.workflow_guard`) |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Hard-blocks Read / Grep / Bash reads of `.env`, `.env.<suffix>` (templates such as `.env.example` exempt) and `.secrets`; replaces the installer-written `Read(.env*)` permission deny rules, which made every `cd DIR && grep …` compound prompt for approval on Claude Code ≥ 2.1.259 (#4221) |
 | `gsd-read-guard.js` | `PreToolUse` | Advisory guard preventing Edit/Write on files not yet read in the session |
 | `gsd-session-state.sh` | `SessionStart` | Session state tracking for shell-based runtimes |
 | `gsd-validate-commit.sh` | `PreToolUse` | Commit validation for conventional commit enforcement |

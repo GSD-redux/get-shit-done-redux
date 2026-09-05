@@ -97,7 +97,8 @@
       "verificationStyle": "kimi",
       "agentManifestStyle": "kimi-nested",
       "doneBannerStyle": "kimi-agent-file",
-      "skipSharedHooksInstall": true
+      "skipSharedHooksInstall": true,
+      "noPathRewrite": true
     }
   }
 }
