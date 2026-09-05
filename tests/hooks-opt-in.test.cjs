@@ -67,12 +67,14 @@ function cleanup(tmpDir) {
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 }
 
-function writeConfigWithHooks(tmpDir, enabled) {
+function writeConfigWithHooks(tmpDir, enabled, commitTypes) {
+  const hooks = { community: enabled };
+  if (commitTypes !== undefined) hooks.commit_types = commitTypes;
   fs.writeFileSync(
     path.join(tmpDir, '.planning', 'config.json'),
     JSON.stringify({
       model_profile: 'balanced',
-      hooks: { community: enabled }
+      hooks
     }, null, 2)
   );
 }
@@ -367,6 +369,108 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // #3811 — hooks.commit_types config surface (extends, never replaces, the
+  // 10 built-in Conventional Commits types)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('hooks.commit_types config surface (#3811)', () => {
+    test('blocks a non-built-in type when commit_types is absent (default list unchanged)', () => {
+      writeConfigWithHooks(tmpDir, true);
+      const result = runHookCmd('git commit -m "enhance(core): x"');
+      assert.strictEqual(result.status, 2, `expected block, got ${result.status}`);
+      assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    });
+
+    test('treats an empty commit_types array as the default list', () => {
+      writeConfigWithHooks(tmpDir, true, []);
+      const result = runHookCmd('git commit -m "enhance(core): x"');
+      assert.strictEqual(result.status, 2, `expected block, got ${result.status}`);
+      assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    });
+
+    test('accepts a single configured type', () => {
+      writeConfigWithHooks(tmpDir, true, ['enhance']);
+      const result = runHookCmd('git commit -m "enhance(core): x"');
+      assert.strictEqual(result.status, 0, `expected pass, got ${result.status}. stderr: ${result.stderr}`);
+    });
+
+    test('still rejects an unconfigured type when only one type is configured', () => {
+      writeConfigWithHooks(tmpDir, true, ['enhance']);
+      const result = runHookCmd('git commit -m "enh(core): x"');
+      assert.strictEqual(result.status, 2, `extension must not become a free-for-all, got ${result.status}`);
+      assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    });
+
+    test('accepts every type in a many-entry commit_types array', () => {
+      writeConfigWithHooks(tmpDir, true, ['enhance', 'enh', 'revert']);
+      for (const type of ['enhance', 'enh', 'revert']) {
+        const result = runHookCmd(`git commit -m "${type}(core): x"`);
+        assert.strictEqual(result.status, 0, `expected pass for type "${type}", got ${result.status}. stderr: ${result.stderr}`);
+      }
+    });
+
+    test('dedupes a configured type that duplicates a built-in', () => {
+      writeConfigWithHooks(tmpDir, true, ['feat']);
+      const okResult = runHookCmd('git commit -m "feat(core): x"');
+      assert.strictEqual(okResult.status, 0, `expected pass, got ${okResult.status}`);
+      const blockResult = runHookCmd('git commit -m "WIP save"');
+      assert.strictEqual(blockResult.status, 2);
+      const { valid_types: validTypes } = JSON.parse(blockResult.stdout);
+      assert.deepStrictEqual(
+        validTypes,
+        ['feat', 'fix', 'docs', 'style', 'refactor', 'perf', 'test', 'build', 'ci', 'chore'],
+        `configuring a duplicate of a built-in must not add a second "feat", got: ${JSON.stringify(validTypes)}`
+      );
+    });
+
+    test('dedupes a configured type repeated in its own array', () => {
+      writeConfigWithHooks(tmpDir, true, ['enhance', 'enhance']);
+      const blockResult = runHookCmd('git commit -m "WIP save"');
+      assert.strictEqual(blockResult.status, 2);
+      const { valid_types: validTypes } = JSON.parse(blockResult.stdout);
+      assert.strictEqual(
+        validTypes.filter((t) => t === 'enhance').length,
+        1,
+        `"enhance" configured twice must still appear once, got: ${JSON.stringify(validTypes)}`
+      );
+      assert.strictEqual(new Set(validTypes).size, validTypes.length, `valid_types must have no duplicates: ${JSON.stringify(validTypes)}`);
+    });
+
+    test('drops non-string commit_types entries and keeps the valid ones', () => {
+      writeConfigWithHooks(tmpDir, true, [123, null, 'enhance', {}]);
+      const result = runHookCmd('git commit -m "enhance(core): x"');
+      assert.strictEqual(result.status, 0, `expected pass, got ${result.status}. stderr: ${result.stderr}`);
+    });
+
+    test('rejects unsafe commit_types entries without corrupting the built-in regex', () => {
+      writeConfigWithHooks(tmpDir, true, ['feat|rm -rf /', 'a)(b', '.*', 'UPPER', '']);
+      // Built-ins must still work — a bad entry must not corrupt the compiled regex.
+      const builtinResult = runHookCmd('git commit -m "feat(core): x"');
+      assert.strictEqual(builtinResult.status, 0, `built-in type must still pass, got ${builtinResult.status}. stderr: ${builtinResult.stderr}`);
+      // None of the unsafe entries should have been accepted as a type.
+      const rejectedResult = runHookCmd('git commit -m "UPPER(core): x"');
+      assert.strictEqual(rejectedResult.status, 2, `unsafe entry must not be accepted as a type, got ${rejectedResult.status}`);
+    });
+
+    test('ignores a non-array commit_types value', () => {
+      writeConfigWithHooks(tmpDir, true, 'enhance');
+      const result = runHookCmd('git commit -m "enhance(core): x"');
+      assert.strictEqual(result.status, 2, `non-array commit_types must be ignored (treated as absent), got ${result.status}`);
+    });
+
+    test('valid_types includes configured types alongside the built-ins', () => {
+      writeConfigWithHooks(tmpDir, true, ['enhance']);
+      const result = runHookCmd('git commit -m "WIP save"');
+      assert.strictEqual(result.status, 2);
+      const { valid_types: validTypes } = JSON.parse(result.stdout);
+      assert.deepStrictEqual(
+        validTypes,
+        ['feat', 'fix', 'docs', 'style', 'refactor', 'perf', 'test', 'build', 'ci', 'chore', 'enhance'],
+        `expected built-ins plus "enhance", got: ${JSON.stringify(validTypes)}`
+      );
+    });
+  });
 
   // ─── #3816 round 8 (Major): bracket classes must not smuggle a literal `\` ───
   //
