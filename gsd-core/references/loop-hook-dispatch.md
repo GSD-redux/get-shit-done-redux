@@ -67,14 +67,13 @@ resolve or gate on the trait itself, only passes the two flags naming which step
 trait reads exactly `true`, `dispatch-step` routes through `dispatchReviewerLanes`, the one
 interpreter in `src/reviewer-step-dispatch.cts` that reuses the existing reviewer-lane selection,
 planning, and invocation machinery, so any explicitly selected reviewer lane also reviews the
-same scope. Absent, `false`, or any non-boolean value is inert: `dispatch-step` itself returns a
-no-op, no plan/invoke calls. This is the only place a step opts into reviewer-lane support; do
-not hand-roll trait resolution inside a workflow body — any capability beyond `code-review`
-wanting the same enforcement declares the same trait on its own step and passes
-`--cap-id`/`--point` to the same `dispatch-step` call, with zero bespoke TRAIT-RESOLUTION code of
-its own. The workflow still owns matching its own CLI flags against the reviewer-lane roster and
-assembling the evidence block handed to its consolidator — those are NOT part of what this trait
-makes reusable.
+same scope. Absent or `false` is inert: `dispatch-step` itself is a no-op (a non-boolean value is
+rejected by `capability-validator.cjs` at load time, so it never reaches `dispatch-step` at all).
+This is the only place a step opts into reviewer-lane support: a capability beyond `code-review`
+reuses it by declaring the same trait on its own step and calling `dispatch-step` with
+`--cap-id`/`--point`, with zero bespoke TRAIT-RESOLUTION code of its own. The workflow still owns
+matching its own CLI flags against the reviewer-lane roster and assembling the evidence block
+handed to its consolidator — those are NOT part of what this trait makes reusable.
 
 A `step` is **advisory by construction**: it never blocks or redirects the host workflow —
 that is what a `gate` is for. Each dispatch is best-effort; on error record a warning and

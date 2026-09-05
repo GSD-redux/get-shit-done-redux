@@ -687,6 +687,16 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
       'the workflow must not call loop render-hooks itself — that belongs to dispatch-step, the reusable seam');
   });
 
+  test('dispatch_reviewer_lanes delegates roster-flag matching to review-lane explicit-from-argv, not an inline node -e (#4209 RQ-02)', () => {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepContent = stepMatch[1];
+    assert.match(stepContent, /review-lane explicit-from-argv -- "\$@"/,
+      'must delegate roster/flag matching to the shared explicit-from-argv subcommand');
+    assert.ok(!/mergeReviewerLanes/.test(stepContent),
+      'the workflow must not re-implement the roster merge inline — that duplicate is exactly what RQ-02 removed');
+  });
+
   // #4209 (maintainer redirect): the trait must be enforced by the shared `dispatch-step` CLI
   // itself, not trusted from a caller-passed boolean — otherwise a second capability reusing this
   // seam gets zero enforcement from declaring the trait alone. These run the REAL command against
@@ -751,6 +761,44 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
     } finally {
       cleanup(tmpDir);
     }
+  });
+
+  test('review-lane dispatch-step: --cap-id without --point warns (misconfigured, not opted out) (#4209 RQ-03)', () => {
+    const tmpDir = createTempGitProject();
+    try {
+      const result = runNode(
+        [GSD_TOOLS_BIN, 'review-lane', 'dispatch-step',
+          '--repo-root', tmpDir, '--depth', 'standard', '--base-sha', 'deadbeef',
+          '--run-dir', tmpDir, '--cwd', tmpDir, '--explicit', 'codex',
+          '--cap-id', 'code-review', '--raw'],
+        { cwd: REPO_ROOT, timeoutMs: 15000, input: 'src/foo.ts\n' },
+      );
+      assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+      assert.match(result.stderr, /--cap-id and --point must both be given/,
+        `a --cap-id with no --point must warn distinctly from a correct no-context opt-out, got stderr: ${result.stderr}`);
+      const parsed = JSON.parse(result.stdout.trim());
+      assert.strictEqual(parsed.reason, 'trait_not_enabled');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('review-lane explicit-from-argv matches CLI flags against the merged roster (#4209 RQ-02)', () => {
+    const result = runNode(
+      [GSD_TOOLS_BIN, 'review-lane', 'explicit-from-argv', '--', '--codex', '--agy'],
+      { cwd: REPO_ROOT, timeoutMs: 15000 },
+    );
+    assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+    assert.strictEqual(result.stdout.trim(), 'antigravity,codex');
+  });
+
+  test('review-lane explicit-from-argv resolves to empty when no known flag is present', () => {
+    const result = runNode(
+      [GSD_TOOLS_BIN, 'review-lane', 'explicit-from-argv', '--'],
+      { cwd: REPO_ROOT, timeoutMs: 15000 },
+    );
+    assert.strictEqual(result.exitCode, 0, `expected exit 0, stderr: ${result.stderr || ''}`);
+    assert.strictEqual(result.stdout.trim(), '');
   });
 
   test('dispatch_reviewer_lanes step derives explicit flags from the roster, not a hand-maintained list', () => {

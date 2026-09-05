@@ -552,18 +552,23 @@ FALLOW_JSON_PATH=""
 Optional external source-reviewer lanes (#4209, DISP-01..05). A canonical reviewer-lane flag
 (e.g. `--codex`, `--agy`) requests that lane independently review the SAME already-resolved
 scope alongside the internal `gsd-code-reviewer` agent below. **No canonical flag present is
-the default and by far the common case:** this step is then a no-op — zero selection, plan, or
-invoke calls — and the internal reviewer dispatch in `spawn_reviewer` stays byte-for-behavior
-unchanged from before #4209 (COMP-01).
+the default and by far the common case:** this step is then inert — and the internal reviewer
+dispatch in `spawn_reviewer` stays unchanged from before #4209 (COMP-01).
 
-This step is itself opt-in at the capability layer, not just the CLI-flag layer: `code-review`'s
-own capability step declares `supportsReviewerLanes: true` (the reusable trait `src/loop-resolver.cts`
-projects onto `activeHooks` — see `gsd-core/references/loop-hook-dispatch.md`). The trait check
-itself lives inside `review-lane dispatch-step` (`--cap-id`/`--point`, below) — NOT here — so any
-other capability step declaring the same trait gets the identical enforcement by passing the same
-two flags, without reproducing a render-hooks scrape in its own workflow body:
+This step is itself opt-in at the capability layer (see `gsd-core/references/loop-hook-dispatch.md`
+for the `supportsReviewerLanes` trait), not just the CLI-flag layer. The trait check itself lives
+inside `review-lane dispatch-step` (`--cap-id`/`--point`, below) — NOT here:
 ```bash
-CODE_REVIEW_POINT=$(gsd_run query config-get workflow.code_review_point --raw 2>/dev/null || echo "execute:post")
+CODE_REVIEW_POINT_STDERR=$(mktemp)
+CODE_REVIEW_POINT=$(gsd_run query config-get workflow.code_review_point --raw 2>"$CODE_REVIEW_POINT_STDERR") || {
+  # #4209 RQ-03: `config-get` already resolves capabilities/code-review/capability.json's own
+  # declared schema default (execute:post) in the normal case — this fallback is reached only
+  # when the config-get COMMAND ITSELF fails, an already-anomalous state that must be visible,
+  # not silently papered over with a literal that could itself drift from the manifest.
+  echo "Warning: could not resolve workflow.code_review_point ($(head -1 "$CODE_REVIEW_POINT_STDERR")) — falling back to execute:post." >&2
+  CODE_REVIEW_POINT="execute:post"
+}
+rm -f "$CODE_REVIEW_POINT_STDERR"
 ```
 
 Match only flags the reviewer-lane roster itself declares — never a hand-maintained static list.
@@ -578,30 +583,11 @@ not survive a markdown fence boundary (a prose sentence between two fences is no
 the depth-resolution guard's own rule earlier in this file), so the guard and everything that
 reads it must run as a single shell control-flow decision:
 ```bash
-# Resolve the lane-descriptor/capability-loader modules against $GSD_TOOLS's OWN directory
-# (already resolved by the `initialize` step across every supported install location — vendored
-# in-repo, ~/.claude, ~/.codex, etc.) rather than a cwd-relative './gsd-core/...' literal, which
-# only resolves when cwd happens to BE the vendored install root.
-GSD_LIB_DIR="${GSD_TOOLS%/*}/lib"
+# #4209 RQ-02: `review-lane explicit-from-argv` owns matching this workflow's raw CLI argv
+# against the merged first-party+installed-overlay roster — the SAME roster-merge logic
+# `dispatch-step` and `plan`/`invoke` already share, not a second copy re-derived here.
 EXPLICIT_JOINED_STDERR=$(mktemp)
-EXPLICIT_JOINED=$(GSD_LIB_DIR="$GSD_LIB_DIR" node -e "
-  const path = require('node:path');
-  const libDir = process.env.GSD_LIB_DIR;
-  const { REVIEWER_LANES, mergeReviewerLanes } = require(path.join(libDir, 'review-lane-descriptor.cjs'));
-  const capabilityLoader = require(path.join(libDir, 'capability-loader.cjs'));
-  let lanes = REVIEWER_LANES;
-  try {
-    const registry = capabilityLoader.loadRegistry({ includeInstalled: true, cwd: process.cwd() });
-    lanes = mergeReviewerLanes(REVIEWER_LANES, registry);
-  } catch { lanes = REVIEWER_LANES; }
-  const args = new Set(process.argv.slice(1));
-  const slugs = new Set();
-  for (const lane of lanes) {
-    const flags = Array.isArray(lane.flags) ? lane.flags : [];
-    if (flags.some((f) => args.has(f))) slugs.add(lane.slug);
-  }
-  process.stdout.write([...slugs].sort().join(','));
-" -- "$@" 2>"$EXPLICIT_JOINED_STDERR") || {
+EXPLICIT_JOINED=$(gsd_run review-lane explicit-from-argv -- "$@" 2>"$EXPLICIT_JOINED_STDERR") || {
   # A resolution failure (e.g. an install layout `initialize` didn't anticipate) must be visible,
   # not a silent downgrade to "no reviewer-lane flags were passed" — but it also must not hard-fail
   # the whole `/gsd:code-review` run for users who never asked for a reviewer lane in the first
@@ -683,6 +669,9 @@ elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
   fi
 fi
 ```
+
+Step complete when `EXTERNAL_EVIDENCE_BLOCK` is set — to the evidence block, or to the empty
+string. Both are success; there is no other outcome.
 </step>
 
 <step name="spawn_reviewer">

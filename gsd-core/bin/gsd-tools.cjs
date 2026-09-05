@@ -1347,8 +1347,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `plan`/`invoke` are the only subs that need the expensive plan-building path
     // below; `sections`/`flags` return earlier still. Anything else errors here, before
     // any of that work starts.
-    if (!['plan', 'invoke', 'sections', 'flags', 'dispatch-step'].includes(sub)) {
-      error("Usage: review-lane <plan|invoke|sections|flags|dispatch-step> [--selected a,b] [--run-dir D] [--repo-root R]");
+    if (!['plan', 'invoke', 'sections', 'flags', 'dispatch-step', 'explicit-from-argv'].includes(sub)) {
+      error("Usage: review-lane <plan|invoke|sections|flags|dispatch-step|explicit-from-argv> [--selected a,b] [--run-dir D] [--repo-root R]");
       return;
     }
     const runDir = flag('--run-dir') || '.';
@@ -1477,6 +1477,25 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const laneBySlug = new Map(mergedLanes.map((l) => [l.slug, l]));
     const chosen = selected.length ? selected : mergedLanes.map((l) => l.slug);
 
+    // #4209 RQ-02: match a workflow's raw CLI argv (e.g. `--codex`, `--agy`) against the SAME
+    // merged first-party+installed-overlay roster this whole function already built above,
+    // instead of a workflow re-deriving its own copy of `loadRegistry`/`mergeReviewerLanes` via
+    // an inline `node -e` (a rename-only duplicate of the block starting at `mergedLanes =
+    // REVIEWER_LANES` above — `code-review-flags.cjs`'s own header states "this is the canonical
+    // flag-parsing surface — do not replicate inline bash parsing" for exactly this reason).
+    // Everything after `--` is a candidate flag; matched lane slugs print sorted and comma-joined.
+    if (sub === 'explicit-from-argv') {
+      const sepIdx = args.indexOf('--');
+      const candidateArgs = new Set(sepIdx === -1 ? [] : args.slice(sepIdx + 1));
+      const slugs = [];
+      for (const lane of mergedLanes) {
+        const flags = Array.isArray(lane.flags) ? lane.flags : [];
+        if (flags.some((f) => candidateArgs.has(f))) slugs.push(lane.slug);
+      }
+      process.stdout.write([...new Set(slugs)].sort().join(','));
+      return;
+    }
+
     if (sub === 'sections') {
       const rows = chosen
         .map((s) => laneBySlug.get(s))
@@ -1559,15 +1578,12 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       const explicitFlags = (flag('--explicit') || '').split(',').map((s) => s.trim()).filter(Boolean);
       const depth = flag('--depth') || '';
       const baseSha = flag('--base-sha') || '';
-      // #4209 (maintainer redirect): this command IS the reusable capability/step-dispatch
-      // trait check — a workflow declares `supportsReviewerLanes: true` on its own capability
-      // step and passes --cap-id/--point here; NOTHING else about opting in is hand-wired per
-      // workflow. Calls the SAME resolver `loop render-hooks` uses, `resolveActiveHooksForPoint`,
-      // directly in-process — no subprocess, no JSON re-parse, and no exposure to `io.cjs`'s
-      // `@file:` overflow protocol (which only applies to the rendered-string envelope this
-      // path never touches). Absent --cap-id/--point (a caller with no capability-step context
-      // at all) is a hard no-op, same as an absent trait — this command never assumes it is
-      // wanted.
+      // #4209: this command IS the reusable capability/step-dispatch trait check — see
+      // gsd-core/references/loop-hook-dispatch.md for what supportsReviewerLanes means and why
+      // this is the one place it's resolved. Calls the SAME resolver `loop render-hooks` uses,
+      // `resolveActiveHooksForPoint`, directly in-process — no subprocess, no JSON re-parse, and
+      // no exposure to `io.cjs`'s `@file:` overflow protocol (which only applies to the
+      // rendered-string envelope this path never touches).
       const capId = flag('--cap-id') || '';
       const point = flag('--point') || '';
       let trait = false;
@@ -1580,6 +1596,12 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           process.stderr.write(`Warning: reviewer-lane trait resolution failed for --cap-id ${capId} --point ${point}: ${e && e.message ? e.message : String(e)} — treating as not enabled.\n`);
           trait = false;
         }
+      } else if (capId || point) {
+        // #4209 RQ-03: exactly one of the two was passed — a caller with NO capability-step
+        // context at all (neither flag) is the legitimate, silent no-op documented above, but a
+        // caller that named a capability without its point (or vice versa) is misconfigured, not
+        // opted out, and that must not look identical to a correct opt-out on the wire.
+        process.stderr.write(`Warning: --cap-id and --point must both be given to resolve the reviewer-lane trait (got --cap-id=${JSON.stringify(capId)} --point=${JSON.stringify(point)}) — treating as not enabled.\n`);
       }
       // No piped stdin (interactive TTY): fail closed to empty paths instead of blocking
       // indefinitely on a TTY EOF the caller never sends.
@@ -1630,8 +1652,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       // precedence chain (explicit > --all > review.default_reviewers > all detected) ends,
       // when none of the first three apply, in `selected = [...detected]` — the SAME
       // "no flags means every detected reviewer" default `/gsd:review` intentionally uses.
-      // Source review's COMP-01 contract is the opposite: no reviewer-lane flag means ZERO
-      // external calls, byte-for-behavior identical to before #4209. Passing a non-empty
+      // Source review's COMP-01 contract is the opposite: no reviewer-lane flag means inert,
+      // unchanged from before #4209. Passing a non-empty
       // `detected` unconditionally would silently opt every dispatch-step call with no
       // `--explicit` into planning+invoking the WHOLE roster via that fallback branch. An
       // empty `detected` when nothing was asked for makes that fallback resolve to
@@ -1694,7 +1716,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
 
     if (sub !== 'invoke') {
-      error("Usage: review-lane <plan|invoke|sections|flags|dispatch-step> [--selected a,b] [--run-dir D] [--repo-root R]");
+      error("Usage: review-lane <plan|invoke|sections|flags|dispatch-step|explicit-from-argv> [--selected a,b] [--run-dir D] [--repo-root R]");
       return;
     }
 
