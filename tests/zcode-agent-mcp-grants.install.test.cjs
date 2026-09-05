@@ -29,6 +29,7 @@ const { runNode } = require('./helpers/process-seam.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const { installerEnv } = require('./helpers/install-shared.cjs');
+const { buildOverlayRepo } = require('./helpers/overlay-repo.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -85,9 +86,9 @@ function parseFrontmatterTools(content) {
 /** Spawn a real install of one runtime at one scope. Mirrors the seam shape of
  *  tests/agent-fragments-emission.install.test.cjs. Returns { result, root }
  *  where root is the install root (config dir for global, project cwd for local). */
-function spawnInstall(runtime, scope) {
+function spawnInstall(runtime, scope, repoRoot = REPO_ROOT) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-3384-${runtime}-${scope}-`));
-  const args = ['--preserve-symlinks', '--preserve-symlinks-main', path.join(REPO_ROOT, 'bin', 'install.js'), `--${runtime}`];
+  const args = ['--preserve-symlinks', '--preserve-symlinks-main', path.join(repoRoot, 'bin', 'install.js'), `--${runtime}`];
   if (scope === 'global') {
     args.push('--global', '--config-dir', root);
   } else {
@@ -149,6 +150,45 @@ test('zcode global install: all 8 MCP-granted agents install with zero mcp__* to
 
 test('zcode local install: all 8 MCP-granted agents install with zero mcp__* tool grants (#3384)', (t) => {
   assertZcodeAgentsClean(t, 'local');
+});
+
+function zcodeFixture(tools) {
+  return `---\nname: gsd-phase-researcher\ndescription: ZCode quoted-MCP fixture\ntools: ${tools}\n---\n\nfixture body survives\n`;
+}
+
+function zcodeBlockFixture(items) {
+  return `---\nname: gsd-phase-researcher\ndescription: ZCode quoted-MCP fixture\ntools:\n${items.map((item) => `  - ${item}`).join('\n')}\n---\n\nfixture body survives\n`;
+}
+
+test('zcode treats quoted MCP scalars as equivalent to plain scalars (#4189)', (t) => {
+  const cases = [
+    { name: 'mixed inline', source: zcodeFixture('Read, mcp__server__plain, \'mcp__server__single\', "mcp__server__double"'), expected: 'tools: Read' },
+    { name: 'escaped inline', source: zcodeFixture('Read, "\\x6dcp__server__tool"'), expected: 'tools: Read' },
+    { name: 'escaped inline unicode-16', source: zcodeFixture('Read, "\\u006dcp__server__tool"'), expected: 'tools: Read' },
+    { name: 'escaped inline unicode-32', source: zcodeFixture('Read, "\\U0000006dcp__server__tool"'), expected: 'tools: Read' },
+    { name: 'commented inline', source: zcodeFixture('Read, "mcp__server__double" # note'), expected: 'tools: Read' },
+    { name: 'all inline', source: zcodeFixture('\'mcp__server__single\', "mcp__server__double"'), expected: null },
+    { name: 'mixed block', source: zcodeBlockFixture(['Read', 'mcp__server__plain', "'mcp__server__single'", '"mcp__server__double"']), expected: 'tools:\n  - Read' },
+    { name: 'escaped block', source: zcodeBlockFixture(['Read', '"\\x6dcp__server__tool"']), expected: 'tools:\n  - Read' },
+    { name: 'escaped block unicode-16', source: zcodeBlockFixture(['Read', '"\\u006dcp__server__tool"']), expected: 'tools:\n  - Read' },
+    { name: 'escaped block unicode-32', source: zcodeBlockFixture(['Read', '"\\U0000006dcp__server__tool"']), expected: 'tools:\n  - Read' },
+    { name: 'commented block', source: zcodeBlockFixture(['Read', '"mcp__server__double" # note']), expected: 'tools:\n  - Read' },
+    { name: 'all block', source: zcodeBlockFixture(["'mcp__server__single'", '"mcp__server__double"']), expected: null },
+  ];
+
+  for (const row of cases) {
+    const overlay = buildOverlayRepo({ 'agents/gsd-phase-researcher.md': row.source });
+    t.after(() => cleanup(overlay));
+    const { result, root } = spawnInstall('zcode', 'global', overlay);
+    t.after(() => cleanup(root));
+    assert.strictEqual(result.exitCode, 0, `${row.name}: zcode install must succeed\n${result.stderr}`);
+    const emitted = fs.readFileSync(path.join(root, 'agents', 'gsd-phase-researcher.md'), 'utf8');
+    assert.ok(!emitted.includes('mcp__server__'), `${row.name}: all semantic MCP entries must be removed`);
+    assert.ok(!emitted.includes('\\x6dcp__server__'), `${row.name}: YAML-escaped semantic MCP entries must be removed`);
+    assert.ok(emitted.includes('fixture body survives'), `${row.name}: unrelated body bytes must survive`);
+    if (row.expected === null) assert.ok(!/^tools:/m.test(emitted), `${row.name}: all-MCP lists must drop tools`);
+    else assert.ok(emitted.includes(row.expected), `${row.name}: non-MCP tool formatting must survive`);
+  }
 });
 
 // ─── Row 4: Claude Code parity — its mcp__* grants are an OPTIONAL allowlist ───

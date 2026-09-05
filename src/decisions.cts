@@ -106,6 +106,216 @@ const bulletTitledColonRe = /^\s*-\s+\*\*D-([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s*\[([
  */
 const boldLeadInBulletRe = /^\s*-\s+\*\*[A-Z]+[0-9]*-[A-Za-z0-9]/m;
 
+/**
+ * #3939: a decision bullet's DECLARATION line — the `- **D-NN … **` bold lead-in
+ * the three grammars above anchor on — may wrap across a line break. Physical
+ * line breaks inside a bullet are markdown-insignificant, and GSD's own
+ * discuss-phase writer emits the wrapped shape whenever a decision title runs
+ * past the wrap column. All three grammars require the closing `**` in the same
+ * string as the `- **D-` anchor, so a wrapped declaration matched none of them
+ * and fell to the #1365 parse-miss guard, forcing `could-not-parse` (which
+ * hard-blocks `check.decision-coverage-plan`) on a well-formed CONTEXT.md.
+ *
+ * The repair is confined to how the LOGICAL bullet is assembled — the grammars
+ * themselves are untouched, so every single-line form parses exactly as before.
+ */
+const decisionBulletStartRe = /^\s*-\s+\*\*D-/;
+
+/**
+ * A line that opens a new BLOCK-LEVEL construct, and therefore terminates the
+ * bullet above it: a list marker of any family (`-`, `*`, `+`, `1.`, `1)`), an
+ * ATX heading, a blockquote, or a table row. Joining never reaches across one of
+ * these (nor across a blank/whitespace-only line, checked separately), so a
+ * declaration whose bold run genuinely never closes cannot absorb the block
+ * below it and get "closed" by an unrelated inline `**` — it stays a parse-miss
+ * and still fails loud, which #1365's contract requires.
+ *
+ * The four MARKER families demand trailing whitespace so that a continuation
+ * line opening with emphasis (`*in* the header.** …`) is text, not a bullet.
+ * The table-row alternative deliberately does not: CommonMark tables may open
+ * flush (`|Col1|Col2|`), and a leading `|` is never ordinary decision prose.
+ * A `- ` line at ANY indent stops the join: a deeper one is #3169 nested
+ * elaboration, which the main loop folds into the open decision itself.
+ *
+ * DELIBERATE DIVERGENCE from the sectionizer seam (ADR-1372): `iterateBullets`
+ * recognises only the `N. ` ordered-list form (`numberedRe`,
+ * src/markdown-sectionizer.cts), while this set also stops at the `N) ` form.
+ * That is intentional and one-directional — this regex answers "may the join
+ * cross this line?", where recognising MORE block openers is the conservative
+ * answer (a missed terminator can manufacture a decision; a spare one can only
+ * make a malformed bullet fail loud, which #1365 already wants). `N)` is a
+ * CommonMark ordered-list marker, so a join must not reach across it whether or
+ * not the seam's own bullet iterator yields it. Both forms are pinned by tests,
+ * and a drift test asserts the seam still does NOT treat `N)` as a bullet, so
+ * this divergence stays visible if either side moves.
+ *
+ * Accepted over-termination: continuation prose that happens to open with
+ * digits-then-`.`/`)` ("10. really keeps going") or a literal `|` stops the join
+ * early, so such a bullet fails loud rather than parsing. That is the same
+ * markdown ambiguity every line-oriented reader carries, and this direction of
+ * the trade is the one #1365 asks for — fail loud, never guess.
+ */
+const blockConstructRe = /^(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|>\s|\|)/;
+
+/**
+ * The id-adjacent `[tags]` REGION of a logical bullet, as far as it has been
+ * assembled. Matching means the region is still unsettled, in one of two ways:
+ * capture group 1 is present when the bracket is open (group 1 is the content
+ * seen so far), and absent when the id has been read but no `[` has followed
+ * yet — so a bracket may still open on the next absorbed line.
+ *
+ * A NON-match means the region is settled for good: the bracket closed, or
+ * something other than `[` followed the id. Either way the join no longer has
+ * to watch for a splice.
+ *
+ * The id character class is deliberately looser than the grammars' (it admits
+ * an empty id, so a bare `- **D-` still counts as unsettled). This regex only
+ * answers "may an id-adjacent bracket still open here?", where recognising MORE
+ * shapes is the conservative direction: an over-broad match can only make a
+ * malformed bullet fail loud, while a missed one silently re-classifies.
+ *
+ * Only the ID-ADJACENT bracket matters: that is the one the three grammars turn
+ * into `tags` (and therefore into `trackable`). A `[` further along the title is
+ * ordinary text and does not restrict the join.
+ */
+const tagRegionRe = /^\s*-\s+\*\*D-[A-Za-z0-9_-]*\s*(?:\[([^\]]*))?$/;
+
+/**
+ * #3939 (review): would folding `next` onto a lead-in whose `[tags]` bracket is
+ * still open splice the inserted space INTO a tag token?
+ *
+ * Tags are comma-split and trimmed, so a space landing next to a delimiter
+ * (`[`, `,`, `]`) changes nothing — `[informational,` + `deferred]` is still
+ * exactly `[informational, deferred]`. A space landing anywhere else splits one
+ * token into two (`[defer` + `red]` → `defer red`), which would not fail; it
+ * would parse to a DIFFERENT tag, silently flipping `trackable` on a gate that
+ * decides whether a decision must be covered. Refusing to join there leaves the
+ * bullet unchanged, so it reaches the #1365 parse-miss guard and fails loud —
+ * a wrong answer about coverage is worse than a blocked gate.
+ *
+ * `tail` is the bracket content accumulated so far, `next` the trimmed
+ * continuation line.
+ */
+function wouldSpliceTagToken(tail: string, next: string): boolean {
+  const before = tail.trimEnd();
+  if (before === '' || before.endsWith(',') || before.endsWith('[')) return false;
+  return !(next.startsWith(',') || next.startsWith(']'));
+}
+
+/**
+ * True when the bullet's own bold lead-in — the FIRST bold run on the line —
+ * is still open at end-of-line. Deliberately asks only about that first run
+ * (not `**`-parity over the whole string), because that is the run the three
+ * grammars anchor on: a balanced inline `**bold**` later in the body must not
+ * make a terminated lead-in look open.
+ */
+function boldLeadInIsUnterminated(text: string): boolean {
+  const open = text.indexOf('**');
+  if (open === -1) return false;
+  return text.indexOf('**', open + 2) === -1;
+}
+
+/**
+ * Fold a decision bullet whose bold lead-in wraps into ONE logical line, so the
+ * declaration grammars see the whole lead-in (#3939).
+ *
+ * Bounded and fail-loud-preserving: a wrapped declaration absorbs following
+ * lines only until its lead-in closes, and a blank/whitespace-only line, a new
+ * block-level construct (`blockConstructRe`), or the end of the block stops it.
+ * If the lead-in never closes, the original line is emitted UNCHANGED — a
+ * genuinely malformed bullet (e.g. an unterminated bold run) still reaches the
+ * parse-miss guard and still fails loud, exactly as #1365 requires. Non-decision
+ * lines pass through untouched, so continuation lines (#1372 FIX) and nested
+ * cross-reference bullets (#3169) are handled by the main loop as before.
+ *
+ * The joined line keeps the FIRST physical line's leading whitespace, so the
+ * `indentWidth` signal #3169 depends on is unchanged. Absorbed lines are
+ * trimmed and re-joined with a single space, which is what a soft line break
+ * means in markdown — so the join reproduces the rendered one-line text rather
+ * than concatenating the raw bytes.
+ *
+ * One place that equivalence does not hold is inside the id-adjacent `[tags]`
+ * bracket, where an inserted space can split a tag token and silently flip
+ * `trackable`. The join stops there instead (`wouldSpliceTagToken`), leaving the
+ * bullet to fail loud.
+ *
+ * Absorption stops at the first `**` on a continuation line, so an inline
+ * `**bold**` INSIDE a wrapped title closes the run early. That is deliberate:
+ * the result is byte-identical to what the same bullet written on one physical
+ * line parses to (the text past the early close re-attaches through the main
+ * loop's continuation folding), which is the whole contract here — wrapping is
+ * markdown-insignificant, never a second grammar.
+ */
+function joinWrappedBoldLeadIns(lines: string[]): string[] {
+  const joined: string[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!decisionBulletStartRe.test(line) || !boldLeadInIsUnterminated(line)) {
+      joined.push(line);
+      continue;
+    }
+
+    // Absorbed lines accumulate as SEGMENTS joined by a single space, and each
+    // new segment is searched on its own: the lead-in is known to be open at the
+    // end of the declaration line, and the inserted space means a closing `**`
+    // can never straddle a segment boundary, so the first `**` in any later
+    // segment is the close. Scanning per segment (rather than re-searching the
+    // accumulated string, which forces a rope flatten every iteration) keeps a
+    // long unterminated run linear on the plan gate's hot path.
+    const segments = [line];
+    // Bracket content accumulated while the id-adjacent `[tags]` bracket is
+    // still open; null when it is not open. O(1) per segment.
+    let tagTail: string | null = null;
+    // The logical text assembled so far, kept ONLY while the id-adjacent
+    // bracket has yet to open, so a bracket that opens on ANY absorbed line
+    // arms the splice guard — not just one that opens on the declaration line.
+    // Null once the region settles (the bracket opened and `tagTail` took over,
+    // or the id was followed by something else), so this never re-walks a long
+    // absorption: a non-empty segment that is not a bracket-open settles the
+    // region immediately, which bounds the string to a single extra join.
+    let tagRegion: string | null = null;
+    const declRegion = tagRegionRe.exec(line);
+    if (declRegion !== null) {
+      if (declRegion[1] === undefined) tagRegion = line;
+      else tagTail = declRegion[1];
+    }
+    let scan = i + 1;
+    let closed = false;
+    while (scan < lines.length) {
+      const trimmed = lines[scan].trim();
+      if (trimmed === '' || blockConstructRe.test(trimmed)) break;
+      if (tagTail !== null && wouldSpliceTagToken(tagTail, trimmed)) break;
+      segments.push(trimmed);
+      scan += 1;
+      if (tagTail !== null) {
+        tagTail = trimmed.indexOf(']') === -1 ? trimmed : null;
+      } else if (tagRegion !== null) {
+        tagRegion = `${tagRegion} ${trimmed}`;
+        const opened = tagRegionRe.exec(tagRegion);
+        if (opened === null) tagRegion = null;
+        else if (opened[1] !== undefined) {
+          tagTail = opened[1];
+          tagRegion = null;
+        }
+      }
+      if (trimmed.indexOf('**') !== -1) {
+        closed = true;
+        break;
+      }
+    }
+
+    if (closed) {
+      joined.push(segments.join(' '));
+      i = scan - 1;
+    } else {
+      joined.push(line);
+    }
+  }
+
+  return joined;
+}
+
 interface ParseDecisionLinesResult {
   decisions: Decision[];
   parseMisses: number;
@@ -119,9 +329,12 @@ interface ParseDecisionLinesResult {
  * FIX B (#1365): parseMisses > 0 means the caller must treat the result as
  * could-not-parse even when some decisions were extracted — a silent drop is
  * worse than a fail-loud signal.
+ *
+ * #3939: physical lines are folded into logical bullets first, so a declaration
+ * whose bold lead-in wraps is matched as the one bullet it is.
  */
 function parseDecisionLines(block: string): ParseDecisionLinesResult {
-  const lines = block.split(/\r?\n/);
+  const lines = joinWrappedBoldLeadIns(block.split(/\r?\n/));
   const out: Decision[] = [];
   let category = '';
   let inDiscretion = false;

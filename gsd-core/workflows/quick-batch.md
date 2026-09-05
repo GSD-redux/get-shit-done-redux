@@ -1,3 +1,4 @@
+@~/.claude/gsd-core/references/response-language-directive.md
 <purpose>
 Batch several `/gsd:quick`-shaped tasks together (#3676, epic #3344, ADR-1239
 "Quick-batch binding"). ONE coordinator (this workflow) owns every shared

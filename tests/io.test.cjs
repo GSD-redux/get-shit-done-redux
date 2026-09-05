@@ -395,7 +395,9 @@ function bug1008ChunkOf(data, offset, length) {
     const end = length === undefined ? data.length : start + length;
     return data.subarray(start, end).toString('utf8');
   }
-  return String(data);
+  const str = String(data);
+  if (length === undefined) return str;
+  return Buffer.from(str, 'utf8').subarray(0, length).toString('utf8');
 }
 
 function bug1008WriteError(code, errno) {
@@ -415,9 +417,19 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
       if (fd !== 1) return orig(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11); // pipe momentarily full
-      const chunk = bug1008ChunkOf(data, offset, length);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
+      // #4306: deliver the retried write for real via `orig` rather than
+      // fabricating a byte count while discarding it. node:test's own
+      // process-isolated runner reads this file's real stdout to parse its
+      // child-to-parent result protocol; a stray write from that protocol
+      // landing on fd 1 while this mock is installed would otherwise be
+      // silently swallowed instead of reaching the real pipe, corrupting the
+      // parent's parse ("Unable to deserialize cloned data"). The pushed
+      // chunk is derived from `orig`'s real return count (never the
+      // requested length) so a genuine short write from the real fd is
+      // reflected accurately, matching the short-write test's pattern below.
+      const n = orig(fd, data, offset, length);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     });
 
     const payload = { ok: true, n: 42 };
@@ -434,9 +446,11 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
       if (fd !== 1) return orig(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EINTR', -4);
-      const chunk = bug1008ChunkOf(data, offset, length);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
+      // #4306: see the EAGAIN test above — deliver the retried write for
+      // real, and derive the pushed chunk from its real return count.
+      const n = orig(fd, data, offset, length);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     });
 
     assert.doesNotThrow(() => io.output('plain', true, 'PLAIN-RAW'));
@@ -449,10 +463,29 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
     const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
       if (fd !== 1) return orig(fd, data, offset, length);
+      if (!Buffer.isBuffer(data)) {
+        // Only Buffer-form writes (what io.output actually produces) are
+        // subject to the simulated short-write cap below. Anything else
+        // sharing fd 1 during this window (e.g. node:test's own interleaved
+        // report traffic, which can be string-form) must pass through with
+        // its real arguments — forcing it through the Buffer-shaped
+        // truncation math below would corrupt fs.writeSync's string-form
+        // overload (its 3rd/4th args are position/encoding, not
+        // offset/length).
+        return orig(fd, data, offset, length);
+      }
       const chunk = bug1008ChunkOf(data, offset, length);
       const part = chunk.slice(0, CAP);
-      written.push(part);
-      return Buffer.byteLength(part, 'utf8');
+      const partLen = Buffer.byteLength(part, 'utf8');
+      // #4306: deliver the truncated slice for real via `orig`, at the
+      // simulated cap, instead of fabricating a byte count while discarding
+      // the write — see the EAGAIN test above for why a swallowed write on a
+      // shared fd is unsafe. `orig`'s own return is used below so a real
+      // short write from the kernel (rather than our simulated one) is still
+      // reflected accurately.
+      const n = orig(fd, data, offset ?? 0, partLen);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     });
 
     const payload = { message: 'a reasonably long ascii payload to force many short writes' };
@@ -508,9 +541,13 @@ describe('bug #1008: io.error() tolerates a full non-blocking stderr pipe', () =
       if (fd !== 2) return restore(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11);
-      const chunk = bug1008ChunkOf(data, offset, length);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
+      // #4306: forward the retried write to the real writeSync instead of
+      // fabricating a byte count — see the io.output() EAGAIN test above.
+      // The pushed chunk is derived from the real return count, not the
+      // requested length.
+      const n = restore(fd, data, offset, length);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     };
     try {
       assert.throws(

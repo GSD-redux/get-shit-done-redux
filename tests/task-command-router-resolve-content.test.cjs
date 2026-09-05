@@ -14,12 +14,12 @@
  * injection convention — no subprocess spawn needed for these rows.
  */
 
-const { test, describe, mock } = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, captureFdSync } = require('./helpers.cjs');
 
 const { routeResolveContent } = require('../gsd-core/bin/lib/task-command-router.cjs');
 const { ExitError } = require('../gsd-core/bin/lib/cli-exit.cjs');
@@ -42,21 +42,7 @@ function writePlan(dir, taskXml) {
  * body still work).
  */
 function captureStdout(fn) {
-  const chunks = [];
-  const origWriteSync = fs.writeSync.bind(fs);
-  const writeMock = mock.method(fs, 'writeSync', (fd, buffer, ...rest) => {
-    if (fd === 1) {
-      chunks.push(Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer));
-      return Buffer.isBuffer(buffer) ? buffer.length : Buffer.byteLength(String(buffer));
-    }
-    return origWriteSync(fd, buffer, ...rest);
-  });
-  try {
-    fn();
-  } finally {
-    writeMock.mock.restore();
-  }
-  return chunks.join('');
+  return captureFdSync(1, fn);
 }
 
 /**
@@ -72,21 +58,7 @@ function captureStdout(fn) {
  * `runCalibrateExpectError`.
  */
 function captureStderr(fn) {
-  const chunks = [];
-  const origWriteSync = fs.writeSync.bind(fs);
-  const writeMock = mock.method(fs, 'writeSync', (fd, buffer, ...rest) => {
-    if (fd === 2) {
-      chunks.push(Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer));
-      return Buffer.isBuffer(buffer) ? buffer.length : Buffer.byteLength(String(buffer));
-    }
-    return origWriteSync(fd, buffer, ...rest);
-  });
-  try {
-    fn();
-  } finally {
-    writeMock.mock.restore();
-  }
-  return chunks.join('');
+  return captureFdSync(2, fn);
 }
 
 const RESOLVABLE_TASK = '<task type="auto" tracker-id="test:1"><name>x</name><action>do the thing</action></task>';

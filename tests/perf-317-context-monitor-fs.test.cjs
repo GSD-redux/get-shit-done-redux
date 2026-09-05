@@ -8,6 +8,13 @@
  *   1. metrics file (early-exit path when absent)
  *   2. config.json (defaults when absent)
  *   3. warn sentinel (first-warn vs debounce)
+ *
+ * This file has since become the home for context-monitor behaviour generally,
+ * folded in rather than split into per-bug files, per the repo convention:
+ *   - #2289 — output-envelope allowlist; side effects still run on silent events
+ *   - #1974 — one-time critical-session breadcrumb
+ *   - #3709 — PreCompact clears the warn sentinel AND the metrics bridge
+ * Extend this list when folding in the next one.
  */
 
 'use strict';
@@ -1137,6 +1144,31 @@ describe('#2289 context-monitor: injection events still warn (unchanged)', () =>
     const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 25 });
     assert.strictEqual(JSON.parse(stdout).hookSpecificOutput.severity, 'critical');
   });
+
+  // Review of #3709 (Major 3): complete the limit-1/limit/limit+1 trios on the
+  // EMIT path for both thresholds. 36/35 (WARNING) and 25 (CRITICAL) are pinned
+  // above; these close the trios. 26 is the row that separates the two
+  // comparisons — a `< CRITICAL_THRESHOLD` regression keeps 25 CRITICAL-looking
+  // tests green while silently reclassifying nothing, but 24-as-CRITICAL plus
+  // 26-as-WARNING-not-CRITICAL pins the `<=` on both sides.
+  test('PostToolUse at 34% (WARNING limit-1) → still WARNING envelope', () => {
+    const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 34 });
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT WARNING/);
+  });
+
+  test('PostToolUse at 26% (CRITICAL limit+1) → WARNING, not CRITICAL', () => {
+    const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 26 });
+    const msg = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(msg, /CONTEXT WARNING/, '26% is inside WARNING territory');
+    assert.doesNotMatch(msg, /CONTEXT CRITICAL/,
+      '26% must NOT be CRITICAL — the threshold is `remaining <= 25`, and one-off-the-limit is '
+      + 'exactly where an off-by-one in the comparison hides');
+  });
+
+  test('PostToolUse at 24% (CRITICAL limit-1) → CRITICAL envelope', () => {
+    const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 24 });
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT CRITICAL/);
+  });
 });
 
 describe('#2289 context-monitor: side effects still fire on silent events (no output ≠ no side effect)', () => {
@@ -1156,3 +1188,1308 @@ describe('#2289 context-monitor: side effects still fire on silent events (no ou
 });
   });
 }
+
+/**
+ * #3709 — the warn sentinel must not survive a compaction.
+ *
+ * The hook was already wired to PreCompact (#772), but read the event only at
+ * the END, to pick an output envelope. So `lastLevel` stayed pinned at
+ * 'critical' for the rest of the session and two DOCUMENTED behaviours died:
+ * "First warning always fires immediately" and "Severity escalation
+ * (WARNING -> CRITICAL) bypasses debounce" (the context-monitor reference,
+ * "Debounce" section) — the latter computed as `lastLevel === 'warning'`, which can never be true again.
+ *
+ * These rows drive a SEQUENCE against one session id, because the defect is
+ * about state carried ACROSS calls. The helpers above deliberately delete the
+ * sentinel after every invocation, so this block needs its own driver.
+ */
+describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
+  const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
+  const UNLINK_EPERM_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-unlink-eperm-preload.cjs');
+  // Same clock-pinning seam the threshold trios below use, available here so a
+  // row whose CLAIM is about timing can drive the real sequence with exact
+  // arithmetic rather than a future-stamped bridge (round 4, Major 1).
+  const NOW_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-fixed-now-preload.cjs');
+  // A fixed instant for the rows that drive the compaction sequence by exact
+  // arithmetic. Any stable value works; this one is far from any real clock so
+  // an unpinned child cannot accidentally satisfy the assertions.
+  const SEQ_NOW_MS = 1_800_000_000_000;
+  const SEQ_NOW_S = Math.floor(SEQ_NOW_MS / 1000);
+
+  function makeSession(t, { gsdActive = false, contextWarnings = null } = {}) {
+    const dir = os.tmpdir();
+    const id = `fix-3709-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const metricsPath = path.join(dir, `claude-ctx-${id}.json`);
+    const warnPath = path.join(dir, `claude-ctx-${id}-warned.json`);
+    const watermarkPath = path.join(dir, `claude-ctx-${id}-compacted.json`);
+    let cwd = dir;
+    let projDir = null;
+    if (gsdActive) {
+      projDir = fs.mkdtempSync(path.join(dir, 'fix-3709-proj-'));
+      fs.mkdirSync(path.join(projDir, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(projDir, '.planning', 'STATE.md'), '# State\n');
+      if (contextWarnings !== null) {
+        fs.writeFileSync(path.join(projDir, '.planning', 'config.json'),
+          JSON.stringify({ hooks: { context_warnings: contextWarnings } }));
+      }
+      cwd = projDir;
+    }
+    t.after(() => {
+      for (const p of [metricsPath, warnPath, watermarkPath]) { try { fs.unlinkSync(p); } catch { /* absent */ } }
+      if (projDir) { try { cleanup(projDir); } catch { /* best effort */ } }
+    });
+
+    return {
+      warnPath,
+      watermarkPath,
+      metricsPath,
+      // Drive one hook invocation at a given remaining%, WITHOUT touching the
+      // sentinel — that is the state under test. `metrics` selects how the
+      // statusline bridge is presented:
+      //   true    — write a fresh reading (the default)
+      //   false   — no bridge at all, how a real PreCompact arrives
+      //   'keep'  — leave whatever is already there, STALE. This is the shape the
+      //             Major 1 rows need: after a compaction the bridge still holds
+      //             the pre-compaction reading until the statusline next renders.
+      //             Using `false` there would delete the very thing under test and
+      //             the row would pass for the wrong reason.
+      //
+      // Returns the EXIT CODE as well as stdout. An earlier version swallowed the
+      // exit status, which made `assert.doesNotThrow` vacuous: a hook that exited
+      // 1 on an ENOENT unlink would still have passed, because the assertion only
+      // saw the helper's own catch.
+      // `failUnlinkMatching` injects an EPERM into the CHILD's fs.unlinkSync for
+      // every path containing the given substring, via --require preload — the
+      // review-of-#3709 (Blocker 2) seam for the unlink-failure fallback. Method
+      // monkeypatching, never chmod 0o000: root bypasses mode bits under
+      // Docker/CI, so a chmod row passes with zero coverage.
+      // `lstatClaimsFileMatching` additionally makes the child's lstat report a
+      // REGULAR FILE for matching paths — the lstat→open substitution-race
+      // shape, so the O_NOFOLLOW backstop is the guard actually exercised
+      // (review of #3808, round 3, Minor 3).
+      // `nowMs` pins the CHILD's Date.now via the same --require seam the
+      // STALE trio uses, and `bridgeTimestamp` stamps the bridge explicitly.
+      // Together they let a row drive the real production sequence with exact
+      // arithmetic instead of a future-stamped reading (review of #3808,
+      // round 4, Major 1).
+      //
+      // `env` overrides the child's environment. Without it the child
+      // inherited process.env wholesale, so two rows silently depended on
+      // ambient GEMINI_API_KEY and failed outright on any machine or CI lane
+      // that set it (review of #3808, round 4, Major 2). The sibling
+      // `runMonitor` helper in this file has taken an explicit env for exactly
+      // this reason all along. A key set to `undefined` is UNSET in the child,
+      // which is what pinning an ambient variable requires.
+      call(event, remaining, {
+        metrics = true,
+        failUnlinkMatching = null,
+        lstatClaimsFileMatching = null,
+        shrinkAfterLstatMatching = null,
+        shortWriteMarker = null,
+        nowMs = null,
+        bridgeTimestamp = null,
+        env: envOverrides = null,
+      } = {}) {
+        if (metrics === 'keep') {
+          // leave the bridge exactly as the previous call left it
+        } else if (metrics) {
+          fs.writeFileSync(metricsPath, JSON.stringify({
+            session_id: id,
+            remaining_percentage: remaining,
+            used_pct: 100 - remaining,
+            // Default +62s: deliberately beyond the compaction grace window
+            // (COMPACT_GRACE_SECONDS=60, +2 for the same-second start). These
+            // tests run PreCompact and the next PostToolUse inside one second,
+            // while a real post-compaction WARNING arrives minutes later when
+            // the context re-climbs — inside the grace window every alarming
+            // reading is dropped BY DESIGN (a mid-compaction render is
+            // indistinguishable from it). Future-stamping models "a reading
+            // from after the window" without touching the staleness math (a
+            // negative age is never > 60).
+            //
+            // It is a MODELLING SHORTCUT, not a shape the real writer emits:
+            // hooks/gsd-statusline.js always stamps Math.floor(Date.now()/1000)
+            // on the same clock. Rows whose CLAIM is about the timing itself
+            // must not rest on it — they pass `nowMs` + `bridgeTimestamp` and
+            // drive the real sequence instead (round 4, Major 1).
+            timestamp: bridgeTimestamp == null
+              ? Math.floor(Date.now() / 1000) + 62
+              : bridgeTimestamp,
+          }));
+        } else {
+          try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
+        }
+        let stdout = '';
+        let exitCode = 0;
+        const usePreload = failUnlinkMatching || lstatClaimsFileMatching || shrinkAfterLstatMatching || shortWriteMarker;
+        const preloads = [];
+        if (usePreload) preloads.push('--require', UNLINK_EPERM_PRELOAD);
+        if (nowMs != null) preloads.push('--require', NOW_PRELOAD);
+        const argv = [...preloads, HOOK];
+        const env = {
+          ...process.env,
+          ...(failUnlinkMatching ? { GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching } : {}),
+          ...(lstatClaimsFileMatching ? { GSD_TEST_LSTAT_CLAIMS_FILE_MATCH: lstatClaimsFileMatching } : {}),
+          ...(shrinkAfterLstatMatching ? { GSD_TEST_SHRINK_AFTER_LSTAT_MATCH: shrinkAfterLstatMatching } : {}),
+          ...(shortWriteMarker ? { GSD_TEST_SHORT_WRITE_MATCH: shortWriteMarker } : {}),
+          ...(nowMs != null ? { GSD_TEST_NOW_MS: String(nowMs) } : {}),
+          ...(envOverrides || {}),
+        };
+        for (const k of Object.keys(env)) { if (env[k] === undefined) delete env[k]; }
+        try {
+          stdout = execFileSync(process.execPath, argv, {
+            input: JSON.stringify({ session_id: id, cwd, hook_event_name: event }),
+            encoding: 'utf8',
+            timeout: 8000,
+            env,
+          });
+        } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
+        return { stdout: String(stdout), exitCode };
+      },
+      warn() {
+        try { return JSON.parse(fs.readFileSync(warnPath, 'utf8')); } catch { return null; }
+      },
+      // Raw file contents (or null when absent) — the truncation rows assert on
+      // the exact byte content, because `warn()` cannot distinguish "absent"
+      // from "present but unparseable", and that distinction IS the fallback.
+      warnRaw() {
+        try { return fs.readFileSync(warnPath, 'utf8'); } catch { return null; }
+      },
+      metricsRaw() {
+        try { return fs.readFileSync(metricsPath, 'utf8'); } catch { return null; }
+      },
+      // The bridge filename (claude-ctx-<id>.json) ends with this, the sentinel
+      // (claude-ctx-<id>-warned.json) and watermark (claude-ctx-<id>-compacted
+      // .json) do not — a match string that fails ONLY the bridge unlink.
+      bridgeMatch: `${id}.json`,
+      metrics() {
+        try { return JSON.parse(fs.readFileSync(metricsPath, 'utf8')); } catch { return null; }
+      },
+      watermark() {
+        try { return JSON.parse(fs.readFileSync(watermarkPath, 'utf8')); } catch { return null; }
+      },
+      // Write the bridge EXACTLY as given (plus session_id) — the statusline-
+      // race rows need full control of the timestamp, which call()'s fresh
+      // stamp deliberately does not offer.
+      writeBridge(fields) {
+        fs.writeFileSync(metricsPath, JSON.stringify({ session_id: id, ...fields }));
+      },
+      seed(data) { fs.writeFileSync(warnPath, JSON.stringify(data)); },
+    };
+  }
+
+  test('AC1: a PreCompact event clears a sentinel pinned at critical', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    assert.strictEqual(s.warnRaw(), null,
+      'the sentinel must be GONE after a compaction — a compact restarts the context lifecycle, '
+      + 'so carrying lastLevel:critical across it disables escalation for the rest of the session');
+  });
+
+  test('AC1: PreCompact is tolerant of the sentinel already being absent', (t) => {
+    const s = makeSession(t);
+    assert.strictEqual(s.warnRaw(), null, 'precondition: no sentinel');
+    // Asserted on the EXIT CODE, not on "did not throw". The driver catches every
+    // child failure, so doesNotThrow would hold even for a hook that exited 1 on
+    // the ENOENT unlink — the row would have proved nothing.
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0,
+      'the common case is no warning having fired this cycle; an absent sentinel is success, and a '
+      + 'compaction must never be failed by this hook');
+    assert.strictEqual(s.warnRaw(), null, 'and it stays absent');
+  });
+
+  // Review of #3709: every other row writes a fresh metrics file, so the reset could
+  // be moved BELOW the metrics read, the stale check or the healthy-threshold exit
+  // and all of them would stay green — while a real PreCompact, which carries no
+  // fresh metrics and follows a recovery to healthy usage, silently kept its
+  // sentinel. These two rows pin the placement itself.
+  test('placement: the reset fires with NO metrics file at all', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const r = s.call('PreCompact', 20, { metrics: false });
+    assert.strictEqual(r.exitCode, 0, 'a PreCompact without metrics must still exit cleanly');
+    assert.strictEqual(s.warnRaw(), null,
+      'a real PreCompact carries no bridge metrics — if the reset sat below the metrics read, the '
+      + 'ENOENT branch would exit first and the sentinel would survive every genuine compaction');
+  });
+
+  test('placement: the reset fires when usage has recovered to healthy', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    // 80% remaining is above the WARNING threshold — the shape right after a
+    // compaction, and an early `process.exit(0)` for every path below the reset.
+    assert.strictEqual(s.call('PreCompact', 80).exitCode, 0);
+    assert.strictEqual(s.warnRaw(), null,
+      'post-compaction usage is healthy again, so a reset placed below the above-threshold exit '
+      + 'would never run — which is exactly the state the issue reported in a live session');
+  });
+
+  // Review of #3709: the config gate is an early exit that sits ABOVE the reset's
+  // original position, so a session that disabled warnings, compacted, and then
+  // re-enabled them resurrected the stale sentinel and the bug with it. Config is
+  // re-read per invocation, so that sequence is supported, not hypothetical.
+  test('placement: the reset fires even when context warnings are disabled', (t) => {
+    const s = makeSession(t, { gsdActive: true, contextWarnings: false });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    assert.strictEqual(s.warnRaw(), null,
+      'clearing the sentinel is CLEANUP, not a warning — state that must not outlive a compaction '
+      + 'should not outlive it merely because warnings are switched off for now');
+  });
+
+  // AC2 and AC3 drive the REAL post-compaction sequence, on a pinned clock,
+  // with the bridge stamped the way hooks/gsd-statusline.js stamps it
+  // (Math.floor(Date.now()/1000), never ahead of the reader).
+  //
+  // An earlier cut drove them through call()'s default bridge, stamped 62
+  // seconds in the FUTURE — a shape the real writer cannot produce on the same
+  // machine and clock. That proved only "the sentinel was cleared" while the
+  // assertion messages claimed the documented immediate-warning behaviour,
+  // which in production is gated behind the grace window and went unexercised;
+  // a future hardening that rejected future-stamped readings would have redded
+  // both rows with no real regression behind it (review of #3808, round 4,
+  // Major 1). The clock-pinning seam already existed for the STALE trio and is
+  // simply reused here, so the timing these rows CLAIM is the timing they RUN.
+  test('AC2: after a compaction the first WARNING fires immediately, not debounced', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    // A real PreCompact carries no fresh bridge reading.
+    assert.strictEqual(s.call('PreCompact', 20, { metrics: false, nowMs: SEQ_NOW_MS }).exitCode, 0);
+    assert.strictEqual(s.watermark().at, SEQ_NOW_S,
+      'the watermark is stamped on the pinned clock — the arithmetic below is exact, not a race');
+    // The statusline's first render after the compaction completes and the
+    // context has re-climbed: current reading, current stamp, one second past
+    // the grace window.
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: SEQ_NOW_S + 61 });
+    const { stdout } = s.call('PostToolUse', 30, { metrics: 'keep', nowMs: SEQ_NOW_MS + 61_000 });
+    assert.match(stdout, /CONTEXT WARNING/,
+      'The context-monitor reference states "First warning always fires immediately". Before the fix '
+      + 'this was silently debounced: the surviving sentinel made it look like a repeat warning');
+  });
+
+  test('AC3: after a compaction a WARNING -> CRITICAL escalation bypasses debounce', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20, { metrics: false, nowMs: SEQ_NOW_MS }).exitCode, 0);
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: SEQ_NOW_S + 61 });
+    s.call('PostToolUse', 30, { metrics: 'keep', nowMs: SEQ_NOW_MS + 61_000 });
+    assert.strictEqual(s.warn().lastLevel, 'warning', 'the fresh cycle recorded a WARNING');
+    s.writeBridge({ remaining_percentage: 20, used_pct: 80, timestamp: SEQ_NOW_S + 62 });
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep', nowMs: SEQ_NOW_MS + 62_000 });
+    assert.match(stdout, /CONTEXT CRITICAL/,
+      'The context-monitor reference states "Severity escalation (WARNING -> CRITICAL) bypasses '
+      + 'debounce". That bypass is `lastLevel === "warning"`, unreachable while a stale sentinel lives');
+  });
+
+  test('AC4: after a compaction the critical-session breadcrumb can be recorded again', (t) => {
+    const s = makeSession(t, { gsdActive: true });
+    // A distinguishing marker, because asserting `criticalRecorded === true` alone
+    // is VACUOUS here — the stale sentinel already carries true, so the row would
+    // pass with or without the fix. The marker can only survive by the sentinel
+    // surviving, so its absence is what proves the state was REBUILT rather than
+    // carried across the compaction.
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true, staleProbe: 'pre-compact' });
+    s.call('PreCompact', 20);
+    s.call('PostToolUse', 20);
+    const after = s.warn();
+    assert.strictEqual(after.staleProbe, undefined,
+      'the post-compaction sentinel must be a NEW file — any field carried over means the pre-compact '
+      + 'state survived, and with it the sticky criticalRecorded guard');
+    assert.strictEqual(after.criticalRecorded, true,
+      'criticalRecorded is equally sticky: without the reset the #1974 /gsd:resume-work breadcrumb '
+      + 'keeps describing the earlier near-miss instead of the exhaustion that ended the session');
+  });
+
+  // Review of #3709, Major 1. Every row above writes a FRESH metrics file before
+  // each call, which is precisely the shape real life does not guarantee. The
+  // statusline owns the bridge and rewrites it on render; between the compaction
+  // and that next render the bridge still holds the PRE-compaction reading, and
+  // STALE_SECONDS is 60, so it still reads fresh and still says "exhausted".
+  //
+  // Clearing only the sentinel turned that window into a spurious CRITICAL fired
+  // immediately after the compaction that freed the context — and a FALSE
+  // exhaustion breadcrumb, the same inaccuracy #3709 exists to fix, from the
+  // other side. So the compaction clears the reading as well as the state.
+  test('Major 1: a PreCompact leaves no stale reading for the next tool use', (t) => {
+    const s = makeSession(t, { gsdActive: true });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    // 'keep', NOT false: the defect is a bridge that is still THERE and still
+    // reads fresh. Deleting it would make the row pass on the ENOENT early-exit
+    // instead of on the fix — vacuous, and it was, until a mutation showed it.
+    //
+    // HONEST SCOPE (Codex review of #3808, round 4): this row asserts the
+    // COMPOSED post-compaction behaviour, not bridge deletion in isolation. Its
+    // sensitivity to a bridge-deletion regression rests on call()'s future
+    // stamp; with a production stamp the watermark would suppress the same
+    // reading and the row would stay green either way. The two guards genuinely
+    // overlap inside the window, so no end-to-end row can separate them. The
+    // DIRECT pin for bridge deletion is the next row, which asserts
+    // s.metrics() === null and cannot be satisfied by the watermark.
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'the next tool use after a compaction must not warn off a pre-compaction reading — the '
+      + 'context was just FREED, so telling the agent to stop is exactly backwards');
+    assert.strictEqual(s.warnRaw(), null,
+      'and criticalRecorded must not be re-armed off that stale reading, or the session records a '
+      + 'context-exhaustion breadcrumb for an exhaustion that did not happen');
+  });
+
+  test('Major 1: the compaction clears the metrics bridge itself', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    assert.strictEqual(s.metrics(), null,
+      'the bridge holds the reading that produced the warning state; a compaction invalidates '
+      + 'both, and the statusline rewrites it on the next render');
+  });
+
+  test('AC5 (non-vacuity): a NON-compaction lifecycle event does NOT clear the sentinel', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const { stdout } = s.call('Stop', 20);
+    assert.strictEqual(stdout, '', 'Stop stays silent (#2289)');
+    assert.ok(s.warn(), 'Stop must NOT clear the sentinel — if this fails the reset is firing for '
+      + 'every event, not just PreCompact, and the debounce is gone entirely');
+  });
+
+  test('PreCompact does not consume a debounce slot', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'warning' });
+    s.call('PreCompact', 20);
+    // Asserted at the OBSERVABLE consequence rather than on the sentinel being
+    // absent, which AC1 already covers: the whole side-effect pipeline used to
+    // run for PreCompact, advancing callsSinceWarn 0 -> 1 and eating a slot from
+    // the very cycle the compaction was supposed to restart. If a slot were
+    // still consumed, this first post-compaction warning would be debounced.
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'the cycle after a compaction starts fresh, so its first warning fires immediately');
+  });
+
+  // Review of #3709, Blockers 1+2. The unlink-failure fallback is the branch a
+  // held Windows handle takes, and it used to write well-formed NEUTRAL values —
+  // which are not equivalent to deletion on either path. These rows execute the
+  // branch for real (EPERM injected into the child's fs.unlinkSync via preload)
+  // and pin each half at its observable consequence. The '' assertions are also
+  // the proof the injection fired: a preload that failed to match would let the
+  // unlink succeed and leave `null`, not ''.
+  //
+  // WINDOWS: the truncating write-open itself fails DETERMINISTICALLY on the CI
+  // runners (observed on both windows-latest lanes: files freshly written by
+  // the parent are held with a share mode that allows DELETE — every
+  // real-unlink row passes — but refuses a write-open, so the give-up arm
+  // engages). The fallback is best-effort BY DESIGN, so the rows tolerate the
+  // give-up there, but still pin the Blocker-1 class on every platform: the
+  // only legal states are TRUNCATED or UNTOUCHED — a parseable neutral value
+  // ('{}' / '{"timestamp":0}') is never legal anywhere. The behavioural
+  // follow-ons are asserted only where the truncation actually landed.
+  test('Blocker: sentinel unlink EPERM → truncated to empty, and AC2 still holds on this path', (t) => {
+    const s = makeSession(t);
+    const seeded = { callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true };
+    s.seed(seeded);
+    const r = s.call('PreCompact', 20, { failUnlinkMatching: '-warned.json' });
+    assert.strictEqual(r.exitCode, 0, 'a failed unlink must never fail the compaction');
+    const raw = s.warnRaw();
+    if (process.platform === 'win32') {
+      assert.ok(raw === '' || raw === JSON.stringify(seeded),
+        `sentinel must be truncated or untouched, never a neutral value; got ${JSON.stringify(raw)} — `
+        + 'the old {} parsed fine, so firstWarn was false and the first post-compaction warning '
+        + 'was debounced: AC2 of #3709 undone on exactly the path the fallback exists for');
+      if (raw !== '') {
+        // A VISIBLE skip, never a silent if: a platform that stops reaching
+        // the behavioural half must show in the run output rather than count
+        // as a pass (review of #3808, round 3, Minor 5).
+        t.skip('truncation did not land (Windows share-mode hold on fresh files) — the '
+          + 'neutral-value class is pinned above; the behavioural follow-on is provable only '
+          + 'where truncation lands, and the POSIX lanes prove it');
+        return;
+      }
+    } else {
+      assert.strictEqual(raw, '',
+        'the sentinel must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral {} '
+        + 'parsed fine, so firstWarn was false and the first post-compaction warning was debounced: '
+        + 'AC2 of #3709 still unfixed on exactly the path the fallback exists for');
+    }
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unparseable sentinel IS the reset: the first warning of the new cycle fires immediately');
+  });
+
+  test('Blocker: bridge unlink EPERM → truncated to empty, silent — never "Usage at undefined%"', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const r = s.call('PreCompact', 20, { failUnlinkMatching: s.bridgeMatch });
+    assert.strictEqual(r.exitCode, 0, 'a failed unlink must never fail the compaction');
+    const raw = s.metricsRaw();
+    if (process.platform === 'win32') {
+      assert.ok(raw === '' || (raw !== null && (JSON.parse(raw).timestamp || 0) > 0),
+        `bridge must be truncated or untouched, never a neutral value; got ${JSON.stringify(raw)} — `
+        + 'the old {"timestamp":0} was NEVER stale (the staleness guard is falsy at 0), so the '
+        + 'flow reached emit with remaining === undefined');
+      if (raw !== '') {
+        t.skip('truncation did not land (Windows share-mode hold on fresh files) — the '
+          + 'neutral-value class is pinned above; the behavioural follow-on is provable only '
+          + 'where truncation lands, and the POSIX lanes prove it');
+        return;
+      }
+    } else {
+      assert.strictEqual(raw, '',
+        'the bridge must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral '
+        + '{"timestamp":0} was NEVER stale (the staleness guard is `metrics.timestamp && ...` and 0 '
+        + 'is falsy), so the flow reached emit with remaining === undefined');
+    }
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'the next tool use must be SILENT: an unreadable bridge falls to the outer catch and exits 0 '
+      + '— re-entering the prior round\'s Major as a literal "CONTEXT WARNING: Usage at undefined%" '
+      + 'injection is the failure mode this row pins shut');
+    assert.strictEqual(s.warnRaw(), null,
+      'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
+  });
+
+  test('the truncation fallback refuses to follow a planted symlink', (t) => {
+    // Codex review of #3808. The per-session paths live in a shared sticky
+    // tmpdir, where "unlink fails with EPERM" is exactly what a file PLANTED by
+    // another user produces — so the fallback's write must not follow links: a
+    // plain truncating write would empty out the symlink's TARGET, weaponising
+    // the hook against any file its own user can write. This row pins the
+    // LSTAT guard — lstat sees the link and the open is never reached; the
+    // O_NOFOLLOW backstop is exercised by the substitution-race row below
+    // (review of #3808, round 3, Minor 3).
+    if (process.platform === 'win32') {
+      t.skip('symlink planting is a POSIX shared-sticky-tmpdir scenario; Windows temp is per-user');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(), `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(victim, 'precious victim bytes');
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+    fs.symlinkSync(victim, s.warnPath);
+
+    const r = s.call('PreCompact', 20, { failUnlinkMatching: '-warned.json' });
+    assert.strictEqual(r.exitCode, 0, 'refusing the symlink is a give-up, never a hook failure');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
+      'the symlink TARGET must be untouched — a truncating write that follows links empties it');
+    // Non-vacuity (Codex round 2): if the EPERM injection ever stops matching,
+    // the ordinary unlink simply REMOVES the symlink and the two assertions
+    // above still pass without the fallback ever running. The link surviving is
+    // the proof this row actually drove the refuse-to-follow branch.
+    assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
+      'the planted symlink must still be there — its absence means the unlink succeeded and the '
+      + 'fallback under test never executed');
+  });
+
+  test('O_NOFOLLOW backstops the lstat→open substitution race', (t) => {
+    // Review of #3808, round 3, Minor 3. The lstat guard and O_NOFOLLOW defend
+    // DIFFERENT things: lstat covers "the path is not a regular file",
+    // O_NOFOLLOW covers a symlink swapped in BETWEEN the lstat and the open.
+    // The preload makes the child's lstat claim a regular file for the planted
+    // symlink — exactly the race's shape — so the open itself is the only
+    // guard left, and dropping `| O_NOFOLLOW` from the flags ships red here
+    // instead of green.
+    if (process.platform === 'win32') {
+      t.skip('O_NOFOLLOW is a no-op on Windows (libuv defines it 0); the race backstop is POSIX-only');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(), `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(victim, 'precious victim bytes');
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+    fs.symlinkSync(victim, s.warnPath);
+
+    const marker = `${s.warnPath}.gsd-test-lstat-claimed`;
+    t.after(() => { try { fs.unlinkSync(marker); } catch { /* absent */ } });
+    const r = s.call('PreCompact', 20, {
+      failUnlinkMatching: '-warned.json',
+      lstatClaimsFileMatching: '-warned.json',
+    });
+    assert.strictEqual(r.exitCode, 0, 'ELOOP is a give-up, never a hook failure');
+    assert.ok(fs.existsSync(marker),
+      'the lstat-claim arm must PROVE it engaged — without the marker, a match string that '
+      + 'silently stops matching lets the real lstat refuse the symlink and every other '
+      + 'assertion here passes without O_NOFOLLOW ever being the guard under test');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
+      'with lstat blinded, only O_NOFOLLOW stands between the open and the victim — the target '
+      + 'must be untouched');
+    assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
+      'the planted symlink must survive — its absence means the injection never engaged');
+  });
+
+  test('round 11: the statusline bridge is read through the same hardening as the sentinels', (t) => {
+    // Review of #3808, round 11. `metricsPath` is built one line from `warnPath` and
+    // `watermarkPath` — same tmpdir, same predictable `claude-ctx-{sessionId}` shape, same
+    // threat model this PR documents at length — and it is the only one of the three read on
+    // EVERY invocation. It was also the only one still reached by a bare readFileSync, so the
+    // symlink-to-FIFO stall the other two were hardened against stayed reachable on the file's
+    // highest-traffic path. This row plants a symlink at the bridge and asserts the hook neither
+    // follows it nor fails.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows; the lstat half of the guard still '
+        + 'refuses a non-regular bridge there, and the directory row below covers it');
+      return;
+    }
+    const s = makeSession(t);
+    const planted = path.join(os.tmpdir(),
+      `fix-3709-planted-bridge-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    // A bridge that WOULD warn if it were followed: remaining=20 is CRITICAL territory, and the
+    // timestamp is current so it passes the staleness gate. Following the link emits; refusing
+    // it is silent. That asymmetry is what makes this row non-vacuous.
+    fs.writeFileSync(planted, JSON.stringify({
+      session_id: 'planted', remaining_percentage: 20, used_pct: 80,
+      timestamp: Math.floor(Date.now() / 1000),
+    }));
+    t.after(() => { try { fs.unlinkSync(planted); } catch { /* absent */ } });
+    fs.symlinkSync(planted, s.metricsPath);
+
+    const { stdout, exitCode } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(exitCode, 0, 'a refused bridge must never fail the hook');
+    assert.strictEqual(stdout, '',
+      'an attacker-chosen reading reached through a link must not drive a warning — following it '
+      + 'is a false-CRITICAL primitive, and a link to a FIFO stalls this synchronous read on the '
+      + 'one path that runs for every tool call');
+    assert.ok(fs.lstatSync(s.metricsPath).isSymbolicLink(),
+      'the planted link must survive — its absence means the hook rewrote the path and this row '
+      + 'passed without the guard ever being reached');
+  });
+
+  test('round 11: a non-regular bridge is refused without failing the hook', (t) => {
+    // The arm every platform runs. WHAT IT PINS, stated precisely because the obvious reading is
+    // wrong (Codex review of round 11): this row asserts the OUTCOME — a directory at the bridge
+    // path produces no warning and no failure — not that `lstat`'s isFile() check is what
+    // produced it. Measured: deleting `!st.isFile() ||` leaves this row green, because the read
+    // of a directory fails on its own one line later. The isFile() half is pinned by the symlink
+    // row above, where a bare read would have succeeded and emitted.
+    const s = makeSession(t);
+    fs.mkdirSync(s.metricsPath);
+    t.after(() => { try { fs.rmdirSync(s.metricsPath); } catch { /* absent */ } });
+
+    const { stdout, exitCode } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(exitCode, 0, 'refusing the bridge is a give-up, never a hook failure');
+    assert.strictEqual(stdout, '', 'and nothing is emitted off an object that is not a bridge');
+    assert.ok(fs.lstatSync(s.metricsPath).isDirectory(), 'the planted directory must survive');
+  });
+
+  test('round 11: an oversized bridge is refused rather than slurped', (t) => {
+    // The size bound is what stops a planted multi-megabyte file from being read into memory on
+    // every tool call. A legitimate bridge is four fixed fields (~140 bytes with a UUID session
+    // id, gsd-statusline.js), so nothing real approaches 4096.
+    const s = makeSession(t);
+    fs.writeFileSync(s.metricsPath, JSON.stringify({
+      session_id: 'x', remaining_percentage: 20, used_pct: 80,
+      timestamp: Math.floor(Date.now() / 1000), pad: 'x'.repeat(5000),
+    }));
+    const { stdout, exitCode } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(stdout, '', 'a bridge past the size bound is refused, not parsed');
+  });
+
+  test('round 11: readSentinel refuses a file that shrinks under the read', (t) => {
+    // Round 11, Minor. `fs.readSync`'s RETURN value was discarded and the buffer assumed full.
+    // A file truncated between the lstat and the read — an ordinary concurrent writer, not the
+    // planted-object case the rest of the function guards — leaves the tail zero-filled. The
+    // preload shrinks the file after lstat has measured it, the only way to produce a short read
+    // deterministically.
+    //
+    // WHAT THIS ROW PINS, stated because it is narrower than it looks: the END-TO-END outcome of
+    // a shrink, not the `bytesRead` guard itself. Measured by mutation — deleting the guard
+    // leaves this row GREEN, because the zero-filled tail makes JSON.parse throw one line later
+    // and both paths land in the same catch and degrade to "no sentinel". The guard has no
+    // observable behavioural delta; it is a consistency fix in a function whose whole purpose is
+    // refusing to trust what it read, and it is worth having for the same reason the lstat and
+    // O_NOFOLLOW checks are. No row here claims otherwise.
+    if (process.platform === 'win32') {
+      t.skip('the preload shrinks the file between lstat and read; Windows holds a share lock '
+        + 'that makes the truncation unreliable, and the guard itself is platform-independent');
+      return;
+    }
+    const s = makeSession(t);
+    // A sentinel whose ACCEPTANCE would suppress: critical→critical is not an escalation and
+    // callsSinceWarn=1 is under DEBOUNCE_CALLS, so a hook that trusted it stays silent. A hook
+    // that REFUSES it falls back to the default warnData, and the first warning of a fresh cycle
+    // is emitted immediately. That asymmetry is the whole row — with a sentinel that emitted
+    // either way, this would pass without the guard existing.
+    fs.writeFileSync(s.warnPath, JSON.stringify({
+      callsSinceWarn: 1, lastLevel: 'critical', criticalRecorded: true, pad: 'x'.repeat(400),
+    }));
+    const marker = `${s.warnPath}.gsd-test-shrunk`;
+    t.after(() => { try { fs.unlinkSync(marker); } catch { /* absent */ } });
+    const { stdout, exitCode } = s.call('PostToolUse', 20, {
+      shrinkAfterLstatMatching: '-warned.json',
+    });
+    assert.strictEqual(exitCode, 0, 'a short read is a refusal, never a hook failure');
+    // Non-vacuity, and NOT a size check on the sentinel: the hook rewrites that file later in
+    // the same invocation, so its size afterwards says nothing about whether the truncation
+    // landed (this row was written that way first and passed for the wrong reason).
+    assert.ok(fs.existsSync(marker),
+      'the shrink injection must PROVE it engaged — without the marker, a match string that '
+      + 'silently stops matching lets an ordinary full read satisfy every assertion here');
+    assert.match(stdout, /CONTEXT/,
+      'a refused sentinel degrades to "no sentinel", which is the same fresh-cycle behaviour '
+      + 'every other refusal in this function produces');
+  });
+
+  test('round 11: a short write is retried, not left as a truncated sentinel', (t) => {
+    // Codex review of round 11. `fs.writeSync` may write fewer bytes than it is given, and the
+    // return value was discarded — so a short write left a truncated sentinel on disk that every
+    // later read rejects, silently defeating the debounce accounting this write exists to record.
+    // The injection makes the first write of the payload return 1 byte, once; the loop under test
+    // must finish the rest. Without the loop the sentinel is `{` and the next invocation warns
+    // again instead of debouncing.
+    const s = makeSession(t);
+    const marker = path.join(os.tmpdir(), `fix-3709-shortwrite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    t.after(() => { try { fs.unlinkSync(`${marker}.gsd-test-short-write`); } catch { /* absent */ } });
+
+    const first = s.call('PostToolUse', 20, { shortWriteMarker: marker });
+    assert.strictEqual(first.exitCode, 0);
+    assert.ok(fs.existsSync(`${marker}.gsd-test-short-write`),
+      'the short-write injection must PROVE it engaged — without the marker this row exercises '
+      + 'an ordinary full write and proves nothing');
+    const raw = s.warnRaw();
+    assert.ok(raw && raw.length > 1,
+      `the sentinel must be complete after a short write, got ${JSON.stringify(raw)}`);
+    assert.doesNotThrow(() => JSON.parse(raw),
+      'a truncated sentinel is unparseable, which is how a short write silently lost the state');
+  });
+
+  test('round 11: a healthy bridge still drives a warning — the hardening is not a mute', (t) => {
+    // The direction that matters most: every row above asserts SILENCE, and silence is also what
+    // a hook that refused every bridge would produce. This is the same read path with an ordinary
+    // regular file, and it must still emit.
+    const s = makeSession(t);
+    const { stdout, exitCode } = s.call('PostToolUse', 20);
+    assert.strictEqual(exitCode, 0);
+    assert.match(stdout, /CONTEXT/,
+      'routing the bridge through readSentinel must not change what a normal reading does');
+  });
+
+  test('round 10: the watermark write refuses to follow a planted symlink', (t) => {
+    // Review of #3808, round 10. The PreCompact watermark write was the block
+    // writeSentinel was lifted from in round 7 and it kept its own inline copy
+    // until round 10 routed it through the helper. Nothing pinned that site:
+    // no other watermark row supplies a pre-existing object at the path before
+    // PreCompact writes — the sequence rows let PreCompact create it, the
+    // hardened-read rows below plant one afterwards and test the READ — so the
+    // write regressing to a bare writeFileSync, which follows a link and writes
+    // through to its target, shipped green (Codex, round 10, by mutation). This
+    // row plants the object BEFORE the write: the target must be untouched,
+    // and the path must end up a fresh regular file, which only
+    // unlink-then-O_EXCL produces.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows. A directory at the path does not tell '
+        + 'the two writes apart (both give up inside the branch-level catch with an identical '
+        + 'exit 0 — checked by mutation); a hard link would, but is unverified on Windows here '
+        + 'and not taken');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(), `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(victim, 'precious victim bytes');
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+    fs.symlinkSync(victim, s.watermarkPath);
+
+    const r = s.call('PreCompact', 20);
+    assert.strictEqual(r.exitCode, 0, 'a planted watermark path must never fail the hook');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
+      'the symlink TARGET must be untouched — a write that follows links lands the watermark JSON in it');
+    assert.ok(fs.lstatSync(s.watermarkPath).isFile() && !fs.lstatSync(s.watermarkPath).isSymbolicLink(),
+      'the path must now hold a plain regular file this process made — the unlink half removed the link');
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'and it must be a real watermark, not the link left in place');
+  });
+
+  test('round 3, Major 1: a statusline rewrite DURING the compaction cannot re-fire off the old reading', (t) => {
+    // PreCompact deletes the bridge, but the statusline is an uncoordinated
+    // process that re-writes it on every render — a render landing between the
+    // clear and the compaction's completion re-creates the PRE-compaction
+    // remaining with a CURRENT timestamp, sailing past STALE_SECONDS. The
+    // compaction watermark makes that reading identifiable: anything inside
+    // the grace window past the watermark is dropped.
+    const s = makeSession(t, { gsdActive: true });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
+    // the racing render: pre-compaction remaining, stamped in the same second
+    s.writeBridge({ remaining_percentage: 20, used_pct: 80, timestamp: wm.at });
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'a reading the compaction watermark covers must be dropped — warning off it tells the agent '
+      + 'to stop right after the compaction that freed the context');
+    assert.strictEqual(s.warnRaw(), null,
+      'and no false context-exhaustion breadcrumb may be re-armed off it');
+  });
+
+  test('round 3, Major 1: a DELAYED mid-compaction render is dropped too — the watermark marks the start, not the end', (t) => {
+    // Codex on the first watermark cut: PreCompact stamps the compaction's
+    // START, but the compaction keeps running — a statusline render one second
+    // later still carries the PRE-compaction reading, and "strictly newer than
+    // the watermark" admitted it. The grace window covers the compaction's own
+    // duration, so a reading barely past the watermark is still suspect.
+    const s = makeSession(t, { gsdActive: true });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
+    s.writeBridge({ remaining_percentage: 20, used_pct: 80, timestamp: wm.at + 1 });
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'one second past the watermark is still mid-compaction territory — the old reading under a '
+      + 'newer stamp must not re-fire the CRITICAL');
+    assert.strictEqual(s.warnRaw(), null, 'and no false breadcrumb may be re-armed off it');
+  });
+
+  test('round 3, Major 1: a reading from past the grace window still warns', (t) => {
+    // The non-vacuity half: the watermark must drop the compaction-window
+    // readings, not all readings — one clearly past the window passes and the
+    // fresh cycle behaves like a fresh session.
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
+    // COMPACT_GRACE_SECONDS is 60; +61 is the first second the window no longer covers
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: wm.at + 61 });
+    const { stdout } = s.call('PostToolUse', 30, { metrics: 'keep' });
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a reading past the grace window is the new cycle — it must warn immediately');
+  });
+
+  test('round 3: an insane FUTURE watermark is ignored, never a permanent mute', (t) => {
+    // Codex on the first watermark cut: a watermark stamped in the future — a
+    // clock step backwards, a stray or planted file — would otherwise drop
+    // every reading until wall-clock catches up: monitoring silently
+    // self-disabled. A watermark ahead of the reader's own clock is treated
+    // as garbage and the plain staleness rules apply.
+    const s = makeSession(t);
+    fs.writeFileSync(path.join(os.tmpdir(), `claude-ctx-${s.bridgeMatch.replace('.json', '')}-compacted.json`),
+      JSON.stringify({ at: Math.floor(Date.now() / 1000) + 3600 }));
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a future-stamped watermark must not be honored — dropping fresh readings against it mutes '
+      + 'the monitor indefinitely');
+  });
+
+  test('round 3, Minor 6: malformed hook_event_name values are silent, with side effects intact', (t) => {
+    // readEventName is TOTAL and STRICT about type: the old expression threw
+    // on a truthy non-string AFTER the side effects; hoisting would have moved
+    // the throw ahead of them; and a String() coercion renders ['PreCompact']
+    // as 'PreCompact' — running the RESET off a malformed payload — while a
+    // hostile toString still throws. typeof does neither: every non-string is
+    // "no event".
+    //
+    // GEMINI_API_KEY is pinned UNSET (round 4, Major 2). The preserved Gemini
+    // fallback is `eventName === "" && !!process.env.GEMINI_API_KEY`, and
+    // readEventName returned "" for every malformed name AT THE TIME THIS ROW
+    // WAS WRITTEN — so with the key set in the ambient environment this row's
+    // `stdout === ''` assertion failed outright: injection becomes supported
+    // and a 30%-remaining reading emits a CONTEXT WARNING. Reproduced by
+    // running this row under `GEMINI_API_KEY=x`. Round 7 then SUPERSEDED that
+    // behaviour: a present-but-non-string name returns null and only an ABSENT
+    // one returns "", so a malformed payload can no longer reach the fallback
+    // at all. The pin stays regardless — this row is about readEventName's
+    // typing, not about the fallback, and an ambient key would still change
+    // what it measures — so the dialect variable is fixed, not inherited.
+    // A FRESH SESSION PER SUBCASE (Codex review of #3808, round 4). Both
+    // subcases shared one session, and the sentinel is the thing being
+    // asserted: the `42` iteration left one behind, so the hostile-object
+    // iteration's `assert.ok(s.warn())` passed off the PREVIOUS iteration's
+    // side effect. A regression where a hostile object throws BEFORE the
+    // bookkeeping would have kept the row green — vacuous for exactly the
+    // subcase the row exists for.
+    const noGemini = { GEMINI_API_KEY: undefined };
+    for (const [label, badEvent] of [
+      ['number', 42],
+      ['object', { toString: 'not-callable' }],
+    ]) {
+      const s = makeSession(t);
+      assert.strictEqual(s.warnRaw(), null, `${label}: precondition — no sentinel from a prior subcase`);
+      const { stdout, exitCode } = s.call(badEvent, 30, { env: noGemini });
+      assert.strictEqual(exitCode, 0, `${label}: a malformed event name must never fail the hook`);
+      assert.strictEqual(stdout, '', `${label}: unknown events emit nothing (#2289 allowlist)`);
+      assert.ok(s.warn(), `${label}: the debounce side effect must still have run (#2289 contract)`);
+    }
+  });
+
+  test('round 7: a malformed event name does not inherit the Gemini fallback', (t) => {
+    // The row above pins malformed names with GEMINI_API_KEY UNSET, and its own
+    // comment records why: with the key SET, `stdout === ''` failed outright,
+    // because readEventName collapsed ABSENT and MALFORMED onto the same '' and
+    // the fallback `eventName === "" && !!GEMINI_API_KEY` then fired. That was
+    // pinned around rather than fixed, and it is an ACCEPT-DIRECTION regression
+    // against the merge-base: base evaluated `data.hook_event_name.trim()`,
+    // which THREW on a truthy non-string after the side effects, so no envelope
+    // was ever emitted. Measured base-vs-head at 996196fe0 before fixing:
+    //
+    //   hook_event_name: 42             base silent -> head EMITS AfterTool
+    //   hook_event_name: ['PreCompact'] base silent -> head EMITS AfterTool
+    //   hook_event_name: {}             base silent -> head EMITS AfterTool
+    //   hook_event_name ABSENT          base EMITS  -> head EMITS   (unchanged)
+    //
+    // readEventName now returns '' only for an ABSENT name and null for a
+    // present-but-non-string one, so the documented fallback keeps working for
+    // the case it was written for and stops covering malformed payloads.
+    //
+    // This row is the one that must run with the key SET — that is the whole
+    // condition under test, and pinning it unset here would reproduce the
+    // blind spot the row exists to close.
+    const withGemini = { GEMINI_API_KEY: 'fixture-key-not-a-real-credential' };
+    for (const [label, badEvent] of [
+      ['number', 42],
+      ['array', ['PreCompact']],
+      ['object', { toString: 'not-callable' }],
+    ]) {
+      const s = makeSession(t);
+      const { stdout, exitCode } = s.call(badEvent, 30, { env: withGemini });
+      assert.strictEqual(exitCode, 0, `${label}: a malformed event name must never fail the hook`);
+      assert.strictEqual(stdout, '', `${label}: a malformed name must not be treated as the ABSENT `
+        + 'name and emit the Gemini AfterTool envelope — base emitted nothing for this payload');
+      assert.ok(s.warn(), `${label}: the #2289 side-effect contract still holds — the payload is `
+        + 'malformed, not a reason to skip the bookkeeping');
+    }
+
+    // Non-vacuity: the ABSENT name must STILL take the documented fallback with
+    // the same key set. Without this, the rows above would also pass if the
+    // fallback had simply been deleted.
+    const s = makeSession(t);
+    const { stdout } = s.call(undefined, 30, { env: withGemini });
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a MISSING event name under a Gemini-dialect runtime must still mean AfterTool — that '
+      + 'fallback is the pre-#2289 behaviour this hook deliberately preserves');
+  });
+
+  test('round 3, Minor 6: an ARRAY-wrapped PreCompact does not run the reset', (t) => {
+    // ['PreCompact'] under String() coercion reads as 'PreCompact' — a
+    // malformed payload triggering a state-clearing branch. Strict typeof
+    // treats it as no event: the sentinel survives.
+    // GEMINI_API_KEY pinned unset for the same reason as the row above: this
+    // row's `stdout === ''` also rests on injection being unsupported. It
+    // happens to survive an ambient key today only because remaining=20 with
+    // callsSinceWarn=0 is debounced — an incidental rescue, not independence,
+    // so the variable is pinned here too (round 4, Major 2).
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const { stdout, exitCode } = s.call(['PreCompact'], 20, { env: { GEMINI_API_KEY: undefined } });
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(stdout, '', 'a malformed event emits nothing');
+    assert.ok(s.warn(), 'the reset must NOT run off a non-string event name — the sentinel survives '
+      + '(the side-effect pipeline ran instead, which is the unknown-event contract)');
+  });
+
+  // ─── round 7: the routine sentinel writes/read refuse a planted object ───
+  //
+  // Round 7 ruled that the three routine debounce-accounting writes must be
+  // brought in line with the PreCompact clear and the compaction watermark,
+  // which already refuse to follow or overwrite a planted object. The read
+  // beside them is folded in as the same class in the same file — the
+  // watermark's read was hardened in round 4 for exactly this reason, so
+  // leaving this one bare recreated the asymmetry round 7 asks be removed.
+  //
+  // Every row below drives the REAL hook; none extracts logic into a
+  // standalone harness. The control row runs first on purpose: without it a
+  // refusal row passes for the wrong reason if the sentinel mechanism is
+  // broken outright.
+
+  test('round 7 control: an ordinary warning run writes a usable regular-file sentinel', (t) => {
+    const s = makeSession(t);
+    const { stdout, exitCode } = s.call('PostToolUse', 30);
+    assert.strictEqual(exitCode, 0, 'the ordinary warning path must exit 0');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'precondition: remaining=30 is under WARNING_THRESHOLD and must warn');
+    const wd = s.warn();
+    assert.ok(wd && wd.lastLevel === 'warning',
+      'the sentinel must be written AND parseable through the hardened write — if it is not, the '
+      + 'refusal rows below prove nothing, because a hook that writes no sentinel at all also '
+      + 'never writes through a symlink');
+    assert.ok(fs.lstatSync(s.warnPath).isFile(),
+      'and it must land as a plain regular file, not a link');
+  });
+
+  test('round 7: a planted symlink is never written through to its target', (t) => {
+    // The write-through primitive. A bare writeFileSync on a path in the
+    // shared, sticky os.tmpdir() follows a planted link and writes the
+    // sentinel INTO the attacker's chosen file — an arbitrary-file-write with
+    // JSON the hook itself composes. Verified fail-first against the
+    // pre-hardening file: the victim came back holding the sentinel JSON.
+    if (process.platform === 'win32') {
+      t.skip('symlink planting is a POSIX shared-sticky-tmpdir scenario; Windows temp is per-user, '
+        + 'and libuv defines O_NOFOLLOW as 0 there — the unlink-then-O_EXCL half still applies');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(),
+      `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const ORIGINAL = JSON.stringify({ untouched: true });
+    fs.writeFileSync(victim, ORIGINAL);
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+
+    fs.symlinkSync(victim, s.warnPath);
+    const { exitCode } = s.call('PostToolUse', 30);
+
+    assert.strictEqual(exitCode, 0,
+      'refusing a planted object is a give-up, never a hook failure');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), ORIGINAL,
+      'the symlink TARGET must be byte-identical — writing through it is the arbitrary-file-write '
+      + 'primitive this hardening exists to remove');
+    assert.ok(fs.lstatSync(s.warnPath).isFile(),
+      'the planted link must be REPLACED by a fresh regular file: unlink removes the link, then '
+      + 'O_EXCL refuses to create through one, so the write can only land on this process own file');
+  });
+
+  test('round 7: a SYMLINKED sentinel cannot mute the monitor through the read', (t) => {
+    // The mute primitive, and the reason the read is hardened alongside the
+    // writes. The read runs BEFORE the first write of an invocation, so the
+    // write-side unlink cannot protect it, and re-planting reopens it every
+    // invocation. Fail-first against the pre-hardening file: this row emitted
+    // NOTHING, because following the link set firstWarn=false and left
+    // callsSinceWarn under DEBOUNCE_CALLS, taking the silent debounce arm.
+    //
+    // SCOPE OF THIS ROW, stated because the guard is narrower than "cannot be
+    // muted" (Codex review of #3808, round 7): lstat + O_NOFOLLOW establishes
+    // that the sentinel is a plain regular file, NOT that it is trustworthy. A
+    // cross-owner REGULAR file planted at the predictable path in a shared
+    // sticky tmpdir is still read, and the write cannot displace it either —
+    // unlink returns EPERM in a sticky directory, so writeSentinel gives up and
+    // the planted value persists. That residual is pre-existing (the bare
+    // readFileSync had it too, plus the symlink case this row closes) and is
+    // NOT fixed here: refusing it needs an ownership check, which is a
+    // different policy than this PR's. Every object below is created by the
+    // current user, so no row here exercises the cross-owner case.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows; the guard is lstat + O_NOFOLLOW, and '
+        + 'the lstat half still refuses a non-regular sentinel there');
+      return;
+    }
+    const s = makeSession(t);
+    const planted = path.join(os.tmpdir(),
+      `fix-3709-planted-warn-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    // callsSinceWarn=1 with lastLevel='warning' keeps the debounce arm taken at
+    // remaining=30: the counter increments to 2, still under DEBOUNCE_CALLS=5,
+    // and warning→warning is not a severity escalation, so nothing is emitted.
+    fs.writeFileSync(planted, JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning' }));
+    t.after(() => { try { fs.unlinkSync(planted); } catch { /* absent */ } });
+
+    fs.symlinkSync(planted, s.warnPath);
+    const { stdout, exitCode } = s.call('PostToolUse', 30);
+
+    assert.strictEqual(exitCode, 0, 'a refused sentinel must never fail the hook');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an attacker-chosen sentinel reached through a link must not suppress the warning — in a '
+      + 'shared sticky tmpdir that is a mute primitive, and a link to a FIFO stalls this '
+      + 'synchronous read outright');
+  });
+
+  test('round 7: a non-regular sentinel is refused without failing the hook', (t) => {
+    // Class coverage rather than one spelling, and the shape that proves the
+    // refusal is not symlink-specific: the write's unlink throws something
+    // other than ENOENT on a directory, which must still land in the give-up
+    // arm rather than escaping as a hook crash.
+    const s = makeSession(t);
+    const oversized = JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning', pad: 'x'.repeat(8192) });
+    for (const [label, plant, unplant] of [
+      ['a directory', (wp) => fs.mkdirSync(wp), (wp) => { try { fs.rmdirSync(wp); } catch { /* gone */ } }],
+      ['an oversized file', (wp) => fs.writeFileSync(wp, oversized), () => {}],
+    ]) {
+      plant(s.warnPath);
+      const { stdout, exitCode } = s.call('PostToolUse', 30);
+      unplant(s.warnPath);
+      assert.strictEqual(exitCode, 0, `${label}: must never fail the hook`);
+      assert.match(stdout, /CONTEXT WARNING/,
+        `${label}: must be refused as a sentinel and fall back to first-warn defaults, not honored `
+        + 'and not crashed on');
+    }
+  });
+
+  // Round 8 (Minor): the 4096-byte bound on the round-7 sentinel READ
+  // (gsd-context-monitor.js:335), at its fence. The row above proves an
+  // OVERSIZED file is refused, but it pads to 8192 — a full 4096 bytes clear of
+  // the boundary — so `>` vs `>=`, or an off-by-one in the limit itself, is
+  // invisible to it.
+  test('round 8: the sentinel size bound is exact at 4095/4096/4097', (t) => {
+    const s = makeSession(t);
+    // Sized by MEASUREMENT, not by arithmetic on an assumed prefix width: 'x'
+    // is one UTF-8 byte and never JSON-escaped, and the assertion below pins
+    // the result so a change to the skeleton cannot slide the fence.
+    const sentinelOfExactBytes = (bytes) => {
+      const skeleton = JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning', pad: '' });
+      const pad = bytes - Buffer.byteLength(skeleton, 'utf8');
+      assert.ok(pad >= 0, `${bytes} is smaller than the un-padded sentinel skeleton`);
+      const out = JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning', pad: 'x'.repeat(pad) });
+      assert.strictEqual(Buffer.byteLength(out, 'utf8'), bytes,
+        'the padding arithmetic must land exactly on the size under test');
+      return out;
+    };
+
+    // The discriminator is the DEBOUNCE ARM, not an error: an honored
+    // `{callsSinceWarn:1, lastLevel:'warning'}` keeps the arm taken at
+    // remaining=30 (the counter goes 1→2, still under DEBOUNCE_CALLS=5, and
+    // warning→warning is not a severity escalation), so nothing is emitted —
+    // while a REFUSED sentinel falls back to first-warn defaults and emits.
+    // Both directions therefore assert on observable hook output, and the 4097
+    // row is the non-vacuity control for the two accept rows.
+    for (const [bytes, honored] of [[4095, true], [4096, true], [4097, false]]) {
+      fs.writeFileSync(s.warnPath, sentinelOfExactBytes(bytes));
+      assert.strictEqual(fs.lstatSync(s.warnPath).size, bytes,
+        `${bytes}: the planted sentinel must be exactly the size under test`);
+      const { stdout, exitCode } = s.call('PostToolUse', 30);
+      assert.strictEqual(exitCode, 0, `${bytes}: a size verdict must never fail the hook`);
+      if (honored) {
+        assert.doesNotMatch(stdout, /CONTEXT WARNING/,
+          `${bytes}: at or under the bound the sentinel must be HONORED — its taken debounce arm `
+          + 'suppresses the warning; a warning here means the read refused a legal sentinel');
+      } else {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `${bytes}: one byte over the bound must be REFUSED and fall back to first-warn defaults`);
+      }
+    }
+  });
+
+});
+
+// ─── #3709 round 3 (Major 2): the thresholds this fix turns on, at their limits ───
+//
+// DEBOUNCE_CALLS is the threshold the whole fix is ABOUT — the bug was a stale
+// sentinel forcing every later CRITICAL through the full debounce — and
+// STALE_SECONDS is load-bearing for the bridge-clearing argument. Neither had
+// limit-1/limit/limit+1 coverage; the seeded values in the repo (0, 1, 10) sit
+// far from the edges, so an off-by-one in either comparison shipped green.
+describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () => {
+  const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
+  const NOW_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-fixed-now-preload.cjs');
+  // The STALE rows sit ON a wall-clock boundary, where one second of child
+  // startup delay flips the verdict — so the child's Date.now is pinned via
+  // preload and every age is exact arithmetic, not a race.
+  const NOW_MS = 1_800_000_000_000;
+  const NOW_S = Math.floor(NOW_MS / 1000);
+
+  function drive({
+    remaining = 30, warnData = null, timestamp = NOW_S, watermarkAt = null, nowMs = NOW_MS,
+    plantWatermark = null,
+  }) {
+    const id = `fix-3709-trio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const metricsPath = path.join(os.tmpdir(), `claude-ctx-${id}.json`);
+    const warnPath = path.join(os.tmpdir(), `claude-ctx-${id}-warned.json`);
+    const watermarkPath = path.join(os.tmpdir(), `claude-ctx-${id}-compacted.json`);
+    fs.writeFileSync(metricsPath, JSON.stringify({
+      session_id: id, remaining_percentage: remaining, used_pct: 100 - remaining, timestamp,
+    }));
+    if (warnData) fs.writeFileSync(warnPath, JSON.stringify(warnData));
+    if (plantWatermark) plantWatermark(watermarkPath);
+    else if (watermarkAt !== null) fs.writeFileSync(watermarkPath, JSON.stringify({ at: watermarkAt }));
+    let stdout = '';
+    let exitCode = 0;
+    try {
+      stdout = execFileSync(process.execPath, ['--require', NOW_PRELOAD, HOOK], {
+        input: JSON.stringify({ session_id: id, cwd: os.tmpdir(), hook_event_name: 'PostToolUse' }),
+        encoding: 'utf8',
+        timeout: 8000,
+        env: { ...process.env, GSD_TEST_NOW_MS: String(nowMs) },
+      });
+    } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
+    finally {
+      for (const p of [metricsPath, warnPath, watermarkPath]) {
+        try { fs.unlinkSync(p); } catch { /* absent, or the planted directory below */ }
+      }
+      // A row may plant a DIRECTORY at the watermark path, which unlinkSync
+      // cannot remove. cleanup() rather than a raw rmSync: it carries the
+      // repo's Windows-EBUSY retry budget (local/no-raw-rmsync-in-tests).
+      try { if (fs.existsSync(watermarkPath)) cleanup(watermarkPath); } catch { /* best effort */ }
+    }
+    return { stdout, exitCode };
+  }
+
+  // The gate is `callsSinceWarn < DEBOUNCE_CALLS` evaluated AFTER the +1
+  // increment: a seed of 3 becomes 4 (debounced), 4 becomes 5 (emits, the
+  // limit itself), 5 becomes 6 (emits). `<=` for `<`, or moving the increment
+  // below the comparison, reds exactly one of these three.
+  for (const [seed, emits] of [[3, false], [4, true], [5, true]]) {
+    test(`DEBOUNCE_CALLS trio: seed ${seed} (${seed + 1} after increment) → ${emits ? 'emits' : 'debounced'}`, () => {
+      const { stdout, exitCode } = drive({
+        remaining: 30,
+        warnData: { callsSinceWarn: seed, lastLevel: 'warning' },
+      });
+      assert.strictEqual(exitCode, 0);
+      if (emits) {
+        assert.match(stdout, /CONTEXT WARNING/, `seed ${seed}: the debounce window is over — must emit`);
+      } else {
+        assert.strictEqual(stdout, '', `seed ${seed}: still inside the debounce window — must stay silent`);
+      }
+    });
+  }
+
+  // The gate is `(now - timestamp) > STALE_SECONDS`: an age of exactly 60 is
+  // NOT stale, 61 is. `>=` for `>` reds the 60 row; widening reds the 61 row.
+  for (const [age, emits] of [[59, true], [60, true], [61, false]]) {
+    test(`STALE_SECONDS trio: reading aged ${age}s → ${emits ? 'warns' : 'dropped as stale'}`, () => {
+      const { stdout, exitCode } = drive({ remaining: 30, timestamp: NOW_S - age });
+      assert.strictEqual(exitCode, 0);
+      if (emits) {
+        assert.match(stdout, /CONTEXT WARNING/, `age ${age}s is inside the freshness window`);
+      } else {
+        assert.strictEqual(stdout, '', `age ${age}s is beyond STALE_SECONDS`);
+      }
+    });
+  }
+
+  test('timestamp 0 bypasses the stale gate — characterized directly', () => {
+    // The falsy guard (`metrics.timestamp && ...`) means an UNSTAMPED reading
+    // is never age-checked. Pinned here as the current contract in its own
+    // row — not inside a platform disjunction — so a change to the guard's
+    // polarity is a visible decision, not drift. After a compaction the
+    // watermark closes this hole (`!(0 > at)` drops the reading), which the
+    // round-3 Major-1 rows exercise.
+    const { stdout, exitCode } = drive({ remaining: 30, timestamp: 0 });
+    assert.strictEqual(exitCode, 0);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unstamped reading skips the age check (falsy guard) — current, characterized behaviour');
+  });
+
+  // COMPACT_GRACE_SECONDS is the ONE constant this PR introduces, and it was
+  // the only threshold here without a limit-1/limit/limit+1 trio while the PR
+  // added full trios for four PRE-EXISTING ones (review of #3808, round 4,
+  // Major 3). The seeded values were at+0, at+1 and at+61 — the boundary
+  // itself (at+60, must be dropped) and limit-1 (at+59, must be dropped) went
+  // untested, so mutating `>` to `>=`, or moving the constant by one, left the
+  // suite green while the window shifted.
+  //
+  // The gate is `!(metrics.timestamp > watermark.at + COMPACT_GRACE_SECONDS)`:
+  // a reading at at+60 is still covered, at+61 is the first one that is not.
+  // The clock is pinned so every reading is also unambiguously FRESH
+  // (now - timestamp is 0..60 here), which isolates the grace gate from the
+  // staleness gate — a row that failed for the wrong gate would prove nothing.
+  for (const [offset, emits] of [[59, false], [60, false], [61, true]]) {
+    test(`COMPACT_GRACE_SECONDS trio: reading at watermark+${offset}s -> ${emits ? 'warns' : 'covered by the window'}`, () => {
+      const { stdout, exitCode } = drive({
+        remaining: 30,
+        watermarkAt: NOW_S,
+        // The reader's clock ADVANCES to the moment of the render; the reading
+        // is stamped `now`, exactly as hooks/gsd-statusline.js stamps it. The
+        // reading is therefore never ahead of the reader — the future-stamped
+        // shortcut is what round 4 rejected — and its age is 0, so only the
+        // grace gate can drop it.
+        nowMs: NOW_MS + offset * 1000,
+        timestamp: NOW_S + offset,
+      });
+      assert.strictEqual(exitCode, 0);
+      if (emits) {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `watermark+${offset}s is past the grace window — the new cycle must warn`);
+      } else {
+        assert.strictEqual(stdout, '',
+          `watermark+${offset}s is still inside the grace window — a mid-compaction render is `
+          + 'indistinguishable from a real reading and must be dropped');
+      }
+    });
+  }
+
+  // WATERMARK_SKEW_SECONDS is the OTHER threshold the watermark introduces, and
+  // it had no boundary coverage either — the only sanity row used now+3600,
+  // three orders of magnitude from the edge (Codex review of #3808, round 4).
+  // The gate is `watermark.at <= now + WATERMARK_SKEW_SECONDS`: +5 is honored,
+  // +6 is not. Mutating `<=` to `<`, or moving the constant, reds one row.
+  //
+  // This threshold is not cosmetic: an accepted +5 watermark pushes the grace
+  // window's end from +61 to +66, which is why the docs no longer claim the
+  // delay is bounded by COMPACT_GRACE_SECONDS alone.
+  for (const [skew, honored] of [[4, true], [5, true], [6, false]]) {
+    test(`WATERMARK_SKEW_SECONDS trio: a watermark ${skew}s ahead is ${honored ? 'honored' : 'ignored'}`, () => {
+      const { stdout, exitCode } = drive({
+        remaining: 30,
+        watermarkAt: NOW_S + skew,
+        timestamp: NOW_S,
+        nowMs: NOW_MS,
+      });
+      assert.strictEqual(exitCode, 0);
+      if (honored) {
+        assert.strictEqual(stdout, '',
+          `a watermark ${skew}s ahead is within the accepted skew, so the grace window applies `
+          + 'and this current reading is dropped');
+      } else {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `a watermark ${skew}s ahead is beyond the accepted skew — it must be discarded as insane `
+          + 'rather than muting the monitor, which is how a clock step would silently disable it');
+      }
+    });
+  }
+
+  test('round 4: a watermark that is not a plain regular file is never followed', (t) => {
+    // The WRITE side already refused to follow or overwrite a planted object,
+    // but the READ was a bare readFileSync — so anything the write side gave up
+    // on was followed by every later invocation. Verified against the
+    // pre-hardening file: a symlink to a planted watermark WAS honored and muted
+    // the monitor; it is now refused (Codex review of #3808, round 4).
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows; the guard is lstat+O_NOFOLLOW, '
+        + 'and libuv defines O_NOFOLLOW as 0 there — the lstat half still applies');
+      return;
+    }
+    const planted = path.join(os.tmpdir(), `fix-3709-planted-${Date.now()}.json`);
+    t.after(() => { try { fs.unlinkSync(planted); } catch { /* absent */ } });
+    fs.writeFileSync(planted, JSON.stringify({ at: NOW_S }));
+
+    // Control FIRST: a legitimate regular-file watermark is still honored, so
+    // the refusals below cannot pass by the hook simply ignoring watermarks.
+    assert.strictEqual(drive({ remaining: 30, watermarkAt: NOW_S, timestamp: NOW_S, nowMs: NOW_MS }).stdout, '',
+      'a plain watermark must still mute — otherwise the refusals prove nothing');
+
+    for (const [label, plant] of [
+      ['a symlink', (wp) => fs.symlinkSync(planted, wp)],
+      ['a directory', (wp) => fs.mkdirSync(wp)],
+      ['an oversized file', (wp) => fs.writeFileSync(wp, JSON.stringify({ at: NOW_S, pad: 'x'.repeat(8192) }))],
+    ]) {
+      const { stdout, exitCode } = drive({
+        remaining: 30, timestamp: NOW_S, nowMs: NOW_MS, plantWatermark: plant,
+      });
+      assert.strictEqual(exitCode, 0, `${label}: a refused watermark must never fail the hook`);
+      assert.match(stdout, /CONTEXT WARNING/,
+        `${label}: must not be honored as a watermark — in a shared sticky tmpdir that is a mute `
+        + 'primitive, and a symlink to a FIFO is a stall primitive on this synchronous read');
+    }
+  });
+
+  // Round 8 (class sweep): the SAME 4096-byte bound guards the round-4
+  // WATERMARK read at gsd-context-monitor.js:278, and its refusal row above
+  // pads to 8192 exactly as the sentinel's did. Round 8's Minor was raised
+  // against the round-7 sentinel bound only — this trio applies the identical
+  // reasoning to its twin, so one constant is not held to this file's boundary
+  // convention while the other, byte-for-byte the same check, is not. The bound
+  // is pre-existing and this addition is test-only; say the word and it comes
+  // out without touching the rest.
+  test('round 8: the watermark size bound is exact at 4095/4096/4097', () => {
+    // 'x' is one UTF-8 byte and never JSON-escaped, so the serialized length
+    // moves one byte per padding character — but the payload is still sized by
+    // MEASUREMENT below, not by arithmetic on an assumed prefix width, so a
+    // change to the skeleton cannot silently move the fence off the boundary.
+    const watermarkOfExactBytes = (bytes) => {
+      const skeleton = JSON.stringify({ at: NOW_S, pad: '' });
+      const pad = bytes - Buffer.byteLength(skeleton, 'utf8');
+      assert.ok(pad >= 0, `${bytes} is smaller than the un-padded watermark skeleton`);
+      const out = JSON.stringify({ at: NOW_S, pad: 'x'.repeat(pad) });
+      assert.strictEqual(Buffer.byteLength(out, 'utf8'), bytes,
+        'the padding arithmetic must land exactly on the size under test');
+      return out;
+    };
+
+    // `st.size > 4096`: 4095 and 4096 are legal and must be HONORED (and so
+    // mute the monitor), 4097 is one byte over and must be REFUSED. The 4097
+    // row is the non-vacuity control for the two accept rows — without it,
+    // a read that refused everything would still pass them.
+    for (const [bytes, honored] of [[4095, true], [4096, true], [4097, false]]) {
+      const { stdout, exitCode } = drive({
+        remaining: 30, timestamp: NOW_S, nowMs: NOW_MS,
+        plantWatermark: (wp) => fs.writeFileSync(wp, watermarkOfExactBytes(bytes)),
+      });
+      assert.strictEqual(exitCode, 0, `${bytes}: a size verdict must never fail the hook`);
+      if (honored) {
+        assert.strictEqual(stdout, '',
+          `${bytes}: at or under the bound the watermark must be HONORED and mute the monitor; `
+          + 'a warning here means the read refused a legal watermark');
+      } else {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `${bytes}: one byte over the bound must be REFUSED, leaving the monitor unmuted`);
+      }
+    }
+  });
+
+});
