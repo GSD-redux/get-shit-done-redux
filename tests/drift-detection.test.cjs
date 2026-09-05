@@ -754,6 +754,13 @@ describe('verify codebase-drift CLI', () => {
   });
 
   test('elements and affected_paths contain decoded repo-relative paths (#4081)', () => {
+    // Threshold 1 so a single drift element flips action_required — the
+    // assertion below depends on the gate triggering, not staying latent
+    // below the default threshold of 3.
+    fs.writeFileSync(
+      path.join(tmp, '.planning', 'config.json'),
+      JSON.stringify({ workflow: { drift_threshold: 1 } }, null, 2),
+    );
     const structure = path.join(tmp, '.planning', 'codebase', 'STRUCTURE.md');
     fs.writeFileSync(structure, '# Codebase Structure\n\n- `src/`\n');
     writeMappedCommit(structure, git(tmp, 'rev-parse', 'HEAD'), '2026-09-04');
