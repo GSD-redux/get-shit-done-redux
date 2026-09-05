@@ -53,6 +53,7 @@
     "planning.pr_strict",
     "planning.search_gitignored",
     "planning.sub_repos",
+    "agent_tools",
     "review.default_reviewers",
     "review.max_prompt_tokens",
     "review.max_prompt_tokens_per_reviewer",
@@ -118,6 +119,11 @@
     "workflow._auto_chain_active"
   ],
   "dynamicKeyPatterns": [
+    {
+      "topLevel": "agent_tools",
+      "source": "^agent_tools\\.(\\*|[a-zA-Z0-9_-]+)$",
+      "description": "agent_tools.<selector>"
+    },
     {
       "topLevel": "agent_skills",
       "source": "^agent_skills\\.[a-zA-Z0-9_-]+$",

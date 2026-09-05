@@ -183,10 +183,11 @@ function isCodexHooksFeatureKey(key) {
   return CODEX_HOOKS_FEATURE_ALL_KEYS.includes(key);
 }
 
-// #768 \u2014 Claude Code permissions.allow / permissions.deny entries.
+// #768 \u2014 Claude Code permissions.allow entries.
 // Pre-populated during Claude installs to eliminate first-run approval friction
-// for gsd-core's own known-safe tool calls, and to add defense-in-depth deny
-// entries for common credential files.
+// for gsd-core's own known-safe tool calls. (The defense-in-depth deny entries
+// for credential files that #768 also wrote are retired \u2014 see
+// GSD_CLAUDE_LEGACY_DENY_PERMISSIONS below.)
 //
 // Format: each string uses Claude Code's documented permission rule syntax \u2014
 //   "Tool(pattern)"  e.g. "Bash(npx gsd-core *)", "Read(.planning/*)"
@@ -204,7 +205,20 @@ const GSD_CLAUDE_ALLOW_PERMISSIONS = Object.freeze([
   'Read(STATE.md)',
   'Edit(STATE.md)',
 ]);
-const GSD_CLAUDE_DENY_PERMISSIONS = Object.freeze([
+// #4221 \u2014 Retired deny rules. #768 wrote these three `Read()` deny rules
+// into settings.json; Claude Code 2.1.259 hardened the Bash-side enforcement
+// of Read() deny rules so that ANY such rule makes every
+// `cd DIR && grep/cat relative-path` compound prompt for approval, even in
+// `auto` permission mode \u2014 and GSD subagents emit hundreds of those per
+// session. The same protection now ships as the managed PreToolUse hook
+// hooks/gsd-secret-read-guard.js (a hook denial is not a permission rule and
+// never arms that check). Unlike the #2278 allow-side migration, there is no
+// surviving "current" deny list: the constant is RENAMED to its legacy role
+// and only ever filtered, never added. Byte-equal strings only \u2014 a user's
+// own hand-written identical rule is indistinguishable and is removed too
+// (the install manifest never recorded permission strings, so a
+// manifest-gated cleanup is not possible).
+const GSD_CLAUDE_LEGACY_DENY_PERMISSIONS = Object.freeze([
   'Read(.env)',
   'Read(.env.*)',
   'Read(.secrets)',
@@ -236,6 +250,13 @@ const GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS = Object.freeze([
  * so existing installs end up with the working `Edit(...)` forms instead of
  * both the dead legacy entry and its replacement sitting side by side.
  *
+ * Migration (#4221): the retired GSD_CLAUDE_LEGACY_DENY_PERMISSIONS entries
+ * are removed from permissions.deny (byte-equal only). Nothing is added to
+ * deny any more: an absent `deny` key is left absent (never created as an
+ * empty array), and a `deny` array emptied BY THIS FILTER is deleted so the
+ * retirement leaves no `"deny": []` residue; a user's pre-existing empty
+ * `deny: []` is untouched.
+ *
  * Defensive: if settings is not a plain object, returns immediately without
  * throwing. If permissions.allow / permissions.deny exist but are not arrays
  * (malformed settings), they are replaced with valid arrays.
@@ -252,7 +273,7 @@ function mergeClaudePermissions(settings) {
   if (!Array.isArray(settings.permissions.allow)) {
     settings.permissions.allow = [];
   }
-  if (!Array.isArray(settings.permissions.deny)) {
+  if (settings.permissions.deny !== undefined && !Array.isArray(settings.permissions.deny)) {
     settings.permissions.deny = [];
   }
 
@@ -265,9 +286,13 @@ function mergeClaudePermissions(settings) {
       settings.permissions.allow.push(entry);
     }
   }
-  for (const entry of GSD_CLAUDE_DENY_PERMISSIONS) {
-    if (!settings.permissions.deny.includes(entry)) {
-      settings.permissions.deny.push(entry);
+  if (Array.isArray(settings.permissions.deny)) {
+    const before = settings.permissions.deny.length;
+    settings.permissions.deny = settings.permissions.deny.filter(
+      (e) => !GSD_CLAUDE_LEGACY_DENY_PERMISSIONS.includes(e)
+    );
+    if (settings.permissions.deny.length === 0 && before > 0) {
+      delete settings.permissions.deny;
     }
   }
 }
@@ -1796,8 +1821,20 @@ const kiloAgentPermissionOrder = [
   'lsp',
 ];
 
+const kiloMcpPermissionPattern = /^mcp__([A-Za-z0-9_-]+)__((?:[A-Za-z0-9_-]+)|\*)$/;
+
+// Derives Kilo's native `{server}_{tool}` MCP permission key (kilo.ai/docs —
+// external, fixed format). Not injective: both capture groups allow `_`, so
+// e.g. `mcp__a_b__c` and `mcp__a__b_c` derive the same key. The `Set` below
+// resolves any such collision deterministically to first-seen-wins — see
+// src/runtime-artifact-conversion.cts's regression test. Mirrors that file's
+// convertClaudeToKiloPermissionTool exactly (#4032).
 function convertClaudeToKiloPermissionTool(claudeTool) {
-  return claudeToKiloAgentPermissions[claudeTool] || null;
+  const builtinPermission = claudeToKiloAgentPermissions[claudeTool];
+  if (builtinPermission) return builtinPermission;
+
+  const mcpPermission = kiloMcpPermissionPattern.exec(claudeTool);
+  return mcpPermission ? `${mcpPermission[1]}_${mcpPermission[2]}` : null;
 }
 
 function buildKiloAgentPermissionBlock(claudeTools) {
@@ -1813,6 +1850,10 @@ function buildKiloAgentPermissionBlock(claudeTools) {
   const lines = ['permission:'];
   for (const permission of kiloAgentPermissionOrder) {
     lines.push(`  ${permission}: ${allowedPermissions.has(permission) ? 'allow' : 'deny'}`);
+  }
+  for (const permission of allowedPermissions) {
+    if (kiloAgentPermissionOrder.includes(permission)) continue;
+    lines.push(`  ${permission}: allow`);
   }
 
   return lines;
@@ -7372,7 +7413,8 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
 
     if (isAgent && inAgentTools) {
       if (trimmed.startsWith('- ')) {
-        agentTools.push(trimmed.substring(2).trim());
+        const tool = runtimeArtifactConversion._decodeToolScalar(trimmed.substring(2));
+        if (tool !== null) agentTools.push(tool);
         continue;
       }
       if (trimmed && !trimmed.startsWith('-')) {
@@ -7384,8 +7426,12 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
     if (trimmed.startsWith('tools:')) {
       if (isAgent) {
         const toolsValue = trimmed.substring(6).trim();
-        if (toolsValue) {
-          const tools = toolsValue.split(',').map(t => t.trim()).filter(t => t);
+        // A comment-only value (`tools: # note`) is not real inline content —
+        // fall through to the block-list scan instead of decoding the
+        // comment as a bogus tool name and dropping the list (mirrors
+        // src/runtime-artifact-conversion.cts's convertClaudeToKiloFrontmatter, #4032).
+        if (toolsValue && !toolsValue.startsWith('#')) {
+          const tools = runtimeArtifactConversion._splitToolScalars(toolsValue).map(runtimeArtifactConversion._decodeToolScalar).filter(tool => tool !== null);
           agentTools.push(...tools);
         } else {
           inAgentTools = true;
@@ -7451,7 +7497,8 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
       if (trimmed.startsWith('- ')) {
         const tool = trimmed.substring(2).trim();
         if (isAgent) {
-          agentTools.push(tool);
+          const decoded = runtimeArtifactConversion._decodeToolScalar(tool);
+          if (decoded !== null) agentTools.push(decoded);
         } else {
           allowedTools.push(tool);
         }
@@ -9039,16 +9086,28 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         );
         if (settings.permissions.allow.length !== before) {
           permissionsModified = true;
+          // #4221: an array this filter emptied was GSD-only \u2014 remove the
+          // key rather than leave an empty array behind (Antigravity symmetry).
+          if (settings.permissions.allow.length === 0) {
+            delete settings.permissions.allow;
+          }
         }
       }
       if (Array.isArray(settings.permissions.deny)) {
         const before = settings.permissions.deny.length;
+        // #4221: the deny rules are retired, so this is a legacy-only filter.
         settings.permissions.deny = settings.permissions.deny.filter(
-          (e) => !GSD_CLAUDE_DENY_PERMISSIONS.includes(e)
+          (e) => !GSD_CLAUDE_LEGACY_DENY_PERMISSIONS.includes(e)
         );
         if (settings.permissions.deny.length !== before) {
           permissionsModified = true;
+          if (settings.permissions.deny.length === 0) {
+            delete settings.permissions.deny;
+          }
         }
+      }
+      if (permissionsModified && Object.keys(settings.permissions).length === 0) {
+        delete settings.permissions;
       }
       if (permissionsModified) {
         settingsModified = true;
@@ -11314,7 +11373,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   } else if (_isSkillsRuntime) {
     console.log(`  ${dim}↳${reset} Agents installed via descriptor-driven layout (${runtime})`);
   } else {
-    const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry);
+    const _standaloneProjectDir = isGlobal ? process.cwd() : targetDir;
+    const _standaloneAgentsResult = installAgentsKindStandalone(runtime, targetDir, _installScopeId, _resolvedProfile, pathPrefix, getCommitAttribution, _installedCapabilityRegistry, _standaloneProjectDir);
     if (_standaloneAgentsResult) {
       // #2875 defect fix: installAgentsKindStandalone now returns `null`
       // (rather than a truthy result pointing at an empty destDir) whenever a
@@ -12064,8 +12124,18 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     //   require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so all four must be
     //   installed/refreshed together for every profile, or Codex is wired to a dependency
     //   chain the same installer never delivers.
-    // We deliberately do *not* copy gsd-graphify-update.sh or hooks/lib/ for Codex
-    // in this change (graphify auto-update support for Codex is out of scope for #3579).
+    // We deliberately do *not* copy gsd-graphify-update.sh for Codex in this
+    // change (graphify auto-update support for Codex is out of scope for #3579).
+    // hooks/lib/ WAS excluded here for the same reason, and that stopped being
+    // correct when #3911 (2ea5efc15) gave gsd-context-monitor.js a real
+    // `require('./lib/hook-exit.js')`: the allowlist below is flat and never
+    // recursed, so the hook shipped without its helper and died with
+    // MODULE_NOT_FOUND at load, before its own try/catch, on every registered
+    // event (#4087, #4098). The libs are now derived from what the staged
+    // scripts actually require rather than hand-listed — see the
+    // stageTransitiveHookLibs call after the copy loop. The #3579 boundary is
+    // preserved: helpers no staged Codex hook requires (graphify tooling among
+    // them) are still not shipped.
     const CODEX_HOOKS_TO_COPY = [
       'gsd-check-update.js',
       'gsd-check-update-worker.js',
@@ -12081,6 +12151,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // is not the same as an allowlisted file landing in it — see the marker
       // gate below.
       let codexStagedHooks = false;
+      // The entries THIS invocation actually staged. Seeding the lib scan from
+      // `existsSync` over the destination instead would also pick up a file
+      // left by a PREVIOUS install whose source is no longer staged — e.g. a
+      // name dropped from the allowlist — and derive helpers for a hook that is
+      // no longer shipped (review of #4087).
+      const codexStagedEntries = [];
       for (const entry of fs.readdirSync(codexHooksSrc)) {
         if (!CODEX_HOOKS_TO_COPY.includes(entry)) continue;
         const srcFile = path.join(codexHooksSrc, entry);
@@ -12115,8 +12191,43 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
         }
         codexStagedHooks = true;
+        codexStagedEntries.push(entry);
+      }
+      // Stage the hooks/lib/ helpers the staged scripts require, transitively
+      // (#4087, #4098). Shares writeCursorHooksJson's walker rather than a
+      // second copy: both reduced bundles hand-pick SCRIPTS, and the identical
+      // MODULE_NOT_FOUND was already fixed once for Cursor in 704859e9c. A flat
+      // list of today's three helpers would re-break the next time a
+      // Codex-bundled hook grows a lib dependency, which is exactly how this
+      // regressed. Gated on codexStagedHooks for the same reason the CommonJS
+      // marker below is: hooks/ is shared space, and staging nothing must not
+      // leave a GSD-owned lib/ behind in a directory GSD created but did not
+      // fill (#2544). Seeded from the copies staged by THIS invocation, so the
+      // scan sees the same bytes Node will load and never derives helpers for a
+      // hook left behind by an earlier install.
+      let codexStagedLibs = [];
+      if (codexStagedHooks) {
+        codexStagedLibs = hooksSurface.stageTransitiveHookLibs({
+          seedSources: codexStagedEntries
+            .map((entry) => fs.readFileSync(path.join(codexHooksDest, entry), 'utf8')),
+          srcLibDir: path.join(codexHooksSrc, 'lib'),
+          destLibDir: path.join(codexHooksDest, 'lib'),
+          runtimeLabel: 'Codex',
+          // Same substitutions the .js branch above applies to hook scripts, so
+          // a helper that ever gains a runtime path or version token is
+          // rewritten identically instead of shipping a Claude-shaped path.
+          // No-ops on today's helpers, which carry neither.
+          transform: (content) => content
+            .replace(/'\.claude'/g, configDirReplacement)
+            .replace(/\/\.claude\//g, `/${getDirName(runtime)}/`)
+            .replace(/\.claude\//g, `${getDirName(runtime)}/`)
+            .replace(/\{\{GSD_VERSION\}\}/g, pkg.version),
+        });
       }
       console.log(`  ${green}✓${reset} Installed hooks (Codex)`);
+      if (codexStagedLibs.length > 0) {
+        console.log(`  ${green}✓${reset} Installed hooks/lib/ helpers (${codexStagedLibs.join(', ')})`);
+      }
       // #2717: write the CommonJS marker into hooks/ alongside the staged .js
       // scripts. Codex is excluded from installSharedHooksBundle by the
       // !isCodex gate, so it never received the marker the shared-bundle path
@@ -13881,7 +13992,7 @@ module.exports = {
     mergeClaudePermissions,
     GSD_CLAUDE_ALLOW_PERMISSIONS,
     GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS,
-    GSD_CLAUDE_DENY_PERMISSIONS,
+    GSD_CLAUDE_LEGACY_DENY_PERMISSIONS,
     GSD_CODEX_MARKER,
     // #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2)
     CODEX_SANDBOX_HOLDS,

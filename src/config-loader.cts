@@ -928,6 +928,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       project_code: get('project_code') ?? defaults.project_code,
       subagent_timeout: get('subagent_timeout', { section: 'workflow', field: 'subagent_timeout' }) ?? defaults.subagent_timeout,
       model_overrides: (parsed['model_overrides']) || null,
+      agent_tools: (parsed['agent_tools']) || null,
       models: (parsed['models']) || null,
       granularity: parsed['granularity'] !== undefined ? parsed['granularity'] : null,
       granularities: (parsed['granularities']) || null,

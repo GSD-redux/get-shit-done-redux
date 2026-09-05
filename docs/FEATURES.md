@@ -564,6 +564,8 @@
 - REQ-DO-02: System MUST map intent to the best matching GSD command
 - REQ-DO-03: System MUST confirm the routing with the user before executing
 - REQ-DO-04: System MUST handle project-exists vs no-project contexts differently
+- REQ-DO-05: Routing rules MUST order specific operations before the generic keyword rules they shadow (specific-before-generic)
+- REQ-DO-06: Dispatch MUST forward only arguments the selected command accepts; the freeform sentence is forwarded only when that command explicitly accepts a freeform task description
 
 ---
 
@@ -2106,6 +2108,8 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 **Requirements:**
 - REQ-LANG-01: System MUST respect `response_language` setting across all phases and agents
 - REQ-LANG-02: Setting MUST propagate to all spawned agents for consistent language output
+- REQ-LANG-03: Every workflow MUST carry response-language coverage — through an exact inline directive, a shared `@`-referenced directive (`gsd-core/references/response-language-directive.md`), or inheritance from the parent workflow that dispatches it; enforced in CI by `scripts/lint-response-language-coverage.cjs` (#2529)
+- REQ-LANG-04: A covering directive MUST name inter-tool narration, not only the question/prompt surface. A directive names it by using the word "narration" or the phrase "between tool calls"; the class it denotes is the model's running commentary between tool calls, status updates, progress notes and findings included, and enumerating those items without naming the class does not satisfy the rule. A directive worded around questions and prompts alone leaves the model's running commentary in English beside translated answers, which is the defect #2529 reports; `scripts/lint-response-language-coverage.cjs` rejects it (#2529)
 
 **Config:**
 | Setting | Type | Default | Description |

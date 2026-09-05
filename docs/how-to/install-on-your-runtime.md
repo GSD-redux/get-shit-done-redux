@@ -52,7 +52,7 @@ GSD registers the following Claude Code hook events automatically on install:
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, commit validation |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-secret-read-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, secret-file read protection, commit validation |
 | `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
 | `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |
 | `PreCompact` | `gsd-context-monitor.js` | Context awareness before conversation compaction |
@@ -252,7 +252,7 @@ GSD wires its lifecycle hooks into Kimi's native `[[hooks]]` array in `config.to
 | Event | Hook | Purpose |
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check and session-state bootstrap at session open |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-worktree-path-guard.js`, `gsd-workflow-guard.js`, `gsd-validate-commit.sh` | Prompt-injection guard, read-before-edit guidance, worktree path safety, workflow guard, and commit validation before tool calls |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-worktree-path-guard.js`, `gsd-workflow-guard.js`, `gsd-secret-read-guard.js`, `gsd-validate-commit.sh` | Prompt-injection guard, read-before-edit guidance, worktree path safety, workflow guard, secret-file read protection, and commit validation before tool calls |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-phase-boundary.sh`, `gsd-read-injection-scanner.js`, `gsd-graphify-update.sh` | Context window tracking, phase-boundary detection, read-time injection scanning, and graph updates after tool calls |
 | `Stop` | `gsd-context-monitor.js` | Context headroom tracking before the model stops |
 | `PreCompact` | `gsd-context-monitor.js` | Context headroom tracking before compaction |
@@ -376,7 +376,7 @@ GSD registers the following events automatically on install (Claude hook event d
 | Event | Hook | Purpose |
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, commit validation |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-secret-read-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, secret-file read protection, commit validation |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
 | `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
 | `SubagentStart` | `gsd-context-monitor.js` | Context headroom tracking at subagent start |
@@ -415,7 +415,7 @@ Qwen Code supports 15 hook events. GSD registers the following events automatica
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, commit validation |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-secret-read-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, secret-file read protection, commit validation |
 | `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
 | `SubagentStart` | `gsd-context-monitor.js` | Context headroom tracking at subagent start |
 | `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |

@@ -8,7 +8,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { createTempProject, cleanup } = require('./helpers.cjs');
+const { createTempProject, cleanup, captureFdSync } = require('./helpers.cjs');
 
 describe('workflow.discuss_mode config', () => {
   test('config template includes discuss_mode default', () => {
@@ -153,26 +153,10 @@ describe('workflow.discuss_mode config', () => {
 
       // cmdInitPlanPhase writes its JSON result directly to fd 1 via
       // io.cjs's writeAllSync (bypasses console.log — captureConsole()
-      // cannot observe it). Monkeypatch fs.writeSync and restore it in a
-      // finally, the project's standard IO-capture seam.
-      const orig = fs.writeSync;
-      let captured = Buffer.alloc(0);
-      fs.writeSync = (fd, ...rest) => {
-        if (fd !== 1) return orig.call(fs, fd, ...rest);
-        const [data, offset = 0, length] = rest;
-        const chunk = Buffer.isBuffer(data)
-          ? data.subarray(offset, offset + (length ?? data.length - offset))
-          : Buffer.from(String(data), 'utf8');
-        captured = Buffer.concat([captured, chunk]);
-        return chunk.length;
-      };
-      let result;
-      try {
-        cmdInitPlanPhase(cwd, 'does-not-exist', false, {});
-        result = JSON.parse(captured.toString('utf8'));
-      } finally {
-        fs.writeSync = orig;
-      }
+      // cannot observe it). Delegates to the shared, safe fd-capture helper
+      // (#4306) — see tests/helpers.cjs's captureFdSync.
+      const captured = captureFdSync(1, () => cmdInitPlanPhase(cwd, 'does-not-exist', false, {}));
+      const result = JSON.parse(captured);
       assert.strictEqual(
         result.text_mode, true,
         'cmdInitPlanPhase result must propagate config.workflow.text_mode'
