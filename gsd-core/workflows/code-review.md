@@ -617,7 +617,11 @@ elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
   # (gsd-review-prompt.md, gsd-review-<slug>.md/.err) are read-once evidence for THIS run, never
   # meant to be committed, and a second dispatch on the same phase would otherwise silently
   # overwrite the prior run's files in place. Removed by commit_review once the reviewer agent
-  # has read every cited evidence path.
+  # has read every cited evidence path. An early exit between here and commit_review (a
+  # checkpoint, a halt) leaves this directory on disk — the same trade-off review.md's own
+  # gather_context/cleanup pair already accepts for the identical resource class: a leftover
+  # $TMPDIR entry is cheaper than a cleanup mechanism (e.g. a trap) that could fire before a
+  # later step reads it. Not a regression to fix; matches established precedent.
   LANE_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gsd-review-lanes-XXXXXX")
   DISPATCH_JSON=$(printf '%s\n' "${REVIEW_FILES[@]}" | gsd_run review-lane dispatch-step \
     --repo-root "$REPO_ROOT" --depth "$REVIEW_DEPTH" --base-sha "$DIFF_BASE" \
