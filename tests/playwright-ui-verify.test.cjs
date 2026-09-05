@@ -281,6 +281,27 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     }
   });
 
+  test('a total capture failure removes its stray files, not just an empty directory', () => {
+    // rmdir alone cannot honour a "leaves nothing behind" claim: it succeeds only on a
+    // genuinely empty directory and its stderr is discarded, so a zero-byte or partial
+    // .png from a crashed browser — which `[ -s ]` correctly scores as a failure —
+    // leaves BOTH the file and the directory in place, silently.
+    const rows = guardedLines(screenshotApproachLines());
+    const removesDir = rows.filter((r) => /^rmdir\b/.test(r.line));
+    assert.ok(removesDir.length > 0, 'expected the all-failed branch to remove the review directory');
+    const removesFiles = rows.filter((r) => /\brm -f[\t ].*\$SCREENSHOT_DIR/.test(r.line));
+    assert.ok(
+      removesFiles.length > 0,
+      'the all-failed branch must remove the files a crashed capture wrote, or rmdir cannot clean up after one'
+    );
+    for (const row of removesFiles) {
+      assert.ok(
+        row.guards.some((cond) => /CAPTURED/.test(cond)),
+        `stray-file removal must be confined to the capture-failure branch; governing conditions were ${JSON.stringify(row.guards)}`
+      );
+    }
+  });
+
   test('report surfaces can express partial capture', () => {
     const content = fs.readFileSync(AUDITOR_PATH, 'utf-8');
     assert.ok(

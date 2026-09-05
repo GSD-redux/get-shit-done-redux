@@ -394,7 +394,10 @@ field is derived from the observed exit statuses and the files on disk, so it
 distinguishes three outcomes — captured (3/3), partially captured (N/3, naming
 the viewports that failed), and not captured with its reason (no dev server,
 auth-gated, or capture failure). A failed capture never reports as a successful
-one, and leaves no empty review directory behind.
+one, and takes its own artifacts with it — when all three viewports fail, the
+partial or zero-byte files a crashed capture wrote are removed along with the
+review directory, so a failed audit leaves nothing behind to be mistaken for
+evidence.
 
 ---
 

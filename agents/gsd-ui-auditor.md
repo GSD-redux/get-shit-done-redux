@@ -161,6 +161,13 @@ if [ -n "$DEV_URL" ]; then
     echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
   else
     CAPTURE_STATUS="not captured (capture failed)"
+    # Remove what the failed captures WROTE before removing the directory. A crashed
+    # browser commonly leaves a zero-byte or partial .png behind; `[ -s ]` above
+    # correctly scores that as a failure, but rmdir then fails on the non-empty
+    # directory with its stderr discarded, so BOTH the stray file and the directory
+    # would survive. Scoped to the .png files in the timestamped directory this block
+    # created moments ago, and only on the all-three-failed path.
+    [ -n "$SCREENSHOT_DIR" ] && rm -f "$SCREENSHOT_DIR"/*.png
     rmdir "$SCREENSHOT_DIR" 2>/dev/null
     echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
   fi
