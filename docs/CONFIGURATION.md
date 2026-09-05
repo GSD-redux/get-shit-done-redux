@@ -1194,6 +1194,7 @@ All four fields are **optional and additive** — STATE.md files without them ke
 | `git.branching_strategy` | enum | `none` | `none`, `phase`, or `milestone` |
 | `git.base_branch` | string | `main` | The integration branch that phase/milestone branches are created from and merged back into. Override when your repo uses `master` or a release branch |
 | `git.protected_branches` | array of non-empty strings | (none) | Optional additional shared branches that should trigger protected-branch warnings alongside the resolved base branch |
+| `git.allow_default_branch_commits` | boolean | `false` | Escape hatch (#3819): when `true`, the executor's pre-commit guard no longer refuses to commit on the resolved default branch. Explicitly configured `git.protected_branches` names are still enforced. |
 | `git.create_tag` | boolean | `true` | Create a git tag (`v[X.Y]`) on milestone completion. Set to `false` for projects with their own release flow |
 | `git.phase_branch_template` | string | `gsd/phase-{phase}-{slug}` | Branch name template for phase strategy |
 | `git.milestone_branch_template` | string | `gsd/{milestone}-{slug}` | Branch name template for milestone strategy |
@@ -1223,6 +1224,25 @@ still apply.
   }
 }
 ```
+
+### Escape Hatch: Committing on the Default Branch
+
+Some projects intentionally run GSD directly on their default branch (no branch-per-phase
+workflow). For those, `git.allow_default_branch_commits: true` tells the executor's pre-commit
+guard (see `agents/gsd-executor.md`) to stop refusing commits on the resolved default branch.
+It narrows only the *automatic* default-branch protection — any branch name explicitly listed
+in `git.protected_branches` stays protected regardless of this flag.
+
+```json
+{
+  "git": {
+    "allow_default_branch_commits": true
+  }
+}
+```
+
+This does not change what gets committed, commit message format, or behavior on any
+non-default branch — see issue #3819.
 
 ### Strategy Comparison
 
@@ -2213,6 +2233,7 @@ Two different rules apply, and the difference is deliberate ([#3532](https://git
   global `effort` block keeps working in projects and does not trigger the warning.
 - **The whole `git.*` namespace is project-scoped and never resolves from the global file**,
   in either directory shape — not `git.base_branch`, not `git.protected_branches`, not
+  `git.allow_default_branch_commits`, not
   `git.branching_strategy` or the branch templates. Branch policy is a property of the
   repository, not of the machine, so it is read only from that project's
   `.planning/config.json`. A `git` block in `~/.gsd/defaults.json` still seeds new projects

@@ -902,6 +902,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       branching_strategy: get('branching_strategy', { section: 'git', field: 'branching_strategy' }) ?? defaults.branching_strategy,
       base_branch: get('base_branch', { section: 'git', field: 'base_branch' }),
       protected_branches: getNested('git', 'protected_branches'),
+      allow_default_branch_commits: getNested('git', 'allow_default_branch_commits'),
       phase_branch_template: get('phase_branch_template', { section: 'git', field: 'phase_branch_template' }) ?? defaults.phase_branch_template,
       milestone_branch_template: get('milestone_branch_template', { section: 'git', field: 'milestone_branch_template' }) ?? defaults.milestone_branch_template,
       quick_branch_template: get('quick_branch_template', { section: 'git', field: 'quick_branch_template' }) ?? defaults.quick_branch_template,

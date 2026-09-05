@@ -45,6 +45,7 @@
     "git.branching_strategy",
     "git.base_branch",
     "git.protected_branches",
+    "git.allow_default_branch_commits",
     "git.create_tag",
     "git.phase_branch_template",
     "git.milestone_branch_template",

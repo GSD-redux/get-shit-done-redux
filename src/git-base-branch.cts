@@ -77,6 +77,15 @@ interface EffectiveGitConfig {
   protectedBranches: string[];
   /** Rendered form of every entry rejected as unusable, for the caller to report. */
   rejectedProtectedBranches: string[];
+  /**
+   * `git.allow_default_branch_commits` escape hatch (#3819). When `true`, the
+   * resolved base branch is no longer auto-added to `protectedBranches` — for
+   * a project that legitimately runs GSD directly on its default branch.
+   * Explicitly configured `protected_branches` entries are unaffected: this
+   * flag narrows only the automatic base-branch protection, never a name the
+   * project named on purpose.
+   */
+  allowDefaultBranchCommits: boolean;
 }
 
 /** Render a rejected config value for a diagnostic without throwing on exotic input. */
@@ -150,6 +159,7 @@ function readEffectiveGitConfig(
           config = {
             base_branch: _readGitKey(normalized, 'base_branch'),
             protected_branches: _readGitNested(normalized, 'protected_branches'),
+            allow_default_branch_commits: _readGitNested(normalized, 'allow_default_branch_commits'),
           };
         }
       } catch { /* malformed direct edit contributes no policy values */ }
@@ -186,7 +196,11 @@ function readEffectiveGitConfig(
     rejectedProtectedBranches.push(renderRejected(rawProtectedBranches));
   }
 
-  return { baseBranch, protectedBranches, rejectedProtectedBranches };
+  // #3819: nested-only read (mirrors protected_branches — new key, no legacy
+  // flat form, so a top-level spelling must not become an undocumented alias).
+  const allowDefaultBranchCommits = config.allow_default_branch_commits === true;
+
+  return { baseBranch, protectedBranches, rejectedProtectedBranches, allowDefaultBranchCommits };
 }
 
 /**
@@ -374,6 +388,8 @@ export interface ProtectedBranchStatus {
   rejectedProtectedBranches: string[];
   isProtected: boolean;
   verified: boolean;
+  /** Mirrors the `git.allow_default_branch_commits` config value (#3819). */
+  allowDefaultBranchCommits: boolean;
 }
 
 /** Resolve the base branch plus configured protected-branch extensions. */
@@ -388,13 +404,17 @@ export function resolveProtectedBranchStatus(
     effectiveConfig.baseBranch,
     deps,
   );
-  const protectedBranches = [...new Set([baseBranch, ...effectiveConfig.protectedBranches])];
+  const protectedBranches = [...new Set([
+    ...(effectiveConfig.allowDefaultBranchCommits ? [] : [baseBranch]),
+    ...effectiveConfig.protectedBranches,
+  ])];
   return {
     baseBranch,
     protectedBranches,
     rejectedProtectedBranches: effectiveConfig.rejectedProtectedBranches,
     isProtected: protectedBranches.includes(currentBranch),
     verified,
+    allowDefaultBranchCommits: effectiveConfig.allowDefaultBranchCommits,
   };
 }
 
