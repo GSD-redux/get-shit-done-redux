@@ -7,7 +7,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 </required_reading>
 
 <process>
-**If `response_language` is configured:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in that language. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is configured:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in that language. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 <step name="get_installed_version">
 Detect the installed GSD version, scope, runtime, and config dir.

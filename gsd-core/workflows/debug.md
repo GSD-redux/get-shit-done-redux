@@ -30,7 +30,7 @@ One round-trip carries everything this workflow needs (#3149 — this call repla
 - `tdd_mode` — used as `{TDD_MODE}` in the session parameter blocks below.
 - `section_manifest` — `null` today, because this workflow declares no applicability-section markers of its own. **When it is `null`, read this workflow in full.** When it is present, read only the files named in its `read` array. `null` and an empty `included` array are NOT the same: `null` means "no manifest for this workflow", an empty `included` means "nothing applies".
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 ## 1a. LIST subcommand
 
