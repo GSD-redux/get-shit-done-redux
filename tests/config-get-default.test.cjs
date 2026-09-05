@@ -257,7 +257,9 @@ describe('config-get --default flag (#1893)', () => {
     const branches = [
       {
         name: 'no config file',
-        arrange: () => fs.rmSync(configPath, { force: true }),
+        arrange: () => {
+          if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+        },
         keyPath: 'probe.absent',
       },
       {
