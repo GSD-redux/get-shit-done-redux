@@ -1,9 +1,8 @@
 # Executor session-survivability dispatch
 
-Read and follow this fragment from `execute-phase.md` step 3 after resolving
-`SESSION_OUTLIVES_TURN`. It controls executor invocation; verifier dispatch
-is handled in `execute-phase.md` step 10, while isolation selection and worktree
-ownership remain unchanged.
+Read and follow this fragment from `execute-phase.md` steps 3 and 10 after
+resolving `SESSION_OUTLIVES_TURN`. It controls executor and verifier invocation;
+isolation selection and worktree ownership remain unchanged.
 
 ## harness Agent dispatch
 
@@ -65,3 +64,73 @@ the next plan's executor until this call has returned.
 The isolation fragment receives `SESSION_OUTLIVES_TURN` as an already-resolved
 value. Its true path background-spawns the resolved command; its false path
 runs the same command synchronously and waits before the next executor.
+
+## verifier Agent dispatch
+
+At `verify_phase_goal`, use exactly one branch based on the already-resolved
+`SESSION_OUTLIVES_TURN` value. The foreground branch must return before reading
+verification status.
+
+When `SESSION_OUTLIVES_TURN` is `true` (default), retain asynchronous verifier
+dispatch:
+
+```text
+Agent(
+  description="Verify phase {phase_number} goal achievement",
+  prompt="Verify phase {phase_number} goal achievement.
+Phase directory: {phase_dir}
+Phase goal: {goal from ROADMAP.md}
+Phase requirement IDs: {phase_req_ids}
+Check must_haves against actual codebase.
+Cross-reference requirement IDs from PLAN frontmatter against REQUIREMENTS.md — every ID MUST be accounted for.
+Create VERIFICATION.md.
+
+<required_reading>
+Read these files before verification:
+- {phase_dir}/*-PLAN.md (All plans — understand intent, check must_haves)
+- {phase_dir}/*-SUMMARY.md (All summaries — cross-reference claimed vs actual)
+- {requirements_path} (Requirement traceability)
+${CONTEXT_WINDOW >= 500000 ? `- {phase_dir}/*-CONTEXT.md (User decisions — verify they were honored)
+- {phase_dir}/*-RESEARCH.md (Known pitfalls — check for traps)
+- Prior VERIFICATION.md files from earlier phases (regression check)
+` : ''}
+</required_reading>
+
+${VERIFIER_SKILLS}",
+  subagent_type="gsd-verifier",
+  model="{verifier_model}",
+  run_in_background=true
+)
+```
+
+When `SESSION_OUTLIVES_TURN` is `false`, dispatch the verifier in the
+foreground and wait for its result before continuing:
+
+```text
+verifier_result = Agent(
+  description="Verify phase {phase_number} goal achievement",
+  prompt="Verify phase {phase_number} goal achievement.
+Phase directory: {phase_dir}
+Phase goal: {goal from ROADMAP.md}
+Phase requirement IDs: {phase_req_ids}
+Check must_haves against actual codebase.
+Cross-reference requirement IDs from PLAN frontmatter against REQUIREMENTS.md — every ID MUST be accounted for.
+Create VERIFICATION.md.
+
+<required_reading>
+Read these files before verification:
+- {phase_dir}/*-PLAN.md (All plans — understand intent, check must_haves)
+- {phase_dir}/*-SUMMARY.md (All summaries — cross-reference claimed vs actual)
+- {requirements_path} (Requirement traceability)
+${CONTEXT_WINDOW >= 500000 ? `- {phase_dir}/*-CONTEXT.md (User decisions — verify they were honored)
+- {phase_dir}/*-RESEARCH.md (Known pitfalls — check for traps)
+- Prior VERIFICATION.md files from earlier phases (regression check)
+` : ''}
+</required_reading>
+
+${VERIFIER_SKILLS}",
+  subagent_type="gsd-verifier",
+  model="{verifier_model}",
+  run_in_background=false
+)
+```

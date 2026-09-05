@@ -104,13 +104,29 @@ describe('#3159: session-survivability executor dispatch', () => {
 
   test('carries the resolved mode to worktree process dispatch and verifier dispatch', () => {
     const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const dispatch = fs.readFileSync(SESSION_DISPATCH_PATH, 'utf8');
     const isolation = fs.readFileSync(ISOLATION_DISPATCH_PATH, 'utf8');
     assert.match(isolation, /already-resolved `SESSION_OUTLIVES_TURN` mode without re-reading configuration/);
     assert.match(isolation, /true.*background[\s\S]*false.*synchronously[\s\S]*wait/s);
     assert.doesNotMatch(isolation, /workflow\.session_outlives_turn/);
-    const verifierRegion = workflow.slice(workflow.indexOf('<step name="verify_phase_goal">'));
-    assert.match(verifierRegion, /SESSION_OUTLIVES_TURN/);
-    assert.match(verifierRegion, /run_in_background:\s*false/);
+    const verifierStart = dispatch.indexOf('## verifier Agent dispatch');
+    assert.ok(verifierStart !== -1, 'verifier dispatch section must exist');
+    const verifierRegion = dispatch.slice(verifierStart);
+    const trueAnchor = verifierRegion.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
+    const falseAnchor = verifierRegion.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+    assert.ok(trueAnchor !== -1, 'verifier true branch must exist');
+    assert.ok(falseAnchor !== -1, 'verifier false branch must exist');
+    assert.ok(trueAnchor < falseAnchor, 'verifier true branch precedes false branch');
+
+    const trueBranch = verifierRegion.slice(trueAnchor, falseAnchor);
+    const falseBranch = verifierRegion.slice(falseAnchor);
+    assert.match(trueBranch, /subagent_type="gsd-verifier"/);
+    assert.match(trueBranch, /run_in_background\s*=\s*true/);
+    assert.doesNotMatch(trueBranch, /run_in_background\s*=\s*false/);
+    assert.match(falseBranch, /subagent_type="gsd-verifier"/);
+    assert.match(falseBranch, /run_in_background\s*=\s*false/);
+    assert.doesNotMatch(falseBranch, /run_in_background\s*=\s*true/);
+    assert.match(workflow, /literal verifier `Agent\(\)` branch/);
   });
 
   test('uses foreground dispatch when a session-survivability config read is malformed or fails', () => {

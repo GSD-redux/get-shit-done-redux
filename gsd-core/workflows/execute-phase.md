@@ -1275,37 +1275,10 @@ Verify phase achieved its GOAL, not just completed tasks.
 VERIFIER_SKILLS=$(gsd_run query agent-skills gsd-verifier)
 ```
 
-Apply the already-resolved `SESSION_OUTLIVES_TURN` mode here too: pass
-`run_in_background: false` when `SESSION_OUTLIVES_TURN` is `false` so the
-verifier runs synchronously in the foreground before the turn ends.
-
-```
-Agent(
-  description="Verify phase {phase_number} goal achievement",
-  prompt="Verify phase {phase_number} goal achievement.
-Phase directory: {phase_dir}
-Phase goal: {goal from ROADMAP.md}
-Phase requirement IDs: {phase_req_ids}
-Check must_haves against actual codebase.
-Cross-reference requirement IDs from PLAN frontmatter against REQUIREMENTS.md — every ID MUST be accounted for.
-Create VERIFICATION.md.
-
-<required_reading>
-Read these files before verification:
-- {phase_dir}/*-PLAN.md (All plans — understand intent, check must_haves)
-- {phase_dir}/*-SUMMARY.md (All summaries — cross-reference claimed vs actual)
-- {requirements_path} (Requirement traceability)
-${CONTEXT_WINDOW >= 500000 ? `- {phase_dir}/*-CONTEXT.md (User decisions — verify they were honored)
-- {phase_dir}/*-RESEARCH.md (Known pitfalls — check for traps)
-- Prior VERIFICATION.md files from earlier phases (regression check)
-` : ''}
-</required_reading>
-
-${VERIFIER_SKILLS}",
-  subagent_type="gsd-verifier",
-  model="{verifier_model}"
-)
-```
+Read `execute-phase/steps/session-survivability-dispatch.md` and use its
+literal verifier `Agent()` branch for the already-resolved
+`SESSION_OUTLIVES_TURN` value. The `false` branch is foreground and must
+return before this step reads verification status.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available. If the session ends abnormally (`turn_aborted`), reconcile via the `verification.status` query below — the session's terminal state is not evidence of failure (#4217).
 
