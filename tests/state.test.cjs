@@ -2096,6 +2096,156 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
       assert.ok(updated.includes('Plan: 2 of 3'), 'Plan counter should advance to 2 of 3');
     });
   });
+
+  describe('cmdStateAdvancePlan #4093 zero-labeled-fields recovery decline', () => {
+    // The reporter's exact shape: ## Current Position has drifted to pure
+    // narrative prose — zero matches for Phase:/Plan:/Current Plan:/Total
+    // Plans in Phase: anywhere in the file, bold or plain — while frontmatter
+    // still carries current_phase and the phase directory still holds the
+    // plan/summary set that IS the position. advance-plan must not strand the
+    // caller at a bare "cannot parse" error: the decline carries a
+    // machine-readable reason plus the disk-derived facts needed to repair.
+    const narrativeFixture = [
+      '---',
+      'status: Executing',
+      'current_phase: 01',
+      'current_phase_name: Implementation',
+      'last_activity: 2026-09-01',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      '**Phase 1 plan 2** (auth flow): EXECUTED — token round-trip verified end to end.',
+      "Follow-ups captured in plan 3's tasks.",
+      '',
+      '## Session',
+      '',
+      'Session ID: abc',
+      '',
+    ].join('\n');
+
+    const seedPhaseDir = (dir, planCount, summaryCount) => {
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= planCount; i++) {
+        fs.writeFileSync(path.join(phaseDir, `01-0${i}-PLAN.md`), `# plan ${i}\n`);
+      }
+      for (let i = 1; i <= summaryCount; i++) {
+        fs.writeFileSync(path.join(phaseDir, `01-0${i}-SUMMARY.md`), `# summary ${i}\n`);
+      }
+      return phaseDir;
+    };
+
+    test('#4093 declines with disk-derived repair guidance when Current Position has zero labeled fields', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), narrativeFixture);
+      seedPhaseDir('01-impl', 2, 1);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.ok(typeof out.error === 'string' && /cannot read the plan position/i.test(out.error),
+        `error should still name the unreadable plan position; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.reason, 'plan_position_unreadable',
+        `reason should be plan_position_unreadable; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '01-impl',
+        `phase_dir should name the disk phase directory; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.disk.plan_count, 2,
+        `disk.plan_count should count the 2 plan files; got: ${JSON.stringify(out.disk)}`);
+      assert.strictEqual(out.disk.summarized_count, 1,
+        `disk.summarized_count should count the 1 summary; got: ${JSON.stringify(out.disk)}`);
+      assert.strictEqual(out.suggested.current_plan, 2,
+        `next plan after 1 summarized of 2 is 2; got: ${JSON.stringify(out.suggested)}`);
+      assert.strictEqual(out.suggested.total_plans, 2,
+        `suggested total is the on-disk plan count; got: ${JSON.stringify(out.suggested)}`);
+      assert.ok(out.suggested.lines.includes('Current Plan: 2') && out.suggested.lines.includes('Total Plans in Phase: 2'),
+        `suggested lines should name the legacy pair to re-insert; got: ${JSON.stringify(out.suggested)}`);
+
+      const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.strictEqual(after, narrativeFixture,
+        'a recovery decline must leave STATE.md byte-identical');
+    });
+
+    test('#4093 resolves the position phase from the Phase line when frontmatter has none', () => {
+      const noFm = [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 — Build out',
+        '',
+        'All narrative from here; the labeled plan lines were displaced by executor notes.',
+        '',
+      ].join('\n') + '\n';
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), noFm);
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-second');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= 3; i++) fs.writeFileSync(path.join(phaseDir, `02-0${i}-PLAN.md`), `# plan ${i}\n`);
+      fs.writeFileSync(path.join(phaseDir, '02-01-SUMMARY.md'), '# summary 1\n');
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '02-second',
+        `phase should resolve from the Phase: prose line; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.suggested.current_plan, 2, `got: ${JSON.stringify(out.suggested)}`);
+      assert.strictEqual(out.suggested.total_plans, 3, `got: ${JSON.stringify(out.suggested)}`);
+    });
+
+    test('#4093 names the reason even when no phase can be resolved from disk or frontmatter', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        '# Project State\n\n## Current Position\n\nPure narrative, no labeled lines anywhere.\n',
+      );
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.ok(/cannot read the plan position/i.test(out.error),
+        `the accepted-shape sentence must survive; got: ${out.error}`);
+      assert.strictEqual(out.phase_dir, undefined,
+        `no resolvable phase means no phase_dir; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.disk, undefined, `no resolvable phase means no disk block`);
+    });
+
+    test('#4093 omits suggested values when the phase directory has no plan files', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), narrativeFixture);
+      seedPhaseDir('01-impl', 0, 0);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '01-impl', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.disk.plan_count, 0, `got: ${JSON.stringify(out.disk)}`);
+      assert.strictEqual(out.suggested, undefined,
+        `zero plans on disk means nothing to suggest; got: ${JSON.stringify(out)}`);
+    });
+
+    test('#4093 gives the same recovery decline for a present-but-unreadable plan field', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        narrativeFixture.replace("Follow-ups captured in plan 3's tasks.", 'Plan: TBD'),
+      );
+      seedPhaseDir('01-impl', 2, 1);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '01-impl', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.suggested.current_plan, 2, `got: ${JSON.stringify(out.suggested)}`);
+      assert.strictEqual(out.advanced, undefined, 'an unreadable position must never be advanced');
+    });
+  });
 });
 
 describe('cmdStateRecordMetric (state record-metric)', () => {
