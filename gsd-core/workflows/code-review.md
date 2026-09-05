@@ -557,7 +557,15 @@ dispatch in `spawn_reviewer` stays unchanged from before #4209 (COMP-01).
 
 This step is itself opt-in at the capability layer (see `gsd-core/references/loop-hook-dispatch.md`
 for the `supportsReviewerLanes` trait), not just the CLI-flag layer. The trait check itself lives
-inside `review-lane dispatch-step` (`--cap-id`/`--point`, below) — NOT here:
+inside `review-lane dispatch-step` (`--cap-id`/`--point`, below) — NOT here.
+
+Resolve the point, the roster, then dispatch (repository root, canonical file paths, review depth,
+and base SHA — SAFE-01; canonical file paths travel on stdin, never argv, per
+`compute_file_scope`). This is ONE fence, not several: `CODE_REVIEW_POINT`,
+`EXPLICIT_JOINED`/`EXPLICIT_REVIEWER_SLUGS` are bash-local state that does not survive a markdown
+fence boundary (a prose sentence between two fences is not a guard — see the depth-resolution
+guard's own rule earlier in this file), so every value this step computes and everything that
+reads it must run as a single shell control-flow decision, start to finish:
 ```bash
 CODE_REVIEW_POINT_STDERR=$(mktemp)
 CODE_REVIEW_POINT=$(gsd_run query config-get workflow.code_review_point --raw 2>"$CODE_REVIEW_POINT_STDERR") || {
@@ -569,20 +577,12 @@ CODE_REVIEW_POINT=$(gsd_run query config-get workflow.code_review_point --raw 2>
   CODE_REVIEW_POINT="execute:post"
 }
 rm -f "$CODE_REVIEW_POINT_STDERR"
-```
 
-Match only flags the reviewer-lane roster itself declares — never a hand-maintained static list.
-`code-review-flags.cjs` stays untouched (COMP-01's parser contract); reviewer-lane flags are
-parsed separately, straight from the merged first-party + installed-overlay roster
-(`review-lane-descriptor.cjs`), so a flag with more than one alias (e.g. antigravity's
-`--antigravity`/`--agy`) resolves to its one canonical slug:
-Resolve the roster, then dispatch (repository root, canonical file paths, review depth, and base
-SHA — SAFE-01; canonical file paths travel on stdin, never argv, per `compute_file_scope`). This
-is ONE fence, not two: `EXPLICIT_JOINED`/`EXPLICIT_REVIEWER_SLUGS` are bash-local state that does
-not survive a markdown fence boundary (a prose sentence between two fences is not a guard — see
-the depth-resolution guard's own rule earlier in this file), so the guard and everything that
-reads it must run as a single shell control-flow decision:
-```bash
+# Match only flags the reviewer-lane roster itself declares — never a hand-maintained static
+# list. code-review-flags.cjs stays untouched (COMP-01's parser contract); reviewer-lane flags
+# are parsed separately, straight from the merged first-party + installed-overlay roster
+# (review-lane-descriptor.cjs), so a flag with more than one alias (e.g. antigravity's
+# --antigravity/--agy) resolves to its one canonical slug.
 # #4209 RQ-02: `review-lane explicit-from-argv` owns matching this workflow's raw CLI argv
 # against the merged first-party+installed-overlay roster — the SAME roster-merge logic
 # `dispatch-step` and `plan`/`invoke` already share, not a second copy re-derived here.

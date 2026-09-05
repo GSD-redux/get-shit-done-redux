@@ -25,6 +25,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 /** Return the raw text of every ```bash fenced block in `content`. */
 function extractBashBlocks(content) {
@@ -675,6 +676,83 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
   test('code-review.md workflow has <step name="dispatch_reviewer_lanes">', () => {
     assert.ok(workflowContent.includes('<step name="dispatch_reviewer_lanes">'),
       'code-review.md workflow missing dispatch_reviewer_lanes step');
+  });
+
+  // #4209 (round 5 review): every prior "one fence, not two" fix in this step was verified by
+  // manually extracting a SUB-SLICE of the step and pre-seeding the variables that slice reads
+  // (e.g. CODE_REVIEW_POINT set by the test driver, not by the fence itself) — which is exactly
+  // why a SIBLING cross-fence bug on CODE_REVIEW_POINT itself went undetected for a full review
+  // round even after the EXPLICIT_JOINED/EXPLICIT_REVIEWER_SLUGS instance was fixed. This test
+  // extracts and executes the step's ENTIRE bash content as the workflow author's own execution
+  // model actually runs it (one process, nothing pre-seeded except genuinely external inputs),
+  // and additionally asserts there is exactly one fence — a structural invariant that makes any
+  // future accidental re-split fail loudly here instead of silently at runtime.
+  function extractDispatchReviewerLanesFences() {
+    // eslint-disable-next-line local/no-unbounded-quantifier -- bounded author-controlled workflow markdown
+    const stepMatch = workflowContent.match(/<step name="dispatch_reviewer_lanes">([\s\S]*?)<\/step>/);
+    const stepLines = splitLines(stepMatch[1]);
+    return scanFencedBlocks(stepLines)
+      .filter((b) => b.infoString.trim().toLowerCase() === 'bash' && b.closeLineIdx !== -1)
+      .map((b) => stepLines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
+  }
+
+  test('dispatch_reviewer_lanes is exactly one bash fence (no cross-fence variable read can reappear)', () => {
+    const fences = extractDispatchReviewerLanesFences();
+    assert.equal(fences.length, 1,
+      `expected dispatch_reviewer_lanes to be exactly one continuous bash fence, found ${fences.length} — a split fence means any variable set in one and read in another is silently empty (this file's own documented execution model: fenced blocks do not share shell state)`);
+  });
+
+  test('dispatch_reviewer_lanes computes CODE_REVIEW_POINT and dispatches in the SAME process, end to end (#4209 round 5)', () => {
+    const [fence] = extractDispatchReviewerLanesFences();
+    const tmpDir = createTempGitProject();
+    const dispatchArgsPath = path.join(tmpDir, 'dispatch-args.txt');
+    try {
+      // `review-lane dispatch-step --explicit codex` would spawn the REAL `codex` CLI (present on
+      // this machine) via runner.runLane, which then blocks on interactive auth with no stdin —
+      // a genuine hang, not a test artifact (#4209 round 5, BL-01). This test's subject is the
+      // FENCE's own bash control flow (CODE_REVIEW_POINT/EXPLICIT_JOINED computed correctly and
+      // threaded into dispatch-step's argv) — not the external CLI dispatch-step goes on to spawn.
+      // `gsd_run` stays real for `config-get`/`review-lane explicit-from-argv` (what this test
+      // verifies) and is short-circuited ONLY for `review-lane dispatch-step`, whose argv is
+      // captured to a file for assertion instead of executed for real.
+      const driver = [
+        `GSD_TOOLS=${JSON.stringify(GSD_TOOLS_BIN)}`,
+        `DISPATCH_ARGS_PATH=${JSON.stringify(dispatchArgsPath)}`,
+        'gsd_run() {',
+        '  if [ "$1" = "review-lane" ] && [ "$2" = "dispatch-step" ]; then',
+        '    printf \'%s\\n\' "$@" > "$DISPATCH_ARGS_PATH"',
+        '    cat >/dev/null',
+        '    echo \'{"ok":true,"dispatched":false,"selection":{},"results":[]}\'',
+        '    return 0',
+        '  fi',
+        '  node "$GSD_TOOLS" "$@"',
+        '}',
+        `REPO_ROOT=${JSON.stringify(tmpDir)}`,
+        'REVIEW_DEPTH=standard',
+        'DIFF_BASE=deadbeef',
+        'REVIEW_FILES=(src/foo.ts)',
+        'set -- --codex',
+        fence,
+        'echo "===RESULT==="',
+        'echo "CODE_REVIEW_POINT=[$CODE_REVIEW_POINT]"',
+        'echo "EXPLICIT_JOINED=[$EXPLICIT_JOINED]"',
+      ].join('\n');
+      const result = require('node:child_process').spawnSync('bash', ['-c', driver], { cwd: tmpDir, encoding: 'utf8', timeout: 15000 });
+      assert.equal(result.status, 0, `driver failed: stdout=${result.stdout} stderr=${result.stderr}`);
+      assert.match(result.stdout, /CODE_REVIEW_POINT=\[execute:post\]/,
+        `CODE_REVIEW_POINT must be computed and survive within the SAME fence that later uses it for --point, got: ${result.stdout}`);
+      assert.match(result.stdout, /EXPLICIT_JOINED=\[codex\]/,
+        `EXPLICIT_JOINED must resolve --codex to its canonical slug within the same fence, got: ${result.stdout}`);
+      const dispatchArgs = splitLines(fs.readFileSync(dispatchArgsPath, 'utf-8')).filter(Boolean);
+      assert.ok(dispatchArgs.includes('--point'), `dispatch-step argv missing --point: ${dispatchArgs.join(' ')}`);
+      assert.equal(dispatchArgs[dispatchArgs.indexOf('--point') + 1], 'execute:post',
+        `dispatch-step must receive the SAME CODE_REVIEW_POINT the fence computed, got argv: ${dispatchArgs.join(' ')}`);
+      assert.ok(dispatchArgs.includes('--explicit'), `dispatch-step argv missing --explicit: ${dispatchArgs.join(' ')}`);
+      assert.equal(dispatchArgs[dispatchArgs.indexOf('--explicit') + 1], 'codex',
+        `dispatch-step must receive the SAME EXPLICIT_JOINED the fence computed, got argv: ${dispatchArgs.join(' ')}`);
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 
   test('dispatch_reviewer_lanes passes --cap-id/--point to dispatch-step instead of resolving the trait itself', () => {
