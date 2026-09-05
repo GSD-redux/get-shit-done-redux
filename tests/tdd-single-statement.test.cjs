@@ -324,4 +324,29 @@ describe('#4268 — reworded restatement detection (structural, not literal)', (
       { numRuns: 20 },
     );
   });
+
+  // #4302: hasNearbyDeferralMarker's 500-char trailing window is a flat
+  // character count with no structural boundary — on the real
+  // agents/gsd-executor.md, a compact citation-free restatement sits
+  // immediately before an UNRELATED "## Plan-Level TDD Gate Enforcement"
+  // section that carries its own, independent tdd.md citation 82 chars past
+  // the REFACTOR anchor. The restatement borrows that neighbor's citation and
+  // evades detection. This fixture reproduces the same shape: a restatement
+  // paragraph with NO citation of its own, followed by a blank line and an
+  // unrelated section that does cite tdd.md within the 500-char window.
+  test('does not borrow a citation from an unrelated LATER section (paragraph-bounded window)', () => {
+    const fixture = [
+      'RED: write a failing test proving the bug exists and record it with a test-scoped commit.',
+      'GREEN: implement the smallest change that makes the test pass and record that with a',
+      'feat-scoped commit. REFACTOR: simplify the implementation now that it is proven correct,',
+      'without changing observable behavior.',
+      '',
+      '## Unrelated Section',
+      '',
+      'This paragraph cites the canonical `gsd-core/references/tdd.md` reference for a completely',
+      'different purpose and must not be borrowed by the restatement above.',
+    ].join('\n');
+    assert.ok(restatesCycleStructurally(fixture),
+      "a citation belonging to a different, later paragraph/section must not count as this restatement's own deferral");
+  });
 });
