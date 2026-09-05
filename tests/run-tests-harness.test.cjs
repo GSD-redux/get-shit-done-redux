@@ -1184,18 +1184,21 @@ test('hangs forever', () => new Promise((resolve) => { setTimeout(resolve, ${HAN
     // sha against the then-current body: on Node 24 it fails the
     // self-termination arm (an unheld never-settling promise also never
     // self-terminates on lines where the runner DOES hold it open), and on
-    // off-24 lines it fails the still-hanging arm. Deterministic guard, same
-    // shape as the #4104 self-exit regression: spawn the EXACT served body
-    // directly — no harness, no runner — and observe that it (a) is still
-    // running past the chunk bound the harness run above arms (it hangs by
-    // itself, without any runtime holding it), and (b) exits on its own —
-    // natural exit, no signal — inside a generous ceiling (an orphaned
-    // fixture must not outlive its intended park). Liveness of a SUBPROCESS
+    // off-24 lines it fails the still-hanging arm. Deterministic guard, the
+    // #4104 self-exit regression's event-driven shape: spawn the EXACT served
+    // body directly — no harness, no runner, no polling — and observe that its
+    // natural 'exit' event (a) arrives no earlier than past the chunk bound
+    // the harness run above arms (it hangs by itself, without any runtime
+    // holding it up), and (b) carries a natural exit — exit code 0, no
+    // signal. The `{ timeout: 2 * HANG_PARK_MS }` backstop (the
+    // health-validation #663 pattern) fails an immortal body — one that never
+    // delivers 'exit' — instead of hanging the suite; a `{ timeout }` option
+    // is the no-elapsed-assertion-compliant bound. Liveness of a SUBPROCESS
     // cannot be driven through the clock seam (mock.timers cannot reach
     // inside a separately spawned node), so the guard asserts observable
     // exit/signal/liveness behavior only — never a measured duration value
     // (RULESET.TESTS.no-timing-assertion).
-    test('the #3889 hang fixture genuinely hangs by itself and self-terminates (#4105)', (t, done) => {
+    test('the #3889 hang fixture genuinely hangs by itself and self-terminates (#4105)', { timeout: 2 * HANG_PARK_MS }, (t, done) => {
       // (a) Structural margin, single-sourced with the served body: the park
       // must outlast the chunk bound by >= 4x, so a loaded box's scheduling
       // jitter can never let the timer settle before the harness kill fires.
@@ -1208,47 +1211,37 @@ test('hangs forever', () => new Promise((resolve) => { setTimeout(resolve, ${HAN
       const tf = path.join(dir, 'hangs.test.cjs');
       fs.writeFileSync(tf, HANGS_BODY, 'utf8');
       const child = spawn(process.execPath, [tf], { stdio: 'ignore' });
+      // The runner timeout above fails an immortal body; this hook guarantees
+      // the child is reaped on every exit path, including that one.
       t.after(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } });
-      // Fast-fail on a spawn error (execPath unspawnable): the poll below keys
-      // on exit/signal, which a failed spawn never sets, so without this the
-      // ceiling would expire with a misleading "did not self-terminate"
-      // message instead of the real cause (same hardening as #4104).
+      const spawnedAt = Date.now();
+      // Past the chunk bound the harness kills at: the fixture's natural exit
+      // must arrive no earlier than this — that is the vacuity guard. +400ms
+      // covers child spawn startup so the checkpoint measures the fixture,
+      // not boot time.
+      const stillHangingAt = spawnedAt + CHUNK_TIMEOUT_MS_FOR_HANG_RUN + 400;
+      // Fast-fail on a spawn error (execPath unspawnable): 'exit' never fires
+      // for a failed spawn, so without this the runner timeout would expire
+      // with a generic timeout message instead of the real cause (same
+      // hardening as #4104).
       child.on('error', (err) => {
         assert.fail(`could not spawn the fixture directly: ${err.message}`);
       });
-      // 2x the park: generous for a loaded runner, still bounded so an
-      // immortal body fails loudly well inside this suite's chunk budget.
-      const CEILING_MS = 2 * HANG_PARK_MS;
-      const spawnedAt = Date.now();
-      // Past the chunk bound the harness kills at: the fixture must still be
-      // hanging HERE, alone — this is the vacuity guard. +400ms covers child
-      // spawn startup so the checkpoint measures the fixture, not boot time.
-      const stillHangingAt = spawnedAt + CHUNK_TIMEOUT_MS_FOR_HANG_RUN + 400;
-      const deadline = spawnedAt + CEILING_MS;
-      const poll = () => {
-        // `exitCode !== null` alone misses a SIGNALED exit (exitCode stays
-        // null when a signal ends the child); signalCode covers that, and the
-        // assertions below then name it as the failure.
-        if (child.exitCode !== null || child.signalCode !== null) {
-          assert.ok(
-            Date.now() >= stillHangingAt,
-            `fixture must still be hanging past the ${CHUNK_TIMEOUT_MS_FOR_HANG_RUN}ms chunk bound — ` +
-              `it exited after only ${Date.now() - spawnedAt}ms ` +
-              '(#4105 regression: the hang is the runtime\'s, not the fixture\'s)',
-          );
-          assert.strictEqual(child.signalCode, null,
-            'fixture must SELF-terminate (natural exit) — a signal means we had to kill it (#4105/#4104 regression)');
-          assert.strictEqual(child.exitCode, 0, 'the parked fixture settles and its test passes cleanly');
-          done();
-          return;
-        }
-        if (Date.now() >= deadline) {
-          child.kill('SIGKILL');
-          assert.fail(`fixture did not self-terminate within ${CEILING_MS}ms — immortal process (#4105/#4104 regression)`);
-        }
-        setTimeout(poll, 200);
-      };
-      setImmediate(poll);
+      // `exitCode !== null` alone misses a SIGNALED exit (exitCode stays null
+      // when a signal ends the child); the assertions name signalCode as the
+      // failure when that happens.
+      child.on('exit', () => {
+        assert.ok(
+          Date.now() >= stillHangingAt,
+          `fixture must still be hanging past the ${CHUNK_TIMEOUT_MS_FOR_HANG_RUN}ms chunk bound — ` +
+            `it exited after only ${Date.now() - spawnedAt}ms ` +
+            '(#4105 regression: the hang is the runtime\'s, not the fixture\'s)',
+        );
+        assert.strictEqual(child.signalCode, null,
+          'fixture must SELF-terminate (natural exit) — a signal means we had to kill it (#4105/#4104 regression)');
+        assert.strictEqual(child.exitCode, 0, 'the parked fixture settles and its test passes cleanly');
+        done();
+      });
     });
   });
 });
