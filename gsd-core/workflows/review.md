@@ -845,6 +845,19 @@ NOT a preservation failure. This copy is deliberately NOT part of the commit abo
 step names only `{padded_phase}-REVIEWS.md` explicitly, never a directory glob, so
 `.review-diagnostics/` is never swept into it.
 
+**#4097: preserve lane OUTPUT, never the run's own input copies.** `RUN_DIR` holds not only
+lane outputs — prompt assembly (the `gather_context`/section-copy step above) also writes the
+run's assembled INPUTS there under the same `gsd-review-` prefix: the combined prompt, the
+instructions/roadmap sections, a copy of every plan under review, the project/context/research/
+requirements sections, and the per-lane trimmed prompts. Those are byte-identical duplicates of
+files already committed under `.planning/`; sweeping them into `.review-diagnostics/` buries
+the actual evidence under plan duplicates and grows the phase directory on every run. The
+exclusion list below is CLOSED and owned here: this workflow itself writes every input
+basename at prompt-assembly time, so a future input file CANNOT silently join the evidence
+set — adding one means adding its stem to this list consciously. Lane slugs never begin with
+any excluded stem (`prompt`, `instructions`, `plan-`, `project`, `roadmap`, `context`,
+`research`, `requirements`), so a lane report can never be excluded by accident.
+
 Preservation and cleanup MUST run in the same fenced block below (a shell variable cannot
 survive across separate fences — each is its own process). `mkdir -p` and every `cp` are
 exit-status checked; `rm -rf "$RUN_DIR"` runs ONLY if nothing was preserved (nothing to
@@ -858,7 +871,20 @@ shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
 RUN_DIR="{run_dir}"
 DIAG_DIR="{phase_dir}/.review-diagnostics"
 
-_DIAG_MD=( "$RUN_DIR"/gsd-review-*.md )
+# #4097: `gsd-review-*.md` matches BOTH lane outputs (reports, diagnostic stubs) and the
+# run's own assembled input copies (see the #4097 note above). Filter by basename against
+# the closed input set this workflow itself writes — direct glob iteration with a `case`
+# filter, no string accumulator, identical under bash and zsh (#4099/#4109), and the
+# `nullglob` set at the top of this fence keeps an empty RUN_DIR an empty array (#2962).
+# `gsd-review-prompt*` deliberately covers BOTH the combined prompt (`gsd-review-prompt.md`)
+# and the per-lane trimmed prompts (`gsd-review-prompt-<slug>.md`).
+_DIAG_MD=()
+for f in "$RUN_DIR"/gsd-review-*.md; do
+  case "$(basename "$f")" in
+    gsd-review-prompt*|gsd-review-instructions*|gsd-review-plan-*|gsd-review-project*|gsd-review-roadmap*|gsd-review-context*|gsd-review-research*|gsd-review-requirements*) ;;
+    *) _DIAG_MD+=("$f") ;;
+  esac
+done
 _DIAG_ERR=()
 for f in "$RUN_DIR"/gsd-review-*.err; do
   [ -s "$f" ] && _DIAG_ERR+=("$f")
