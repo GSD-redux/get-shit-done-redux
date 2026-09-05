@@ -274,7 +274,7 @@ Important: You are running in the background. Do NOT use AskUserQuestion — mak
 )
 ```
 
-> **ORCHESTRATOR RULE — BACKGROUND DISPATCH**: After calling Agent() above with `run_in_background=true`, do NOT do any planning work for this phase independently. Return to the dashboard immediately and wait for the background agent to report back. Only resume planning-related work when the subagent result is available.
+> **ORCHESTRATOR RULE — BACKGROUND DISPATCH**: After calling Agent() above with `run_in_background=true`, do NOT do any planning work for this phase independently. Return to the dashboard immediately and wait for the background agent to report back. Only resume planning-related work when the subagent result is available. Never call `ScheduleWakeup` or any host wake/sleep-scheduling tool while waiting (#4079) — a partial-args wake call surfaces a red validation error; the dashboard loop is the wait.
 
 Display:
 
@@ -328,7 +328,7 @@ Important: You are running in the background. Do NOT use AskUserQuestion — mak
 )
 ```
 
-> **ORCHESTRATOR RULE — BACKGROUND DISPATCH**: After calling Agent() above with `run_in_background=true`, do NOT do any execution work for this phase independently. Return to the dashboard immediately and wait for the background agent to report back. Only resume execution-related work when the subagent result is available.
+> **ORCHESTRATOR RULE — BACKGROUND DISPATCH**: After calling Agent() above with `run_in_background=true`, do NOT do any execution work for this phase independently. Return to the dashboard immediately and wait for the background agent to report back. Only resume execution-related work when the subagent result is available. Never call `ScheduleWakeup` or any host wake/sleep-scheduling tool while waiting (#4079) — a partial-args wake call surfaces a red validation error; the dashboard loop is the wait.
 
 Display:
 
