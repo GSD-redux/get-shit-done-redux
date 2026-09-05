@@ -77,7 +77,7 @@ const AUDITOR_PATH = path.join(__dirname, '..', 'agents', 'gsd-ui-auditor.md');
 // body regex is ad-hoc markdown parsing (local/no-adhoc-markdown-parsing), and a
 // bare \n split is CRLF-fragile on Windows checkouts (local/no-crlf-fragile-split).
 // splitLines() handles the line endings; the scan below handles the fence.
-function screenshotApproachBlock() {
+function screenshotApproachLines() {
   const lines = splitLines(fs.readFileSync(AUDITOR_PATH, 'utf-8'));
   const FENCE = '`'.repeat(3);
   const OPENER = FENCE + 'bash';
@@ -98,7 +98,63 @@ function screenshotApproachBlock() {
     body.push(line);
   }
   assert.ok(body.length > 0, '<screenshot_approach> must contain a non-empty bash fence');
-  return body.join('\n');
+  return body;
+}
+
+function screenshotApproachBlock() {
+  return screenshotApproachLines().join('\n');
+}
+
+// Join backslash continuations, so a capture invocation or an `if ... ; then` spread
+// over four physical lines is ONE logical line. Without this, a structural read of the
+// block sees `if npx playwright screenshot "$DEV_URL" \` — a header with no `then` —
+// and silently declines to open a scope.
+function logicalLines(lines) {
+  const joined = [];
+  let buf = null;
+  for (const raw of lines) {
+    const piece = buf === null ? raw : `${buf} ${raw.trim()}`;
+    const trimmedEnd = piece.replace(/[\t ]+$/, '');
+    if (trimmedEnd.endsWith('\\')) {
+      buf = trimmedEnd.slice(0, -1).replace(/[\t ]+$/, '');
+      continue;
+    }
+    buf = null;
+    joined.push(piece);
+  }
+  if (buf !== null) joined.push(buf);
+  return joined;
+}
+
+// Every logical line paired with the shell conditions actually GOVERNING it — the
+// `if`/`elif`/`else` conditions of the enclosing scopes, innermost last. Loops and
+// `case` open a scope with no condition of their own, so a line inside one is still
+// correctly reported as ungoverned unless an `if` encloses it too.
+//
+// This is what a "the echo is gated" assertion has to read. Asking instead whether some
+// token appears EARLIER IN THE BLOCK TEXT than the echo answers a different question
+// entirely, and `CAPTURED=0` near the top of the block makes that question true forever:
+// moving the success echo back outside its `if [ "$CAPTURED" -eq 3 ]` branch — which is
+// precisely the #4176 bug — would not disturb it.
+function guardedLines(lines) {
+  const stack = [];
+  const rows = [];
+  for (const line of logicalLines(lines)) {
+    const t = line.trim();
+    const ifMatch = /^if[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
+    if (ifMatch) { stack.push(ifMatch[1]); continue; }
+    const elifMatch = /^elif[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
+    if (elifMatch) { if (stack.length) stack[stack.length - 1] = elifMatch[1]; continue; }
+    if (t === 'else') { if (stack.length) stack[stack.length - 1] = `!(${stack[stack.length - 1]})`; continue; }
+    if (t === 'fi') { stack.pop(); continue; }
+    if (/^(for|while|until)\b/.test(t) && /;[\t ]*do$/.test(t)) { stack.push(''); continue; }
+    if (t === 'do') { stack.push(''); continue; }
+    if (t === 'done') { stack.pop(); continue; }
+    if (/^case\b/.test(t) && /\bin$/.test(t)) { stack.push(''); continue; }
+    if (t === 'esac') { stack.pop(); continue; }
+    rows.push({ line: t, guards: stack.slice() });
+  }
+  return rows;
 }
 
 describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
@@ -122,12 +178,27 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     const block = screenshotApproachBlock();
     const checksOutcome = /\[ -s "?\$SCREENSHOT_DIR|\[ -s |if npx |CAPTURED=|\$\?/.test(block);
     assert.ok(checksOutcome, 'an exit-status or file-existence check must gate the captured/not-captured signal');
-    // The unconditional echo is the actual defect: a "captured" claim must not
-    // sit outside any conditional that could have observed a failure.
-    const unconditional = block
-      .split('\n')
-      .some((l) => /^\s*echo "Screenshots captured/.test(l) && !/CAPTURED|-eq|-s /.test(block.slice(0, block.indexOf(l))));
-    assert.ok(!unconditional, '"Screenshots captured" must never be echoed without an outcome check');
+  });
+
+  // The structural half of the assertion above. A "captured" claim is a claim about an
+  // outcome, so what has to be true is that the branch printing it could only have been
+  // reached by observing that outcome — a property of the block's CONTROL FLOW, which a
+  // substring-proximity check cannot express and cannot fail on the regression it names.
+  test('every capture-success claim is governed by a conditional testing the capture count', () => {
+    const rows = guardedLines(screenshotApproachLines());
+    const CLAIM = /^echo "Screenshots (captured|PARTIALLY captured)\b/;
+    const claims = rows.filter((r) => CLAIM.test(r.line));
+    assert.ok(
+      claims.length > 0,
+      'expected the capture block to echo a success or partial-success claim'
+    );
+    for (const claim of claims) {
+      assert.ok(
+        claim.guards.some((cond) => /CAPTURED/.test(cond)),
+        'a capture-success claim must sit inside a conditional that tests the capture count; ' +
+          `governing conditions for ${JSON.stringify(claim.line)} were ${JSON.stringify(claim.guards)}`
+      );
+    }
   });
 
   test('all three documented ports are tried in the control flow', () => {
