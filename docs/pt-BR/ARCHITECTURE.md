@@ -261,6 +261,7 @@ Hooks de runtime que se integram ao agente de IA anfitrião:
 | `gsd-prompt-guard.js` | `PreToolUse` | Escaneia escritas em `.planning/` em busca de padrões de injeção de prompt (consultivo) |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Escaneia saídas da ferramenta Read em busca de instruções injetadas em conteúdo não confiável |
 | `gsd-workflow-guard.js` | `PreToolUse` | Detecta edições de arquivos fora do contexto de workflow do GSD (consultivo, ativado via `hooks.workflow_guard`) |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Bloqueia rigorosamente leituras de `.env`, `.env.<suffix>` (exceto templates como `.env.example`) e `.secrets` via Read / Grep / Bash; substitui as regras deny `Read(.env*)` que o instalador escrevia (#4221) |
 | `gsd-read-guard.js` | `PreToolUse` | Guarda consultivo que impede Edit/Write em arquivos ainda não lidos na sessão |
 | `gsd-session-state.sh` | `SessionStart` | Rastreamento de estado de sessão para runtimes baseados em shell |
 | `gsd-validate-commit.sh` | `PreToolUse` | Validação de commit para aplicação de commits convencionais |

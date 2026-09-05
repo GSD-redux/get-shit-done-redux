@@ -249,6 +249,63 @@ describe('reconstructFrontmatter', () => {
     assert.ok(hashResult.includes('"value # note"'), 'should quote value with hash');
   });
 
+  describe('#4053 — decimal-shaped numeric scalars survive a spec YAML reader', () => {
+    const yaml = require('js-yaml');
+    const lineFor = (obj, key) =>
+      reconstructFrontmatter(obj).split('\n').find((l) => l.startsWith(`${key}:`));
+
+    test('a decimal phase id is quoted so js-yaml keeps it a string', () => {
+      assert.strictEqual(lineFor({ current_phase: '22.1' }, 'current_phase'), 'current_phase: "22.1"');
+      assert.strictEqual(lineFor({ current_phase: '22.10' }, 'current_phase'), 'current_phase: "22.10"');
+      assert.strictEqual(lineFor({ current_phase: '22.0' }, 'current_phase'), 'current_phase: "22.0"');
+    });
+
+    test('"22.1" and "22.10" no longer collide under js-yaml', () => {
+      const load = (v) => yaml.load(reconstructFrontmatter({ current_phase: v })).current_phase;
+      const a = load('22.1');
+      const b = load('22.10');
+      assert.strictEqual(a, '22.1');
+      assert.strictEqual(b, '22.10'); // was the float 22.1 before the fix
+      assert.notStrictEqual(a, b);
+      assert.strictEqual(typeof b, 'string'); // was 'number' before the fix
+    });
+
+    test('a nested decimal value is also quoted', () => {
+      assert.strictEqual(
+        reconstructFrontmatter({ progress: { ratio: '1.10' } }),
+        'progress:\n  ratio: "1.10"',
+      );
+    });
+
+    test('plain integer phase ids and counts stay bare — no idempotency churn', () => {
+      assert.strictEqual(lineFor({ current_phase: '3' }, 'current_phase'), 'current_phase: 3');
+      assert.strictEqual(lineFor({ current_phase: '10' }, 'current_phase'), 'current_phase: 10');
+      assert.strictEqual(
+        reconstructFrontmatter({ progress: { completed_phases: '2', percent: '40' } }),
+        'progress:\n  completed_phases: 2\n  percent: 40',
+      );
+    });
+
+    test('exponent, hex, octal, binary and sexagesimal forms are quoted and survive js-yaml', () => {
+      for (const v of ['1e3', '0x1F', '0o17', '0b101', '12:30']) {
+        assert.strictEqual(lineFor({ k: v }, 'k'), `k: "${v}"`, v);
+        assert.strictEqual(yaml.load(reconstructFrontmatter({ k: v })).k, v, v);
+      }
+    });
+
+    test('a leading-zero all-digit id stays bare — the documented, scoped trade-off', () => {
+      assert.strictEqual(lineFor({ current_phase: '02' }, 'current_phase'), 'current_phase: 02');
+      assert.strictEqual(lineFor({ plan: '01' }, 'plan'), 'plan: 01');
+    });
+
+    test('free-text with no YAML-special characters stays unquoted — no blanket quoting', () => {
+      assert.strictEqual(
+        lineFor({ current_phase_name: 'Test Phase' }, 'current_phase_name'),
+        'current_phase_name: Test Phase',
+      );
+    });
+  });
+
   test('serializes nested objects with proper indentation', () => {
     const result = reconstructFrontmatter({ tech: { added: 'prisma', patterns: 'repo' } });
     assert.ok(result.includes('tech:'), 'should have parent key');
@@ -312,7 +369,7 @@ describe('reconstructFrontmatter', () => {
       `comment should survive reconstruct; got:\n${reconstructed}`,
     );
     // data identity preserved alongside the comment.
-    assert.ok(reconstructed.includes('gsd_state_version: 1.0'));
+    assert.ok(reconstructed.includes('gsd_state_version: "1.0"'));
     assert.ok(reconstructed.includes('current_phase: 3'));
     assert.ok(reconstructed.includes('status: executing'));
     // the reconstructed output re-parses to the same data (idempotent round-trip).

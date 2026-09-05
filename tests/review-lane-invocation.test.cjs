@@ -26,6 +26,7 @@ const {
 } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 const {
   resolveLanePlan,
+  resolveLaneEffort,
   resolveTimeoutMs,
   isEmptyReview,
   normalizeHost,
@@ -720,5 +721,144 @@ describe('#2358 design principle: run-scoped temp dirs never collide across proj
       staleProjectAPath, laterProjectBPath,
       `phase ${phase} in two different runs must not resolve to the same prompt path`
     );
+  });
+});
+
+describe('#4255 — lane effort comes from REVIEW config, never from another agent', () => {
+  // Before this fix `review-lane plan` resolved every lane's effort by spawning
+  // `query resolve-execution gsd-plan-checker --host <slug>`. The agent id was a hardcoded
+  // literal, so `--host` chose only the argv RENDERING while the LEVEL always came from the
+  // installed plan-checker's frontmatter — `low` under every shipped model profile. A cross-AI
+  // review is the opposite workload from a fast structural verifier, the rendered argument is a
+  // CLI config OVERRIDE (so it beat the effort the operator had set for that CLI), and at `low` a
+  // large source-grounded prompt makes the model end its turn with no final message: the lane
+  // came back empty and its stub read as a crash.
+  //
+  // These rows pin the replacement. `renderArgv` is injected, so they assert the RESOLUTION —
+  // which level wins, and whether an argument is emitted at all — independently of any host's
+  // argv syntax. The syntax itself stays pinned by the GOLDEN table above.
+
+  /** Stand-in for the host renderer: echoes the level back in a recognisable shape. */
+  const render = (host, level) => ({ argv: ['-c', `effort=${level}`], value: level });
+  /** A host that declares no argv effort surface — renders nothing, as ADR-2481 requires. */
+  const renderNone = () => ({ argv: [], value: null });
+  const lane = (slug) => REVIEWER_LANES.find((l) => l.slug === slug);
+
+  test('the declared default is used when nothing is configured — high on the prompt-fed lanes', () => {
+    for (const slug of ['codex', 'claude', 'opencode']) {
+      const r = resolveLaneEffort(lane(slug), () => undefined, render);
+      assert.equal(r.value, 'high', `${slug} must default to high, not to another agent's level`);
+      assert.equal(r.source, 'lane-default');
+      assert.deepEqual(r.argv, ['-c', 'effort=high']);
+    }
+  });
+
+  test("a lane's own config key wins over the declared default", () => {
+    const r = resolveLaneEffort(lane('codex'), (k) => (k === 'review.effort.codex' ? 'xhigh' : undefined), render);
+    assert.equal(r.value, 'xhigh');
+    assert.equal(r.source, 'config');
+  });
+
+  test('each lane reads ONLY its own key — one lane’s effort never leaks into another', () => {
+    const configGet = (k) => (k === 'review.effort.codex' ? 'minimal' : undefined);
+    assert.equal(resolveLaneEffort(lane('codex'), configGet, render).value, 'minimal');
+    assert.equal(resolveLaneEffort(lane('claude'), configGet, render).value, 'high',
+      'claude must fall back to its OWN default, not pick up the codex key');
+  });
+
+  test('a configured `inherit` emits NO argument, so the reviewer CLI’s own config decides', () => {
+    const r = resolveLaneEffort(lane('codex'), () => 'inherit', render);
+    assert.deepEqual(r.argv, []);
+    assert.equal(r.value, null);
+    assert.equal(r.source, 'none');
+  });
+
+  test('a lane declaring no review effort at all emits no argument', () => {
+    // The non-vacuity half of the row above: `none` must be reachable from the DECLARATION too,
+    // not only from an explicit `inherit`. Nine shipped lanes have no effort channel to feed.
+    for (const l of REVIEWER_LANES.filter((x) => x.effortConfigKey === null)) {
+      const r = resolveLaneEffort(l, () => 'high', render);
+      assert.deepEqual(r.argv, [], `${l.slug} declares no effort key and must emit nothing`);
+      assert.equal(r.source, 'none');
+    }
+  });
+
+  test('an unrecognized level is REFUSED, not forwarded to the CLI', () => {
+    // Forwarding a typo renders an argument the CLI rejects, which kills the lane outright — a
+    // strictly worse outcome than the level the operator meant. Fall back to the declared default.
+    for (const bogus of ['hihg', 'HIGH ', 'very-high', '', '  ', 'null']) {
+      const r = resolveLaneEffort(lane('codex'), () => bogus, render);
+      assert.equal(r.value, 'high', `'${bogus}' must fall back to the lane default`);
+      assert.equal(r.source, 'lane-default');
+    }
+  });
+
+  test('a non-string configured value is ignored rather than rendered', () => {
+    for (const bogus of [42, true, null, {}, ['high']]) {
+      const r = resolveLaneEffort(lane('codex'), () => bogus, render);
+      assert.equal(r.value, 'high', `${JSON.stringify(bogus)} must not reach the renderer`);
+    }
+  });
+
+  test('the host’s negotiated surface still decides — a renderer that emits nothing yields none', () => {
+    // ADR-1239/#2481's trust-boundary invariant: a lane cannot talk a host into accepting an
+    // argument its negotiated effortSurface does not declare, however the lane is configured.
+    const r = resolveLaneEffort(lane('codex'), () => 'xhigh', renderNone);
+    assert.deepEqual(r.argv, []);
+    assert.equal(r.source, 'none');
+  });
+
+  test('the documented clamp is what the catalog actually does', () => {
+    // The configuration reference tells the operator which levels survive per host, and a prose
+    // claim about behaviour is a claim that can rot. Pin it against the real renderer so the two
+    // cannot drift. (No file is read here — the lane's clamp table IS the thing being asserted.)
+    const mc = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const seen = {};
+    for (const host of ['codex', 'claude', 'opencode']) {
+      seen[host] = Object.fromEntries(
+        ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+          .map((l) => [l, mc.renderEffortArgv(host, l, 'argv').value]),
+      );
+    }
+    assert.equal(seen.codex.minimal, 'low', 'codex clamps minimal to low');
+    assert.equal(seen.claude.minimal, 'low', 'claude clamps minimal to low');
+    assert.equal(seen.opencode.minimal, 'minimal', 'opencode accepts minimal as-is');
+    for (const host of ['codex', 'claude', 'opencode']) {
+      for (const l of ['low', 'medium', 'high', 'xhigh', 'max']) {
+        assert.equal(seen[host][l], l, `${host} must pass ${l} through unchanged`);
+      }
+    }
+  });
+
+  test('the renderer’s clamped value is recorded, not the level asked for', () => {
+    // #2295 records the effort in REVIEWS.md as `model (reasoning=LEVEL)`. When a host clamps
+    // (`max` -> `xhigh` on codex), the recorded level must be what actually ran.
+    const clamping = () => ({ argv: ['-c', 'effort=xhigh'], value: 'xhigh' });
+    const r = resolveLaneEffort(lane('codex'), () => 'max', clamping);
+    assert.equal(r.value, 'xhigh', 'the clamped level is what ran, so it is what is recorded');
+  });
+
+  test('a malformed lane object degrades to no effort instead of throwing', () => {
+    // The resolver is called from gsd-tools.cjs (untyped) with a lane looked up by slug, which
+    // can miss. Losing one lane's effort is recoverable; a throw there takes down every lane.
+    for (const bad of [null, undefined, {}, { slug: 'x' }]) {
+      assert.deepEqual(resolveLaneEffort(bad, () => 'high', render).argv, []);
+    }
+  });
+
+  test('resolved effort reaches argv only for lanes declaring effortChannel argv', () => {
+    for (const l of REVIEWER_LANES) {
+      const eff = resolveLaneEffort(l, () => undefined, render);
+      const r = resolveLanePlan({
+        lane: l, configGet: () => undefined, runDir: RUN, repoRoot: ROOT,
+        effortArgs: eff.argv, effortValue: eff.value,
+      });
+      if (!r.ok || r.plan.transport !== 'spawn') continue;
+      const carriesEffort = r.plan.argv.some((a) => String(a).startsWith('effort='));
+      assert.equal(carriesEffort, l.invoke.effortChannel === 'argv',
+        `${l.slug}: effort argv must appear exactly when the lane declares the channel`);
+      assert.equal(r.plan.effort, l.invoke.effortChannel === 'argv' ? 'high' : null,
+        `${l.slug}: the recorded effort must match what actually expanded`);
+    }
   });
 });

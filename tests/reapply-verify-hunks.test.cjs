@@ -1060,3 +1060,113 @@ describe('Bug #934: OK_NO_BASELINE when recordedHash present but pristine file a
 });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4086 (verifier resolves skills/ entries at the
+// runtime's ACTUAL skills root). Codex installs skills to ~/.agents/skills;
+// verifyFile() joined every relPath against configDir only, so legacy
+// Codex skills/ patch entries reported fail_installed_missing even though
+// the file existed at its real location.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4086-verify-reapply-skills-root', () => {
+'use strict';
+
+const { test, describe, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { cleanup, scrubConfigLocationEnv } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON } = require(SCRIPT);
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let savedHome;
+let savedUserProfile;
+let restoreConfigEnv;
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function runVerifier() {
+  const r = runNode([
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir', configDir,
+    '--json',
+  ], { timeoutMs: 60_000 });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+beforeEach(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4086-vfy-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'home', '.codex');
+  fs.mkdirSync(patchesDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  // Sandbox HOME so the codex skills-kind home override resolves inside the
+  // fixture (~/.agents/skills), not the developer's real home.
+  const home = path.join(tmpRoot, 'home');
+  savedHome = process.env.HOME;
+  savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  restoreConfigEnv = scrubConfigLocationEnv();
+});
+
+afterEach(() => {
+  restoreConfigEnv();
+  process.env.HOME = savedHome;
+  if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = savedUserProfile;
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4086: verifyFile resolves skills entries at the runtime skills root', () => {
+  test('verifyFile resolves skills entries at the runtime\'s skills root (#4086)', () => {
+    const key = 'skills/gsd-x/SKILL.md';
+    writeFile(path.join(patchesDir, key), 'stock body line for the patch backup\nuser-added line that must survive merges\n');
+    writeFile(path.join(tmpRoot, 'home', '.agents', key), 'stock body line for the patch backup\nuser-added line that must survive merges\n');
+    // Manifest tells the verifier which runtime/scope owns this configDir.
+    writeFile(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.12.0', runtime: 'codex', scope: 'global', files: {},
+    }));
+
+    const { status, report } = runVerifier();
+    assert.equal(status, 0, `gate must pass; got report ${JSON.stringify(report)}`);
+    assert.equal(report.failures, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'ok');
+    assert.notEqual(r0.reason, REASON.FAIL_INSTALLED_MISSING);
+  });
+
+  test('verifyFile still fails when the skill file is genuinely missing (#4086)', () => {
+    const key = 'skills/gsd-gone/SKILL.md';
+    writeFile(path.join(patchesDir, key), 'stock body line for the patch backup\nuser-added line that must survive merges\n');
+    writeFile(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.12.0', runtime: 'codex', scope: 'global', files: {},
+    }));
+
+    const { status, report } = runVerifier();
+    assert.equal(status, 1);
+    const r0 = report.results[0];
+    assert.equal(r0.file.replace(/\\/g, '/'), key);
+    assert.equal(r0.status, 'fail');
+    assert.equal(r0.reason, REASON.FAIL_INSTALLED_MISSING);
+  });
+});
+  });
+}

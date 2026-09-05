@@ -1055,6 +1055,7 @@ const JS_HOOKS = [
   'gsd-workflow-guard.js',
   'gsd-worktree-path-guard.js',
   'gsd-write-guard.js',
+  'gsd-secret-read-guard.js',
 ];
 
 // Drives the real guarded registration function directly (local-install
@@ -2939,6 +2940,277 @@ describe('#1834: installer deploys .sh hooks alongside .js hooks', () => {
   });
 }
 
+// ─── #4087 / #4098: the Codex hook bundle must ship the helpers it requires ───
+//
+// CODEX_HOOKS_TO_COPY is a flat, hand-maintained filename allowlist that never
+// recursed, and Codex is excluded from installSharedHooksBundle (the path that
+// stages hooks/lib/ for full-bundle runtimes). Excluding hooks/lib/ was a
+// correct, scoped decision for #3579 — until #3911 (2ea5efc15) gave
+// gsd-context-monitor.js a real `require('./lib/hook-exit.js')`. From then on a
+// fresh --codex install staged the hook without its helper, and the hook died
+// with MODULE_NOT_FOUND at module load — before its own try/catch — on every
+// event Codex registers it for. The install still exited 0, so nothing surfaced
+// it but the user's own broken session.
+//
+// These rows drive the REAL installer into a sandboxed config dir and then
+// EXECUTE the installed hook. Asserting the files exist is not enough: the
+// failure is at load, and a require chain one level deeper than the assertion
+// looks identical to success on a file listing.
+describe('#4087 regression: Codex install stages the hook helpers its hooks require', () => {
+  // These rows spawn a REAL install. The host suite sets GSD_TEST_MODE=1 at
+  // collection time, which the child inherits and which gates bin/install.js's
+  // whole main() block — the install then writes nothing at all and every
+  // assertion below fails on an absent hooks/ dir rather than on the defect.
+  // Same clear-and-restore the folded #1834 block uses for the same reason.
+  const { before: __gtmBefore, after: __gtmAfter } = require('node:test');
+  let __savedGsdTestMode;
+  __gtmBefore(() => { __savedGsdTestMode = process.env.GSD_TEST_MODE; delete process.env.GSD_TEST_MODE; });
+  __gtmAfter(() => { if (__savedGsdTestMode === undefined) delete process.env.GSD_TEST_MODE; else process.env.GSD_TEST_MODE = __savedGsdTestMode; });
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-install-4087-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function installCodex(configDir) {
+    // HOME/USERPROFILE must be sandboxed for the CHILD, not just --config-dir.
+    // Codex's "skills" kind declares a global `home` override, so it resolves
+    // from os.homedir() rather than the configDir — and install/uninstall PRUNE
+    // GSD entries there. Without this the #3712 real-home guard refuses the call
+    // outright (correctly: it would otherwise write into and prune the
+    // developer's real ~/.agents/skills). sandboxHome() from helpers covers
+    // IN-PROCESS calls; this install is spawned, so the sandbox goes in the
+    // child's env.
+    throwIfFailed(
+      runNode([INSTALL_SCRIPT, '--codex', '--global', '--yes', '--no-sdk', '--config-dir', configDir], {
+        timeoutMs: 120000,
+        env: { ...process.env, HOME: configDir, USERPROFILE: configDir },
+      }),
+      `node ${INSTALL_SCRIPT} --codex --global --config-dir ${configDir}`,
+    );
+    return path.join(configDir, 'hooks');
+  }
+
+  test('the installed context-monitor hook LOADS AND RUNS, not merely exists', () => {
+    const hooksDir = installCodex(tmpDir);
+    const hook = path.join(hooksDir, 'gsd-context-monitor.js');
+    assert.ok(fs.existsSync(hook), 'precondition: the hook itself must be staged');
+
+    // The actual defect. Before the fix this exited 1 with
+    // "Cannot find module './lib/hook-exit.js'".
+    // `exitCode`, not `status`: the process seam returns its own shape
+    // ({outcome, exitCode, stdout, stderr, ...}) and `status` reads undefined —
+    // which would compare unequal to 0 and pass this row for the wrong reason
+    // if the polarity were ever flipped.
+    const result = runNode([hook], { timeoutMs: 30000, input: '{}', env: { ...process.env } });
+    assert.strictEqual(
+      result.outcome, 'exited',
+      `the hook must run to completion, not time out or be killed. outcome=${result.outcome}`,
+    );
+    assert.strictEqual(
+      result.exitCode, 0,
+      'the installed Codex hook must load and exit 0 — a MODULE_NOT_FOUND at load fires on every '
+      + `registered event and is invisible to the installer's own exit code. stderr: ${result.stderr}`,
+    );
+    assert.doesNotMatch(
+      String(result.stderr || ''), /MODULE_NOT_FOUND|Cannot find module/,
+      'no missing-module error may reach stderr',
+    );
+  });
+
+  // AC4: this is the row that stops the bug recurring. It derives the
+  // requirement graph from the SHIPPED files rather than restating today's three
+  // helpers, so a Codex-bundled hook that grows a new lib dependency fails here
+  // instead of in a user's session.
+  test('every helper required by a staged Codex hook — transitively — is staged', () => {
+    const hooksDir = installCodex(tmpDir);
+    const libDir = path.join(hooksDir, 'lib');
+
+    // Seed from hook scripts: only the explicit './lib/X' spelling is a lib
+    // requirement. A bare './X' from a hook script is a sibling in hooks/
+    // (gsd-check-update-worker.js requires './managed-hooks-registry.cjs'),
+    // which is NOT under lib/ — conflating the two demands the wrong file.
+    const seedRe = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
+    // From inside lib/, a sibling is already local, so './X' IS a lib require.
+    const libRe = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
+
+    const required = new Set();
+    const scan = (source, re) => {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(source)) !== null) required.add(m[1]);
+    };
+
+    for (const entry of fs.readdirSync(hooksDir)) {
+      const full = path.join(hooksDir, entry);
+      if (!fs.statSync(full).isFile()) continue;
+      if (!/\.(js|cjs)$/.test(entry)) continue;
+      scan(fs.readFileSync(full, 'utf8'), seedRe);
+    }
+    assert.ok(
+      required.size > 0,
+      'precondition: at least one staged Codex hook must require a ./lib/ helper — if this ever '
+      + 'goes to zero the bundle changed and this row silently stops testing anything',
+    );
+
+    // Walk to a fixed point, exactly as the installer must.
+    const checked = new Set();
+    let next = [...required].find((f) => !checked.has(f));
+    while (next !== undefined) {
+      checked.add(next);
+      const staged = path.join(libDir, next);
+      assert.ok(
+        fs.existsSync(staged),
+        `hooks/lib/${next} is required (directly or transitively) by a staged Codex hook but was `
+        + 'not installed. A Codex-bundled hook gained a helper the installer does not stage — the '
+        + 'hook will throw MODULE_NOT_FOUND at load on every event (#4087, #4098).',
+      );
+      scan(fs.readFileSync(staged, 'utf8'), libRe);
+      next = [...required].find((f) => !checked.has(f));
+    }
+  });
+
+  // The #3579 boundary this fix must preserve: derive what is needed, do not
+  // dump the whole helper directory into the reduced bundle.
+  // ─── the grammar itself, unit-level (review of #4087) ───
+  //
+  // The install rows above prove today's three-helper chain. These pin the
+  // DISCOVERY GRAMMAR directly, which is what has to hold for the
+  // "future dependencies cannot silently regress" claim to mean anything.
+  describe('stageTransitiveHookLibs discovery grammar', () => {
+    const { stageTransitiveHookLibs } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+    let dir;
+
+    beforeEach(() => { dir = createTempDir('gsd-stage-libs-'); });
+    afterEach(() => { cleanup(dir); });
+
+    function fixture(libFiles) {
+      const srcLibDir = path.join(dir, 'src', 'lib');
+      const destLibDir = path.join(dir, 'dest', 'lib');
+      fs.mkdirSync(srcLibDir, { recursive: true });
+      for (const [name, content] of Object.entries(libFiles)) {
+        fs.writeFileSync(path.join(srcLibDir, name), content);
+      }
+      return { srcLibDir, destLibDir };
+    }
+
+    test('an EXTENSIONLESS require resolves — valid CommonJS, was failing the install', () => {
+      const { srcLibDir, destLibDir } = fixture({ 'helper.js': '// no requires\n' });
+      const staged = stageTransitiveHookLibs({
+        seedSources: ["require('./lib/helper')"],
+        srcLibDir, destLibDir, runtimeLabel: 'Test',
+      });
+      assert.deepStrictEqual(staged, ['helper.js'],
+        "require('./lib/helper') must resolve to helper.js — matching only the extension-bearing "
+        + 'spelling resolved "helper" literally and failed the install on a legitimate require');
+      assert.ok(fs.existsSync(path.join(destLibDir, 'helper.js')),
+        'and it must land under its RESOLVED name, or Node cannot resolve it at the destination');
+    });
+
+    test('a NESTED lib require is refused LOUDLY, never silently skipped', () => {
+      const { srcLibDir, destLibDir } = fixture({ 'helper.js': '' });
+      assert.throws(
+        () => stageTransitiveHookLibs({
+          seedSources: ["require('./lib/sub/helper.js')"],
+          srcLibDir, destLibDir, runtimeLabel: 'Test',
+        }),
+        /NESTED hooks\/lib path/,
+        'hooks/lib/ is flat and the scan cannot express a nested path, so a nested require would '
+        + 'stage nothing and ship a hook that dies at load — it must fail the install instead',
+      );
+    });
+
+    test('prose that merely LOOKS like a require does not become a dependency', () => {
+      // hooks/lib/injection-patterns.js's own header documents this mechanism
+      // with the literal string require('./lib/...'), which captured `...` and
+      // sent the resolver hunting for hooks/lib/... — failing the install on a
+      // comment. Measured before the fix.
+      const { srcLibDir, destLibDir } = fixture({ 'helper.js': '' });
+      const staged = stageTransitiveHookLibs({
+        seedSources: ["/* the stager auto-discovers require('./lib/...') in staged scripts */"],
+        srcLibDir, destLibDir, runtimeLabel: 'Test',
+      });
+      assert.deepStrictEqual(staged, [],
+        'a capture with no alphanumeric character is prose, not a module name');
+    });
+
+    test('a genuinely missing helper still fails loudly (the guard must not be softened)', () => {
+      const { srcLibDir, destLibDir } = fixture({ 'other.js': '' });
+      assert.throws(
+        () => stageTransitiveHookLibs({
+          seedSources: ["require('./lib/absent.js')"],
+          srcLibDir, destLibDir, runtimeLabel: 'Test',
+        }),
+        /absent\.js is required by a staged Test hook/,
+        'the extension-fallback must not turn a real missing helper into a silent skip',
+      );
+    });
+  });
+
+  test('the staged helper set EQUALS the dependency closure — no more, no less', () => {
+    // Was: "fewer staged than available, and graphify absent". That passes while
+    // over-staging (an extra git-cmd.js keeps the count below the total and
+    // leaves graphify absent), so it did not prove its own title — the #3579
+    // boundary is that helpers nothing requires must NOT ship (review of #4087).
+    // Now compared as SETS, with the difference asserted in both directions.
+    const hooksDir = installCodex(tmpDir);
+    const libDir = path.join(hooksDir, 'lib');
+    const stagedLibs = fs.existsSync(libDir) ? fs.readdirSync(libDir).sort() : [];
+    assert.ok(stagedLibs.length > 0, 'precondition: some helper must have been staged');
+
+    // Derive the closure independently of the installer.
+    const seedRe = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
+    const libRe = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
+    const srcLibDir = path.join(__dirname, '..', 'hooks', 'lib');
+    const required = new Set();
+    const scan = (source, re) => {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(source)) !== null) {
+        if (/[A-Za-z0-9]/.test(m[1])) required.add(m[1]);
+      }
+    };
+    const resolveName = (name) => [name, `${name}.js`, `${name}.cjs`]
+      .find((c) => fs.existsSync(path.join(srcLibDir, c)));
+
+    for (const entry of fs.readdirSync(hooksDir)) {
+      const full = path.join(hooksDir, entry);
+      if (!fs.statSync(full).isFile() || !/\.(js|cjs)$/.test(entry)) continue;
+      scan(fs.readFileSync(full, 'utf8'), seedRe);
+    }
+    const closure = new Set();
+    let next = [...required].find((f) => !closure.has(resolveName(f) || f));
+    while (next !== undefined) {
+      const resolved = resolveName(next);
+      assert.ok(resolved, `hooks/lib/${next} is required but absent from source — packaging bug`);
+      closure.add(resolved);
+      scan(fs.readFileSync(path.join(srcLibDir, resolved), 'utf8'), libRe);
+      next = [...required].find((f) => !closure.has(resolveName(f) || f));
+    }
+
+    const expected = [...closure].sort();
+    assert.deepStrictEqual(
+      stagedLibs, expected,
+      'the staged helper set must equal the dependency closure exactly. Extra files violate the '
+      + '#3579 boundary (helpers no Codex hook requires must not ship); missing files mean a hook '
+      + `throws MODULE_NOT_FOUND at load. staged=${JSON.stringify(stagedLibs)} `
+      + `expected=${JSON.stringify(expected)}`,
+    );
+    // Non-vacuity: the source dir must hold MORE than the closure, or an
+    // over-staging bug would be undetectable by this comparison.
+    const available = fs.readdirSync(srcLibDir);
+    assert.ok(
+      available.length > expected.length,
+      `precondition: source must offer more helpers than the closure needs (available=${available.length}, closure=${expected.length})`,
+    );
+  });
+});
+
 // ─── #3023: pi must not stage its shared-hooks bundle in pi's reserved hooks/ ──
 //
 // pi (pi.dev) renamed its `hooks/` directory to `extensions/` and now prints a
@@ -2951,6 +3223,70 @@ describe('#1834: installer deploys .sh hooks alongside .js hooks', () => {
 // The expected directory name is asserted as a LITERAL on purpose: importing the
 // production constant would make the assertion re-derive the very value under
 // test, and it could then never catch that value changing.
+describe('#4087 review: Windsurf install stages the hook helpers its hooks require', () => {
+  // Same defect class as the Codex rows above, one runtime over. Windsurf sets
+  // skipSharedHooksInstall, so it never reaches installSharedHooksBundle, and
+  // writeWindsurfHooksJson staged the two Cascade guards without the hooks/lib
+  // helpers both require at module load. Measured before the fix against a real
+  // `--windsurf --global` install: installer exit 0, hooks/ holding only the two
+  // scripts, and each one exiting 1 with "Cannot find module './lib/hook-exit.js'".
+  //
+  // tests/windsurf-hooks-bridge.test.cjs runs these guards from the SOURCE tree,
+  // where hooks/lib/ is a sibling and require() trivially resolves — the same
+  // "assert existence, never execute the installed copy" blind spot that let
+  // #4087 ship. These rows execute the INSTALLED copy.
+  const { before: __gtmBefore, after: __gtmAfter } = require('node:test');
+  let __savedGsdTestMode;
+  __gtmBefore(() => { __savedGsdTestMode = process.env.GSD_TEST_MODE; delete process.env.GSD_TEST_MODE; });
+  __gtmAfter(() => { if (__savedGsdTestMode === undefined) delete process.env.GSD_TEST_MODE; else process.env.GSD_TEST_MODE = __savedGsdTestMode; });
+
+  let tmpDir;
+  beforeEach(() => { tmpDir = createTempDir('gsd-install-4087-windsurf-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function installWindsurf(configDir) {
+    // HOME/USERPROFILE sandboxed for the CHILD, for the same reason as installCodex.
+    throwIfFailed(
+      runNode([INSTALL_SCRIPT, '--windsurf', '--global', '--yes', '--config-dir', configDir], {
+        timeoutMs: 120000,
+        env: { ...process.env, HOME: configDir, USERPROFILE: configDir },
+      }),
+      `node ${INSTALL_SCRIPT} --windsurf --global --config-dir ${configDir}`,
+    );
+    return path.join(configDir, 'hooks');
+  }
+
+  test('both installed Windsurf guards LOAD AND RUN, not merely exist', () => {
+    const hooksDir = installWindsurf(tmpDir);
+    for (const script of ['gsd-windsurf-pre-write.js', 'gsd-windsurf-pre-command.js']) {
+      const hook = path.join(hooksDir, script);
+      assert.ok(fs.existsSync(hook), `precondition: ${script} must be staged`);
+      const result = runNode([hook], { timeoutMs: 30000, input: '{}', env: { ...process.env } });
+      assert.strictEqual(result.outcome, 'exited',
+        `${script} must run to completion, not time out or be killed. outcome=${result.outcome}`);
+      assert.strictEqual(result.exitCode, 0,
+        `the installed ${script} must load and exit 0 — a MODULE_NOT_FOUND at load fires on every `
+        + `pre_write_code / pre_run_command event and is invisible to the installer's exit code. stderr: ${result.stderr}`);
+      assert.doesNotMatch(String(result.stderr || ''), /MODULE_NOT_FOUND|Cannot find module/,
+        `no missing-module error may reach stderr for ${script}`);
+    }
+  });
+
+  test('the helpers the Windsurf guards require are staged, transitively', () => {
+    const hooksDir = installWindsurf(tmpDir);
+    const libDir = path.join(hooksDir, 'lib');
+    assert.ok(fs.existsSync(libDir), 'hooks/lib/ must be staged for Windsurf');
+    // Direct requires of the two guards, plus what hook-exit.js itself requires
+    // (cli-exit.js → exit-code-registry.js). The exact set is also pinned by
+    // tests/fixtures/install-tree/windsurf.json via the golden-install-tree test;
+    // this row states the reason each file must be present.
+    for (const helper of ['hook-exit.js', 'git-probe.js', 'cli-exit.js', 'exit-code-registry.js']) {
+      assert.ok(fs.existsSync(path.join(libDir, helper)),
+        `${helper} is on the require path of a staged Windsurf guard and must be staged`);
+    }
+  });
+});
+
 describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory', () => {
   const PI_RESERVED_DIR = 'hooks';
   const PI_BUNDLE_DIR = 'gsd-hooks';
@@ -3068,6 +3404,7 @@ describe('bug #3981: blocking-guard timeout budget + migration', () => {
     'gsd-worktree-path-guard.js',
     'gsd-agent-isolation-guard.js',
     'gsd-write-guard.js',
+    'gsd-secret-read-guard.js',
     'gsd-validate-commit.sh',
   ];
 

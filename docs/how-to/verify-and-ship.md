@@ -103,6 +103,19 @@ If your branch contains `.planning/` commits that you do not want reviewers to s
 
 ---
 
+## Why a passing verification can turn stale
+
+A `*-VERIFICATION.md` reporting `status: passed` is re-checked, not cached, every time a completion gate reads it. Two ways it can flip to `status: stale`:
+
+- **Content fingerprint (default for new reports).** The verifier records a digest of every input its verdict covers — the phase's `PLAN.md`/`SUMMARY.md` files, mapped requirements, and implementation files in the change set. If any of those files changes, disappears, or becomes unreadable after verification, the gate recomputes the digest, finds a mismatch, and reports `stale`. This catches drift even when nothing touches `SUMMARY.md` itself — an implementation file edited after verification is enough.
+- **Legacy SUMMARY-mtime check.** A `*-VERIFICATION.md` written before this fingerprint existed has no digest to check, so it keeps the older rule: `stale` when a `SUMMARY.md` is newer than the verification report.
+
+Either way, `stale` routes the same as any other incomplete state: re-run `/gsd-verify-work 1` before shipping.
+
+The content fingerprint hashes covered files exactly as they sit on disk, including line endings. A checkout without a `.gitattributes` `eol=lf` rule pinning text files to LF (a Windows checkout with `core.autocrlf=true`, for example) can report `stale` on unchanged content — fix with a `.gitattributes` `eol=lf` rule, not by treating it as drift.
+
+---
+
 ## Closing a milestone
 
 If this was the last phase in the milestone, run the milestone audit and archive it:

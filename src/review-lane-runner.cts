@@ -420,12 +420,20 @@ export async function probeLane(
  * `extraDiagnostics` carries the raw HTTP response body for the OpenAI-compatible lanes: an error
  * from such a server arrives with HTTP 4xx/5xx and the JSON in the BODY, so stderr alone is empty
  * and the body is the only evidence.
+ *
+ * `outcome` (#4255) carries the spawn's exit status so the stub can say WHICH empty it is. The
+ * header alone cannot: a crash, a timeout kill and a model that ended its turn without writing a
+ * final message all reach here as the same zero bytes, and the third is what a too-low reasoning
+ * effort produces on a large source-grounded prompt. A clean exit inside the timeout with no
+ * output is a stopped-short model, and the stub now says so — with the effort it ran at, which is
+ * the value the operator would change.
  */
 export function writeReviewOrStub(
   plan: LanePlan,
   content: string,
   deps: RunnerDeps,
   extraDiagnostics?: string,
+  outcome?: { status: number | null; errorCode?: string },
 ): { stubbed: boolean } {
   if (!isEmptyReview(content)) {
     deps.writeFile(plan.reviewPath, content.endsWith('\n') ? content : `${content}\n`);
@@ -434,8 +442,55 @@ export function writeReviewOrStub(
   const stderr = deps.exists(plan.errPath) ? deps.readFile(plan.errPath) : '';
   const parts = [`${plan.slug} review failed or returned empty output. stderr:`, stderr];
   if (extraDiagnostics) parts.push('Raw response body:', extraDiagnostics);
+  parts.push(emptyOutputDiagnosis(plan, outcome));
   deps.writeFile(plan.reviewPath, `${parts.join('\n')}\n`);
   return { stubbed: true };
+}
+
+/**
+ * One line naming the effort the lane ran at and how the process ended (#4255).
+ *
+ * Kept out of the header so the `failed or returned empty output` string every downstream reader
+ * greps for is untouched — this is an added line, not a reworded one.
+ */
+export function emptyOutputDiagnosis(
+  plan: LanePlan,
+  outcome?: { status: number | null; errorCode?: string },
+): string {
+  // `effort` lives on the spawn plan only. An HTTP lane reaches a server directly and has no
+  // reviewer CLI at all, so naming one there would be a lie about what ran (Codex review of
+  // #4255) — the two transports get different, accurate wording.
+  const spawned = plan.transport === 'spawn';
+  const level = spawned ? plan.effort : null;
+  const effort = level
+    ? `ran at effort=${level}`
+    : spawned
+      ? "ran with no effort argument, so the reviewer CLI's own configuration applied"
+      : 'is an HTTP lane and carries no reasoning-effort setting';
+  if (!outcome) return `Diagnosis: ${plan.slug} ${effort}.`;
+  // Four endings, not two. `status` is null for BOTH a timeout kill and a process that never
+  // ran or died on a signal (ENOENT, SIGKILL) — reporting the latter as "status null" said
+  // nothing, and folding them together would attach the stopped-short hint to a crash.
+  const timedOut = outcome.errorCode === 'ETIMEDOUT';
+  const neverRan = !timedOut && outcome.status === null;
+  const cleanExit = outcome.status === 0;
+  const ending = timedOut
+    ? 'was killed by the outer timeout'
+    : neverRan
+      ? `did not exit normally (${outcome.errorCode ?? 'killed by a signal'})`
+      : cleanExit
+        ? 'exited cleanly inside the timeout'
+        : `exited with status ${String(outcome.status)}`;
+  // Hedged deliberately. A clean exit with no output is CONSISTENT with a model ending its turn
+  // without a final message — which is what too low an effort produces on a large prompt — but it
+  // is equally consistent with the CLI writing its output somewhere this lane did not read. The
+  // line points at the likeliest cause without asserting it.
+  const tail = cleanExit
+    ? ' — a clean exit that produced no output is most often a model ending its turn without'
+      + ' writing a final message rather than a crash; if this lane carries a reasoning effort,'
+      + ' raising it is the usual fix.'
+    : '.';
+  return `Diagnosis: ${plan.slug} ${effort} and ${ending}${tail}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1218,7 +1273,7 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   // folded in as a diff observation, and the citation check must not change that surface.
   if (plan.evidenceClass !== 'diff-only') review = stampUngroundedReview(review);
 
-  const { stubbed } = writeReviewOrStub(plan, review, deps, extra);
+  const { stubbed } = writeReviewOrStub(plan, review, deps, extra, out);
   return { slug: plan.slug, ok: true, stubbed, model };
 }
 

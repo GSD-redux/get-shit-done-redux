@@ -23,7 +23,7 @@
  */
 
 const { describe, test, before, after, afterEach } = require('node:test');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, installSpawnEnv } = require('./helpers.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -40,20 +40,23 @@ const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
 // ── CLI path ───────────────────────────────────────────────────────────────────
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
-// ── Env hermeticity (strip ambient GSD_ vars that skew planning dir lookups) ──
-const CLEAN_ENV = Object.fromEntries(
-  Object.entries(process.env).filter(([k]) => !k.startsWith('GSD_')),
-);
-
 /**
  * Invoke gsd-tools CLI with spawnSync and return the parsed result.
- * Always use CLEAN_ENV to avoid ambient GSD_ env vars redirecting planning paths.
+ *
+ * #4204: uses helpers.cjs's installSpawnEnv() rather than a hand-rolled env,
+ * because it sandboxes HOME (so capability-loader's overlayRoots and
+ * resolveCapabilityRuntimeState's registry load — both of which fall back to
+ * os.homedir() — never reach the real machine) AND clears the full
+ * config-location env list (GSD_HOME, GSD_RUNTIME, CLAUDE_CONFIG_DIR, etc.),
+ * not just a GSD_-prefix strip. Without it, a capability genuinely installed
+ * on the host running the suite (e.g. beads, markdown-linting) leaked into
+ * the verify:post registry and inflated the exact-count assertions below.
  */
 function runCli(args, cwd) {
   const result = spawnSync(process.execPath, [GSD_TOOLS, ...args], {
     cwd,
     encoding: 'utf8',
-    env: CLEAN_ENV,
+    env: installSpawnEnv(),
     timeout: 60000,
   });
   return result;

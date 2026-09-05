@@ -265,6 +265,70 @@ export function normalizeHost(raw: string): string {
  * negative values are deliberately treated as unset too — a timeout has no legitimate zero or
  * negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
  */
+/**
+ * The reasoning effort a reviewer lane runs at, and its host-rendered argv (#4255).
+ *
+ * `argv` is spliced into `{{effort}}`; `value` is the bare level the runner folds into the
+ * recorded model designation (`gpt-5.6-sol (reasoning=high)`, #2295). Both are empty/null when
+ * this lane emits no effort argument, which is a real and correct outcome — see `resolveLaneEffort`.
+ */
+export interface LaneEffort {
+  argv: readonly string[];
+  value: string | null;
+  /** Where `value` came from, for diagnostics: the config key, the lane default, or nothing. */
+  source: 'config' | 'lane-default' | 'none';
+}
+
+/** Levels GSD's effort axis accepts (#3533). `inherit` selects the no-argument path. */
+const EFFORT_LEVELS: ReadonlySet<string> = new Set([
+  'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'inherit',
+]);
+
+/**
+ * Resolve one lane's reasoning effort from REVIEW configuration (#4255).
+ *
+ * Resolution order, highest first:
+ *   1. `lane.effortConfigKey` — the per-lane review effort the operator set
+ *   2. `lane.defaultEffort` — the lane's declared review default (`high` for prompt-fed,
+ *      source-grounded lanes)
+ *   3. nothing — no effort argument is emitted and the reviewer CLI's own configuration decides
+ *
+ * A configured `'inherit'` selects (3) explicitly. An unrecognized level is REFUSED rather than
+ * passed to the host: it falls back to the lane default, because forwarding a typo would render an
+ * argument the CLI rejects and kill the lane outright.
+ *
+ * What this function deliberately does NOT do is consult any agent's execution settings. Before
+ * #4255 the level came from `gsd-plan-checker`'s installed frontmatter through a hardcoded agent
+ * id, so every lane ran at a fast structural verifier's `low` — and, because the rendered argument
+ * is a CLI config override, it silently beat the effort the operator had configured for that CLI
+ * itself. A value inherited from an unrelated agent is worse than no value at all, which is why
+ * (3) emits nothing rather than falling back to some other agent's number.
+ *
+ * `renderArgv` is injected (the host table and the ADR-2481 surface negotiation live in
+ * `model-catalog` / `commands`, above this module's layer) so this stays a pure function of its
+ * inputs and the golden lane table can assert it without a spawn.
+ */
+export function resolveLaneEffort(
+  lane: ReviewerLane,
+  configGet: (key: string) => unknown,
+  renderArgv: (host: string, level: string) => { argv: readonly string[]; value: string | null },
+): LaneEffort {
+  const none: LaneEffort = { argv: [], value: null, source: 'none' };
+  if (!lane || typeof lane !== 'object') return none;
+  const configured = lane.effortConfigKey ? configString(configGet(lane.effortConfigKey)) : null;
+  const valid = configured !== null && EFFORT_LEVELS.has(configured) ? configured : null;
+  const level = valid ?? configString(lane.defaultEffort);
+  if (level === null || level === 'inherit') return none;
+  const rendered = renderArgv(lane.slug, level);
+  const argv = (rendered.argv ?? []).filter((a): a is string => typeof a === 'string' && a !== '');
+  if (argv.length === 0) return none;
+  return {
+    argv,
+    value: configString(rendered.value) ?? level,
+    source: valid !== null ? 'config' : 'lane-default',
+  };
+}
+
 export function resolveTimeoutMs(
   timeoutConfigKey: string | null | undefined,
   floorMs: number,

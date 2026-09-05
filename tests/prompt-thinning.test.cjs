@@ -17,6 +17,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
 const EXECUTOR_AGENT = path.join(__dirname, '..', 'agents', 'gsd-executor.md');
@@ -69,6 +70,36 @@ describe('prompt thinning — sub-200K context window support (#1978)', () => {
         content.includes('planner-antipatterns.md'),
         'gsd-planner.md must reference planner-antipatterns.md for extended checkpoint anti-patterns and specificity examples'
       );
+    });
+
+    test('sequences known external review after internal review fixes (#4107)', () => {
+      const planner = fs.readFileSync(PLANNER_AGENT, 'utf-8');
+      const assignWaves = planner.match(/<step name="assign_waves">([\s\S]{0,3000}?)<\/step>/)?.[1] || '';
+      assert.match(assignWaves, /known automatic external review/i);
+      assert.match(assignWaves, /plan includes internal review lanes/i);
+      assert.match(assignWaves, /accepted internal-review fixes[^.]*before[^.]*open/i);
+      assert.match(assignWaves, /run internal review and apply the accepted internal-review fixes before the final open/i);
+      assert.match(assignWaves, /if an open-time property exists[^.]*re-check it immediately before opening[^.]*nothing intervening/i);
+      assert.match(assignWaves, /post-open CI[^.]*review[^.]*tracking may follow/i);
+      // Directionality fixture (#4107): an inverted-order sentence — PR opens
+      // first, fixes land after — must fail the ordering-sensitive assertion
+      // above. Proves the regex tests sequence, not mere keyword co-occurrence.
+      const invertedOrdering = 'Open the PR before scheduling the accepted internal-review fixes.';
+      assert.doesNotMatch(invertedOrdering, /accepted internal-review fixes[^.]*before[^.]*open/i);
+      const invertedPlannerText = 'Open the PR, then run internal review and apply the accepted internal-review fixes.';
+      assert.doesNotMatch(invertedPlannerText, /run internal review and apply the accepted internal-review fixes before the final open/i);
+      assert.match(assignWaves, /planner-antipatterns\.md \("External Review Before PR Open \(#4107\)"\)/);
+
+      const reference = fs.readFileSync(PLANNER_ANTIPATTERNS_REF, 'utf-8');
+      const example = collectSection(reference, (heading) => heading.text === 'External Review Before PR Open (#4107)')?.body || '';
+      assert.match(example, /Bad[\s\S]*open[^\n]*PR[\s\S]*internal review/i);
+      assert.match(example, /Good[\s\S]*internal review[\s\S]*accepted fixes[\s\S]*if applicable[^\n]*re-check[^\n]*then immediately open PR/i);
+      assert.match(example, /nothing may intervene[^.]*re-check[^.]*open/i);
+      assert.match(example, /post-open work may follow/i);
+      // Directionality fixture: a Good section that opens the PR before
+      // internal review must fail the "Good" assertion above.
+      const invertedExample = 'Good:\nWave 1: If applicable, re-check the open-time property; then immediately open PR\nWave 2: Run internal review\nWave 3: Apply accepted fixes\n';
+      assert.doesNotMatch(invertedExample, /Good[\s\S]*internal review[\s\S]*accepted fixes[\s\S]*if applicable[^\n]*re-check[^\n]*then immediately open PR/i);
     });
   });
 

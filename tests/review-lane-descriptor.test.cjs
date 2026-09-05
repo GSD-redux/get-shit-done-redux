@@ -1045,3 +1045,49 @@ describe('review-lane CLI overlay invocation (#2927, rows 9–10)', () => {
 });
   });
 }
+
+describe('#4255 — every lane declares where its review effort comes from', () => {
+  // The two fields exist so a lane's effort is DATA about the lane, resolvable without asking any
+  // agent for its execution settings. These rows pin the declaration itself: a new lane that adds
+  // an argv effort channel without saying what effort to run at would otherwise silently inherit
+  // whatever the resolver's fallback happens to be — the exact shape of the original bug.
+  test('a lane with an argv effort channel declares BOTH a config key and a default', () => {
+    for (const lane of REVIEWER_LANES) {
+      if (lane.invoke.effortChannel !== 'argv') continue;
+      assert.equal(typeof lane.effortConfigKey, 'string',
+        `${lane.slug} renders an effort argument but declares no effortConfigKey`);
+      assert.equal(lane.effortConfigKey, `review.effort.${lane.slug}`,
+        `${lane.slug}: the key is read from config by this exact name`);
+      assert.equal(typeof lane.defaultEffort, 'string',
+        `${lane.slug} renders an effort argument but declares no review default`);
+    }
+  });
+
+  test('a lane with no effort channel declares neither', () => {
+    for (const lane of REVIEWER_LANES) {
+      if (lane.invoke.effortChannel === 'argv') continue;
+      assert.equal(lane.effortConfigKey, null, `${lane.slug} has no channel to feed`);
+      assert.equal(lane.defaultEffort, null, `${lane.slug} has no channel to feed`);
+    }
+  });
+
+  test('the prompt-fed, source-grounded lanes default no lower than high', () => {
+    // These lanes read the repository against a plan set. Effort is load-bearing exactly here:
+    // it is where a large prompt at a low level ends the turn with no final message.
+    const RANK = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    for (const lane of REVIEWER_LANES) {
+      if (lane.defaultEffort === null) continue;
+      assert.equal(lane.evidenceClass, 'source-grounded', `${lane.slug}: unexpected class for a default`);
+      assert.ok(RANK.indexOf(lane.defaultEffort) >= RANK.indexOf('high'),
+        `${lane.slug} defaults to ${lane.defaultEffort}, below the review floor`);
+    }
+  });
+
+  test('no declared default is the `inherit` sentinel — that is what a null key means', () => {
+    // `inherit` is a legitimate CONFIGURED value (it selects "emit nothing"), but as a declared
+    // default it would be a second spelling for `null` and split one behaviour across two shapes.
+    for (const lane of REVIEWER_LANES) {
+      assert.notEqual(lane.defaultEffort, 'inherit', `${lane.slug}: use null, not 'inherit'`);
+    }
+  });
+});

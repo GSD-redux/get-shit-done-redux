@@ -78,6 +78,11 @@ export default tseslint.config(
       '.worktrees/**',
       '.claude/**',
       'coverage/**',
+      // #4141: Stryker's sandbox (tempDirName in stryker.config.mjs, also gitignored
+      // and always-ignored by Stryker itself). A run that dies before cleanup leaves a
+      // copy of the tree here; linting it reports the path-scoped `local/*` rules as
+      // undefined, which reads as the plugin being broken rather than as scratch space.
+      '.stryker-tmp/**',
       '**/*.generated.cjs',
       // ADR-457: tsc-generated runtime artifact — lint the src/*.cts source, not the emitted .cjs.
       'gsd-core/bin/lib/claude-orchestration.cjs',

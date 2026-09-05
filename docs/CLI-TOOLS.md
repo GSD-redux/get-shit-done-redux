@@ -93,6 +93,10 @@ node gsd-tools.cjs state patch --field1 val1 --field2 val2
 
 # Increment plan counter
 node gsd-tools.cjs state advance-plan
+# When no labeled plan position can be parsed (e.g. ## Current Position drifted
+# to pure narrative prose), declines with reason "plan_position_unreadable" plus
+# the disk-derived counts and the exact labeled lines to re-insert; STATE.md is
+# left byte-identical.
 
 # Record execution metrics
 node gsd-tools.cjs state record-metric --phase N --plan M --duration Xmin [--tasks N] [--files N]
