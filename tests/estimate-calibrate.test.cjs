@@ -21,7 +21,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { createTempProject, cleanup, runGsdTools, captureFdSync } = require('./helpers.cjs');
 const est = require('../gsd-core/bin/lib/phase-estimation.cjs');
 const estimateCli = require('../gsd-core/bin/lib/estimate-cli.cjs');
 // io.cjs owns error()/ERROR_REASON/JSON-error-mode — driven directly here so
@@ -549,37 +549,28 @@ describe('unreadable phases directory refuses calibration (#3882, ADR-3473 §8.5
    * throws (ADR-3889 — error() no longer calls process.exit() directly) with
    * stderr(fd 2) captured. */
   function runCalibrateExpectError(tmpDir) {
-    const origWriteSync = fs.writeSync;
     io.setJsonErrorMode(true);
-    let writeCount = 0;
-    let stderr = '';
-    fs.writeSync = (fd, ...rest) => {
-      if (fd !== 2) return origWriteSync.call(fs, fd, ...rest);
-      writeCount++;
-      const [data, offset = 0, length] = rest;
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset, offset + (length ?? data.length - offset)).toString('utf8')
-        : String(data);
-      stderr += chunk;
-      return Buffer.byteLength(chunk);
-    };
-    const lastError = () => {
-      const parts = stderr.split('\n').filter(Boolean);
-      try { return JSON.parse(parts[parts.length - 1]); } catch { return {}; }
-    };
     let exitCode;
+    let stderr;
     try {
-      estimateCli.cmdEstimateCalibrate(tmpDir, [], false);
-      assert.fail('expected cmdEstimateCalibrate to throw ExitError');
-    } catch (e) {
-      if (!(e instanceof ExitError)) throw e;
-      exitCode = e.code;
+      stderr = captureFdSync(2, () => {
+        try {
+          estimateCli.cmdEstimateCalibrate(tmpDir, [], false);
+          assert.fail('expected cmdEstimateCalibrate to throw ExitError');
+        } catch (e) {
+          if (!(e instanceof ExitError)) throw e;
+          exitCode = e.code;
+        }
+      });
     } finally {
-      fs.writeSync = origWriteSync;
       io.setJsonErrorMode(false);
     }
+    const lines = stderr.split('\n').filter(Boolean);
+    const lastError = () => {
+      try { return JSON.parse(lines[lines.length - 1]); } catch { return {}; }
+    };
     assert.ok(exitCode !== 0 && exitCode !== undefined, 'expected a non-zero exit code');
-    assert.equal(writeCount, 1, 'error() must fire exactly once');
+    assert.equal(lines.length, 1, 'error() must emit exactly one stderr line');
     return { status: exitCode, ...lastError() };
   }
 

@@ -3363,6 +3363,7 @@ describe('Bug #2979 (#3002 CR follow-up): no command:null hook entries survive s
     { event: 'PreToolUse',    matcher: 'Write|Edit',                                    label: 'gsd-read-guard.js' },
     { event: 'PostToolUse',   matcher: 'Read',                                          label: 'gsd-read-injection-scanner.js' },
     { event: 'PreToolUse',    matcher: 'Bash|Edit|Write|MultiEdit',                     label: 'gsd-workflow-guard.js' },
+    { event: 'PreToolUse',    matcher: 'Read|Grep|Bash',                                label: 'gsd-secret-read-guard.js' },
   ];
 
   for (const { event, matcher, label } of MANAGED_JS_HOOKS) {

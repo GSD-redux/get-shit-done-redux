@@ -580,14 +580,20 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
 describe('#2481 review workflow resolves effort per reviewer', () => {
   test('shipped orchestration: the live claude lane genuinely receives --effort <level> in its spawned argv', () => {
     // Phase 5b (#2799) moved the call out of review.md's per-lane bash and into the review-lane
-    // route's `effortFor()`, which SPAWNS `query resolve-execution … --pick effort_argv_string`
-    // once per selected lane and folds the result into that lane's argv template. A text grep for
-    // the string "resolve-execution" in gsd-tools.cjs would pass even if effortFor's result were
-    // silently dropped before reaching the spawned reviewer, or if the call were dead code. This
-    // drives the REAL `review-lane invoke` route end-to-end — real cp.spawnSync, a real project
-    // config, a real claude-shaped shim on PATH — and inspects the argv the shim actually received,
-    // which is the only way to prove the resolved effort reaches the invocation rather than merely
-    // that some file mentions the command name.
+    // route's `effortFor()`, which folds a resolved level into that lane's argv template. A text
+    // grep in gsd-tools.cjs would pass even if the result were silently dropped before reaching
+    // the spawned reviewer, or if the call were dead code. This drives the REAL `review-lane
+    // invoke` route end-to-end — real cp.spawnSync, a real project config, a real claude-shaped
+    // shim on PATH — and inspects the argv the shim actually received, which is the only way to
+    // prove the resolved effort reaches the invocation rather than merely that some file mentions
+    // the command name.
+    //
+    // #4255 changed WHERE the level comes from, not whether it must arrive. It used to be read
+    // from the `gsd-plan-checker` AGENT's execution settings via a hardcoded id, so this row
+    // configured `effort.routing_tier_defaults` and expected that value in the reviewer's argv.
+    // A reviewer lane is not that agent, and the coupling is the bug. The row now configures the
+    // lane's OWN `review.effort.claude` and pins the decoupling in the same spawn: the execution
+    // routing tier is set to a DIFFERENT level, and leaking it into the reviewer is a failure.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2481-orchestration-e2e-'));
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2481-orchestration-project-'));
     try {
@@ -637,9 +643,14 @@ describe('#2481 review workflow resolves effort per reviewer', () => {
       fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
       fs.writeFileSync(
         path.join(projectDir, '.planning', 'config.json'),
-        // #3531: pin every tier so the expected value is agent-independent —
-        // the reviewer lane's tier decides, not effort.default.
-        JSON.stringify({ effort: { routing_tier_defaults: { light: 'xhigh', standard: 'xhigh', heavy: 'xhigh' } } }, null, 2),
+        // Two levels, deliberately different (#4255). `review.effort.claude` is the reviewer
+        // lane's own key and is what must reach the shim. `effort.routing_tier_defaults` drives
+        // the AGENT execution axis and is pinned across every tier to a level that must NOT
+        // appear — before #4255 it, through gsd-plan-checker, was the only thing that could.
+        JSON.stringify({
+          review: { effort: { claude: 'xhigh' } },
+          effort: { routing_tier_defaults: { light: 'minimal', standard: 'minimal', heavy: 'minimal' } },
+        }, null, 2),
       );
 
       const r = cp.spawnSync(
@@ -663,7 +674,15 @@ describe('#2481 review workflow resolves effort per reviewer', () => {
       const argv = fs.readFileSync(seenArgv, 'utf8').trim().split(/\r?\n/);
       assert.ok(
         argv.includes('--effort') && argv.includes('xhigh'),
-        `resolved effort ("xhigh") did not reach the spawned claude reviewer's argv: ${JSON.stringify(argv)}`,
+        `the lane's own review effort ("xhigh") did not reach the spawned claude reviewer's argv: ${JSON.stringify(argv)}`,
+      );
+      // The decoupling half (#4255), and the reason this row is worth a real spawn: the agent
+      // execution tier is pinned to `minimal` above. Seeing it here would mean a reviewer lane is
+      // still taking its effort from an agent's execution settings.
+      assert.ok(
+        !argv.includes('minimal'),
+        'the AGENT execution routing tier leaked into the reviewer lane\'s argv: '
+        + `${JSON.stringify(argv)} — a lane's effort must come from its own review key`,
       );
     } finally {
       cleanup(dir);

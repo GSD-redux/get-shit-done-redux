@@ -82,7 +82,7 @@ const MARKDOWN_LINK_PATTERNS = [
 // Standard injection patterns — shared with gsd-prompt-guard.js via
 // hooks/lib/injection-patterns.js so the two surfaces cannot drift (#3504).
 // Staging of the lib helper is allowlisted in GSD_HOOK_LIB_FILES (bin/install.js).
-const { INJECTION_PATTERNS } = require('./lib/injection-patterns.js');
+const { INJECTION_PATTERNS, describePattern } = require('./lib/injection-patterns.js');
 
 const ALL_PATTERNS = [...INJECTION_PATTERNS, ...SUMMARISATION_PATTERNS];
 
@@ -279,10 +279,10 @@ process.stdin.on('end', () => {
 
     for (const pattern of ALL_PATTERNS) {
       if (pattern.test(content)) {
-        // Trim pattern source for readable output
+        // Trim pattern source for readable output (shared with gsd-prompt-guard.js)
         findings.push({
           ruleId: RULE_IDS.INJECTION_PATTERN,
-          match: pattern.source.replace(/\\s\+/g, '-').replace(/[()\\]/g, '').substring(0, 50),
+          match: describePattern(pattern),
         });
       }
     }

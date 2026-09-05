@@ -155,7 +155,6 @@
     "test:coverage:report": "c8 report --reporter text --reporter json-summary --merge-async --include 'gsd-core/bin/lib/**/*.cjs' --exclude 'tests/**' --all && node scripts/check-coverage-gate.cjs",
     "test:coverage:all": "npm run test:coverage",
     "test:mutation": "stryker run",
-    "test:mutation:since": "stryker run --incremental --since origin/next",
     "gen:features": "node scripts/gen-features.cjs",
     "gen:state-md-docs": "node scripts/gen-state-md-docs.cjs"
   },

@@ -22,14 +22,11 @@ Every executable task carries a runtime budget. Planners emit it via a
 `plan:post` fragment); executors branch on it at `execute:wave:post`.
 
 > **Contribution point.** `#1164` specifies classification at
-> `execute:wave:pre`, but `execute-phase.md` only dispatches
-> `execute:wave:post` today — `wave:pre` is declared in the loop host contract
-> but not rendered. Wiring `wave:pre` dispatch is a core-loop change `#1164`
-> explicitly puts out of scope ("without touching core loop semantics"), so the
-> Capability registers at `execute:wave:post` and the executor honors the
-> classification guidance **before** running any task tagged
-> `<runtime_budget>long_compute</runtime_budget>`, whether in the current or a
-> subsequent wave.
+> `execute:wave:pre` and recording at `execute:wave:post`. This Capability still
+> contributes executor guidance at `execute:wave:post`; `execute-phase.md` now
+> renders `wave:pre` entries and dispatches generic step hooks there. Moving
+> external-job classification is a separate capability change, not part of
+> `#4148`. Until then, this guidance cannot classify the wave that already ran.
 
 | Budget | Meaning | Execute behavior |
 |---|---|---|

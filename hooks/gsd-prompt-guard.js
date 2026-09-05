@@ -25,7 +25,7 @@ const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 // Deliberately a subset of security.cjs's set: hooks stay loadable without the
 // compiled lib tree. Staging of the lib helper is allowlisted in
 // GSD_HOOK_LIB_FILES (bin/install.js).
-const { INJECTION_PATTERNS } = require('./lib/injection-patterns.js');
+const { INJECTION_PATTERNS, describePattern } = require('./lib/injection-patterns.js');
 
 // #2304: Kimi's native hook bus delivers Kimi's tool vocabulary in the payload
 // (Write → WriteFile, Edit/MultiEdit → StrReplaceFile) while the [[hooks]]
@@ -184,7 +184,10 @@ process.stdin.on('end', () => {
     const findings = [];
     for (const pattern of INJECTION_PATTERNS) {
       if (pattern.test(content)) {
-        findings.push({ ruleId: RULE_IDS.INJECTION_PATTERN, match: pattern.source });
+        // Bounded label, never the raw regex source (#4016 / PR #4061 review):
+        // the superset pattern's source is ~280 characters and would dominate
+        // the advisory. Same transform as gsd-read-injection-scanner.js.
+        findings.push({ ruleId: RULE_IDS.INJECTION_PATTERN, match: describePattern(pattern) });
       }
     }
 

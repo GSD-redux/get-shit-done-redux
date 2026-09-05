@@ -1,12 +1,10 @@
 <!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).
 
-     Why wave:post, not wave:pre (#1164 refinement A): execute-phase.md only
-     dispatches execute:wave:post today — wave:pre is declared in the loop host
-     contract but not rendered. Wiring wave:pre dispatch is a core-loop change
-     #1164 puts out of scope. The executor therefore honors this classification
-     guidance BEFORE running any task tagged <runtime_budget>long_compute</runtime_budget>,
-     whether in the current or a subsequent wave, and externalizes rather than
-     blocking the turn. -->
+     #1164 specifies classification at wave:pre and recording at wave:post. This
+     capability still contributes executor guidance at wave:post; execute-phase
+     now renders wave:pre entries and dispatches generic step hooks there. Moving
+     external-job classification is a separate capability change, not part of
+     #4148. Until then, this guidance cannot classify the wave that already ran. -->
 
 ## Externalize long-running compute (async external job)
 

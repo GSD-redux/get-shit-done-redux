@@ -913,6 +913,23 @@ function agentScalarNeedsDoubleQuoting(s: string): boolean {
   return false;
 }
 
+/**
+ * #4053 — Quote a numeric-looking scalar that is not all-digit (`22.10`,
+ * `1.0`, `1e3`, `0x1F`) so a spec YAML reader keeps it a string: bare `22.10`
+ * reloads as the float 22.1 and collides with `22.1`, a different phase.
+ *
+ * All-digit strings stay bare as a deliberate, scoped trade-off — not a
+ * safety guarantee. A leading-zero value (`02`, `017`) also mis-parses under
+ * a spec reader (to 2, 17). It is left unquoted because zero-padded ids
+ * (`plan: 01`, `phase: 02`) are the pervasive GSD convention, quoting them
+ * all is the blanket quoting #4053 asked to avoid, and the loss is padding
+ * rather than identity: `02` and `2` normalize to the same phase; `22.1` and
+ * `22.10` do not.
+ */
+function generalScalarNeedsNumericQuoting(s: string): boolean {
+  return YAML_NUMERIC_RE.test(s) && !/^\d+$/.test(s);
+}
+
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
   // #3257: read the full-line-comment channel (set by parseGuardedYamlRegion when comments
@@ -978,12 +995,12 @@ function reconstructFrontmatter(obj: Frontmatter): string {
         } else {
           // eslint-disable-next-line @typescript-eslint/no-base-to-string
           const sv = String(subval);
-          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
+          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) || generalScalarNeedsNumericQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
         }
       }
     } else {
       const sv = String(value);
-      if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv)) {
+      if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv) || generalScalarNeedsNumericQuoting(sv)) {
         lines.push(`${key}: "${escapeDoubleQuotedScalar(sv)}"`);
       } else {
         lines.push(`${key}: ${sv}`);

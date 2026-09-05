@@ -63,6 +63,7 @@ const KNOWN_NORMALIZED_GUARDS = [
   'hooks/gsd-prompt-guard.js',
   'hooks/gsd-read-guard.js',
   'hooks/gsd-read-injection-scanner.js',
+  'hooks/gsd-secret-read-guard.js',
   'hooks/gsd-workflow-guard.js',
   'hooks/gsd-worktree-path-guard.js',
 ];

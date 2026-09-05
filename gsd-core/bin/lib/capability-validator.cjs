@@ -1849,8 +1849,25 @@ const KNOWN_REVIEWER_FIELDS = new Set([
   // `timeoutConfigKey` added by #3274, same optional/backward-compatible shape as
   // `modelConfigKey` above: a manifest authored before this field existed must keep validating.
   'timeoutConfigKey',
+  // `effortConfigKey` / `defaultEffort` added by #4255, same optional/backward-compatible shape
+  // as the two above. Lane effort used to be resolved by querying the `gsd-plan-checker` AGENT
+  // through a hardcoded id, so every prompt-fed lane ran at that verifier's frontmatter effort;
+  // it is a property of the review, so the lane declares it. A manifest authored before these
+  // fields existed must keep validating — absent is read as "this lane declares no review
+  // effort", which emits no effort argument at all.
+  'effortConfigKey',
+  'defaultEffort',
   'handler',
 ]);
+
+/**
+ * The effort levels a lane may declare as its review default (#4255, #3533 vocabulary).
+ *
+ * `inherit` is deliberately NOT a member. It is a legitimate CONFIGURED value — it selects "emit
+ * no argument, the CLI's own configuration decides" — but as a DECLARED default it would be a
+ * second spelling of `null` and split one behaviour across two shapes.
+ */
+const REVIEWER_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
  * The closed `runtime.hostBehaviors` vocabulary (ADR-1016, closed via #2801).
@@ -2404,6 +2421,39 @@ function validateReviewerBodyFields(cap) {
     errors.push(
       ctx + ' reviewer.timeoutConfigKey must be a dotted config key or null ' +
       '(got: ' + describeValue(r.timeoutConfigKey) + ')',
+    );
+  }
+
+  // OPTIONAL, mirroring the two keys above (#4255). Absent/null means "this lane declares no
+  // review effort", which is the shape that emits no effort argument at all — the correct state
+  // for the nine lanes with no effort channel to feed. An empty string is neither.
+  if (r.effortConfigKey !== undefined && r.effortConfigKey !== null &&
+      (typeof r.effortConfigKey !== 'string' || r.effortConfigKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.effortConfigKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.effortConfigKey) + ')',
+    );
+  }
+
+  // A declared default must be a level the effort axis knows, or the lane would render an
+  // argument the reviewer CLI rejects and kill itself on every run. Closed vocabulary, checked
+  // here rather than at resolution time so a malformed manifest fails at the trust boundary.
+  if (r.defaultEffort !== undefined && r.defaultEffort !== null
+      && !(typeof r.defaultEffort === 'string' && REVIEWER_EFFORT_LEVELS.has(r.defaultEffort))) {
+    errors.push(
+      ctx + ' reviewer.defaultEffort must be one of ' +
+      Array.from(REVIEWER_EFFORT_LEVELS).join('/') + ' or null ' +
+      '(got: ' + describeValue(r.defaultEffort) + ')',
+    );
+  }
+
+  // A default with nothing to configure it through is a value the operator cannot change — the
+  // shape #4255 exists to end. Declared together or not at all.
+  if ((r.defaultEffort !== undefined && r.defaultEffort !== null)
+      && (r.effortConfigKey === undefined || r.effortConfigKey === null)) {
+    errors.push(
+      ctx + ' reviewer.defaultEffort is declared without an effortConfigKey, so the level ' +
+      'could never be overridden',
     );
   }
 

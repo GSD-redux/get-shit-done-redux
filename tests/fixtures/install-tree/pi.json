@@ -379,6 +379,7 @@
   "gsd-hooks/gsd-prompt-guard.js",
   "gsd-hooks/gsd-read-guard.js",
   "gsd-hooks/gsd-read-injection-scanner.js",
+  "gsd-hooks/gsd-secret-read-guard.js",
   "gsd-hooks/gsd-session-state.sh",
   "gsd-hooks/gsd-statusline.js",
   "gsd-hooks/gsd-update-banner.js",

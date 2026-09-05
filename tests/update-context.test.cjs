@@ -19,7 +19,7 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const ROOT = path.join(__dirname, '..');
 const GSD_TOOLS = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 const { cleanup } = require('./helpers.cjs');
-const { resolveUpdateContext } = require(
+const { RUNTIME_DIRS, inferPreferredRuntime, resolveUpdateContext } = require(
   path.join(ROOT, 'gsd-core', 'bin', 'lib', 'update-context.cjs'),
 );
 
@@ -48,6 +48,21 @@ const CWD = '/work/proj';
 
 function ver(dir) { return `${dir}/gsd-core/VERSION`; }
 function marker(dir) { return `${dir}/gsd-core/workflows/update.md`; }
+
+test('unknown preferred config does not infer Claude', () => {
+  assert.equal(inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir: '/opt/unknown' }), '');
+});
+
+test('known runtime directories infer their table runtime without config markers', () => {
+  for (const [runtime, relativeDir] of RUNTIME_DIRS) {
+    const preferredConfigDir = path.resolve(HOME, relativeDir);
+    assert.equal(
+      inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir }),
+      runtime,
+      preferredConfigDir,
+    );
+  }
+});
 
 describe('resolveUpdateContext: scope cascade', () => {
   test('GLOBAL claude install under $HOME/.claude', () => {
@@ -84,9 +99,29 @@ describe('resolveUpdateContext: scope cascade', () => {
     assert.equal(r.runtime, 'codex');
   });
 
-  test('no install anywhere -> UNKNOWN / claude / empty gsdDir', () => {
+  test('no install anywhere -> UNKNOWN / empty runtime / empty gsdDir', () => {
     const r = resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs: fakeFs({}) });
-    assert.deepEqual(r, { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: 'claude', gsdDir: '' });
+    assert.deepEqual(r, { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: '', gsdDir: '' });
+    assert.deepEqual(
+      resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs: fakeFs({}) }),
+      r,
+      'unresolved resolution must remain deterministic',
+    );
+  });
+
+  test('multiple installs honor an explicit preferred runtime', () => {
+    const claude = `${HOME}/.claude`;
+    const codex = `${HOME}/.codex`;
+    const fs = fakeFs({
+      [ver(claude)]: '1.40.0\n', [marker(claude)]: 'x',
+      [ver(codex)]: '1.41.0\n', [marker(codex)]: 'x',
+    });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: {}, fs, preferredRuntime: 'codex',
+    });
+    assert.equal(r.runtime, 'codex');
+    assert.equal(r.scope, 'GLOBAL');
+    assert.ok(sameDir(r.gsdDir, codex), `gsdDir was ${r.gsdDir}`);
   });
 });
 
@@ -119,6 +154,14 @@ describe('resolveUpdateContext: runtime probing + env overrides', () => {
     assert.equal(r.runtime, 'kilo');
     assert.ok(sameDir(r.gsdDir, custom), `gsdDir was ${r.gsdDir}`);
     assert.equal(r.installedVersion, '1.41.0');
+  });
+
+  test('preferredConfigDir fast-path: unknown dir with no preferredRuntime resolves runtime empty (#4153)', () => {
+    const custom = '/opt/custom-gsd';
+    const fs = fakeFs({ [ver(custom)]: '1.0.0\n', [marker(custom)]: 'x' });
+    const r = resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs, preferredConfigDir: custom });
+    assert.equal(r.scope, 'GLOBAL');
+    assert.equal(r.runtime, '', 'a dir matching no RUNTIME_DIRS suffix, marker, or env must fail closed, not default to claude');
   });
 });
 
