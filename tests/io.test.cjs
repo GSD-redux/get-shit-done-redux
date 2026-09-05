@@ -16,6 +16,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const { captureFdSync } = require('./helpers.cjs');
 
 const io = require('../gsd-core/bin/lib/io.cjs');
 const {
@@ -1059,47 +1060,31 @@ describe('#3912 A6: error() stderr bytes are unchanged by this phase', () => {
     for (const version of VERSIONS_3912) {
       resolveContractVersion({ argv: ['node', 'x', `--exit-contract=${version}`], env: {} });
       let caught;
-      const chunks = [];
-      const origWrite = fs.writeSync;
-      fs.writeSync = (fd, buf, offset, length) => {
-        if (fd !== 2) return origWrite(fd, buf, offset, length);
-        const slice = Buffer.isBuffer(buf) ? buf.subarray(offset, offset + length) : Buffer.from(String(buf));
-        chunks.push(slice.toString('utf8'));
-        return slice.length;
-      };
-      try {
+      const stderr = captureFdSync(2, () => {
         io.setJsonErrorMode(false);
         try { io.error('boundary case', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { caught = e; }
-      } finally {
-        fs.writeSync = origWrite;
-      }
+      });
       assert.ok(caught instanceof ExitError);
-      assert.strictEqual(chunks.join(''), 'Error: boundary case\n', `version=${version}`);
+      assert.strictEqual(stderr, 'Error: boundary case\n', `version=${version}`);
     }
   });
 
   test('json mode: the stderr envelope is identical regardless of contract version (only the thrown exit code differs)', () => {
     for (const version of VERSIONS_3912) {
       resolveContractVersion({ argv: ['node', 'x', `--exit-contract=${version}`], env: {} });
-      const chunks = [];
-      const origWrite = fs.writeSync;
-      fs.writeSync = (fd, buf, offset, length) => {
-        if (fd !== 2) return origWrite(fd, buf, offset, length);
-        const slice = Buffer.isBuffer(buf) ? buf.subarray(offset, offset + length) : Buffer.from(String(buf));
-        chunks.push(slice.toString('utf8'));
-        return slice.length;
-      };
       let caught;
+      let stderr;
       try {
-        io.setJsonErrorMode(true);
-        try { io.error('boundary case', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { caught = e; }
+        stderr = captureFdSync(2, () => {
+          io.setJsonErrorMode(true);
+          try { io.error('boundary case', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { caught = e; }
+        });
       } finally {
-        fs.writeSync = origWrite;
         io.setJsonErrorMode(false);
       }
       assert.ok(caught instanceof ExitError);
       assert.deepStrictEqual(
-        JSON.parse(chunks.join('').trim()),
+        JSON.parse(stderr.trim()),
         { ok: false, reason: 'sdk_missing_arg', message: 'boundary case' },
         `version=${version}`,
       );

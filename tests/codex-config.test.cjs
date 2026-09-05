@@ -220,9 +220,16 @@ describe('getCodexSkillAdapterHeader', () => {
     const result = getCodexSkillAdapterHeader('gsd-execute-phase');
     assert.ok(result.includes('spawn_agent'), 'maps to spawn_agent');
     assert.ok(result.includes('agent_type'), 'maps subagent_type to agent_type');
+    // #4270: resolve-model exposes the portable field as `effort`; the Codex
+    // adapter must fetch it and translate it to spawn_agent.reasoning_effort.
     assert.match(
       result,
-      /Resolved `reasoning_effort="low\|medium\|high\|xhigh"` \(`xhigh` is a GSD\/Codex tier, not a generic runtime enum\) → pass `reasoning_effort`\s+to `spawn_agent` when the runtime\/tool supports it/,
+      /query resolve-model <subagent_type> --pick effort/,
+      'retrieves the unified effort for the dispatched role',
+    );
+    assert.match(
+      result,
+      /unified `effort` field maps to the Codex spawn argument\s+`reasoning_effort`/,
       'documents reasoning_effort transport',
     );
     assert.ok(result.includes('do not invent one-off effort literals'), 'keeps effort policy centralized');

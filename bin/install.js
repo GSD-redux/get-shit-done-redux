@@ -3890,26 +3890,37 @@ Execute mode fallback:
 ## C. Task() → spawn_agent Mapping
 GSD workflows use \`Task(...)\` (Claude Code syntax). Translate to Codex collaboration tools:
 
-**Schema detection (required first step):** Codex exposes two \`spawn_agent\` schemas:
-- **agent_type-capable schema** (e.g. \`multi_agent_v2\`): \`spawn_agent\` accepts \`agent_type\`, \`message\`, \`reasoning_effort\`, \`fork_context\`, etc. — typed GSD agent dispatch is available.
-- **Generic schema** (\`multi_agent_v1\`): \`spawn_agent\` accepts only \`message\`, \`items\`, \`fork_context\` — there is **no \`agent_type\` field**. Typed GSD agent dispatch is unavailable in this session.
+**Schema detection (required first step):** Before spawning, inspect the \`spawn_agent\`
+tool's visible parameter schema (via \`tool_search\` or the tool list). Use the presence
+of \`agent_type\` only to choose typed dispatch versus the generic-agent workaround.
+Detect optional fields independently: \`model\`, \`reasoning_effort\`, \`task_name\`,
+\`fork_turns\`, and \`fork_context\` may be added or removed without \`agent_type\` changing.
+Never infer one field from a schema/version label or from the presence of another field.
 
-Before spawning, inspect the \`spawn_agent\` tool's visible parameter schema (via \`tool_search\` or the tool list) to determine which form is active.
+- **agent_type-capable schema:** \`spawn_agent\` advertises \`agent_type\` — typed GSD agent dispatch is available.
+- **Generic schema:** \`spawn_agent\` does not advertise \`agent_type\` — typed GSD agent dispatch is unavailable in this session, even if other optional fields are present.
 
 Typed mapping (agent_type-capable schema only):
 - \`Task(subagent_type="X", prompt="Y")\` → \`spawn_agent(agent_type="X", message="Y")\`
 - \`Agent(subagent_type="X", prompt="Y")\` → \`spawn_agent(agent_type="X", message="Y")\`
-- \`Task(model="...")\` → omit. \`spawn_agent\` has no inline \`model\` parameter;
-  GSD embeds the resolved per-agent model directly into each agent's \`.toml\`
-  at install time so \`model_overrides\` from \`.planning/config.json\` and
-  \`~/.gsd/defaults.json\` are honored automatically by Codex's agent router.
-- Resolved \`reasoning_effort="low|medium|high|xhigh"\` (\`xhigh\` is a GSD/Codex tier, not a generic runtime enum) → pass \`reasoning_effort\`
-  to \`spawn_agent\` when the runtime/tool supports it. Omit missing, empty,
-  inherited, or unsupported values; do not invent one-off effort literals in
-  workflow prose.
+- \`Task(model="{resolved_model}")\` → pass \`model="{resolved_model}"\` when the
+  visible \`spawn_agent\` schema advertises \`model\` and the resolved value is explicit.
+  This is how \`model_profile\` tier routing, including \`adaptive\`, reaches the child agent.
+  Omit \`model\` only when the schema does not advertise \`model\`, or when the value is
+  missing, empty, or \`"inherit"\`; omission deliberately inherits the session/static agent
+  configuration. Explicit \`model_overrides\` may also be embedded in agent \`.toml\` files,
+  but ordinary profile-resolved models are not, so a TOML file is not a reason to discard
+  an available inline value.
+- Before each typed spawn, obtain the paired effort for its role with
+  \`gsd_run query resolve-model <subagent_type> --pick effort\` when the workflow has not
+  already exposed it. The resolver's unified \`effort\` field maps to the Codex spawn argument
+  \`reasoning_effort\`; do not look for a resolver field named \`reasoning_effort\`.
+  Pass it when the visible \`spawn_agent\` schema advertises \`reasoning_effort\`. Omit the
+  field when it is not advertised, or when the value is missing, empty, \`"inherit"\`, or
+  unsupported; do not invent one-off effort literals in workflow prose.
 - \`fork_context: false\` by default — GSD agents load their own context via \`<required_reading>\` blocks
-- \`task_name\` — required by the collaboration schema; provide a descriptive name for each spawned task
-- \`fork_turns\` — optional parameter controlling turn-forking depth; coexists with \`fork_context\` (not a replacement)
+- \`task_name\` — when advertised, provide a descriptive name for each spawned task
+- \`fork_turns\` — when advertised, controls turn-forking depth; coexists with \`fork_context\` (not a replacement)
 - \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
   but Codex declares \`dispatch.isolation: orchestrator-worktree\` (#2584). Codex
   \`spawn_agent\` still does not create or bind a git worktree; instead GSD itself
