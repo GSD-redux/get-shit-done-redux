@@ -204,7 +204,15 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
 
   test('capture success is checked, not assumed', () => {
     const block = screenshotApproachBlock();
-    const checksOutcome = /\[ -s "?\$SCREENSHOT_DIR|\[ -s |if npx |CAPTURED=|\$\?/.test(block);
+    // `CAPTURED=` is deliberately NOT an alternative here. It matches the unconditional
+    // `CAPTURED=0` initialisation, so a future block that keeps the counter and drops every
+    // real outcome check would still satisfy this — the counter's EXISTENCE is not evidence
+    // that anything was observed. (It does not weaken the regression this test names: the
+    // pre-fix block declared no counter at all, so every alternative below is absent from it
+    // and the test fails there either way. Removing it costs nothing and closes the forward
+    // hole.) The remaining alternatives each name an actual observation: the captured file is
+    // non-empty, or the capture command's own exit status is consumed.
+    const checksOutcome = /\[ -s "?\$SCREENSHOT_DIR|\[ -s |if npx |\$\?/.test(block);
     assert.ok(checksOutcome, 'an exit-status or file-existence check must gate the captured/not-captured signal');
   });
 
