@@ -1028,12 +1028,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     // survivor of body drift (the reporter's document still carried it, and
     // `buildStateFrontmatter` re-derives it from the body only when the body
     // HAS the line). It feeds the recovery DECLINE only — never a write.
-    const fmPhase = positionPhase === null
-      ? (() => {
-          const fmToken = extractFrontmatter(content, statePath)['current_phase'];
-          return typeof fmToken === 'string' && fmToken.trim() !== '' ? fmToken.trim() : null;
-        })()
-      : null;
+    let fmPhase: string | null = null;
+    if (positionPhase === null) {
+      const fmToken = extractFrontmatter(content, statePath)['current_phase'];
+      fmPhase = typeof fmToken === 'string' && fmToken.trim() !== '' ? fmToken.trim() : null;
+    }
     positionPhaseRef.value = positionPhase ?? fmPhase;
     if (positionPhase !== null) {
       milestoneConflict = milestoneLockMod.checkMilestonePosition(cwd, positionPhase);
