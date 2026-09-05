@@ -1095,8 +1095,8 @@ describe('#3916 writer, persistence, reader and migration contracts agree', () =
       const fields = { dimension: 'd', plan: 'p1', property: 'prop', constraint: 'D-1', alternatives: 'alt' };
       assert.equal(runWriterGate(file, fields).status, 0);
       const after = fs.readFileSync(file, 'utf-8');
-      const headerLine = after.split('\n')[0];
-      assert.ok(headerLine.endsWith('\r'), 'a pre-existing line must keep its original CRLF ending');
+      assert.ok(after.startsWith('# Cross-AI Plan Review — Phase 7\r\n'),
+        'a pre-existing line must keep its original CRLF ending');
     });
   });
 
