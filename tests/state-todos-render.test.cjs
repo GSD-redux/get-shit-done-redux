@@ -236,7 +236,13 @@ test('renderPendingTodosMarkdown: absolute path outside projectRoot renders a ..
     TODO_RELATIVE_TAIL,
   );
   const line = renderPendingTodosMarkdown([makeTodo({ path: outsideTodo })], root);
-  assert.ok(!line.includes(outsideTodo), 'machine-variable absolute path must not leak into the bullet');
+  // The ../-form legitimately CONTAINS the absolute path as a substring, so a
+  // plain includes() negative is a false positive — assert the property
+  // itself: the link target is relative, never the absolute path.
+  const linkMatch = line.match(/\[todo file\]\(([^)]*)\)/);
+  assert.ok(linkMatch, 'bullet must contain a todo link');
+  assert.ok(!path.isAbsolute(linkMatch[1]), 'link target must be relative, not absolute');
+  assert.notEqual(linkMatch[1], outsideTodo, 'link target must not be the machine-variable absolute path');
   assert.ok(
     line.includes('[todo file](../'),
     'link must be relative to the project root, not absolute',
