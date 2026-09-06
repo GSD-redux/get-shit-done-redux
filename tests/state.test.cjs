@@ -3539,7 +3539,9 @@ describe('#4186: progress recount ignores stray summaries (pin of #1988)', () =>
 
   function completedPlans() {
     const text = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    const m = text.match(/^progress:[\s\S]*?completed_plans:\s*(\d+)/m);
+    // Bounded scan (#2128 class): the progress block sits within a few hundred
+    // bytes of its opening key in every fixture this suite writes.
+    const m = text.match(/^progress:[\s\S]{0,400}?completed_plans:\s*(\d+)/m);
     assert.ok(m, 'progress.completed_plans must be present after a recount write');
     return Number(m[1]);
   }
