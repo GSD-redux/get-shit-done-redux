@@ -1185,8 +1185,8 @@ describe('execute-phase workflow: #3684 review findings — join normalization',
 
 // ── #4218: a live executor must not be steered or cut short ──────────────────
 //
-// allow-test-rule: source-text-is-the-product — the workflow .md IS the
-// instruction the orchestrator executes; its text is the artifact under test.
+// allow-test-rule: source-text-is-the-product (#4218) — the workflow .md IS
+// the instruction the orchestrator executes; its text is the artifact under test.
 //
 // Reported on Codex: an executor with recent RED/GREEN/REFACTOR commits and
 // passing verification had not yet written its SUMMARY because it was finishing
