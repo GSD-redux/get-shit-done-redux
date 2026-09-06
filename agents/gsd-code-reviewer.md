@@ -109,6 +109,7 @@ Additional checks:
 - `review_path`: Full path for REVIEW.md output (e.g., `.planning/phases/02-code-review-command/02-REVIEW.md`). If absent, derived from phase_dir.
 - `files`: Array of changed files to review (passed by workflow — primary scoping mechanism)
 - `diff_base`: Git commit hash for diff range (passed by workflow when files not available)
+- `diff_tip`: Newest phase commit — upper bound for the fallback diff range (#3926; passed alongside `diff_base`)
 
 **Validate depth (defense-in-depth):** If depth is not one of `quick`, `standard`, `deep`, warn and default to `standard`. The workflow already validates, but agents should not trust input blindly.
 
@@ -128,14 +129,14 @@ Parse each `- path` line under `files:` into the REVIEW_FILES array. If `files` 
 This fallback runs ONLY when invoked directly without workflow context. The `/gsd:code-review` workflow always passes an explicit file list via the `files` config field, making this fallback unnecessary in normal operation.
 
 If `files` is absent or empty, compute DIFF_BASE:
-1. If `diff_base` is provided in config, use it
+1. If `diff_base` is provided in config, use it (and DIFF_TIP from `diff_tip` when provided)
 2. Otherwise, **fail closed** with error: "Cannot determine review scope. Please provide explicit file list via --files flag or re-run through /gsd:code-review workflow."
 
 Do NOT invent a heuristic (e.g., HEAD~5) — silent mis-scoping is worse than failing loudly.
 
-If DIFF_BASE is set, run:
+If DIFF_BASE is set, run (#3926: `${DIFF_TIP:-HEAD}` — an unbounded `..HEAD` tip sweeps every commit landed since the phase's first commit into the review scope):
 ```bash
-git diff --name-only ${DIFF_BASE}..HEAD -- . ':!.planning/' ':!ROADMAP.md' ':!STATE.md' ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock'
+git diff --name-only ${DIFF_BASE}..${DIFF_TIP:-HEAD} -- . ':!.planning/' ':!ROADMAP.md' ':!STATE.md' ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock'
 ```
 
 **4. Parse structural findings when present:** If prompt includes:
