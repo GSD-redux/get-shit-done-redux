@@ -6,6 +6,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+  - Grep
   - Agent
   - AskUserQuestion
 requires: [new-project, phase, plan-phase]

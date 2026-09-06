@@ -2265,19 +2265,49 @@ function truncatePendingTodoText(value: string, maxLen: number): string {
  * code rather than a prose algorithm (DEFECT.GENERATIVE-FIX: a prose
  * algorithm duplicated as a test oracle is exactly the divergence class
  * this avoids).
+ *
+ * #4384 regression fix: the optional `projectRoot` makes the bullet's
+ * `[todo file](…)` link repo-relative (see pendingTodoLinkTarget) so the cap
+ * is deterministic w.r.t. where the repo is checked out. Omitting it keeps
+ * the legacy absolute-link behavior for existing direct callers.
  */
-function renderPendingTodosMarkdown(todos: Record<string, unknown>[]): string {
+function renderPendingTodosMarkdown(todos: Record<string, unknown>[], projectRoot?: string): string {
   if (!Array.isArray(todos) || todos.length === 0) {
     return 'None yet.';
   }
-  return todos.map((todo) => renderPendingTodoBullet(todo)).join('\n');
+  return todos.map((todo) => renderPendingTodoBullet(todo, projectRoot)).join('\n');
 }
 
 function pendingTodoFieldAsString(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
 
-function renderPendingTodoBullet(todo: Record<string, unknown>): string {
+/**
+ * #4384 regression fix: the bullet's markdown link target, rendered
+ * repo-relative when `projectRoot` is given and the todo's `path` is
+ * absolute. The JSON `todos[].path` field stays absolute (#2376 contract);
+ * only the rendered display link changes — embedding the machine-variable
+ * absolute base let macOS's /private/var/folders/… temp paths consume the
+ * 240-char budget and drop the "Needs <solution>" clause on long-path
+ * machines only (next's own macos CI shard went red on exactly this, run
+ * 34038716700). Repo-relative links also resolve correctly from STATE.md at
+ * the repo root and survive repo moves.
+ */
+function pendingTodoLinkTarget(todo: Record<string, unknown>, projectRoot: string | undefined): string {
+  const raw = pendingTodoFieldAsString(todo['path'], '');
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0 || !path.isAbsolute(raw)) {
+    return raw;
+  }
+  const rel = toPosixPath(path.relative(projectRoot, raw));
+  if (rel.length === 0 || path.isAbsolute(rel)) {
+    // Degenerate (path === projectRoot) or Windows cross-drive fallback:
+    // keep the raw target rather than emitting an empty or incorrect link.
+    return raw;
+  }
+  return rel;
+}
+
+function renderPendingTodoBullet(todo: Record<string, unknown>, projectRoot?: string): string {
   const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
   let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
   let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
@@ -2287,7 +2317,7 @@ function renderPendingTodoBullet(todo: Record<string, unknown>): string {
     typeof todo['needs'] === 'string'
       ? sanitizePendingTodoInline(todo['needs']).replace(/\.+$/, '')
       : '';
-  const link = `[todo file](${pendingTodoFieldAsString(todo['path'], '')})`;
+  const link = `[todo file](${pendingTodoLinkTarget(todo, projectRoot)})`;
 
   const assemble = (): string => {
     const needsClause = needs ? ` — Needs ${needs}.` : '';
@@ -2420,7 +2450,9 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
     // (rather than emitted with possibly-wrong data) when pendingReadOk is
     // false, so the workflow's fail-safe check can key off field presence.
     pending_read_ok: pendingReadOk,
-    ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos) } : {}),
+    // #4384 fix: pass cwd as projectRoot so the bullet link renders
+    // repo-relative — see pendingTodoLinkTarget.
+    ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos, cwd) } : {}),
   };
 
   output(withProjectRoot(cwd, result), raw);

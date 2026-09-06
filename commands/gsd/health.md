@@ -5,6 +5,7 @@ argument-hint: "[--repair] [--context]"
 allowed-tools:
   - Read
   - Bash
+  - Grep
   - Write
   - AskUserQuestion
 requires: [thread]
