@@ -133,18 +133,19 @@ function plantExecutable(dir, name) {
 /**
  * Every filename the launcher's `command -v gsd_run` arm could resolve.
  *
- * msys bash appends an executable extension during PATH lookup, so on Windows a
- * directory holding only `gsd_run.exe` is reachable even though `gsd_run` is
- * absent. PATHEXT is folded in as well: it is a cmd.exe mechanism rather than a
- * bash one, so it over-matches, and over-matching is free here — a directory
- * dropped for a `gsd_run.cmd` bash could not have run costs the fixture
- * nothing now that buildIsolatedPath() always supplies its own node.
+ * The arm runs under bash, so this models bash's lookup, not cmd.exe's. The
+ * Cygwin/msys rule is that `.exe` may be omitted from a command while ".bat and
+ * .com ... you cannot omit the extension" — so `gsd_run.exe` is reachable for a
+ * bare `gsd_run` and `gsd_run.cmd`/`.ps1` are not, whatever PATHEXT says.
+ *
+ * Matching PATHEXT instead would drop more directories than bash can reach, and
+ * that is not free: buildIsolatedPath() restores node to the isolated PATH but
+ * nothing restores bash, which the fixtures spawn by name. A wider drop set is
+ * a wider chance of removing the directory bash itself lives in and failing the
+ * fixture with ENOENT instead of an assertion.
  */
 const GSD_RUN_NAMES = process.platform === 'win32'
-  ? ['gsd_run', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
-      .split(';')
-      .filter(Boolean)
-      .map((ext) => `gsd_run${ext.toLowerCase()}`)]
+  ? ['gsd_run', 'gsd_run.exe']
   : ['gsd_run'];
 
 /** True when `dir` holds a gsd_run the launcher's PATH arm could resolve. */
@@ -1372,7 +1373,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
   // test is that prepend's guard: make it conditional again — as it was on
   // Windows, where the helper returned `nodeBinDir: null` — and (ii) goes red.
   test(
-    '(B0) buildIsolatedPath: node is resolvable and gsd_run is not when they share a PATH dir',
+    '(B0) buildIsolatedPath invariants: node survives, every reachable gsd_run name and every relative dir does not',
     (t) => {
       // Build a fake bin dir that contains BOTH a gsd_run executable and node,
       // simulating a dev setup (fnm/nvm/Homebrew) where both land in the same
@@ -1417,10 +1418,14 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       );
 
       // (iii) every name the launcher's PATH arm can resolve must be filtered,
-      // not just the extensionless one. One name on POSIX; on Windows the
-      // PATHEXT set, where a gsd_run.exe-only directory is the reachable leak
-      // an extensionless probe misses (#4344).
-      const survived = GSD_RUN_NAMES.filter((name) => {
+      // not just the extensionless one — a gsd_run.exe-only directory is the
+      // reachable Windows leak an extensionless probe misses (#4344). The list
+      // is written out rather than taken from GSD_RUN_NAMES: sweeping the
+      // constant under test with itself cannot catch that constant being wrong.
+      const reachableNames = process.platform === 'win32'
+        ? ['gsd_run', 'gsd_run.exe']
+        : ['gsd_run'];
+      const survived = reachableNames.filter((name) => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-ext-'));
         t.after(() => cleanup(dir));
         plantExecutable(dir, name);
@@ -1431,30 +1436,32 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       assert.deepStrictEqual(
         survived,
         [],
-        'every GSD_RUN_NAMES entry must be filtered out of the isolated PATH',
+        'every name bash can resolve for a bare gsd_run must be filtered out of the isolated PATH',
       );
 
       // (iv) every surviving element is absolute. A shell resolves an empty
       // element, `.`, or any relative entry against the *child's* working
       // directory, so each one is a way to put a cwd gsd_run back on PATH —
       // and hasGsdRun cannot see any of them, because it probes relative to the
-      // runner's cwd instead. Three ways one arrives: an ambient `::`, an
-      // explicit `.`, and a PATH every entry of which was filtered (which used
-      // to leave a trailing delimiter, meaning the same thing).
+      // runner's cwd instead. Four ways one arrives: an ambient `::`, an
+      // explicit `.`, a relative entry, and a PATH every entry of which was
+      // filtered (which used to leave a trailing delimiter, meaning the same
+      // thing).
+      // Each case names the dirs that must survive, so the assertion has an
+      // oracle of its own rather than re-running the implementation's filter.
       const relativeElementCases = {
-        emptyElement: `${emptyDir}${path.delimiter}${path.delimiter}${emptyDir}`,
-        dotElement: `${emptyDir}${path.delimiter}.${path.delimiter}${emptyDir}`,
-        relativeElement: `${emptyDir}${path.delimiter}sub/dir`,
-        fullyFiltered: fakeBinDir,
+        emptyElement: [`${emptyDir}${path.delimiter}${path.delimiter}${emptyDir}`, [emptyDir, emptyDir]],
+        dotElement: [`${emptyDir}${path.delimiter}.${path.delimiter}${emptyDir}`, [emptyDir, emptyDir]],
+        relativeElement: [`${emptyDir}${path.delimiter}sub/dir`, [emptyDir]],
+        fullyFiltered: [fakeBinDir, []],
       };
-      for (const [label, basePath] of Object.entries(relativeElementCases)) {
+      for (const [label, [basePath, expected]] of Object.entries(relativeElementCases)) {
         const probe = buildIsolatedPath(basePath);
         t.after(() => cleanup(probe.nodeBinDir));
-        const relative = probe.isolatedPath.split(path.delimiter).filter((dir) => !path.isAbsolute(dir));
         assert.deepStrictEqual(
-          relative,
-          [],
-          `${label}: isolated PATH must carry only absolute dirs (a relative one resolves the child's cwd), got: ${probe.isolatedPath}`,
+          probe.isolatedPath.split(path.delimiter),
+          [probe.nodeBinDir, ...expected],
+          `${label}: only absolute, gsd_run-free dirs may survive (a relative one resolves the child's cwd), got: ${probe.isolatedPath}`,
         );
       }
     },
