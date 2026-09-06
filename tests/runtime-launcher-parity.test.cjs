@@ -119,6 +119,18 @@ function linkExecutable(dir, name) {
 }
 
 /**
+ * Plant `dir/name` as a file an X_OK probe accepts, and return `dir`. For
+ * fixtures that only need a name to be *found*: nothing ever executes these,
+ * so they cost a zero-byte write instead of a link to (or, across volumes, a
+ * copy of) the whole interpreter.
+ */
+function plantExecutable(dir, name) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), '', { mode: 0o755 });
+  return dir;
+}
+
+/**
  * Every filename the launcher's `command -v gsd_run` arm could resolve.
  *
  * msys bash appends an executable extension during PATH lookup, so on Windows a
@@ -170,12 +182,11 @@ function buildIsolatedPath(basePath = process.env.PATH) {
   // a fully-filtered PATH from ending in a delimiter, which means the same
   // thing. Dropping a relative entry can only tighten the isolation, never
   // loosen it.
-  const fallback = ['/usr/bin', '/bin'].join(path.delimiter);
-  const filteredDirs = (basePath || fallback)
+  const filteredDirs = (basePath ?? '')
     .split(path.delimiter)
     .filter((p) => path.isAbsolute(p) && !hasGsdRun(p));
 
-  const nodeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-node-'));
+  const nodeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-node-'));
   try {
     linkExecutable(nodeBinDir, NODE_BIN);
   } catch (err) {
@@ -1372,14 +1383,11 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       t.after(() => cleanup(fakeBinDir));
       t.after(() => cleanup(emptyDir));
 
-      // Fake gsd_run shim (executable file). See #4205 / buildIsolatedPath() above.
-      const fakeGsdRun = path.join(fakeBinDir, 'gsd_run');
-      fs.writeFileSync(fakeGsdRun, '#!/bin/sh\necho fake-gsd-run\n');
-      fs.chmodSync(fakeGsdRun, 0o755);
-
-      // node co-located with gsd_run — the fnm/nvm/Homebrew layout, and the
-      // Windows global-install layout the same helper has to survive.
-      linkExecutable(fakeBinDir, NODE_BIN);
+      // gsd_run co-located with node — the fnm/nvm/Homebrew layout, and the
+      // Windows global-install layout the same helper has to survive. Both are
+      // probed, never run.
+      plantExecutable(fakeBinDir, 'gsd_run');
+      plantExecutable(fakeBinDir, NODE_BIN);
 
       // Filter ONLY the two controlled dirs (no real system dirs). This makes
       // the test machine-independent: on any machine, the only place node
@@ -1415,7 +1423,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       const survived = GSD_RUN_NAMES.filter((name) => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-ext-'));
         t.after(() => cleanup(dir));
-        linkExecutable(dir, name);
+        plantExecutable(dir, name);
         const probe = buildIsolatedPath(dir);
         t.after(() => cleanup(probe.nodeBinDir));
         return probe.isolatedPath.split(path.delimiter).includes(dir);
@@ -1459,9 +1467,11 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
   // the stub: on a CLEAN machine the bare HERMES_HOME assertion passes whether
   // buildIsolatedPath() filters gsd_run or gsd-tools, so it only catches the bug
   // on a machine that already has the leak. Planting the sentinel makes it fail
-  // on any machine, and on either platform: the sentinel is planted in both the
-  // extensionless form npm installs and, on Windows, the `gsd_run.exe` form msys
-  // bash resolves for a bare `gsd_run` (#4344).
+  // on any machine, and on either platform: the sentinel is planted in the one
+  // form that platform's shell resolves — the extensionless shim npm installs
+  // on POSIX, `gsd_run.exe` alone on Windows (see below for why alone). Note
+  // that only the POSIX sentinel can print SENTINEL_INVOKED; on Windows the
+  // basename assertion is what carries the guarantee (#4344).
   test('(B) buildIsolatedPath strips a leaked PATH gsd_run; the ${HERMES_HOME} stub wins', (t) => {
     const fakeHome       = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-home-b-'));
     const fakeHermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-hermes-'));
