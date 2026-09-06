@@ -119,8 +119,11 @@ DEV_URL=""
 DEV_GATED=""
 for PORT in 3000 5173 8080; do
   # process.stdout.write(String(...)), never console.log(r.status): console.log
-  # of a NUMBER is colorized by node, so the probe would emit "\033[33m200\033[39m"
-  # and every 2xx would fall through to the no-dev-server branch.
+  # CAN colorize a NUMBER — whenever node emits color, i.e. a TTY or FORCE_COLOR — so
+  # the probe would emit "\033[33m200\033[39m" and every 2xx would fall through to the
+  # no-dev-server branch. Measured: piped and uncoloured it prints "200\n"; with
+  # FORCE_COLOR=1 it prints the escapes. Writing the string is unconditional, which is
+  # why it is the fix rather than relying on the caller's colour state.
   PROBE=$(node -e 'fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write("000"))' "http://localhost:$PORT" 2>/dev/null || echo "000")
   PROBE=${PROBE:-000}
   case "$PROBE" in

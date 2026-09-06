@@ -174,14 +174,21 @@ function hasControlKeyword(text) {
 function blankQuoted(text) {
   let out = '';
   let quote = null;
+  let ansi = false;        // inside $'...', where a backslash escapes the closing quote
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
     if (quote) {
-      if (c === '\\' && quote === '"') { out += '  '; i += 1; continue; }
-      if (c === quote) { quote = null; out += ' '; continue; }
+      // ANSI-C quoting processes backslash escapes, so `$'x\''` is ONE string whose
+      // content is `x'`. Treating that escaped quote as the terminator ended the span
+      // early, and the real `then`/`fi`/`if` after it were then blanked by the NEXT
+      // apparent quote — a stale guard with no throw. Driven, and the same asymmetry
+      // stripComment already models.
+      if (c === '\\' && (quote === '"' || ansi)) { out += '  '; i += 1; continue; }
+      if (c === quote) { quote = null; ansi = false; out += ' '; continue; }
       out += ' ';
       continue;
     }
+    if (c === '$' && text[i + 1] === "'") { quote = "'"; ansi = true; out += '  '; i += 1; continue; }
     if (c === '\\') { out += '  '; i += 1; continue; }
     if (c === "'" || c === '"') { quote = c; out += ' '; continue; }
     out += c;
