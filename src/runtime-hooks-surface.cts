@@ -676,6 +676,8 @@ interface HookEntry {
 }
 
 interface HookGroup {
+  /** Tool-name matcher for the group (`Write|Edit`). Absent on unmatched events. */
+  matcher?: string;
   hooks?: HookEntry[];
 }
 
@@ -2172,6 +2174,7 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
   return { hooksJsonPath, changed: result.changed };
 }
 
+
 /**
  * Remove all GSD-managed Cascade hook entries from hooks.json. User-owned
  * entries are preserved. If the file becomes empty, it is removed.
@@ -2267,6 +2270,59 @@ function writeCopilotHookConfig(targetDir: string): string {
   const hookPath = path.join(hooksDir, GSD_COPILOT_HOOK_FILE);
   fs.writeFileSync(hookPath, JSON.stringify(buildCopilotHookConfig(), null, 2) + '\n');
   return hookPath;
+}
+
+/**
+ * #4332 — Antigravity's tool vocabulary, for the settings.json matcher slot.
+ *
+ * `install --antigravity` registers its guards through the generic
+ * settings.json writer, which translates only the EVENT names
+ * (`PreToolUse` → `BeforeTool`, ADR-857/1016 #1077). The matchers were left in
+ * Claude Code's vocabulary, so every guard was registered against a tool name
+ * Antigravity never emits (`Write`, `Edit`, `Read`, `Bash`) and none of them
+ * could ever fire — the #2304 defect (Kimi) one runtime over. Kimi avoids it by
+ * registering PRE-TRANSLATED matchers (buildKimiHooksTomlBlock); this map is
+ * the settings.json equivalent.
+ *
+ * A Map, not an object literal: bare bracket lookup resolves prototype keys
+ * ('constructor', '__proto__') to truthy values, so an unknown-token
+ * fall-through would never fire for them (same reasoning as the guards'
+ * KIMI_TOOL_NAMES).
+ */
+const ANTIGRAVITY_TOOL_MATCHERS = new Map([
+  ['Write', 'write_to_file'],
+  ['Edit', 'replace_file_content'],
+  ['MultiEdit', 'multi_replace_file_content'],
+  ['Read', 'view_file'],
+  ['Bash', 'run_command'],
+  ['Grep', 'grep_search'],
+]);
+
+/**
+ * Translate a `A|B|C` matcher into Antigravity's vocabulary.
+ *
+ * Total and idempotent by construction:
+ *   - a token with no Antigravity equivalent (`Agent`, `Task` — Antigravity
+ *     exposes no dispatch tool) is carried through UNCHANGED, so this can
+ *     never narrow a matcher into one that matches nothing at all;
+ *   - a token already in Antigravity's vocabulary is left alone, so a
+ *     reinstall over an already-migrated settings.json is a no-op;
+ *   - duplicates are collapsed (`Edit|MultiEdit` both map to a single
+ *     `replace_file_content` sibling pair, and Claude's `Edit|MultiEdit`
+ *     would otherwise emit `replace_file_content|multi_replace_file_content`
+ *     — which is correct, but `Write|Write` from a double-translate is not).
+ */
+function toAntigravityMatcher(matcher: string): string {
+  if (typeof matcher !== 'string' || !matcher) return matcher;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const token of matcher.split('|')) {
+    const translated = ANTIGRAVITY_TOOL_MATCHERS.get(token) || token;
+    if (seen.has(translated)) continue;
+    seen.add(translated);
+    out.push(translated);
+  }
+  return out.join('|');
 }
 
 // ---------------------------------------------------------------------------
@@ -2403,6 +2459,47 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       }
     }
 
+    // Every hook this writer registers WITH a tool matcher. Named explicitly
+    // rather than probed for a bare 'gsd-' substring so a user-owned hook that
+    // happens to live under a gsd-core/ path is never rewritten (#4332).
+    const MATCHER_OWNED_HOOKS = [
+      'gsd-context-monitor',
+      'gsd-prompt-guard',
+      'gsd-read-guard',
+      'gsd-read-injection-scanner',
+      'gsd-worktree-path-guard',
+      'gsd-agent-isolation-guard',
+      'gsd-write-guard',
+      'gsd-secret-read-guard',
+      'gsd-validate-commit',
+      'gsd-graphify-update',
+      'gsd-phase-boundary',
+    ];
+
+    // #4332: Antigravity's guards were registered with Claude Code's tool
+    // names, so every matcher below described a tool Antigravity never emits.
+    // `toolMatcher()` translates at REGISTRATION time, and this pass migrates
+    // the settings.json of an install that already carries the untranslated
+    // matchers — without it, the `has<X>Hook` checks below skip re-registration
+    // and an existing install would stay dormant forever. Idempotent
+    // (toAntigravityMatcher is), and scoped to GSD-owned entries: a user's own
+    // hook keeps whatever matcher the user wrote.
+    const toolMatcher = (claudeMatcher: string): string =>
+      hookEvents === 'gemini' ? toAntigravityMatcher(claudeMatcher) : claudeMatcher;
+    if (hookEvents === 'gemini') {
+      for (const entries of Object.values(settings.hooks as Record<string, HookGroup[]>)) {
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+          if (!entry || typeof entry.matcher !== 'string' || !Array.isArray(entry.hooks)) continue;
+          const isGsdOwned = entry.hooks.some((h: HookEntry) =>
+            MATCHER_OWNED_HOOKS.some((name) => referencesHook(h as Record<string, unknown>, name)));
+          if (!isGsdOwned) continue;
+          const translated = toAntigravityMatcher(entry.matcher);
+          if (translated !== entry.matcher) entry.matcher = translated;
+        }
+      }
+    }
+
     const hasGsdUpdateHook = settings.hooks.SessionStart.some((entry: HookGroup) =>
       entry.hooks && entry.hooks.some((h: HookEntry) => referencesHook(h as Record<string, unknown>, 'gsd-check-update'))
     );
@@ -2438,7 +2535,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const contextMonitorFile = path.join(targetDir, 'hooks', 'gsd-context-monitor.js');
     if (!hasContextMonitorHook && fs.existsSync(contextMonitorFile) && contextMonitorCommand) {
       settings.hooks[postToolEvent].push({
-        matcher: 'Bash|Edit|Write|MultiEdit|Agent|Task',
+        matcher: toolMatcher('Bash|Edit|Write|MultiEdit|Agent|Task'),
         hooks: [
           {
             type: 'command',
@@ -2456,7 +2553,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
         if (entry.hooks && entry.hooks.some((h: HookEntry) => referencesHook(h as Record<string, unknown>, 'gsd-context-monitor'))) {
           let migrated = false;
           if (!entry.matcher) {
-            entry.matcher = 'Bash|Edit|Write|MultiEdit|Agent|Task';
+            entry.matcher = toolMatcher('Bash|Edit|Write|MultiEdit|Agent|Task');
             migrated = true;
           }
           for (const h of entry.hooks) {
@@ -2488,7 +2585,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const promptGuardFile = path.join(targetDir, 'hooks', 'gsd-prompt-guard.js');
     if (!hasPromptGuardHook && fs.existsSync(promptGuardFile) && promptGuardCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Write|Edit',
+        matcher: toolMatcher('Write|Edit'),
         hooks: [
           {
             type: 'command',
@@ -2512,7 +2609,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const readGuardFile = path.join(targetDir, 'hooks', 'gsd-read-guard.js');
     if (!hasReadGuardHook && fs.existsSync(readGuardFile) && readGuardCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Write|Edit',
+        matcher: toolMatcher('Write|Edit'),
         hooks: [
           {
             type: 'command',
@@ -2536,7 +2633,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const readInjectionScannerFile = path.join(targetDir, 'hooks', 'gsd-read-injection-scanner.js');
     if (!hasReadInjectionScannerHook && fs.existsSync(readInjectionScannerFile) && readInjectionScannerCommand) {
       settings.hooks[postToolEvent].push({
-        matcher: 'Read',
+        matcher: toolMatcher('Read'),
         hooks: [
           {
             type: 'command',
@@ -2562,7 +2659,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const workflowGuardCommand = isGlobal
       ? buildHookCommand(targetDir, 'gsd-workflow-guard.js', hookOpts)
       : localCmd('gsd-workflow-guard.js');
-    const workflowGuardMatcher = 'Bash|Edit|Write|MultiEdit';
+    const workflowGuardMatcher = toolMatcher('Bash|Edit|Write|MultiEdit');
     const workflowGuardHookEntry = settings.hooks[preToolEvent].find((entry: HookGroup) =>
       entry.hooks && entry.hooks.some((h: HookEntry) => referencesHook(h as Record<string, unknown>, 'gsd-workflow-guard'))
     );
@@ -2601,7 +2698,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const worktreePathGuardFile = path.join(targetDir, 'hooks', 'gsd-worktree-path-guard.js');
     if (!hasWorktreePathGuardHook && fs.existsSync(worktreePathGuardFile) && worktreePathGuardCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Write|Edit|MultiEdit',
+        matcher: toolMatcher('Write|Edit|MultiEdit'),
         hooks: [
           {
             type: 'command',
@@ -2633,7 +2730,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
         // #3045 MAJOR 1: widened from "Agent"-only — hooks.json's own
         // PostToolUse precedent (context-monitor) already hedges both names,
         // and the hook itself now accepts tool_name "Task" too.
-        matcher: 'Agent|Task',
+        matcher: toolMatcher('Agent|Task'),
         hooks: [
           {
             type: 'command',
@@ -2662,7 +2759,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const writeGuardFile = path.join(targetDir, 'hooks', 'gsd-write-guard.js');
     if (!hasWriteGuardHook && fs.existsSync(writeGuardFile) && writeGuardCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Write',
+        matcher: toolMatcher('Write'),
         hooks: [
           {
             type: 'command',
@@ -2691,7 +2788,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const secretReadGuardFile = path.join(targetDir, 'hooks', 'gsd-secret-read-guard.js');
     if (!hasSecretReadGuardHook && fs.existsSync(secretReadGuardFile) && secretReadGuardCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Read|Grep|Bash',
+        matcher: toolMatcher('Read|Grep|Bash'),
         hooks: [
           {
             type: 'command',
@@ -2718,7 +2815,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const validateCommitFile = path.join(targetDir, 'hooks', 'gsd-validate-commit.sh');
     if (!hasValidateCommitHook && fs.existsSync(validateCommitFile) && validateCommitCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Bash',
+        matcher: toolMatcher('Bash'),
         hooks: [
           {
             type: 'command',
@@ -2747,7 +2844,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const graphifyUpdateFile = path.join(targetDir, 'hooks', 'gsd-graphify-update.sh');
     if (!hasGraphifyUpdateHook && fs.existsSync(graphifyUpdateFile) && graphifyUpdateCommand) {
       settings.hooks[postToolEvent].push({
-        matcher: 'Bash',
+        matcher: toolMatcher('Bash'),
         hooks: [
           {
             type: 'command',
@@ -2797,7 +2894,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const phaseBoundaryFile = path.join(targetDir, 'hooks', 'gsd-phase-boundary.sh');
     if (!hasPhaseBoundaryHook && fs.existsSync(phaseBoundaryFile) && phaseBoundaryCommand) {
       settings.hooks[postToolEvent].push({
-        matcher: 'Write|Edit',
+        matcher: toolMatcher('Write|Edit'),
         hooks: [
           {
             type: 'command',
@@ -3291,6 +3388,10 @@ export = {
   removeKimiHooksToml,
   KIMI_HOOKS_TOML_MARKER_BEGIN,
   KIMI_HOOKS_TOML_MARKER_END,
+
+  // Antigravity tool vocabulary (#4332)
+  toAntigravityMatcher,
+  ANTIGRAVITY_TOOL_MATCHERS,
 
   // Shared
   stageTransitiveHookLibs,

@@ -141,6 +141,55 @@ function normalizeKimiPayload(data) {
   return data;
 }
 
+// #4332: Antigravity's hook bus is the #2304 defect one runtime over, plus a
+// layer. `install --antigravity` registers 13 hooks whose EVENT names are
+// translated (BeforeTool/AfterTool — ADR-857/1016, #1077) but whose matchers
+// and payload reads were left in Claude Code's vocabulary, so every guard was
+// spawned and then exited 0 on `data.tool_name === undefined`. Antigravity
+// does not merely rename the tools the way Kimi does — it NESTS the call and
+// uses PascalCase argument keys:
+//   { toolCall: { name: 'write_to_file', args: { AbsolutePath, TargetFile } },
+//     conversationId: '…' }
+// so a name map alone (the #2507 shape) is not enough; the envelope needs
+// lifting too. `AbsolutePath` is authoritative and wins outright over
+// `TargetFile`, for the same reason Kimi's `path` wins over a model-supplied
+// `file_path` (#2547/#2752): overwriting can only narrow what a guard inspects
+// to the path that will actually be written, so it cannot under-block.
+// Runs BEFORE normalizeKimiPayload and is a no-op on every other runtime — a
+// payload with no `toolCall` object is returned untouched, so a Claude Code or
+// Kimi payload never enters this path. Inlined per guard, not hooks/lib/, for
+// the reason stated above the Kimi block.
+const ANTIGRAVITY_TOOL_NAMES = new Map([['write_to_file', 'Write'], ['replace_file_content', 'Edit'], ['multi_replace_file_content', 'Edit'], ['view_file', 'Read'], ['run_command', 'Bash'], ['grep_search', 'Grep']]);
+function normalizeAntigravityPayload(data) {
+  if (data === null || typeof data !== 'object') return data;
+  const call = data.toolCall;
+  if (call === null || typeof call !== 'object') return data;
+  const raw = call.name;
+  if (typeof raw !== 'string') return data;
+  const mapped = ANTIGRAVITY_TOOL_NAMES.get(raw.slice(raw.lastIndexOf(':') + 1));
+  if (!mapped) return data;
+  data.tool_name = mapped;
+  if (typeof data.session_id !== 'string' && typeof data.conversationId === 'string') {
+    data.session_id = data.conversationId;
+  }
+  const args = call.args;
+  if (args !== null && typeof args === 'object') {
+    const input = (data.tool_input !== null && typeof data.tool_input === 'object') ? data.tool_input : {};
+    // Only documented keys are lifted, and only from a string: a bulk copy of
+    // `args` would carry an attacker-chosen `__proto__` key into a plain
+    // object, and would invent field names this runtime has not been observed
+    // to send. A key that is absent leaves the guard reading `undefined` and
+    // failing open exactly as it does today — never worse than dormant.
+    if (typeof args.TargetFile === 'string') input.file_path = args.TargetFile;
+    if (typeof args.AbsolutePath === 'string') input.file_path = args.AbsolutePath;
+    for (const key of ['CommandLine', 'Command']) {
+      if (typeof args[key] === 'string') { input.command = args[key]; break; }
+    }
+    data.tool_input = input;
+  }
+  return data;
+}
+
 let input = '';
 const stdinTimeout = setTimeout(() => allow(undefined), 3000);
 process.stdin.setEncoding('utf8');
@@ -148,7 +197,7 @@ process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   clearTimeout(stdinTimeout);
   try {
-    const data = normalizeKimiPayload(JSON.parse(input));
+    const data = normalizeKimiPayload(normalizeAntigravityPayload(JSON.parse(input)));
     const toolName = data.tool_name;
 
     // Only guard Edit, Write, and MultiEdit tool calls
