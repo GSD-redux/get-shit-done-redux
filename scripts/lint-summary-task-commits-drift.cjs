@@ -41,7 +41,7 @@ const TEMPLATE_DIR = 'gsd-core/templates';
 // to be the DIRECTORY's set: a hardcoded list silently stops covering the
 // domain the moment a fifth `summary-*.md` lands, and a template whose Task
 // Commits line shape differs is exactly what this guard exists to refuse.
-const TEMPLATE_RE = /^summary(-[A-Za-z0-9]+)*\.md$/;
+const TEMPLATE_RE = /^summary(-[^/]*)?\.md$/;
 
 /**
  * Enumerate the SUMMARY templates. Throws rather than returning an empty set:

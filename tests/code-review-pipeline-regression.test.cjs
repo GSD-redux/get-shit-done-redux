@@ -1607,6 +1607,48 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
   );
 
   test(
+    'SUMMARYs whose task commits none resolve report the middle empty-scope state, not the no-SUMMARY one',
+    SKIP_WIN32,
+    () => {
+      // The THIRD empty-scope branch, and the one the other two do not reach:
+      // SUMMARY artifacts exist and their `## Task Commits` section parses, but
+      // no named commit survives resolution, reachability and the DIFF_BASE
+      // filter. Its message must name THAT state — a reader told "no SUMMARY
+      // artifacts readable" would go looking for a missing file that is right
+      // there. Raised by the #3926 pre-push body audit, which found the branch
+      // reported by the code and asserted by nothing.
+      const repo = createTempGitProject('gsd-3926-unresolvable-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        commitFile(repo, 'phase-a.txt', 'chore: phase work, subject carries no phase scope');
+        // A well-formed hash that names no commit in this repository.
+        commitSummary(repo, ['0123456789abcdef0123456789abcdef01234567']);
+
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'REVIEW_FILES') || [],
+          [],
+          'an unresolvable commit set yields an empty scope'
+        );
+        assert.match(
+          result.stdout,
+          /named no commit that resolves, is reachable from HEAD, and postdates the diff base/,
+          `must report the unresolvable-commit state; got: ${result.stdout}`
+        );
+        assert.doesNotMatch(
+          result.stdout,
+          /No SUMMARY artifacts readable/,
+          'must NOT claim the SUMMARYs are missing — they are present and parsed'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
     'task commits with an empty diff report the condition, not an unearned cause',
     SKIP_WIN32,
     () => {

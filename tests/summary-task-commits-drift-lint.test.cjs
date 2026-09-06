@@ -34,6 +34,7 @@ const {
   findSummaryTaskCommitsDrift,
   listTemplates,
   TEMPLATE_DIR,
+  TEMPLATE_RE,
 } = require(path.join(ROOT, 'scripts', 'lint-summary-task-commits-drift.cjs'));
 
 /** A template body that satisfies both pinned properties. */
@@ -357,6 +358,27 @@ describe('#3926 — SUMMARY task-commits drift lint', () => {
     const failures = findSummaryTaskCommitsDrift(root);
     assert.equal(failures.length, 1);
     assert.match(failures[0], /summary-brand-new\.md/);
+  });
+
+  test('the template pattern covers EVERY `summary-*.md`, not just alphanumeric suffixes', () => {
+    // `/^summary(-[A-Za-z0-9]+)*\.md$/` silently excluded ordinary filenames —
+    // `summary-new_v2.md`, `summary-a.b.md` — so the "a fifth template is
+    // covered automatically" property was only true for suffixes that happened
+    // to be alphanumeric. Raised by the #3926 pre-push body audit.
+    for (const name of ['summary.md', 'summary-minimal.md', 'summary-new_v2.md', 'summary-a.b.md']) {
+      assert.ok(TEMPLATE_RE.test(name), `${name} should be enumerated`);
+    }
+    for (const name of ['not-summary.md', 'summary.txt', 'summaryx.md']) {
+      assert.ok(!TEMPLATE_RE.test(name), `${name} should NOT be enumerated`);
+    }
+    // …and the widened pattern still finds a drifted one on disk.
+    const root = fixture({
+      'summary.md': CLEAN_TEMPLATE,
+      'summary-new_v2.md': CLEAN_TEMPLATE.replace('- `abc123f` (feat)', '- abc123f (feat)'),
+    });
+    const failures = findSummaryTaskCommitsDrift(root);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /summary-new_v2\.md/);
   });
 
   test('an enumeration that matches nothing THROWS — it never reports a clean set', () => {
