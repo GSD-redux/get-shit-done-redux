@@ -28,6 +28,8 @@
  *   - capability-state.cjs (resolveCapabilityRuntimeState — for capabilities list)
  */
 
+import path from 'node:path';
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output: coreOutput, error: coreError } = ioMod;
@@ -587,7 +589,16 @@ function cmdLoopRenderHooks(
       // directories both pass any containment check, yet `--phase 05
       // --phase-dir .planning/phases/07-other` is an incoherent pair no
       // confinement can catch. Comparing against the derived value rejects it.
-      if (phaseDirArg !== undefined && phaseDirArg !== phaseResult.directory) {
+      // Compared as resolved paths, not raw strings, so an absolute form or a
+      // `./` prefix of the SAME directory is a match — sibling commands accept
+      // absolute paths (`resolvePath`, check-command-router.cts), and a caller
+      // following that convention should not silently lose its context. This is
+      // a pure string comparison: `path.resolve` never touches the filesystem,
+      // and the emitted phaseDir below is still the locator's value, never this
+      // argument. A symlinked spelling therefore still fails closed.
+      const sameDir = phaseDirArg !== undefined
+        && path.resolve(cwd, phaseDirArg) === path.resolve(cwd, phaseResult.directory);
+      if (phaseDirArg !== undefined && !sameDir) {
         phaseWarnings.push(
           `--phase-dir ${JSON.stringify(phaseDirArg)} does not match the directory ` +
           `--phase ${JSON.stringify(phaseArg)} resolves to (${JSON.stringify(phaseResult.directory)}); context omitted.`,

@@ -1671,12 +1671,14 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     }
   });
 
-  test('[bva] --phase-dir is matched exactly — no normalization admits an equivalent spelling', (t) => {
+  test('[bva] --phase-dir accepts any spelling of the SAME directory, and still emits the locator form', (t) => {
     const dir = makePhaseProject('05-widgets');
     t.after(() => cleanup(dir));
-    // Every one of these normalizes to the resolved directory, and every one is
-    // still a mismatch: matching them would mean interpreting a caller path.
+    // Sibling commands take absolute paths (resolvePath, check-command-router),
+    // so a caller following that convention must not silently lose its context.
+    // Comparison is on resolved paths; the emitted value is unchanged.
     for (const spelling of [
+      '.planning/phases/05-widgets',
       '.planning/phases/05-widgets/',
       './.planning/phases/05-widgets',
       '.planning//phases/05-widgets',
@@ -1685,9 +1687,11 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     ]) {
       const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', spelling, '--raw']);
       assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
-      const envelope = JSON.parse(result.stdout.trim());
-      assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
-        `${spelling} must not match by normalization`);
+      assert.deepStrictEqual(
+        JSON.parse(result.stdout.trim()).context,
+        { phase: '05', phaseDir: '.planning/phases/05-widgets' },
+        `${spelling} names the resolved directory, so it must match and emit the locator's form`,
+      );
     }
   });
 

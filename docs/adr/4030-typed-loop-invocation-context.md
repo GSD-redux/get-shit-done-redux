@@ -40,14 +40,16 @@ site — confirmed with a hostile-token test (`tests/loop-render-hooks.test.cjs`
 
 `--phase-dir <dir>` is accepted alongside `--phase`, as the issue's spec asks,
 but strictly as a **cross-check on the token's resolution** — never as an
-independent path. The comparison is string equality against the value the
-resolver emits, with no normalization: `.planning/phases/05-widgets` matches,
-while a trailing slash, a `./` prefix, an absolute form of the same directory,
-or a `..` segment that would normalize to it do **not**. That is deliberate —
-normalizing would mean interpreting a caller path, which is the step this
-design exists to avoid — and it is fail-closed, since a near-miss omits
-`context` and warns rather than guessing. When it matches, the envelope is
-unchanged; when it does not, `context` is omitted with a warning naming both.
+independent path. The comparison is on **resolved** paths (`path.resolve` on
+both sides), so any spelling of the same directory matches — relative,
+absolute, `./`-prefixed, or containing a `..` segment. That matters for
+consistency: sibling commands accept absolute paths (`resolvePath`,
+`src/check-command-router.cts`), so a caller following that convention must not
+silently lose its context. `path.resolve` never touches the filesystem, and the
+value emitted is always the locator's, so this is a comparison convenience and
+not a second path source — a *symlinked* spelling still fails closed. When it
+matches, the envelope is unchanged; when it does not, `context` is omitted with
+a warning naming both.
 `--phase-dir` alone is refused, since there is then no resolution to check it
 against. Two consequences follow. An out-of-project value (`/etc`, `../..`)
 cannot reach `context`, so this surface needs no confinement logic of its own.
