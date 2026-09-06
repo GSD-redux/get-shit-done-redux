@@ -2478,16 +2478,17 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.updated, true, 'updated should be true');
-    // #3583: percent is now min(plan_fraction, phase_fraction) — the SAME
-    // value the frontmatter sync seam derives — not raw plan throughput.
-    // Plan fraction is 1/2 (50%), but neither phase has a passing
-    // *-VERIFICATION.md, so completed_phases is 0/2 (0%) and the min caps at 0.
-    assert.strictEqual(output.percent, 0, 'percent should be 0 (min-capped: 0/2 phases verified)');
+    // #4210: percent composes per phase slot — the SAME value the frontmatter
+    // sync seam derives, not raw plan throughput (#3583). Neither phase has a
+    // passing *-VERIFICATION.md, so both stay open and completed_phases is
+    // 0/2; phase 01 fills its own slot (1/1 summarized) and phase 02 fills
+    // none of its own (0/1), so one filled slot of two reads 50.
+    assert.strictEqual(output.percent, 50, 'percent should be 50 (phase 01 fills its slot, phase 02 empty)');
     assert.strictEqual(output.completed, 1, 'completed should be 1');
     assert.strictEqual(output.total, 2, 'total should be 2');
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.ok(updated.includes('0%'), 'STATE.md Progress should contain 0% (min-capped)');
+    assert.ok(updated.includes('50%'), 'STATE.md Progress should contain 50% (composed per phase slot)');
   });
 
   test('#3233: zero plans (0/0) is a no-op — does not clobber the Progress record', () => {
@@ -2601,15 +2602,16 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.strictEqual(out.updated, true);
-    // #3583: min-capped, not raw plan throughput — phase 01 has no passing
-    // *-VERIFICATION.md, so completed_phases is 0/1 and the min caps at 0.
-    assert.strictEqual(out.percent, 0);
+    // #4210: composed per phase slot, not raw plan throughput — phase 01 has
+    // no passing *-VERIFICATION.md so it stays open (completed_phases 0/1),
+    // and fills its one slot by its own summarized/plans fraction: 1/2 = 50.
+    assert.strictEqual(out.percent, 50);
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    // The body line advanced to 0% (min-capped) AND its descriptive suffix survived.
+    // The body line advanced to 50% (composed) AND its descriptive suffix survived.
     // CONTRIBUTING.md "Prohibited: Raw Text Matching" — assert on the field
     // extractor's parsed value, not a substring of the whole rendered file.
-    assert.strictEqual(bodyProgressPercent(updated), 0, 'body Progress line must update to 0% (min-capped)');
+    assert.strictEqual(bodyProgressPercent(updated), 50, 'body Progress line must update to 50% (composed)');
     const progressField = stateDocument.stateExtractField(updated, 'Progress');
     assert.ok(progressField && progressField.includes('(1/2 plans complete)'),
       'descriptive suffix must survive on the extracted Progress field');
@@ -2623,7 +2625,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Progress:** [█████░░░░░] 50% (2/4 plans done; blocked on API keys)\n'
     );
-    // 1 of 1 plan summarized, but no passing *-VERIFICATION.md → 0% (min-capped, see below).
+    // 1 of 1 plan summarized, but no passing *-VERIFICATION.md → 99% (composed, ceiling; see below).
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01');
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
@@ -2632,11 +2634,12 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success);
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    // #3583: min-capped, not raw plan throughput — phase 01 has no passing
-    // *-VERIFICATION.md, so completed_phases is 0/1 and the min caps at 0
-    // even though the single plan is fully summarized.
+    // #4210: composed per phase slot, not raw plan throughput — phase 01 is
+    // fully summarized so it fills its one slot, but it carries no passing
+    // *-VERIFICATION.md, so the phase is still open and the unclosed-milestone
+    // ceiling holds the reported value at 99 rather than 100.
     // CONTRIBUTING.md "Prohibited: Raw Text Matching" — parsed value, not rendered text.
-    assert.strictEqual(bodyProgressPercent(updated), 0, 'the machine segment updates to 0% (min-capped)');
+    assert.strictEqual(bodyProgressPercent(updated), 99, 'the machine segment updates to 99% (composed, unclosed ceiling)');
     const progressField = stateDocument.stateExtractField(updated, 'Progress');
     assert.ok(progressField && progressField.includes('(2/4 plans done; blocked on API keys)'),
       'the descriptive suffix is preserved verbatim on the extracted Progress field');
@@ -2664,10 +2667,12 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
   });
 
   // ── #3583: single-percent parity — stdout, body bar, and frontmatter must
-  // agree, all derived through the SAME computeProgressPercent(min(plan,
-  // phase)) call the frontmatter sync seam (buildStateFrontmatter) uses. ──
+  // agree, all derived through the SAME computeProgressPercent call the
+  // frontmatter sync seam (buildStateFrontmatter) uses. The VALUE moved
+  // under #4210 (per-phase-slot composition replaced the min(plan, phase)
+  // cap); the parity these two tests pin is unchanged. ──
 
-  test('#3583: 3/4 plans done, 1/2 phases verified -> stdout, frontmatter, body bar, and state json all agree at 50', () => {
+  test('#3583: 3/4 plans done, 1/2 phases verified -> stdout, frontmatter, body bar, and state json all agree at 75', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Progress:** [░░░░░░░░░░] 0%\n'
@@ -2689,23 +2694,25 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     fs.writeFileSync(path.join(phase02Dir, '02-01-SUMMARY.md'), '# Summary\n');
     fs.writeFileSync(path.join(phase02Dir, '02-02-PLAN.md'), '# Plan\n');
 
-    // 3/4 plans summarized (75%), 1/2 phases verified (50%) -> min = 50.
+    // #4210: phase 01 closed fills its slot (1), phase 02 open at 1/2 fills
+    // half of its slot -> (1 + 0.5) / 2 = 75. Pre-#4210 this read
+    // min(3/4, 1/2) = 50 — the in-flight phase's plan progress discarded.
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.updated, true);
-    assert.strictEqual(output.percent, 50, 'stdout percent should be min-capped at 50');
+    assert.strictEqual(output.percent, 75, 'stdout percent should compose per phase slot to 75');
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.strictEqual(bodyProgressPercent(updated), 50, 'body bar should read 50%');
+    assert.strictEqual(bodyProgressPercent(updated), 75, 'body bar should read 75%');
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
     const jsonOutput = JSON.parse(jsonResult.output);
-    assert.strictEqual(Number(jsonOutput.progress.percent), 50, 'frontmatter/state json percent should also be 50');
+    assert.strictEqual(Number(jsonOutput.progress.percent), 75, 'frontmatter/state json percent should also be 75');
   });
 
-  test('#3583: 3/4 plans, 0/2 phases verified -> all four surfaces are 0', () => {
+  test('#3583: 3/4 plans, 0/2 phases verified -> all four surfaces are 75 (and the 99 ceiling, not 100, once every plan is summarized)', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Progress:** [██████████] 100%\n'
@@ -2726,19 +2733,36 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     fs.writeFileSync(path.join(phase02Dir, '02-02-PLAN.md'), '# Plan\n');
     // No VERIFICATION.md for phase 02 either.
 
+    // #4210: neither phase is closed, so neither fills a whole slot by
+    // completion — each fills it by its own plan fraction: phase 01 at 2/2
+    // (1.0), phase 02 at 1/2 (0.5) -> (1 + 0.5) / 2 = 75. Pre-#4210 this read
+    // min(3/4, 0/2) = 0: three summarized plans, bar at zero.
     const result = runGsdTools('state update-progress', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.updated, true);
-    assert.strictEqual(output.percent, 0, 'stdout percent should be 0 (0/2 phases verified caps the min)');
+    assert.strictEqual(output.percent, 75, 'stdout percent should compose per phase slot to 75');
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.strictEqual(bodyProgressPercent(updated), 0, 'body bar should read 0%');
+    assert.strictEqual(bodyProgressPercent(updated), 75, 'body bar should read 75%');
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
     const jsonOutput = JSON.parse(jsonResult.output);
-    assert.strictEqual(Number(jsonOutput.progress.percent), 0, 'frontmatter/state json percent should also be 0');
+    assert.strictEqual(Number(jsonOutput.progress.percent), 75, 'frontmatter/state json percent should also be 75');
+
+    // #4210 ceiling: summarize the last plan. Every plan is now done but no
+    // phase is closed (no VERIFICATION.md anywhere), so plan-only coverage
+    // reads 99 on every surface — never a false 100.
+    fs.writeFileSync(path.join(phase02Dir, '02-02-SUMMARY.md'), '# Summary\n');
+    const ceilingResult = runGsdTools('state update-progress', tmpDir);
+    assert.ok(ceilingResult.success, `Command failed: ${ceilingResult.error}`);
+    assert.strictEqual(JSON.parse(ceilingResult.output).percent, 99, 'stdout percent: all plans done, no phase closed -> 99');
+    const ceilingUpdated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(bodyProgressPercent(ceilingUpdated), 99, 'body bar should read 99%');
+    const ceilingJson = runGsdTools('state json', tmpDir);
+    assert.ok(ceilingJson.success, `state json failed: ${ceilingJson.error}`);
+    assert.strictEqual(Number(JSON.parse(ceilingJson.output).progress.percent), 99, 'frontmatter/state json percent should also be 99');
   });
 
   test('#3583: fully planned but partially realized ROADMAP still caps — no false 100%', () => {
@@ -2903,9 +2927,14 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     // *-VERIFICATION.md. If the verb ever re-derives completed_phases from
     // summary parity instead of routing through the same isPhaseComplete
     // (verification-passed) owner buildStateFrontmatter uses, this becomes a
-    // false 100% (plan fraction 2/2 AND a summary-parity phase fraction 1/1
-    // both read 100%). The correct min-capped answer is 0, because
-    // completed_phases is 0/1 under the verification-passed definition.
+    // false 100%.
+    // #4210: percent no longer stands in for that guarantee by being capped to
+    // 0 — the open phase fills its own slot from its summarized/plans
+    // fraction, so the reported value is 99, held off 100 by the
+    // unclosed-milestone ceiling. The #3583 guarantee itself is asserted
+    // directly below, on completed_phases (still 0 under the
+    // verification-passed definition) and on the state json / update-progress
+    // parity — which is all the capped percent was ever a proxy for.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Progress:** [░░░░░░░░░░] 0%\n'
@@ -2924,13 +2953,26 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.strictEqual(output.updated, true);
     assert.strictEqual(
       output.percent,
-      0,
-      'completed_phases must come from verification-passed status (isPhaseComplete), not summary parity — ' +
-      'a summary-parity derivation would wrongly report 100 here'
+      99,
+      'a fully-summarized but unverified phase fills its own slot yet must stay under the ' +
+      'unclosed-milestone ceiling — a summary-parity derivation would wrongly report 100 here'
     );
 
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.strictEqual(bodyProgressPercent(updated), 0, 'body bar must reflect the verification-passed derivation, not summary parity');
+    assert.strictEqual(bodyProgressPercent(updated), 99, 'body bar must carry the same composed value the verb printed');
+
+    // The #3583 guarantee proper, now asserted on the fields that actually
+    // carry it rather than on a capped percent: completed_phases is still
+    // derived from isPhaseComplete (verification-passed), NOT from summary
+    // parity, and `state json` reports the identical percent the verb printed
+    // — the two surfaces #3583 found diverging.
+    const jsonResult = runGsdTools('state json --raw', tmpDir);
+    assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
+    const jsonProgress = JSON.parse(jsonResult.output).progress;
+    assert.strictEqual(jsonProgress.completed_phases, 0,
+      'completed_phases must come from verification-passed status (isPhaseComplete), not summary parity');
+    assert.strictEqual(jsonProgress.percent, 99,
+      'state json and state update-progress must report the identical composed percent (#3583 parity)');
   });
 
   test('#3583 finding 1: percent and completed/total must come from the SAME (stored-milestone-scoped) window, not a differently-scoped auto-derive', () => {
@@ -2999,9 +3041,13 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
     // The mutual-consistency assertion finding 1 requires: completed/total
     // must describe the SAME window percent was computed against (v2.0 only:
-    // phase 02, 1 plan, not phase-verified → percent 0; NOT phase 03's leaked
-    // unsummarized plan folded into the denominator).
-    assert.strictEqual(output.percent, 0, 'v2.0-scoped plan fraction (1/1) is capped to 0 by the missing phase verification');
+    // phase 02's single plan; NOT phase 03's leaked unsummarized plan folded
+    // into the denominator).
+    // #4210: phase 02 is summarized but unverified, so it fills its own slot
+    // while staying open. total_phases stays the ROADMAP heading count (2 —
+    // #549's separate single-source-of-truth derivation, untouched by #4210),
+    // so one filled slot of two reads 50.
+    assert.strictEqual(output.percent, 50, 'phase 02 fills its own slot; the ROADMAP-derived denominator is 2');
     assert.strictEqual(output.total, 1, 'total must be v2.0-scoped (phase 02 only) — Phase 03 must not leak in from the auto-derived scan');
     assert.strictEqual(output.completed, 1, 'completed must be v2.0-scoped (phase 02 only)');
   });
@@ -15180,13 +15226,13 @@ describe('cmdStateSync nested plans/ layout (#3257)', () => {
     const planCountChange = parsed.changes.find(c => c.startsWith('Total Plans in Phase:'));
     assert.ok(planCountChange, `Total Plans in Phase change expected; got: ${JSON.stringify(parsed.changes)}`);
     assert.ok(planCountChange.includes('-> 3'), `current phase plan count must be 3; got: "${planCountChange}"`);
-    // Progress: computeProgressPercent uses min(plan_fraction, phase_fraction).
-    // plan_fraction = 3 summaries / 5 plans = 60%.
-    // phase_fraction = 1 completed phase / 2 total phases = 50%.
-    // min(60%, 50%) = 50% — the phase cap applies (#3242).
+    // Progress: computeProgressPercent composes per phase slot (#4210) from
+    // the nested counts: phase 01-alpha closed fills its slot (1), phase
+    // 02-beta open at 1/3 fills a third of its slot -> (1 + 1/3) / 2 = 67%.
+    // Pre-#4210 this read min(3/5, 1/2) = 50% — the phase-count cap.
     const progressChange = parsed.changes.find(c => c.startsWith('Progress:'));
     assert.ok(progressChange, `Progress change expected; got: ${JSON.stringify(parsed.changes)}`);
-    assert.ok(progressChange.includes('50%'), `progress must reflect nested counts (min(3/5, 1/2)=50%); got: "${progressChange}"`);
+    assert.ok(progressChange.includes('67%'), `progress must reflect nested counts ((1 + 1/3) / 2 = 67%); got: "${progressChange}"`);
   });
 });
   });

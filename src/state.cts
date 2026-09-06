@@ -114,6 +114,7 @@ type PhaseInventoryResult = stateTransitionMod.PhaseInventoryResult;
 type StateTransaction = stateTransitionMod.StateTransaction;
 import {
   computeProgressPercent,
+  type PhaseProgressSample,
   normalizeProgressNumbers,
   normalizeStateStatus,
   shouldPreserveExistingProgress,
@@ -351,6 +352,10 @@ const _diskScanCache = new Map<string, {
   // instead of hardcoding SCOPE.COMPLETE. Distinct from `milestoneBounded`
   // (a heading-existence guard, #1761) — this one is disk-readability.
   phaseDirScope: Scope;
+  // #4210: the per-phase samples the three aggregates above were summed from,
+  // kept so computeProgressPercent can compose per phase slot instead of
+  // capping the milestone by the completed-phase count.
+  phases: PhaseProgressSample[];
 }>();
 
 // Track all lock files held by this process so they can be removed on exit.
@@ -2803,6 +2808,10 @@ function buildStateFrontmatter(
   // from the pre-existing frontmatter fields parsed above, a path this phase
   // does not touch and which predates listMilestonePhaseDirs entirely.
   let diskScope: Scope = SCOPE.COMPLETE;
+  // #4210: per-phase samples from the disk scan below; null when no scan ran
+  // (no cwd / no phases dir), in which case computeProgressPercent keeps its
+  // aggregate-only composition for that pre-existing fallback path.
+  let diskPhaseSamples: PhaseProgressSample[] | null = null;
 
   // #612: resolved ONCE per call, federated workstream -> root, and shared by
   // the heading counter, the retirement filter and the retired-directory skip so
@@ -2895,6 +2904,7 @@ function buildStateFrontmatter(
           let diskTotalPlans = 0;
           let diskTotalSummaries = 0;
           let diskCompletedPhases = 0;
+          const diskPhases: PhaseProgressSample[] = [];
 
           for (const dir of phaseDirs) {
             const phaseDir = path.join(phasesDir, dir);
@@ -2909,7 +2919,11 @@ function buildStateFrontmatter(
             // own comment on that field). Folding this consumer onto the raw
             // summaries-met flag was the exact "consolidate two of three and
             // leave the third" gap §7.4's forcing function rules out.
-            if (isPhaseComplete(phaseDir).value.complete) diskCompletedPhases++;
+            const complete = isPhaseComplete(phaseDir).value.complete;
+            if (complete) diskCompletedPhases++;
+            // #4210: keep the per-phase sample the aggregates above were summed
+            // from — computeProgressPercent composes per phase slot from it.
+            diskPhases.push({ complete, planCount, summaryCount });
           }
           // Count phase headings from ROADMAP — single source of truth for
           // total_phases (#549). #612 round-4: shared with cmdStateSync's
@@ -3063,6 +3077,7 @@ function buildStateFrontmatter(
               totalPlans: diskCountsWithheld ? null : diskTotalPlans,
               completedPlans: diskCountsWithheld ? null : diskTotalSummaries,
               phaseDirScope,
+              phases: diskPhases,
             };
           })();
           _diskScanCache.set(cwd, cached);
@@ -3102,6 +3117,7 @@ function buildStateFrontmatter(
         }
         milestoneUnbounded = cached.milestoneBounded === false;
         diskScope = cached.phaseDirScope;
+        diskPhaseSamples = cached.phases;
       }
       /* best-effort (#2245 audit): this is a READ path building STATE.md's
        * display frontmatter. The real throw source is fs.readdirSync(phasesDir)
@@ -3114,9 +3130,17 @@ function buildStateFrontmatter(
   }
 
   // Derive percent from disk counts when available (ground truth).
-  // Uses min(plan_fraction, phase_fraction) via computeProgressPercent so that
-  // ROADMAP-declared-but-unrealized future phases cap the reported completion
-  // instead of a false 100% from plan-only coverage (#3242 Bug B).
+  // #4210: composes per phase slot via computeProgressPercent — a closed
+  // phase fills its slot, an open one fills it by its own summarized/plans
+  // fraction, and an OPEN ROADMAP-declared phase with no plan files fills
+  // nothing (a zero-plan phase with a passing *-VERIFICATION.md is complete
+  // per #3168 and fills its slot),
+  // which is what keeps unrealized future phases from producing a false 100%
+  // from plan-only coverage (#3242 Bug B). Before #4210 that guarantee came
+  // from min(plan_fraction, phase_fraction), which also discarded every
+  // plan-level step inside the current phase. cmdStateSync composes the same
+  // way from the same per-phase shape — the two must stay in agreement
+  // (#3583).
   // Falls back to the body Progress: field only when no plan files exist on disk.
   // #3217 (ADR-3180 §7.6 rule 4, finding 1): computeProgressPercent requires
   // a `Scope` for its own rule-4 gate. `diskScope` is the real
@@ -3130,7 +3154,7 @@ function buildStateFrontmatter(
   // listMilestonePhaseDirs) fallback path. This call site also keeps its own
   // orthogonal `milestoneUnbounded` null-out below (#1761) — a different
   // guard (ROADMAP heading boundedness, not disk readability).
-  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases, diskScope);
+  let progressPercent = computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases, diskScope, diskPhaseSamples);
   // #1761 read-path: when the milestone can't be bounded, percent would be
   // derived from a conflated/understated total — skip it (mirror cmdStateSync).
   if (milestoneUnbounded) progressPercent = null;
@@ -6011,6 +6035,10 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   let _highestIncompletePhaseNum: string | null = null;
   let highestIncompletePhaseplanCount = 0;
   let _highestIncompletePhaseSummaryCount = 0;
+  // #4210: per-phase samples for computeProgressPercent's per-slot
+  // composition — the same shape buildStateFrontmatter's scan keeps, so the
+  // two surfaces cannot disagree on how plan progress is composed (#3583).
+  const syncPhaseSamples: PhaseProgressSample[] = [];
 
   for (const dir of entries) {
     const dirPath = path.join(phasesDir, dir);
@@ -6024,7 +6052,9 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     // was a second, independent consumer of the same raw field the initial
     // migration missed — without it, `state sync` and `state json` disagreed
     // on completed_phases for the identical disk state.
-    if (isPhaseComplete(dirPath).value.complete) diskCompletedPhases++;
+    const complete = isPhaseComplete(dirPath).value.complete;
+    if (complete) diskCompletedPhases++;
+    syncPhaseSamples.push({ complete, planCount: plans, summaryCount: summaries });
 
     // Track the highest phase with incomplete plans (or any plans)
     const phaseMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
@@ -6114,7 +6144,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     if (syncScope !== SCOPE.COMPLETE) {
       changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)`);
     } else {
-      const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases, syncScope);
+      const p = computeProgressPercent(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases, syncScope, syncPhaseSamples);
       percent = p !== null ? p : 0;
     }
   }

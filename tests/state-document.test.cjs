@@ -20,7 +20,9 @@ const {
   stateReplaceField,
   stateExtractField,
   stateReplaceFieldWithFallback,
+  computeProgressPercent,
 } = require('../gsd-core/bin/lib/state-document.cjs');
+const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 
 describe('stateReplaceField — table branch (characterization, #2880)', () => {
   test('replaces a two-cell row in place', () => {
@@ -2234,5 +2236,132 @@ describe('#3642 — single-section leak controls and seam pins', () => {
     assert.strictEqual(roadmapParser.hasAnyMilestoneSection(flat), false, 'zero signal headings is flat');
     assert.strictEqual(roadmapParser.hasMilestoneSectioning(one), false, '>=2 predicate unchanged: one heading is NOT sectioning');
     assert.strictEqual(roadmapParser.hasMilestoneSectioning(two), true, '>=2 predicate unchanged: two headings is sectioning');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// #4210: computeProgressPercent composes per phase slot when the caller
+// supplies its per-phase samples. Before #4210 it returned
+// min(plan_fraction, phase_fraction), which (a) pinned the percent to
+// (k-1)/N for the whole of phase k once the plan fraction overtook the
+// phase count — every plan shipped, bar unmoved — and (b) moved the bar
+// BACKWARD when an in-flight phase gained plans (total_plans is rightly
+// excluded from the shouldPreserveExistingProgress ratchet, so the plan
+// fraction fell and min() selected it). The guarantee the cap served — a
+// ROADMAP-declared-but-unrealized phase must never produce a false 100%
+// from plan-only coverage — is pinned here too, and must keep passing.
+// ═════════════════════════════════════════════════════════════════════════
+describe('computeProgressPercent — per-phase-slot composition (regressions, #4210)', () => {
+  const closed = (plans, summaries = plans) => ({ complete: true, planCount: plans, summaryCount: summaries });
+  const open = (plans, summaries) => ({ complete: false, planCount: plans, summaryCount: summaries });
+  const pct = (completedPlans, totalPlans, completedPhases, totalPhases, phases) =>
+    computeProgressPercent(completedPlans, totalPlans, completedPhases, totalPhases, SCOPE.COMPLETE, phases);
+
+  test('sweeping plans inside the in-flight phase moves the percent — it no longer freezes at the phase-count floor', () => {
+    // Phase 3 of 3 in flight with 16 plans; phases 1-2 closed with 11 + 12.
+    // Pre-#4210: min(plan, 2/3) = 67 for every row once 26/39 was reached.
+    const rows = [0, 4, 8, 12, 16].map((s) => pct(23 + s, 39, 2, 3, [closed(11), closed(12), open(16, s)]));
+    assert.deepStrictEqual(rows, [67, 75, 83, 92, 99]);
+    // Non-decreasing across the sweep, and strictly above the phase-count
+    // floor (67) once any plan in the open phase is summarized.
+    for (let i = 1; i < rows.length; i++) assert.ok(rows[i] >= rows[i - 1], `row ${i} regressed: ${rows}`);
+    assert.ok(rows[1] > 67, 'first summarized plan must lift the percent above the phase-count floor');
+  });
+
+  test('adding plans to an already-caught-up phase does not lower the percent below the completed work', () => {
+    // 34/34 plans, 3/3 phases closed -> 100. Reopen phase 3 with +5 plans
+    // (11/16 in that phase): pre-#4210 the plan fraction fell to 34/39 and
+    // min() selected it (87, and 67 once the phase reopened); composed, the
+    // work already done keeps its credit: (2 + 11/16) / 3 -> 90.
+    assert.strictEqual(pct(34, 34, 3, 3, [closed(11), closed(12), closed(11)]), 100);
+    assert.strictEqual(pct(34, 39, 2, 3, [closed(11), closed(12), open(16, 11)]), 90);
+  });
+
+  test('control: an OPEN declared phase with no plan files contributes nothing — no false 100% from plan-only coverage', () => {
+    // Phase 1 closed (11/11), phases 2-3 declared in the ROADMAP.
+    // No directory on disk (no sample at all) and an empty directory
+    // (0/0 sample) must both read as the phase-count-only 33 — the
+    // guarantee the pre-#4210 min() cap existed to provide.
+    assert.strictEqual(pct(11, 11, 1, 3, [closed(11)]), 33);
+    assert.strictEqual(pct(11, 11, 1, 3, [closed(11), open(0, 0), open(0, 0)]), 33);
+  });
+
+  test('a CLOSED zero-plan phase fills its slot — #3168 completeness is verification, not plan count', () => {
+    // The `complete` branch is checked before planCount, deliberately: per
+    // #3168 `complete` is exactly `verification.status === 'passed'`, and a
+    // phase with zero plans and a passing *-VERIFICATION.md IS complete. It
+    // therefore fills its slot even at 0/0. This does NOT weaken the
+    // no-false-100% control above, because an unrealized future phase carries
+    // no verification and so is never `complete` — the control's phases are
+    // open, this one is closed, and that is the whole difference.
+    assert.strictEqual(pct(0, 0, 1, 1, [closed(0)]), 100);
+    assert.strictEqual(pct(0, 0, 1, 2, [closed(0), open(0, 0)]), 50);
+  });
+
+  test('a CLOSED under-summarized phase fills its slot — the `complete` branch precedes the plan/summary ratio', () => {
+    // The general case of the precedence the zero-plan test above pins only at
+    // the 0/0 boundary. `complete` is checked BEFORE planCount/summaryCount are
+    // consulted at all, so a phase whose verification passed while its summaries
+    // still lag its plans fills its WHOLE slot rather than 1/3 of it. The state
+    // is reachable, not hypothetical: `complete` is exactly
+    // `verification.status === 'passed'` (#3168) and the plan/summary counts come
+    // from an independent disk scan, so the two can legitimately disagree.
+    assert.strictEqual(pct(1, 3, 1, 1, [closed(3, 1)]), 100);
+  });
+
+  test('an under-summarized closed phase composes to a raw 100 and is still withheld at the ceiling', () => {
+    // The slot credit above is not a false-100% vector. This fixture composes to
+    // a RAW 100 — the closed phase contributes its whole slot and the open one is
+    // fully summarized — and is reported as 99 because the milestone is not
+    // closed, so the ceiling is genuinely load-bearing here rather than a no-op
+    // clamp on an already-lower number.
+    //
+    // It does NOT isolate `anyOpen`: `milestoneClosed` is
+    // `!anyOpen && closed >= totalPhases`, and BOTH conjuncts fail for this
+    // fixture (one phase is open, and one closed phase does not cover a declared
+    // total of two). What is unique about it is the under-summarized closed
+    // phase — the block's other ceiling assertions reach 99 either from
+    // summary-complete closed phases or from open phases alone.
+    //
+    // Kept as its own test rather than a second assertion on the one above, so
+    // that a mutation of the `complete` branch is demonstrated to fail this case
+    // independently instead of being short-circuited by the earlier assertion.
+    assert.strictEqual(pct(3, 5, 1, 2, [closed(3, 1), open(2, 2)]), 99);
+  });
+
+  test('an OPEN 0-of-0 phase contributes 0 to its slot — never NaN, null, or a full slot', () => {
+    const value = pct(0, 0, 0, 2, [open(0, 0), open(0, 0)]);
+    assert.strictEqual(value, 0);
+    assert.ok(Number.isFinite(value));
+  });
+
+  test('all plans summarized but a phase still open reads 99, never 100', () => {
+    assert.strictEqual(pct(39, 39, 2, 3, [closed(11), closed(12), open(16, 16)]), 99);
+    // Every phase closed -> 100 is reachable, and only then.
+    assert.strictEqual(pct(39, 39, 3, 3, [closed(11), closed(12), closed(16)]), 100);
+  });
+
+  test('a summary count above the plan count fills at most one slot', () => {
+    assert.strictEqual(pct(5, 4, 0, 2, [open(2, 3), open(2, 2)]), 99);
+  });
+
+  test('a stored total lower than the directories on disk still cannot read 100 while a phase is open', () => {
+    // #3354/#3573 withhold shapes keep a STORED total_phases; three closed
+    // phases already cover a stored total of 3, but a fourth directory is
+    // open on disk. Credit saturates the denominator; the ceiling must still
+    // hold because a sampled phase is open.
+    assert.strictEqual(pct(7, 8, 3, 3, [closed(2), closed(2), closed(2), open(2, 1)]), 99);
+    // A declared-but-empty directory (0/0, not closed) is an open phase too.
+    assert.strictEqual(pct(6, 6, 3, 3, [closed(2), closed(2), closed(2), open(0, 0)]), 99);
+  });
+
+  test('samples omitted (aggregate-only caller) -> the pre-#4210 min() composition, unchanged', () => {
+    assert.strictEqual(computeProgressPercent(39, 39, 2, 3, SCOPE.COMPLETE), 67);
+    assert.strictEqual(computeProgressPercent(39, 39, 2, 3, SCOPE.COMPLETE, null), 67);
+    assert.strictEqual(computeProgressPercent(1, 2, null, null, SCOPE.COMPLETE, [open(2, 1)]), 50, 'no phase data -> samples cannot compose; plan fraction alone');
+  });
+
+  test('a non-COMPLETE scope still withholds (null) with samples supplied — rule 4 is unchanged', () => {
+    assert.strictEqual(computeProgressPercent(1, 1, 1, 1, SCOPE.UNREADABLE, [closed(1)]), null);
   });
 });

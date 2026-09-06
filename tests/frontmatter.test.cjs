@@ -1215,8 +1215,12 @@ describe('bug #2770 — bare-int depends_on values parse as preserved strings', 
 // Bug B: buildStateFrontmatter (and the duplicate in cmdStateSync) derives
 // progress.percent = completedPlans / totalPlans. When ROADMAP declares more
 // phases than have dirs on disk, all plans being summarised gives percent: 100
-// even though half the phases are unrealised. The formula must be
-// min(plan_fraction, phase_fraction) to reflect true completion.
+// even though half the phases are unrealised. The formula must credit
+// unrealised phases with nothing: since #4210 the percent composes per phase
+// slot, and an OPEN ROADMAP-declared phase holding no plan files fills none
+// of its own slot — the guarantee the earlier min(plan_fraction, phase_fraction)
+// composition provided, kept without capping away plan progress inside the
+// in-flight phase.
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
@@ -1553,7 +1557,7 @@ describe('#1264: state.patch preserves curated progress frontmatter for non-prog
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bug B: progress.percent must use min(plan_fraction, phase_fraction)
+// Bug B: progress.percent must not credit ROADMAP-declared, unrealized phases
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('#3242 Bug B: progress.percent reflects phase fraction when ROADMAP declares future phases', () => {

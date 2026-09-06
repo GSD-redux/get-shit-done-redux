@@ -67,7 +67,7 @@ paused_at: null
 | `progress.completed_phases` | integer | When phase data is available | Number of phases that have all plan summaries on disk (i.e. every plan completed). |
 | `progress.total_plans` | integer | When plan files exist | Sum of all plan files across phases in the current milestone. |
 | `progress.completed_plans` | integer | When summary files exist | Sum of completed plan summaries (one SUMMARY.md per executed plan). |
-| `progress.percent` | integer 0–100 | When progress data is available | Milestone progress in the **phase dimension** (`min(completed_plans/total_plans, completed_phases/total_phases)`). The status-line progress bar is only rendered when this field is present — its absence suppresses the bar. |
+| `progress.percent` | integer 0–100 | When progress data is available | Milestone progress composed **per phase slot**: each of `total_phases` phases owns `1/total_phases`; a closed phase fills its slot, an open phase fills it by its own summarized/plans fraction, and an open phase with no plan files fills nothing (so unrealized future phases never produce a false 100%; a zero-plan phase carrying a passing `*-VERIFICATION.md` is complete per #3168 and does fill its slot). Reads at most 99 while any phase is still open (#4210). The status-line progress bar is only rendered when this field is present — its absence suppresses the bar. |
 | `current_phase` | string | When a phase is executing | Phase number extracted from the body `Current Phase:` field. |
 | `current_phase_name` | string | When a phase has a name | Phase name extracted from the body `Current Phase Name:` field. |
 | `current_plan` | string | When a plan is in progress | Plan number extracted from the body `Current Plan:` field. |

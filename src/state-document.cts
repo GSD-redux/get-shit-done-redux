@@ -639,6 +639,27 @@ export function normalizeStateStatus(status: string | null | undefined, pausedAt
 }
 
 /**
+ * #4210: one phase's contribution to the composed milestone percent — the
+ * per-phase sample both `computeProgressPercent` call sites already derive in
+ * their disk-scan loop (`scanPhasePlans` counts plus the `isPhaseComplete`
+ * verdict) and, before #4210, discarded past the aggregate sums.
+ */
+export interface PhaseProgressSample {
+  /** `isPhaseComplete(...).value.complete` — the ADR-3180 §7.4 owner's verdict, never a summaries-met flag. */
+  complete: boolean;
+  planCount: number;
+  summaryCount: number;
+}
+
+/**
+ * #4210: the ceiling an unfinished milestone can report. Plan-only coverage
+ * of a phase that is not closed (`isPhaseComplete` false) must never read as
+ * 100 — that is the guarantee the pre-#4210 `min()` cap provided, made
+ * explicit instead of emergent.
+ */
+const UNCLOSED_MILESTONE_PERCENT_CEILING = 99;
+
+/**
  * ADR-3180 §7.6 rule 4 (#3217): `scope` is the `listMilestonePhaseDirs`-owner
  * discriminator for the phase/plan set these four counts were derived from.
  * A caller that cannot vouch for `scope === SCOPE.COMPLETE` must pass the
@@ -648,19 +669,71 @@ export function normalizeStateStatus(status: string | null | undefined, pausedAt
  * below, which this generalizes) exactly like its pre-existing "no data"
  * case. `scope` is REQUIRED (no default) so a caller cannot silently opt out
  * of rule 4 by omission.
+ *
+ * #4210: `phases` — the per-phase samples the caller's disk scan produced —
+ * switches the composition from the capping `min()` to the per-phase-slot
+ * sum documented inline below. A caller holding aggregate counts only omits
+ * it and gets the pre-#4210 composition unchanged.
  */
 export function computeProgressPercent(
   completedPlans: number | null,
   totalPlans: number | null,
   completedPhases: number | null,
   totalPhases: number | null,
-  scope: Scope
+  scope: Scope,
+  phases?: readonly PhaseProgressSample[] | null
 ): number | null {
   if (scope !== SCOPE.COMPLETE) return null;
   const hasPlanData = totalPlans !== null && totalPlans > 0 && completedPlans !== null;
   const hasPhaseData = totalPhases !== null && totalPhases > 0 && completedPhases !== null;
   if (!hasPlanData && !hasPhaseData)
     return null;
+  if (phases && hasPhaseData) {
+    // #4210: COMPOSE, don't cap. `min(plan_fraction, phase_fraction)` below
+    // pinned the percent to `(k-1)/N` for the whole of phase k the moment the
+    // plan fraction overtook it (every plan shipped, bar unmoved), and moved
+    // the bar BACKWARD when a phase gained plans (total_plans is rightly
+    // excluded from the shouldPreserveExistingProgress ratchet, so the plan
+    // fraction fell and min() selected it). Each phase instead owns one slot
+    // of 1/total_phases: a closed phase fills its slot, an open phase fills
+    // it by its own summarized/plans fraction, and an OPEN phase with no plan
+    // files on disk (0/0 — or no directory at all, so no sample) fills
+    // nothing. That last zero is what keeps ROADMAP-declared-but-unrealized
+    // future phases from producing a false 100% — the requirement the cap
+    // served, kept without the cap's loss of every plan-level step inside the
+    // current phase. Note the `complete` branch is checked FIRST and does not
+    // consult planCount: a zero-plan phase carrying a passing
+    // *-VERIFICATION.md IS complete (#3168 — `complete` is exactly
+    // `verification.status === 'passed'`) and fills its slot. That is correct
+    // and does not weaken the guarantee, because an unrealized future phase
+    // has no verification and so is never `complete`.
+    const denominator = totalPhases ?? 1;
+    let credit = 0;
+    let closed = 0;
+    let anyOpen = false;
+    for (const phase of phases) {
+      if (phase.complete) {
+        credit += 1;
+        closed += 1;
+        continue;
+      }
+      anyOpen = true;
+      if (phase.planCount > 0) {
+        credit += Math.min(phase.summaryCount, phase.planCount) / phase.planCount;
+      }
+    }
+    const percent = clampPercentFromFraction(Math.min(credit, denominator) / denominator);
+    // 100 needs every sampled phase closed AND enough closed phases to cover
+    // the declared total (a declared phase with no directory is an absent
+    // sample). Both conjuncts are load-bearing: `totalPhases` can be a stored
+    // frontmatter total (#3354/#3573 withhold shapes) that is lower than the
+    // directories on disk, so `closed >= denominator` alone would read 100
+    // while an open phase still sits on disk.
+    const milestoneClosed = !anyOpen && closed >= denominator;
+    return milestoneClosed ? percent : Math.min(percent, UNCLOSED_MILESTONE_PERCENT_CEILING);
+  }
+  // No per-phase samples (a caller with aggregate counts only): the
+  // pre-#4210 composition, unchanged.
   // Use nullish coalescing to avoid non-null assertion operators (flow narrowing
   // cannot track through intermediate boolean variables).
   const planFraction = hasPlanData ? (completedPlans ?? 0) / (totalPlans ?? 1) : 1;
