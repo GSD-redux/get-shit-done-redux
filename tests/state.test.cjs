@@ -3262,22 +3262,39 @@ describe('cmdStateRecordSession (state record-session)', () => {
     assert.ok(updated.includes(PINNED_ISO), `Last session should be the pinned ISO timestamp ${PINNED_ISO}`);
   });
 
-  test('updates Last session timestamp even with no other options', () => {
+  // #4186: `state record-session` with NO arguments used to execute and write
+  // `Last session` / `last_updated` to STATE.md (this test previously pinned
+  // that bare-invocation write). It now follows the house pattern every other
+  // required-arg verb uses (`state update`: `error('field and value required
+  // for state update')`) — a bare invocation is a usage error, not a
+  // heartbeat write. Documented signature (docs/CLI-TOOLS.md):
+  // `state record-session --stopped-at "..." [--resume-file path]`.
+  test('#4186: no args errors instead of writing (STATE.md byte-unchanged)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), sessionFixture);
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+
+    const result = runGsdTools('state record-session', tmpDir);
+
+    assert.ok(!result.success, 'bare record-session must exit non-zero');
+    assert.match(
+      result.error,
+      /stopped-at or resume-file required for state record-session/,
+      'stderr must name the required flags',
+    );
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'STATE.md must be byte-unchanged by a rejected bare call');
+  });
+
+  // #4186: validation precedes the STATE.md existence check (same ordering as
+  // cmdStateUpdate), and a lone --resume-file still carries an explicit value.
+  test('#4186: --resume-file alone is a valid explicit value and persists', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), sessionFixture);
 
-    const PINNED_MS = Date.parse('2020-08-01T08:30:00.000Z');
-    const PINNED_ISO = '2020-08-01T08:30:00.000Z';
-    const result = runGsdTools('state record-session', tmpDir, {
-      GSD_TEST_MODE: '1',
-      GSD_NOW_MS: String(PINNED_MS),
-    });
+    const result = runGsdTools('state record-session --resume-file ".continue-here.md"', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
-    const output = JSON.parse(result.output);
-    assert.strictEqual(output.recorded, true, 'recorded should be true');
-
     const updated = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
-    assert.ok(updated.includes(PINNED_ISO), `Last session should contain the pinned ISO timestamp ${PINNED_ISO}`);
+    assert.ok(updated.includes('.continue-here.md'), 'Resume file should be updated');
   });
 
   test('sets Resume file to None when not specified', () => {
@@ -3295,7 +3312,9 @@ describe('cmdStateRecordSession (state record-session)', () => {
   });
 
   test('returns error when STATE.md missing', () => {
-    const result = runGsdTools('state record-session', tmpDir);
+    // #4186: supply a value so this test keeps exercising the STATE.md-missing
+    // decline rather than the (now earlier) no-args usage error.
+    const result = runGsdTools('state record-session --stopped-at "somewhere"', tmpDir);
     assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -3303,18 +3322,20 @@ describe('cmdStateRecordSession (state record-session)', () => {
     assert.ok(output.error.includes('STATE.md'), 'error should mention STATE.md');
   });
 
-  test('returns recorded false when no session fields found', () => {
+  // #4186: a STATE.md with no session labels is no longer reachable bare
+  // (the no-args usage error fires first, before the existence check even) —
+  // the bare-call contract this test used to pin (recorded:false decline) is
+  // now the error contract pinned above; this variant proves the validation
+  // fires regardless of the body's shape.
+  test('#4186: no args errors even against a STATE.md with no session fields', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       '# Project State\n\n**Status:** Active\n**Phase:** 03\n'
     );
 
     const result = runGsdTools('state record-session', tmpDir);
-    assert.ok(result.success, `Command should exit 0: ${result.error}`);
-
-    const output = JSON.parse(result.output);
-    assert.strictEqual(output.recorded, false, 'recorded should be false when no session fields found');
-    assert.ok(output.reason !== undefined, 'should have a reason');
+    assert.ok(!result.success, 'bare record-session must exit non-zero');
+    assert.match(result.error, /stopped-at or resume-file required for state record-session/);
   });
 
   // #3374 Variant B: stateReplaceField returns the replaced string on any label
@@ -3395,6 +3416,173 @@ describe('cmdStateRecordSession (state record-session)', () => {
       newValue,
       `the RMW sync must reflect the new value in frontmatter; got ${JSON.stringify(fm.stopped_at)}`,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4186 — the write path must not derive the frontmatter `status` token from
+// SUBSTRINGS of the free-prose body Status field. Every STATE.md write funnels
+// through readModifyWriteStateMd → syncStateFrontmatter →
+// buildStateFrontmatter → normalizeStateStatus, so exercising `state update`
+// here covers the shared seam for all write paths.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4186: state update does not rewrite status from prose substrings', () => {
+  let tmpDir;
+
+  function writeStateMd(statusValue) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---',
+      "gsd_state_version: '1.0'",
+      'status: unknown',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 2 (Fondamenta)',
+      'Status: ' + statusValue,
+      'Last activity: 2026-09-02 — aggiornato lo stato',
+      '',
+    ].join('\n') + '\n');
+  }
+
+  function frontmatterStatus() {
+    const text = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = text.split('---')[1] || '';
+    const m = fm.match(/^status:(.*)$/m);
+    assert.ok(m, 'frontmatter must still carry a status key');
+    return m[1].trim().replace(/^['"]|['"]$/g, '');
+  }
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('row 33: Italian prose mentioning .planning/ keeps the visible prose token', () => {
+    writeStateMd('Lavoro sospeso, vedi .planning/STATE.md');
+    const r = runGsdTools(['state', 'update', 'Last activity', '2026-09-03 — verifica del defect'], tmpDir);
+    assert.ok(r.success, `state update failed: ${r.error}`);
+    assert.strictEqual(
+      frontmatterStatus(),
+      'Lavoro sospeso, vedi .planning/STATE.md',
+      'prose containing a .planning/ path must pass through verbatim, not become `planning`',
+    );
+  });
+
+  test('row 34: a recognized handler status still lands its canonical token', () => {
+    writeStateMd('Executing Phase 5');
+    const r = runGsdTools(['state', 'update', 'Last activity', '2026-09-03 — executing'], tmpDir);
+    assert.ok(r.success, `state update failed: ${r.error}`);
+    assert.strictEqual(frontmatterStatus(), 'executing');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4186 — progress recount pin (#1988, PR #2016): a *-SUMMARY.md without a
+// plan twin must not inflate progress.completed_plans on any recount trigger
+// (the issue measured `34-TRIAGE-SUMMARY.md` → completed_plans 62 → 63 on
+// GSD 1.5.0; the pairing fix landed after). These rows pin the correct
+// behavior so it cannot regress, composed with the #4129/#4359 ratchet.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4186: progress recount ignores stray summaries (pin of #1988)', () => {
+  let tmpDir;
+
+  function seedStrayFixture() {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '34-triage');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (const n of ['01', '02', '03']) fs.writeFileSync(path.join(phaseDir, `34-${n}-PLAN.md`), '# plan\n');
+    // Two PAIRED summaries + one stray with no plan twin.
+    fs.writeFileSync(path.join(phaseDir, '34-01-SUMMARY.md'), '# summary\n');
+    fs.writeFileSync(path.join(phaseDir, '34-02-SUMMARY.md'), '# summary\n');
+    fs.writeFileSync(path.join(phaseDir, '34-TRIAGE-SUMMARY.md'), '# stray\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---',
+      "gsd_state_version: '1.0'",
+      'status: executing',
+      'progress:',
+      '  total_phases: 1',
+      '  completed_phases: 0',
+      '  total_plans: 3',
+      '  completed_plans: 0',
+      '  percent: 0',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 34 of 34 (Triage)',
+      'Plan: 3 of 3 in current phase',
+      'Status: Executing Phase 34',
+      'Last activity: 2026-09-02 — executing',
+      '',
+      'Progress: [..........] 0%',
+      'Total Plans in Phase: 3',
+      '',
+    ].join('\n') + '\n');
+  }
+
+  function completedPlans() {
+    const text = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const m = text.match(/^progress:[\s\S]*?completed_plans:\s*(\d+)/m);
+    assert.ok(m, 'progress.completed_plans must be present after a recount write');
+    return Number(m[1]);
+  }
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('row 36: update on the Progress field recounts paired summaries only', () => {
+    seedStrayFixture();
+    const r = runGsdTools(['state', 'update', 'Progress', '[..........] 0%'], tmpDir);
+    assert.ok(r.success, `state update failed: ${r.error}`);
+    assert.strictEqual(completedPlans(), 2,
+      'the stray 34-TRIAGE-SUMMARY.md (no plan twin) must not inflate completed_plans');
+  });
+
+  test('row 37: record-session (the issue trigger) recounts paired summaries only', () => {
+    seedStrayFixture();
+    const r = runGsdTools(['state', 'record-session', '--stopped-at', 'after plan 34-02'], tmpDir);
+    assert.ok(r.success, `record-session failed: ${r.error}`);
+    assert.strictEqual(completedPlans(), 2,
+      'record-session must derive completed_plans from plan-paired summaries, not raw *-SUMMARY.md counts');
+  });
+
+  test('row 38: scanPhasePlans keeps listing the stray file but does not count it', () => {
+    seedStrayFixture();
+    const scanPhasePlans = require('../gsd-core/bin/lib/plan-scan.cjs');
+    const scan = scanPhasePlans(path.join(tmpDir, '.planning', 'phases', '34-triage'));
+    assert.strictEqual(scan.planCount, 3);
+    assert.strictEqual(scan.summaryCount, 2, 'paired summaries only');
+    assert.ok(scan.summaryFiles.includes('34-TRIAGE-SUMMARY.md'),
+      'the stray file stays visible in summaryFiles for callers that list summaries');
+  });
+
+  test('row 39: ratchet still preserves an existing higher completed_plans (#4129/#4359 semantics)', () => {
+    seedStrayFixture();
+    // Poison the frontmatter with a value ABOVE the derived paired count (2).
+    // `state update Progress` EXPLICITLY names a progress field, which by
+    // design (#3242 / ADR-3473 §8.6 early-out) makes the fresh derivation
+    // authoritative — so the ratchet row must use an INCIDENTAL resync write
+    // (record-session) instead: the curated higher counter survives there.
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, fs.readFileSync(statePath, 'utf-8').replace('completed_plans: 0', 'completed_plans: 9'));
+    const r = runGsdTools(['state', 'record-session', '--stopped-at', 'after plan 34-02'], tmpDir);
+    assert.ok(r.success, `record-session failed: ${r.error}`);
+    assert.strictEqual(completedPlans(), 9,
+      'the progress ratchet (monotonic completed counts on incidental resyncs) is unchanged by #4186');
   });
 });
 
@@ -13964,19 +14152,21 @@ describe('#944: record-session persists values even when body lacks session labe
       '--resume-file value must be present in STATE.md');
   });
 
-  test('record-session with no args against a body-less file returns recorded:false (no regression)', () => {
-    // When NO values are supplied and no session fields can be found/updated,
-    // recorded:false is the correct behaviour — we only changed the contract
-    // when the caller supplies values.
+  test('record-session with no args against a body-less file errors (#4186 usage contract)', () => {
+    // #4186 superseded the bare-call contract this test used to pin
+    // (recorded:false decline): a no-values invocation is now a usage error
+    // for every STATE.md shape, handler-side, before any read. The
+    // value-supplied decline paths keep their own dedicated tests above
+    // (#3374 Variant B, #3957).
     const statePath = path.join(tmpDir, '.planning', 'STATE.md');
     fs.writeFileSync(statePath, buildStateMdWithoutSessionSection());
+    const before = fs.readFileSync(statePath, 'utf-8');
 
     const result = runGsdTools('state record-session', tmpDir);
-    assert.ok(result.success, `should exit 0: ${result.error}`);
-
-    const output = JSON.parse(result.output);
-    assert.strictEqual(output.recorded, false,
-      'recorded should still be false when no session fields exist AND no values were supplied');
+    assert.ok(!result.success, 'should exit non-zero: usage error');
+    assert.match(result.error, /stopped-at or resume-file required for state record-session/);
+    assert.strictEqual(fs.readFileSync(statePath, 'utf-8'), before,
+      'a rejected bare call must not touch the file');
   });
 
   test('canonical session section still updates in place (no regression)', () => {
