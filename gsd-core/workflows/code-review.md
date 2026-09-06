@@ -301,7 +301,7 @@ if [ -n "$PHASE_SUMMARIES" ]; then
   # Rewrapped through unquoted command substitution for the same zsh reason as
   # Tier 2 above (gsd-core#4109).
   for summary in $(printf '%s' "$PHASE_SUMMARIES"); do
-    TASK_COMMIT_SECTION=$(awk '/^## Task Commits[ \t]*$/ { inside=1; next } /^## / { inside=0 } inside' "$summary" 2>/dev/null)
+    TASK_COMMIT_SECTION=$(awk '/^## Task Commits[ \t\r]*$/ { inside=1; next } /^## / { inside=0 } inside' "$summary" 2>/dev/null)
     [ -n "$TASK_COMMIT_SECTION" ] || continue
     # shellcheck disable=SC2016  # the backticked hex pattern and the awk program are
     # literal by design — nothing here is meant to expand.
@@ -719,7 +719,7 @@ if [ -n "$PHASE_START" ]; then
   #   a unique newest commit  -> use it.
   PHASE_TIP_CANDIDATES=""
   for summary in $(printf '%s' "$(ls "${PHASE_DIR}"/*-SUMMARY.md 2>/dev/null)"); do
-    TASK_COMMIT_SECTION=$(awk '/^## Task Commits[ \t]*$/ { inside=1; next } /^## / { inside=0 } inside' "$summary" 2>/dev/null)
+    TASK_COMMIT_SECTION=$(awk '/^## Task Commits[ \t\r]*$/ { inside=1; next } /^## / { inside=0 } inside' "$summary" 2>/dev/null)
     [ -n "$TASK_COMMIT_SECTION" ] || continue
     # shellcheck disable=SC2016  # the backticked hex pattern and the awk program are
     # literal by design — nothing here is meant to expand.

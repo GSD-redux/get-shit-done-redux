@@ -1311,7 +1311,7 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
   // in the shipped template's shape — numbered task lines, hash in BACKTICKS,
   // section terminated by the next `## ` heading. That shape is pinned by
   // scripts/lint-summary-task-commits-drift.cjs.
-  function commitSummary(repo, hashes) {
+  function commitSummary(repo, hashes, eol = '\n') {
     const body = [
       '---',
       'phase: 06',
@@ -1325,7 +1325,7 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
       '',
       '## Next Phase Readiness',
       '',
-    ].join('\n');
+    ].join(eol);
     const rel = `${PHASE_DIR}/06-1-SUMMARY.md`;
     fs.mkdirSync(path.join(repo, PHASE_DIR), { recursive: true });
     fs.writeFileSync(path.join(repo, rel), body);
@@ -1342,7 +1342,7 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
   // `## Task Commits` record, so a fixture that still leaked phase-scoped
   // subjects could pass under a message grep and prove nothing about #3995's
   // ban on that class.
-  function buildScopeFixture(prefix) {
+  function buildScopeFixture(prefix, eol = '\n') {
     const repo = createTempGitProject(prefix);
     commitFile(repo, 'pre.txt', 'chore: unrelated work before the phase');
     // Creating the phase directory is what anchors PHASE_START (#3995).
@@ -1350,7 +1350,7 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
     const phaseA = commitFile(repo, 'phase-a.txt', 'chore: first phase commit, subject carries no phase scope');
     commitFile(repo, 'interleaved.txt', 'chore: unrelated work interleaved inside the phase window');
     const phaseB = commitFile(repo, 'phase-b.txt', 'chore: second phase commit, subject carries no phase scope');
-    commitSummary(repo, [phaseA, phaseB]);
+    commitSummary(repo, [phaseA, phaseB], eol);
     commitFile(repo, 'post.txt', 'docs: unrelated work after the phase closed');
     return repo;
   }
@@ -1390,6 +1390,33 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
           scope.sort(),
           ['phase-a.txt', 'phase-b.txt'],
           `fallback scope must be the phase's own files; got: ${JSON.stringify(scope)}`
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'a CRLF SUMMARY is parsed the same as an LF one — the heading anchor tolerates the carriage return',
+    SKIP_WIN32,
+    () => {
+      // Windows is a supported platform and git may check SUMMARYs out with
+      // CRLF. The heading matcher was `/^## Task Commits[ \t]*$/`, which a
+      // trailing \r does not satisfy — so the section never opened, the commit
+      // set came back empty, and the phase silently scoped to nothing while the
+      // drift lint (which normalises CRLF before matching) still reported clean.
+      // Driven both ways: the old anchor extracted 0 hashes from CRLF and 1
+      // from LF; the new one extracts 1 from each.
+      const repo = buildScopeFixture('gsd-3926-crlf-', '\r\n');
+      try {
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        const scope = parseSentinel(result.stdout, 'REVIEW_FILES');
+        assert.deepStrictEqual(
+          scope.sort(),
+          ['phase-a.txt', 'phase-b.txt'],
+          `a CRLF SUMMARY must scope identically to an LF one; got: ${JSON.stringify(scope)}`
         );
       } finally {
         cleanup(repo);
@@ -1929,9 +1956,13 @@ describe('#3926 — Tier-3 scope is the phase change set, not everything since t
     // hash quoted anywhere in the SUMMARY enters the set, and without the
     // backticks a bare hex-shaped token in prose does (the `verifySummaryCore`
     // failure mode, src/phase.cts).
+    // The `\r` in the heading class is load-bearing, not incidental: git may
+    // check a SUMMARY out with CRLF on Windows, and without it the section
+    // never opens, the commit set comes back empty, and the phase silently
+    // scopes to nothing (driven: 0 hashes from CRLF, 1 from LF).
     assert.ok(
-      /awk '\/\^## Task Commits\[ \\t\]\*\$\/ \{ inside=1; next \} \/\^## \/ \{ inside=0 \} inside'/.test(tier3),
-      'the phase commit set must be sliced from the SUMMARY `## Task Commits` section (#3926)'
+      /awk '\/\^## Task Commits\[ \\t\\r\]\*\$\/ \{ inside=1; next \} \/\^## \/ \{ inside=0 \} inside'/.test(tier3),
+      'the phase commit set must be sliced from the SUMMARY `## Task Commits` section, CRLF-tolerantly (#3926)'
     );
     assert.ok(
       tier3.includes("grep -oE '`[0-9a-f]{7,40}`'"),
