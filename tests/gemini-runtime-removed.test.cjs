@@ -313,7 +313,10 @@ describe('#4347 shell launcher / JS registry runtime-home parity', () => {
     // AC4 of the issue: propagated copies move WITH the source, never as a
     // hand-patched subset. `commands/` carries an older if/elif form that
     // sync-runtime-launcher.cjs does not regenerate, so it is swept here too.
-    const roots = ['gsd-core/workflows', 'agents', 'commands'];
+    // skills/ carries copies emitted from commands/ by gen-plugin-skills, so a
+    // stale emitted skill is exactly the "hand-patched subset" AC4 forbids.
+    const roots = ['gsd-core/workflows', 'agents', 'commands', 'skills'];
+    const recognized = registryHomeEnvVars();
     const offenders = [];
     const walk = (dir) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -326,7 +329,7 @@ describe('#4347 shell launcher / JS registry runtime-home parity', () => {
         const text = fs.readFileSync(full, 'utf8');
         if (!text.includes('_GSD_SHIM_NAME')) continue;   // no resolver in this file
         for (const name of shellHomeEnvVars(text)) {
-          if (registryHomeEnvVars().has(name) || LEGACY_SHELL_ONLY_HOME_VARS.has(name)) continue;
+          if (recognized.has(name) || LEGACY_SHELL_ONLY_HOME_VARS.has(name)) continue;
           offenders.push(`${path.relative(ROOT, full)}: ${name}`);
         }
       }
