@@ -153,6 +153,148 @@ describe('resolveModelInternal', () => {
     assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-code-fixer'), 'opus');
   });
 
+  // ── #4192: docs and implementation agree on a claude model_overrides value ─
+  //
+  // The reference and CONFIGURATION.md promised "any fully-qualified model ID".
+  // On claude that is true only for NON-Claude IDs; a `claude-*` ID is spawnable
+  // only when it is a current tier default, because Claude Code's Agent tool
+  // takes aliases. The docs now state each of these four cases, and this pins
+  // them behaviorally so the pair cannot drift apart again.
+  describe('#4192: the documented claude model_overrides contract', () => {
+    test('an agent alias is used as written', () => {
+      writeConfig(tmpDir, { runtime: 'claude', model_overrides: { 'gsd-planner': 'fable' } });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'fable');
+    });
+
+    test('a claude-* ID that is a current tier default maps back to its alias', () => {
+      writeConfig(tmpDir, { runtime: 'claude', model_overrides: { 'gsd-planner': 'claude-sonnet-5' } });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'sonnet');
+    });
+
+    test('any other claude-* ID falls through to the tier, never emitting an unspawnable value', () => {
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        model_overrides: { 'gsd-planner': 'claude-opus-4-7' },
+      });
+      const resolved = resolveModelInternal(tmpDir, 'gsd-planner');
+      assert.strictEqual(resolved, 'opus', 'falls through to the tier alias');
+      assert.ok(!resolved.startsWith('claude-'),
+        'a claude-* ID with no alias must never reach the Agent tool');
+    });
+
+    test('a non-Claude fully-qualified ID passes through verbatim', () => {
+      for (const id of ['o3', 'openai/o3', 'google/gemini-2.5-pro']) {
+        writeConfig(tmpDir, { runtime: 'claude', model_overrides: { 'gsd-planner': id } });
+        assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), id,
+          `${id} is what the docs promise and what the resolver returns`);
+      }
+    });
+  });
+
+  // ── #4192: the same key, on the claude runtime ────────────────────────────
+  //
+  // `model_profile_overrides.claude.<tier>` was accepted by config, documented
+  // in settings-advanced.md and CONFIGURATION.md, and never read — resolution
+  // was byte-identical with the key present and absent, because the
+  // runtime-aware step excluded claude outright.
+  describe('#4192: model_profile_overrides on the claude runtime', () => {
+    test('a claude tier override changes the resolved model (it was inert)', () => {
+      writeConfig(tmpDir, { runtime: 'claude', model_profile: 'balanced' });
+      const control = resolveModelInternal(tmpDir, 'gsd-planner');
+      assert.strictEqual(control, 'opus', 'precondition: gsd-planner is the opus tier under balanced');
+
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        model_profile_overrides: { claude: { opus: 'claude-sonnet-5' } },
+      });
+      assert.notStrictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), control,
+        'the documented override key must change resolution on claude');
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'sonnet');
+    });
+
+    test('only the overridden tier moves', () => {
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        model_profile_overrides: { claude: { opus: 'claude-haiku-4-5' } },
+      });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'haiku', 'opus tier overridden');
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-executor'), 'sonnet', 'sonnet tier untouched');
+    });
+
+    test('an unmappable claude-* ID falls through to the tier alias, as model_overrides does', () => {
+      // Claude Code's Agent tool spawns tier aliases, not arbitrary IDs, so a
+      // pinned older generation cannot be emitted — the #1133/#2041 contract.
+      // Falling through beats returning something the runtime cannot spawn.
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+      });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+    });
+
+    test('a bare agent alias is accepted verbatim', () => {
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        model_profile_overrides: { claude: { opus: 'fable' } },
+      });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'fable');
+    });
+
+    test('no override set leaves every existing path byte-identical', () => {
+      // The branch reads a USER-SET entry only. Reading the builtin claude tier
+      // map here too would preempt resolve_model_ids, which this issue is not
+      // about.
+      writeConfig(tmpDir, { runtime: 'claude', model_profile: 'balanced', resolve_model_ids: true });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-8',
+        'resolve_model_ids: true must still materialize the catalog default');
+
+      writeConfig(tmpDir, { runtime: 'claude', model_profile: 'balanced', model_profile_overrides: { claude: {} } });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus',
+        'an empty claude map is not an override');
+
+      writeConfig(tmpDir, { runtime: 'claude', model_profile: 'balanced', model_profile_overrides: { codex: { opus: 'codex-full' } } });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus',
+        "another runtime's map must not apply on claude");
+    });
+
+    test('resolve_model_ids: true returns the override ID verbatim', () => {
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        resolve_model_ids: true,
+        model_profile_overrides: { claude: { opus: 'claude-sonnet-5' } },
+      });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-sonnet-5',
+        'the one caller that asked for IDs gets the override as written');
+    });
+
+    test('prototype keys in the override map cannot resolve', () => {
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'balanced',
+        model_profile_overrides: { claude: { opus: 'claude-sonnet-5' } },
+      });
+      // A tier named after a prototype member must not pick up Object.prototype.
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'sonnet');
+      writeConfig(tmpDir, { runtime: 'claude', model_profile: 'balanced', model_profile_overrides: {} });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+    });
+
+    test('inherit is untouched by the override', () => {
+      writeConfig(tmpDir, {
+        runtime: 'claude',
+        model_profile: 'inherit',
+        model_profile_overrides: { claude: { opus: 'claude-sonnet-5' } },
+      });
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'inherit');
+    });
+  });
+
   test('runtime non-claude + model_profile_overrides for runtime tier', () => {
     writeConfig(tmpDir, {
       runtime: 'codex',

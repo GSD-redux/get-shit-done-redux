@@ -351,6 +351,14 @@ Read `runtime` from the config (or treat as `"claude"` if absent). Look up the b
 tier map from the table below. For each tier, also read the current override from
 `model_profile_overrides.<runtime>.<tier>` if present.
 
+**On the `claude` runtime the value must be expressible as an agent alias (#4192).** Claude
+Code's Agent tool spawns `opus` / `sonnet` / `haiku` / `fable`, not arbitrary model IDs, so a
+`claude-*` ID that is a current tier default is mapped back to its alias
+(`claude-sonnet-5` → `sonnet`) and any other `claude-*` ID — a pinned earlier generation such
+as `claude-opus-4-7` — warns once on stderr and falls through to the tier alias. Other runtimes
+take the ID verbatim. Setting a tier to another tier's model is how the key is used on claude;
+pinning a Claude generation under a tier is not expressible today (#4192).
+
 Built-in tier defaults by runtime:
 
 | Runtime    | `opus`                        | `sonnet`                        | `haiku`                       |

@@ -1564,7 +1564,23 @@ Override specific agents without changing the entire profile:
 }
 ```
 
-Valid override values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model ID (e.g., `"openai/o3"`, `"google/gemini-2.5-pro"`).
+Valid override values: `opus`, `sonnet`, `haiku`, `fable`, `inherit`, or a fully-qualified model ID (e.g., `"openai/o3"`, `"google/gemini-2.5-pro"`).
+
+**On the `claude` runtime, a value must be expressible as an agent alias (#4192).**
+Claude Code's Agent tool spawns tier aliases — `opus`, `sonnet`, `haiku`, `fable` — not
+arbitrary model IDs. So on `claude`:
+
+- an alias (`"sonnet"`, `"fable"`) is used as written;
+- a `claude-*` ID that is a current tier default is mapped back to its alias
+  (`"claude-sonnet-5"` → `sonnet`);
+- any other `claude-*` ID — a pinned earlier generation such as `"claude-opus-4-7"` —
+  cannot be spawned, so GSD warns once on stderr and falls through to the tier alias
+  rather than emitting a value the runtime would reject;
+- a non-Claude ID (`"o3"`, `"openai/o3"`, `"google/gemini-2.5-pro"`) passes through
+  verbatim; it is meaningful only on a runtime that accepts it.
+
+Pinning a specific Claude *generation* under a tier is not expressible today — see #4192.
+
 
 `model_overrides` can be set in either `.planning/config.json` (per-project)
 or `~/.gsd/defaults.json` (global). Per-project entries win on conflict and

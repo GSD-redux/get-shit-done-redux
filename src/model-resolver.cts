@@ -492,6 +492,44 @@ function resolveModelInternal(cwd: string, agentType: string): string {
     if (entry?.model) return entry.model;
   }
 
+  // 3b. #4192 — the same key, on the claude runtime.
+  //
+  // Step 3 excludes claude, so `model_profile_overrides.claude.<tier>` was
+  // accepted by config, documented in settings-advanced.md and CONFIGURATION.md,
+  // and then never read: resolved output was byte-identical with the key present
+  // and absent. `model_overrides` on the same runtime already had the missing
+  // half — mapClaudeOverrideForRuntime — so the two override paths disagreed
+  // about the same class of value on the same runtime.
+  //
+  // Scoped to a USER-SET entry on purpose. Reading the builtin claude tier map
+  // here too would preempt step 4's `omit` and step 5's `resolve_model_ids: true`
+  // materialization, changing paths this issue is not about; with no override
+  // set, resolution falls through exactly as before.
+  //
+  // The value is mapped for spawnability, not returned raw: Claude Code's Agent
+  // tool takes tier aliases (opus/sonnet/haiku/fable), so a `claude-*` ID with no
+  // alias — a pinned older generation, say — warns and falls through to the tier
+  // rather than emitting something the runtime cannot spawn (the #1133/#2041
+  // contract, unchanged). `resolve_model_ids: true` is the one caller that asked
+  // for IDs, so it gets the override verbatim.
+  if ((!configRuntime || configRuntime === 'claude') && tier && tier !== 'inherit') {
+    const profileOverrides = config['model_profile_overrides'] as Record<string, unknown> | null | undefined;
+    const claudeTiers = (profileOverrides && typeof profileOverrides === 'object' && Object.hasOwn(profileOverrides, 'claude'))
+      ? profileOverrides['claude'] as Record<string, unknown> | null | undefined
+      : undefined;
+    const userSetThisTier = Boolean(claudeTiers && typeof claudeTiers === 'object' && Object.hasOwn(claudeTiers, tier));
+    if (userSetThisTier) {
+      const entryModel = _resolveRuntimeTier(config, tier)?.model;
+      if (typeof entryModel === 'string' && entryModel) {
+        if (config['resolve_model_ids'] === true) return entryModel;
+        const mapped = mapClaudeOverrideForRuntime(entryModel, configRuntime, agentType);
+        if (mapped !== null) return mapped;
+        // Unmappable claude-* ID — warned by mapClaudeOverrideForRuntime; fall
+        // through to the tier alias, exactly as model_overrides does.
+      }
+    }
+  }
+
   // 4. resolve_model_ids: "omit" — runtime-aware (#2297). Honor "omit" when the
   // PROJECT explicitly set it (user intent — project config wins, #2517 finding
   // #4) OR when the active runtime genuinely lacks native model aliases. Only a
