@@ -1285,6 +1285,21 @@ the pipeline runs exactly as it did before, and the per-job
 including which lanes are deliberately *not* gated, is in
 [docs/TESTING-SUITES.md → The mergeability preflight](docs/TESTING-SUITES.md#the-mergeability-preflight).
 
+### A PR cannot merge onto a red base branch
+
+The `Base branch health` required check queries GitHub for the base branch's
+own last push-triggered Tests run and blocks your merge if that run is red —
+independent of whether your own PR's changes pass. This needs no
+branch-protection reconfiguration: it rides the existing "Required tests"
+check, the same status GitHub already requires before merge.
+
+If your PR is itself the fix-forward and you need to land it while the base
+branch is still red, a maintainer applies the `fix-next` label directly to
+your PR to explicitly bypass this one check. Applying a label requires
+GitHub write access to the repo, so a PR author cannot self-apply it to
+bypass the gate — only a maintainer or another collaborator with label-write
+permission can. Full decision logic is in `scripts/ci-next-health.cjs`.
+
 ### CI Test Quality Checks
 
 The following checks run on every PR in addition to the test suite:

@@ -30,8 +30,24 @@ const fs = require('fs');
 const path = require('path');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { NPM_VIEW_TIMEOUT_MS } = require('../gsd-core/bin/check-latest-version.cjs');
 
 const WORKER_PATH = path.join(__dirname, '..', 'hooks', 'gsd-check-update-worker.js');
+
+// #4091/2026-09-06 Windows CI incident: the worker's real `npm view` call
+// (checkLatestVersion, gsd-core/bin/check-latest-version.cjs) is bounded at
+// NPM_VIEW_TIMEOUT_MS. This outer test harness timeout used to be hardcoded
+// to the SAME 15000ms, so a slow registry response raced two SIGKILLs at the
+// exact same wall-clock instant: the worker's own inner npm-view timeout
+// fires and it needs real time to catch that failure, build a degraded
+// result, and atomically publish the cache — but the outer harness could
+// kill the whole process tree first (exitCode: null, empty stderr) before
+// the worker ever got the chance. Windows's shell-wrapped npm subprocess
+// (cmd.exe wrapper, see src/shell-command-projection.cts) adds enough spawn
+// overhead to make this race lose more often there, but the zero-margin race
+// itself is platform-agnostic. This margin gives the worker real headroom
+// beyond the inner timeout it wraps.
+const WORKER_TEARDOWN_MARGIN_MS = 10_000;
 
 // allow-test-rule: structural-regression-guard (#4091)
 // Feeds the real worker source (readFileSync) into the structural assertions
@@ -108,11 +124,25 @@ describe('gsd-check-update-worker.js: atomic cache publish (#4091)', () => {
       GSD_PROJECT_VERSION_FILE: path.join(cacheDir, 'no-such-project', 'VERSION'),
       GSD_GLOBAL_VERSION_FILE: path.join(cacheDir, 'no-such-global', 'VERSION'),
     };
-    const r = runHookSeam(WORKER_PATH, [], { env, timeoutMs: 15000 });
+    const r = runHookSeam(WORKER_PATH, [], { env, timeoutMs: NPM_VIEW_TIMEOUT_MS + WORKER_TEARDOWN_MARGIN_MS });
     assert.equal(r.exitCode, 0, `worker must exit 0; stderr: ${r.stderr}`);
     const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     assert.equal(cache.installed, '0.0.0', 'worker record replaced the pre-existing one');
     const residue = fs.readdirSync(cacheDir).filter((f) => f.startsWith('cache.json.tmp') || f.includes('.tmp-'));
     assert.deepEqual(residue, [], 'no temp stage files may remain after a successful publish');
+  });
+
+  test('outer worker-run timeout keeps real margin beyond the inner npm-view timeout (#4091 exact-tie race)', () => {
+    assert.ok(
+      WORKER_TEARDOWN_MARGIN_MS >= 5000,
+      'the outer test timeout must give the worker real margin beyond the inner npm-view ' +
+        'timeout (NPM_VIEW_TIMEOUT_MS) it wraps, or a slow registry response races the two ' +
+        'SIGKILLs (see #4091/2026-09-06 Windows CI incident: exact-tie timeout killed the worker ' +
+        'before it could degrade gracefully)',
+    );
+    assert.ok(
+      NPM_VIEW_TIMEOUT_MS + WORKER_TEARDOWN_MARGIN_MS > NPM_VIEW_TIMEOUT_MS,
+      'the combined outer timeout must strictly exceed the inner npm-view timeout it wraps',
+    );
   });
 });
