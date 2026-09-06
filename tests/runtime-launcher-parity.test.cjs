@@ -48,7 +48,7 @@ const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
  * CODEX_HOME and XDG_CONFIG_HOME, and adding a 17th runtime home would have
  * left it silently stale — the exact shape of #4205.
  *
- * Two keys the derived set cannot supply, both still live in the snippet:
+ * Three keys the derived set cannot supply:
  *  - GEMINI_CONFIG_DIR: the gemini runtime is retired (#1928) so the registry
  *    no longer carries it, but the snippet still probes its arm.
  *  - CLAUDE_ENV_FILE: a WRITE sink, not a read path. Left ambient, every
@@ -61,7 +61,19 @@ const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
  */
 const SNIPPET_SCRUB = { GEMINI_CONFIG_DIR: '', CLAUDE_ENV_FILE: '', BASH_ENV: '' };
 function snippetEnv(overrides = {}) {
-  return { ...process.env, ...TEST_ENV_BASE, ...SNIPPET_SCRUB, ...overrides };
+  const env = { ...process.env, ...TEST_ENV_BASE, ...SNIPPET_SCRUB, ...overrides };
+  // Windows env vars are case-insensitive; a spread of process.env is not.
+  // The host PATH enumerates as `Path` there, so `{ ...process.env, PATH: x }`
+  // yields BOTH keys — and libuv's make_program_env sorts the child's block
+  // case-insensitively but never drops duplicates, so the child can still
+  // resolve the host PATH and defeat the isolation this whole file rests on.
+  // Drop every other casing whenever a caller supplies its own PATH.
+  if ('PATH' in overrides) {
+    for (const key of Object.keys(env)) {
+      if (key !== 'PATH' && key.toUpperCase() === 'PATH') delete env[key];
+    }
+  }
+  return env;
 }
 
 /**
@@ -430,9 +442,13 @@ describe('runtime-launcher-parity (#373)', () => {
       const stderrOutput = r.stderr || '';
 
       assert.ok(threw, 'Expected the script to exit non-zero when gsd-tools.cjs is missing and gsd_run is not on PATH');
+      // Match the launcher's own diagnostic, not a bare "not found": when node
+      // itself is missing from the isolated PATH, bash's own
+      // `bash: node: command not found` satisfies the loose form and a
+      // regressed guard passes.
       assert.ok(
-        stderrOutput.includes('not found') || stderrOutput.includes('ERROR'),
-        `Expected stderr to contain "not found" or "ERROR", got: ${stderrOutput.trim()}`,
+        stderrOutput.includes('ERROR: gsd-tools.cjs not found'),
+        `Expected stderr to contain "ERROR: gsd-tools.cjs not found", got: ${stderrOutput.trim()}`,
       );
     } finally {
       cleanup(base);
@@ -626,8 +642,9 @@ describe('runtime-launcher-parity (#373)', () => {
         // Ambient CLAUDE_CONFIG_DIR/HERMES_HOME/CURSOR_CONFIG_DIR resolve arms
         // checked before CODEX_HOME, and an ambient CODEX_HOME overrides the
         // $HOME/.codex default this test asserts (#4205 class: same env-leak
-        // bug, this time via config-dir vars rather than PATH) — clear all
-        // four so only HOME's default $HOME/.codex fallback can win.
+        // bug, this time via config-dir vars rather than PATH). snippetEnv()'s
+        // derived TEST_ENV_BASE clears all four, so only HOME's default
+        // $HOME/.codex fallback can win.
         env: { PATH: systemPaths.join(path.delimiter), HOME: fakeHome },
       });
 
@@ -1106,9 +1123,13 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       const stderrOutput = r.stderr || '';
 
       assert.ok(threw, 'Expected non-zero exit when all three resolution arms miss');
+      // Match the launcher's own diagnostic, not a bare "not found": when node
+      // itself is missing from the isolated PATH, bash's own
+      // `bash: node: command not found` satisfies the loose form and a
+      // regressed guard passes.
       assert.ok(
-        stderrOutput.includes('not found') || stderrOutput.includes('ERROR'),
-        `Expected stderr to contain "not found" or "ERROR", got: ${stderrOutput.trim()}`,
+        stderrOutput.includes('ERROR: gsd-tools.cjs not found'),
+        `Expected stderr to contain "ERROR: gsd-tools.cjs not found", got: ${stderrOutput.trim()}`,
       );
     } finally {
       cleanup(fakeHome);
@@ -1284,13 +1305,15 @@ function extractShellBlocks(content) {
  * The caller is responsible for cleaning up `result.nodeBinDir` when non-null
  * (pass it to `cleanup()` in a `t.after` or `finally` block).
  *
+ * @param {string} [basePath] PATH to filter. Callers planting a leaked gsd_run
+ *   pass their own string rather than mutating `process.env.PATH`.
  * @returns {{ isolatedPath: string, nodeBinDir: string|null }}
  */
-function buildIsolatedPath() {
+function buildIsolatedPath(basePath = process.env.PATH) {
   // #4205: the resolver's PATH-fallback arm probes `command -v gsd_run` (not
   // `gsd-tools`) — filter on the actual probe target so a real installed
   // gsd_run can't leak through and shadow the runtime-home fallback.
-  const filteredPath = (process.env.PATH || '/usr/bin:/bin')
+  const filteredPath = (basePath || '/usr/bin:/bin')
     .split(path.delimiter)
     .filter((p) => {
       try { fs.accessSync(path.join(p, 'gsd_run'), fs.constants.X_OK); return false; }
@@ -1391,17 +1414,10 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       // node symlink pointing at the real interpreter (co-located with gsd_run)
       fs.symlinkSync(process.execPath, path.join(fakeBinDir, 'node'));
 
-      // Set PATH to ONLY the two controlled dirs (no real system dirs).
-      // This makes the test machine-independent: on any machine, the only place
-      // node *could* come from before the fix is fakeBinDir — which gets filtered.
-      const origPath = process.env.PATH;
-      process.env.PATH = fakeBinDir + path.delimiter + emptyDir;
-      let result;
-      try {
-        result = buildIsolatedPath();
-      } finally {
-        process.env.PATH = origPath;
-      }
+      // Filter ONLY the two controlled dirs (no real system dirs). This makes
+      // the test machine-independent: on any machine, the only place node
+      // *could* come from before the fix is fakeBinDir — which gets filtered.
+      const result = buildIsolatedPath(fakeBinDir + path.delimiter + emptyDir);
       t.after(() => cleanup(result.nodeBinDir));
 
       const returnedDirs = result.isolatedPath.split(path.delimiter);
@@ -1455,19 +1471,12 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
     fs.writeFileSync(sentinelPath, '#!/bin/sh\necho "SENTINEL_INVOKED:$*"\n');
     fs.chmodSync(sentinelPath, 0o755);
 
-    // Simulate the reported leak: a real gsd_run reachable on PATH.
-    const prevPath = process.env.PATH;
-    process.env.PATH = `${sentinelBinDir}${path.delimiter}${prevPath}`;
-    let isolated;
-    try {
-      isolated = buildIsolatedPath();
-    } finally {
-      // Restore before the child spawns, not in a t.after: on Windows
-      // process.env spreads as `Path`, so a still-live leak would compete with
-      // snippetEnv()'s `PATH` override for the casing the child receives.
-      process.env.PATH = prevPath;
-    }
-    const { isolatedPath, nodeBinDir } = isolated;
+    // Simulate the reported leak: a real gsd_run reachable on PATH. Passed in
+    // rather than assigned to process.env.PATH — the runner's own environment
+    // stays untouched, so no other fixture can observe the leak.
+    const { isolatedPath, nodeBinDir } = buildIsolatedPath(
+      `${sentinelBinDir}${path.delimiter}${process.env.PATH}`,
+    );
     t.after(() => { if (nodeBinDir) cleanup(nodeBinDir); });
 
     // The leak assertion that holds on every platform: a filter probing the
@@ -1557,8 +1566,8 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       const stdout = runBashFile(scriptPath, {
         // CLAUDE_CONFIG_DIR resolves before the HERMES_HOME arm under test
         // (#4205 class, env vector); script-level `unset HERMES_HOME` above
-        // already handles that var, but Node's env spread still needs to
-        // clear CLAUDE_CONFIG_DIR before bash ever sees it.
+        // already handles that var, and snippetEnv()'s derived TEST_ENV_BASE
+        // clears CLAUDE_CONFIG_DIR before bash ever sees it.
         env: { PATH: isolatedPath, HOME: fakeHome },
       });
 
