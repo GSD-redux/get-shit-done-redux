@@ -544,6 +544,13 @@ const {
   RUNTIME_PROFILE_MAP: GSD_RUNTIME_PROFILE_MAP,
   isAnthropicFlavoredModel: gsdIsAnthropicFlavoredModel,
 } = require(path.join(_gsdLibDir, 'model-catalog.cjs'));
+// #4145: shared hash-first recovery for gsd-pristine/ baselines stored at an
+// unexpected path (e.g. without the gsd-core/ prefix an earlier release's
+// writer dropped). Same module the reapply verifier uses, so the two readers
+// cannot drift apart again.
+const {
+  findPristineByHash: gsdFindPristineByHash,
+} = require(path.join(_gsdLibDir, 'pristine-baseline.cjs'));
 // #2875 Part 2: MODEL_PROFILES + resolveTierEntry are now consumed only by
 // install-model-override-resolver.cjs's readGsdRuntimeProfileResolver
 // (required below) — this installer no longer needs its own bindings.
@@ -10154,6 +10161,58 @@ function populatePristineDir({ packageSrc, pristineDir, modified, runtime, pathP
 }
 
 /**
+ * #4145: recover a pristine baseline from a hash-matching orphan stored at an
+ * unexpected path under gsd-pristine/ (e.g. without the gsd-core/ prefix an
+ * earlier release's writer dropped).
+ *
+ * The preserve-check's strict join (pristineDir + manifest-keyed relPath)
+ * misses such snapshots, so they were pushed into regeneration from the
+ * incoming release — and when the file changed upstream, the candidate's hash
+ * could never satisfy the recorded outgoing hash, leaving the correct
+ * baseline permanently unconsumed and unpruned (the self-perpetuating state
+ * #4145 reports). Hash equality with pristine_hashes is the same authority
+ * the #3657 drift guard trusts, so an exact match cannot be the wrong
+ * baseline no matter where under gsd-pristine/ it lives.
+ *
+ * Recovery = relocation: copy the orphan to the canonical manifest-keyed path
+ * (hash-verified after the copy) and remove the orphan only once the
+ * canonical copy is verified in place. Returns true when the canonical path
+ * ended up holding recorded-hash bytes. Never deletes anything it cannot
+ * vouch for by hash; never touches the canonical path of OTHER files.
+ */
+function recoverOrphanedPristine(pristineDir, relPath, recordedHash) {
+  if (!recordedHash) return false;
+  let orphanRel;
+  try {
+    // skipRel = the canonical relPath: a file already sitting at the joined
+    // path can never be (re-)adopted through the scan — that is drift
+    // (#3657) / stale (#3407) territory, handled by the caller.
+    orphanRel = gsdFindPristineByHash(pristineDir, recordedHash, relPath.replace(/\\/g, '/'));
+  } catch {
+    return false;
+  }
+  if (!orphanRel) return false;
+  const outRef = resolveInstallRelativePath(pristineDir, relPath);
+  if (!outRef) return false;
+  try {
+    fs.mkdirSync(path.dirname(outRef.fullPath), { recursive: true });
+    fs.copyFileSync(path.join(pristineDir, orphanRel), outRef.fullPath);
+    // Verify the relocated copy before removing the orphan — only a
+    // hash-matching canonical counts as recovered.
+    if (fileHash(outRef.fullPath) !== recordedHash) {
+      try { fs.rmSync(outRef.fullPath, { force: true }); } catch { /* best-effort */ }
+      return false;
+    }
+    // Orphan removal is best-effort: the canonical copy is already verified,
+    // so a failed unlink leaves a harmless duplicate, never data loss.
+    try { fs.rmSync(path.join(pristineDir, orphanRel), { force: true }); } catch { /* best-effort */ }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Detect user-modified GSD files by comparing against install manifest.
  * Backs up modified files to gsd-local-patches/ for reapply after update.
  * Also saves pristine copies (from manifest) to gsd-pristine/ to enable
@@ -10299,6 +10358,9 @@ function saveLocalPatches(configDir, pristineCtx) {
       const stalePaths = new Set();
       // Track which relPaths were successfully regenerated (from either missing or stale).
       const regeneratedPaths = new Set();
+      // #4145: track which relPaths were recovered by relocating a hash-matching
+      // orphan (stored at an unexpected path, e.g. without the gsd-core/ prefix).
+      const rescuedPaths = new Set();
       const missingPaths = [];
       for (const relPath of modified) {
         const outRef = resolveInstallRelativePath(pristineDir, relPath);
@@ -10319,6 +10381,17 @@ function saveLocalPatches(configDir, pristineCtx) {
           if (!fs.existsSync(pristinePath)) {
             stalePaths.add(relPath);
           }
+        }
+        // #4145: canonical absent (or just removed as stale) — before falling
+        // into regeneration, try to recover the baseline from a hash-matching
+        // orphan elsewhere under gsd-pristine/ and relocate it to the canonical
+        // path. This is the self-heal for snapshots an earlier release stored
+        // without the gsd-core/ prefix: without it the state repeats forever
+        // (regeneration candidates from the incoming release can never satisfy
+        // the recorded outgoing hash when upstream changed the file).
+        if (recoverOrphanedPristine(pristineDir, relPath, pristineHashes[relPath])) {
+          rescuedPaths.add(relPath);
+          continue;
         }
         // File absent from gsd-pristine/ (or just removed above as stale):
         // attempt hash-validated regeneration from new-release source.
@@ -10362,12 +10435,20 @@ function saveLocalPatches(configDir, pristineCtx) {
       }
       // `regenerated` = total files successfully regenerated (from missing OR stale).
       const regenerated = regeneratedPaths.size;
+      // `rescued` = files recovered by relocating a hash-matching orphan to its
+      // canonical path (#4145) — distinct from preservation (canonical already
+      // correct) and regeneration (bytes re-derived from new-release source).
+      const rescued = rescuedPaths.size;
       // `removed` = stale entries that were deleted and NOT subsequently regenerated.
       // Entries that were stale-deleted but then successfully regenerated are counted
-      // only in `regenerated` — the counts are non-overlapping.
-      const removed = [...stalePaths].filter(p => !regeneratedPaths.has(p)).length;
+      // only in `regenerated`; stale-deleted-then-orphan-rescued entries are counted
+      // only in `rescued` — the counts are non-overlapping.
+      const removed = [...stalePaths].filter(p => !regeneratedPaths.has(p) && !rescuedPaths.has(p)).length;
       if (preserved > 0) {
         console.log('  ' + green + '✓' + reset + '  Preserved ' + cyan + 'gsd-pristine/' + reset + ' (' + preserved + ' file(s)) for three-way merge');
+      }
+      if (rescued > 0) {
+        console.log('  ' + green + '✓' + reset + '  Recovered ' + cyan + 'gsd-pristine/' + reset + ' (' + rescued + ' file(s)) by recorded hash from a legacy-path snapshot and relocated them (#4145)');
       }
       if (regenerated > 0) {
         console.log('  ' + green + '✓' + reset + '  Regenerated ' + cyan + 'gsd-pristine/' + reset + ' (' + regenerated + ' file(s)) via hash-validated new-release source');

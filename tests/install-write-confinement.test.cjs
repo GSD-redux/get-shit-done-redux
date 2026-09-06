@@ -4073,6 +4073,7 @@ describe('Bug #4145: saveLocalPatches rescues hash-matching orphaned pristine sn
   });
 
   function seedFixture({ orphanRel, orphanContent, canonicalContent, newReleaseContent }) {
+    fs.mkdirSync(path.dirname(path.join(configDir, FILE)), { recursive: true });
     fs.writeFileSync(path.join(configDir, FILE), USER_MODIFIED);
     fs.writeFileSync(
       path.join(configDir, MANIFEST_NAME),

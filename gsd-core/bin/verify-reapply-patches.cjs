@@ -33,6 +33,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+// #4145: shared hash-first recovery for baselines stored at an unexpected
+// path under gsd-pristine/ (e.g. without the gsd-core/ prefix an earlier
+// release's writer dropped). Same module the installer's preserve-check uses,
+// so the two readers cannot drift apart again.
+const { findPristineByHash } = require('./lib/pristine-baseline.cjs');
 
 const SIGNIFICANT_MIN_CHARS = 12;
 const GSD_HOOK_VERSION_LINE_RE = /^(?:\/\/|#)\s*gsd-hook-version:\s*\S+\s*$/i;
@@ -344,8 +349,29 @@ function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashe
       // pristinePathExists stays false.
     }
 
-    // Bug #934: recordedHash is present (modern installer) but the pristine
-    // path does not exist on disk at all (stat threw above).  This means
+    // Bug #4145: the canonical join missed, but the recorded hash is the
+    // baseline authority the #3657 drift guard already trusts. Before
+    // reporting OK_NO_BASELINE, scan gsd-pristine/ for byte-identical content
+    // (an earlier release may have stored the snapshot without the gsd-core/
+    // prefix). An exact sha-256 match cannot be the wrong baseline, and
+    // gsd-pristine/ holds only backed-up files, so the scan is small. The
+    // canonical path itself is excluded — a mismatching file at the joined
+    // path is drift (#3657), never re-adopted through the scan.
+    if (!pristinePathExists && recordedHash) {
+      try {
+        const recoveredRel = findPristineByHash(pristineDir, recordedHash, hashKey);
+        if (recoveredRel) {
+          pristineContent = fs.readFileSync(path.join(pristineDir, recoveredRel), 'utf8');
+          pristinePathExists = true;
+        }
+      } catch {
+        // scan or read failure — fall through to the OK_NO_BASELINE posture
+      }
+    }
+
+    // Bug #934: recordedHash is present (modern installer) but no hash-matching
+    // pristine exists anywhere under gsd-pristine/ (stat threw above AND the
+    // #4145 scan found nothing).  This means
     // saveLocalPatches recorded a hash but could not write the corresponding
     // gsd-pristine/ file (the only candidate was discarded because it was from
     // a newer release).  Falling to over-broad mode here would treat every
@@ -353,8 +379,9 @@ function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashe
     // false FAIL_USER_LINES_MISSING for each upstream removal.  Since we
     // cannot reason correctly without a baseline, the safe answer is advisory/
     // non-blocking: return OK_NO_BASELINE and let the caller decide.
-    // NOTE: this guard fires ONLY when stat threw (path absent), not when the
-    // path is present but non-file — in that case over-broad mode is safer.
+    // NOTE: this guard fires ONLY when the baseline path is absent (stat threw
+    // and nothing matched by hash), not when the path is present but non-file —
+    // in that case over-broad mode is safer.
     if (!pristinePathExists && recordedHash) {
       result.reason = REASON.OK_NO_BASELINE;
       return result;

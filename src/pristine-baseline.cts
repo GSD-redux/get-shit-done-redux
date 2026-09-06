@@ -71,12 +71,20 @@ export function findPristineByHash(
   recordedHash: string,
   skipRel?: string,
 ): string | null {
-  // RED skeleton (#4145): behavior lands with the fix commit. Tests that
-  // require hash-based recovery fail against this null return.
-  void walkSorted;
-  void sha256File;
-  void pristineDir;
-  void recordedHash;
-  void skipRel;
+  if (!pristineDir || typeof recordedHash !== 'string' || recordedHash.length === 0) {
+    return null;
+  }
+  const rels: string[] = [];
+  walkSorted(pristineDir, '', rels);
+  for (const rel of rels) {
+    if (skipRel !== undefined && rel === skipRel) continue;
+    try {
+      if (sha256File(path.join(pristineDir, rel)) === recordedHash) {
+        return rel;
+      }
+    } catch {
+      // unreadable candidate — keep scanning
+    }
+  }
   return null;
 }

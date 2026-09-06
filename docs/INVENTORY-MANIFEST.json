@@ -475,6 +475,7 @@
       "planning-scope.cjs",
       "planning-snapshot.cjs",
       "planning-workspace.cjs",
+      "pristine-baseline.cjs",
       "probe-core.cjs",
       "profile-output.cjs",
       "profile-pipeline-command-router.cjs",
