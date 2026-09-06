@@ -7381,6 +7381,167 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // #4129 row 1: `phase complete N` failed to increment completed_phases when
+  // a SIBLING completed phase's verification routes `stale` (its SUMMARY was
+  // touched after the verification — the issue's real-world drift). The
+  // transaction flips this phase's ROADMAP row and derives the BODY counters
+  // from the post-completion ROADMAP, but the frontmatter disk scan reads the
+  // PRE-completion ROADMAP and the stale-dated sibling, so the persisted
+  // counter stays pinned at the under-count. See .gsd/bug/
+  // fix-4129-completed-phases-recompute/{10-diagnosis,50-test-matrix}.md.
+  // ─────────────────────────────────────────────────────────────────────────
+  describe('#4129: phase complete increments completed_phases to the ROADMAP truth', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4129-phase-'));
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    // Body Progress percent through the repo's own field extractor (never raw
+    // substring matching on rendered STATE.md — CONTRIBUTING.md prohibits it).
+    function bodyProgressPercentFromState(stateContent) {
+      const raw = stateExtractField(stateContent, 'Progress');
+      if (raw === null) return null;
+      const match = raw.match(/(\d{1,3})%/);
+      return match ? Number(match[1]) : null;
+    }
+
+    function setupStaleSiblingProject(tmpDir) {
+      const planningDir = path.join(tmpDir, '.planning');
+      const phasesDir = path.join(planningDir, 'phases');
+      fs.mkdirSync(phasesDir, { recursive: true });
+      fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ project_code: 'REPRO' }));
+
+      const roadmapLines = [
+        '# Roadmap',
+        '',
+        '## Current Milestone: v1.0',
+        '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 1.    | 2/2            | Complete | 2026-01-01 |',
+        '| 2.    | 2/2            | Complete | 2026-01-02 |',
+        '| 3.    | 2/2            | In Progress |  |',
+      ];
+      for (let i = 4; i <= 18; i += 1) roadmapLines.push(`| ${i}.    | 0/2            | Not Started |  |`);
+      roadmapLines.push('', '- [x] Phase 1: Alpha (completed 2026-01-01)', '- [x] Phase 2: Beta (completed 2026-01-02)', '- [ ] Phase 3: Gamma');
+      for (let i = 4; i <= 18; i += 1) roadmapLines.push(`- [ ] Phase ${i}: P${i}`);
+      for (let i = 1; i <= 18; i += 1) {
+        roadmapLines.push('', `### Phase ${i}: P${i}`, '', '**Goal:** goal', '**Plans:** 2 plans', '');
+      }
+      fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmapLines.join('\n'));
+
+      fs.writeFileSync(
+        path.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'milestone: v1.0',
+          'milestone_name: Programme',
+          'status: executing',
+          'current_phase: 3',
+          'last_updated: 2026-01-02T10:00:00.000Z',
+          'progress:',
+          '  total_phases: 18',
+          '  completed_phases: 2',
+          '  total_plans: 4',
+          '  completed_plans: 4',
+          '  percent: 11',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Current Position',
+          '',
+          'Phase: 3 of 18 (Gamma) — EXECUTING',
+          'Plan: 2 of 2',
+          'Status: Executing Phase 3',
+          'Last activity: 2026-01-02',
+          '',
+          '## Progress',
+          '',
+          'Progress: [█░░░░░░░░░] 11% (2/18 phases complete)',
+          '',
+          '## Session Continuity',
+          '',
+          'Last session: 2026-01-02T10:00:00.000Z',
+          '',
+        ].join('\n'),
+      );
+
+      for (const p of [1, 2, 3]) {
+        const pp = String(p).padStart(2, '0');
+        const dir = path.join(phasesDir, `${pp}-p${p}`);
+        fs.mkdirSync(dir, { recursive: true });
+        for (const i of [1, 2]) {
+          fs.writeFileSync(path.join(dir, `${pp}-0${i}-PLAN.md`), '# Plan\n');
+          fs.writeFileSync(path.join(dir, `${pp}-0${i}-SUMMARY.md`), '# Summary\n');
+        }
+        fs.writeFileSync(
+          path.join(dir, `${pp}-VERIFICATION.md`),
+          ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+        );
+      }
+
+      // The drift: phase 1's summary touched after its verification. No git
+      // repo → the #2348 clock compares mtimes; the newer summary mtime
+      // routes phase 1's verification `stale` (verified via
+      // `verification status` in the diagnosis repro).
+      const older = new Date('2026-01-01T00:00:00Z');
+      const newer = new Date('2026-03-01T00:00:00Z');
+      fs.utimesSync(path.join(phasesDir, '01-p1', '01-VERIFICATION.md'), older, older);
+      fs.utimesSync(path.join(phasesDir, '01-p1', '01-01-SUMMARY.md'), newer, newer);
+
+      return { planningDir };
+    }
+
+    test('phaseCompleteIncrementsCompletedPhasesPastStaleSibling', () => {
+      setupStaleSiblingProject(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const r = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r.success, `phase complete 3 failed: ${r.error}`);
+
+      const state = fs.readFileSync(statePath, 'utf8');
+      const fm = extractFrontmatter(state);
+      assert.ok(fm.progress, 'progress block must exist after phase complete');
+      assert.equal(
+        Number(fm.progress.completed_phases),
+        3,
+        `#4129: completing phase 3 must increment completed_phases to the ROADMAP truth 3 (phases 1-3 Complete), got ${fm.progress.completed_phases}`,
+      );
+      assert.equal(
+        Number(fm.progress.percent),
+        17,
+        `#4129: percent must follow the incremented counter (3/18), got ${fm.progress.percent}`,
+      );
+      // The body bar must stay coherent with the persisted percent (#4129 AC7).
+      assert.equal(bodyProgressPercentFromState(state), 17, 'the body Progress bar must carry the same 17% as the frontmatter percent');
+      // The ROADMAP row this very transaction flipped is the authority.
+      const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8');
+      assert.ok(/^- \[x\] Phase 3: Gamma/m.test(roadmap), 'precondition: the transaction flipped the phase 3 ROADMAP checkbox');
+      assert.ok(/^\| 3\.\s*\|\s*2\/2\s*\|\s*Complete\s*\|/m.test(roadmap), 'precondition: the transaction flipped the phase 3 table row');
+    });
+
+    test('phaseCompleteIsIdempotentOnTheRoadmapTruth', () => {
+      setupStaleSiblingProject(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const r1 = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r1.success, `first call failed: ${r1.error}`);
+      const r2 = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r2.success, `second call failed: ${r2.error}`);
+
+      const fm = extractFrontmatter(fs.readFileSync(statePath, 'utf8'));
+      assert.equal(Number(fm.progress.completed_phases), 3, '#4129: double-complete stays at the ROADMAP truth 3 (idempotent)');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // ADR-3408 §8.3 Matrix A (#3469): cmdPhaseComplete now calls the ONE
   // write-seam composition (syncAndPreserveStateMd) directly instead of
   // hand-assembling syncStateFrontmatter + applyPostSyncPreservation itself
