@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+const { cleanup } = require('./helpers.cjs');
 
 // #2994 fragmentization moved the automated_ui_verification step out of
 // verify-work.md into gsd-core/workflows/verify-work/steps/automated-ui-verification.md
@@ -696,7 +697,10 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // hard-coded `Screenshots: captured` line satisfied a scan of the raw source: the
     // commented lines still matched, and the rendered text no longer carried the
     // variable at all. Driven.
-    const rendered = fs.readFileSync(AUDITOR_PATH, 'utf-8').replace(/<!--[\s\S]*?-->/g, '');
+    // Bounded quantifier: an unbounded `[\s\S]*?` over readFileSync content is a
+    // catastrophic-backtracking risk this repo lints for (local/no-unbounded-quantifier).
+    // 20k is far longer than any comment in this file and far short of the file itself.
+    const rendered = fs.readFileSync(AUDITOR_PATH, 'utf-8').replace(/<!--[\s\S]{0,20000}?-->/g, '');
     const surfaces = splitLines(rendered)
       .filter((l) => /^\*\*Screenshots:\*\*/.test(l.trim()));
     assert.ok(surfaces.length > 0, 'expected a Screenshots report field in the agent output template');
@@ -759,7 +763,7 @@ const urlOf = (server) => `http://127.0.0.1:${server.address().port}`;
 // live servers while the two that "passed" passed vacuously. Measured while writing this
 // suite — a self-inflicted instance of the false-clean class the rest of this file is about.
 function runProbe(url) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     execFile(process.execPath, ['-e', probeProgram(), url], { timeout: 30000 },
       // MODEL THE WHOLE SHELL EXPRESSION, not just the program. The fence runs
       //   PROBE=$(node -e '…' "$url" 2>/dev/null || echo "000"); PROBE=${PROBE:-000}
@@ -851,7 +855,9 @@ const BASH_OK = (() => {
 
 describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
   const tmpDirs = [];
-  after(() => { for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true }); });
+  // cleanup(), not a raw fs.rmSync: the helper carries the Windows-EBUSY retry budget, and
+  // these directories hold files a spawned bash was writing moments earlier.
+  after(() => { for (const d of tmpDirs) cleanup(d); });
 
   // Stub `node` and `npx` on PATH, run the fence, and read what it printed, what it left
   // on disk, what it passed to the capture binary, and what CAPTURE_STATUS ended up as.
@@ -901,13 +907,12 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       + 'case " $SHOT_WRITE " in *" $name "*) printf png > "$out";; esac\n'
       + 'case " $SHOT_EMPTY " in *" $name "*) : > "$out";; esac\n'
       + 'case " $SHOT_EXIT " in *" $name "*) exit 1;; esac\nexit 0\n', { mode: 0o755 });
-    // A `date` stub, so the collision case can actually be CONSTRUCTED. Without it the
-    // uniqueness test was vacuous: two runs a second apart get different names from the
-    // timestamp alone, so it passed with the uniqueness mechanism removed entirely.
-    // Driven — that is exactly how the first version of this test passed.
-    if (env.FIXED_DATE) {
-      fs.writeFileSync(path.join(bin, 'date'), `#!/bin/sh\nprintf %s "${env.FIXED_DATE}"\n`, { mode: 0o755 });
-    }
+    // The `date` override is a SHELL FUNCTION, injected into the script below — never a
+    // file on PATH. Git Bash searches /usr/bin ahead of the converted Windows PATH, so a
+    // stub named after a coreutils binary is shadowed there: measured on the
+    // windows-latest runner, where the fence used the REAL clock, the collision could not
+    // be constructed, and both fixtures passed vacuously while the Linux shards were
+    // green. A function is looked up before PATH on every platform.
     const argvLog = path.join(dir, 'argv.log');
     const script = path.join(dir, 'fence.sh');
     // No `set -u`: the agent does not run this block under it, and adding it changes the
@@ -926,8 +931,11 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // the last. A file the block never names cannot be forged by the block's own output.
     const statusFile = path.join(dir, 'capture-status.out');
     const rcFile = path.join(dir, 'fence-rc.out');
+    const dateOverride = env.FIXED_DATE
+      ? `date() { printf %s ${JSON.stringify(env.FIXED_DATE)}; }\n`
+      : '';
     fs.writeFileSync(script,
-      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${screenshotApproachBlock()}\n`
+      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${dateOverride}${screenshotApproachBlock()}\n`
       + 'FENCE_RC=$?\n'
       + `printf %s "$CAPTURE_STATUS" > ${JSON.stringify(statusFile)}\n`
       + `printf %s "$FENCE_RC" > ${JSON.stringify(rcFile)}\n`);
@@ -1053,6 +1061,12 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     tmpDirs.push(dir);
     const fixed = { FIXED_DATE: '20300101-000000', PADDED_PHASE: '07' };
     const first = ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
+    // PROVE THE CLOCK WAS FROZEN. If the override does not take, the two audits get
+    // different names from the timestamp alone, they never contend, and this test passes
+    // having constructed nothing — which is exactly what happened on windows-latest when
+    // the override was a file on PATH that Git Bash shadowed with /usr/bin/date.
+    assert.ok(first.shotDirs[0] && first.shotDirs[0].startsWith(`07-${fixed.FIXED_DATE}`),
+      `the date override did not take — this fixture cannot construct a collision: ${JSON.stringify(first.shotDirs)}`);
     // The second audit fails every viewport, so its cleanup runs — under a shared
     // directory that cleanup is what deleted the first audit's work.
     const second = ok(runFence({ ...fixed, PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
@@ -1077,7 +1091,12 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     fs.mkdirSync(path.join(reviews, '07-20300101-000000'));
     for (let i = 1; i <= 99; i += 1) fs.mkdirSync(path.join(reviews, `07-20300101-000000-${i}`));
     const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
-    assert.match(r.stdout, /Could not allocate a review directory/);
+    // Same guard, same reason: without a frozen clock the run allocates a fresh name, the
+    // 100 occupied directories are never contended, and the exhaustion branch is not
+    // reached at all. Measured on windows-latest, where this fixture failed for that
+    // reason rather than for the reason it names.
+    assert.doesNotMatch(r.stdout, /Screenshots captured/,
+      'the date override did not take — the allocation was never exhausted');
     assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
     assert.doesNotMatch(r.stdout, /Screenshots captured/);
     assert.strictEqual(r.invocations.length, 0,
