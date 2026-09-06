@@ -1533,12 +1533,17 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     assert.ok(!phaseDir.includes('..'), 'phaseDir must never contain a parent-dir segment');
   });
 
-  test('[negative] a symlinked phase directory is not resolved into context', (t) => {
+  // Skipped on Windows: creating a DIRECTORY symlink needs elevation or
+  // Developer Mode there, so setup would throw EPERM before the assertion runs.
+  // Same guard the sibling symlink tests use (tests/capability-consent.test.cjs).
+  test('[negative] a symlinked phase directory is not resolved into context', {
+    skip: process.platform === 'win32' ? 'directory symlinks require elevation on Windows' : false,
+  }, (t) => {
     const dir = makePhaseProject('05-widgets');
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-phase-outside-'));
     t.after(() => { cleanup(dir); cleanup(outside); });
     fs.mkdirSync(path.join(outside, '99-evil'), { recursive: true });
-    fs.symlinkSync(path.join(outside, '99-evil'), path.join(dir, '.planning', 'phases', '99-evil'));
+    fs.symlinkSync(path.join(outside, '99-evil'), path.join(dir, '.planning', 'phases', '99-evil'), 'dir');
     const result = renderWithPhase(dir, 'plan:pre', ['--phase', '99', '--raw']);
     assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
     const envelope = JSON.parse(result.stdout.trim());
