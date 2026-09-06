@@ -449,13 +449,17 @@ function contextTokenSuffix(currentUsage) {
 // --- Compact state format (opt-in) ---------------------------------------------
 
 /**
- * Collapse GSD's free-text status (often a multi-sentence narrative) to a
- * single keyword, built on the canonical normalizer (#2162 approval
- * condition): normalizeStateStatus() in state-document.cjs owns the status
- * vocabulary (discussing / planning / executing / verifying / completed /
- * paused) so the two can't drift. "paused" — the canonical stuck state — is
- * uppercased to PAUSED, the one state worth shouting about. Statuses the
- * normalizer passes through unrecognized fall back to their first word,
+ * Collapse GSD's status value to a single keyword, built on the canonical
+ * normalizer (#2162 approval condition): normalizeStateStatus() in
+ * state-document.cjs owns the status vocabulary (discussing / planning /
+ * executing / verifying / completed / paused) so the two can't drift.
+ * #4186: the normalizer recognizes the DECLARED vocabulary by anchored
+ * whole-field match — vocabulary values (the state writer persists tokens)
+ * collapse to their keyword; free-text narratives are no longer
+ * keyword-guessed from substrings (a `.planning/` mention in non-English
+ * prose used to render `planning`), and pass through unrecognized to the
+ * first-word fallback below. "paused" — the canonical stuck state — is
+ * uppercased to PAUSED, the one state worth shouting about. The fallback is
  * capped at 16 chars so a rogue STATE.md can't blow up the line.
  * Returns null for empty input.
  */

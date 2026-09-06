@@ -2236,3 +2236,147 @@ describe('#3642 — single-section leak controls and seam pins', () => {
     assert.strictEqual(roadmapParser.hasMilestoneSectioning(two), true, '>=2 predicate unchanged: two headings is sectioning');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4186 — normalizeStateStatus must derive the `status` token by ANCHORED
+// matching against the declared status vocabulary (whole-field value,
+// case-insensitive, whitespace-collapsed), never by substring-scanning the
+// free-prose body Status field. Prose that merely MENTIONS a status word (a
+// `.planning/` path, Italian `verifica*`, `completezza`, `fasi complete`)
+// must pass through verbatim — the visible paragraph beats a valid, credible,
+// wrong token. The lenient fallback itself is a recorded contract
+// (state-md-schema.cts #3873 phase-3 row 26) and is preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4186: normalizeStateStatus anchored status vocabulary — substring traps', () => {
+  const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+
+  // Row 1 — the failing-first regression: a `.planning/` path inside Italian
+  // prose must NOT land on `planning` (the trigger word lives in the
+  // DIRECTORY NAME; the reporter measured this exact counter-pair).
+  test('row 1: a .planning/ path inside prose never yields `planning`', () => {
+    assert.strictEqual(
+      normalizeStateStatus('Lavoro sospeso, vedi .planning/STATE.md', null),
+      'Lavoro sospeso, vedi .planning/STATE.md',
+    );
+  });
+
+  test('rows 2-5: Italian prose mentioning paths/verification/completeness passes through verbatim', () => {
+    const prose = [
+      'Esecuzione in corso su .planning/',
+      'Fase 34 COMPLETA, VERIFICATA 8/8 e FUSA IN PRODUZIONE',
+      'Aggiornato .planning/STATE.md dopo la verifica di fase',
+      'Referto in .planning/phases/34, completezza ok',
+    ];
+    for (const p of prose) {
+      assert.strictEqual(normalizeStateStatus(p, null), p, `prose must pass through verbatim: ${p}`);
+    }
+  });
+
+  test('row 6: Italian verifica-family words do not match the `verif` trigger', () => {
+    for (const p of ['verifica', 'verificata', 'verifiche', 'ri-verifica']) {
+      assert.strictEqual(normalizeStateStatus(p, null), p);
+    }
+  });
+
+  test('rows 7-8: `completezza` and `fasi complete` do not yield `completed`', () => {
+    assert.strictEqual(normalizeStateStatus('riportata per completezza', null), 'riportata per completezza');
+    assert.strictEqual(normalizeStateStatus('fasi complete', null), 'fasi complete');
+  });
+
+  test('rows 9-10: control — prose with no trigger words was already verbatim and stays so', () => {
+    const control = [
+      'completata / completato / completo / completa / incompleta / completamente',
+      'Lavoro sospeso in attesa del CEO',
+    ];
+    for (const p of control) {
+      assert.strictEqual(normalizeStateStatus(p, null), p);
+    }
+  });
+
+  test('row 11: English status words embedded in prose sentences are not rewrites either', () => {
+    assert.strictEqual(normalizeStateStatus('Waiting on the planning department', null), 'Waiting on the planning department');
+    assert.strictEqual(normalizeStateStatus('Notes done, see log', null), 'Notes done, see log');
+    assert.strictEqual(
+      normalizeStateStatus('Discussed the verif steps with QA, paused decision', null),
+      'Discussed the verif steps with QA, paused decision',
+    );
+  });
+
+  test('row 12 (existing #3873 row-26 contract): unrecognized text passes through unchanged', () => {
+    assert.strictEqual(
+      normalizeStateStatus('totally-unrecognized-status-text', null),
+      'totally-unrecognized-status-text',
+    );
+  });
+});
+
+describe('#4186: normalizeStateStatus anchored status vocabulary — documented vocabulary still normalizes', () => {
+  const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+
+  test('rows 13-15: variable handler-written phase statuses (case/whitespace variants)', () => {
+    assert.strictEqual(normalizeStateStatus('Executing Phase 5', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('EXECUTING PHASE 5', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('executing phase 46', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('Planning Phase 3', null), 'planning');
+    assert.strictEqual(normalizeStateStatus('Verifying Phase 2', null), 'verifying');
+  });
+
+  test('row 16: `Phase N complete` still lands on `completed` (composes with the #3578 demote guard)', () => {
+    assert.strictEqual(normalizeStateStatus('Phase 12 complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Phase 3A complete', null), 'completed');
+  });
+
+  test('rows 17-18: ADR-2207 lifecycle terminal statuses (CONTEXT.md:94 recorded contract)', () => {
+    assert.strictEqual(normalizeStateStatus('All phases complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('ALL PHASES COMPLETE', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('v1.0 milestone complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('1.0 milestone complete', null), 'completed');
+  });
+
+  test('rows 19-25: fixed-form handler defaults, including case and whitespace variants', () => {
+    assert.strictEqual(normalizeStateStatus('Ready to plan', null), 'planning');
+    assert.strictEqual(normalizeStateStatus('Ready to execute', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('In progress', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('In   progress', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('  Paused  ', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('Paused', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('Stopped', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('stopped', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('Discussing', null), 'discussing');
+    assert.strictEqual(normalizeStateStatus('Verifying', null), 'verifying');
+    assert.strictEqual(normalizeStateStatus('Completed', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Done', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('done', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Complete ✓', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Complete✔', null), 'completed');
+  });
+
+  test('rows 26-27: branch-order artifacts are preserved byte-for-behaviour', () => {
+    // `verif` outranks `complete` (pinned by tests/state.test.cjs's
+    // advance-plan case-5 comment); `planning` outranks `complete`.
+    assert.strictEqual(normalizeStateStatus('Phase complete — ready for verification', null), 'verifying');
+    assert.strictEqual(normalizeStateStatus('Planning complete', null), 'planning');
+  });
+
+  test('rows 29-30: unknown fallback and the pausedAt force are unchanged', () => {
+    assert.strictEqual(normalizeStateStatus(null, null), 'unknown');
+    assert.strictEqual(normalizeStateStatus('', null), 'unknown');
+    assert.strictEqual(normalizeStateStatus('Executing Phase 5', '2026-09-01'), 'paused');
+  });
+
+  test('row 31: statuses with no branch today stay verbatim', () => {
+    assert.strictEqual(normalizeStateStatus('Awaiting next milestone', null), 'Awaiting next milestone');
+    assert.strictEqual(normalizeStateStatus('Defining requirements', null), 'Defining requirements');
+    assert.strictEqual(normalizeStateStatus('Active', null), 'Active');
+  });
+
+  test('row 32: trailing prose after a vocabulary form is executor-authored and passes through', () => {
+    // Same discipline as #1070's KNOWN_STATUS_PATTERNS: "Complete but needs
+    // manual QA" is NOT a template default. The anchored vocabulary only
+    // recognizes the whole-field value.
+    assert.strictEqual(normalizeStateStatus('Executing Phase 5 — final stretch', null), 'Executing Phase 5 — final stretch');
+    assert.strictEqual(normalizeStateStatus('Complete but needs manual QA', null), 'Complete but needs manual QA');
+  });
+});
