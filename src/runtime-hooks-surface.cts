@@ -3391,23 +3391,6 @@ function validateConfiguredEntrypoints(
   const accessSync = deps.accessSync ?? fs.accessSync;
   const resolve = deps.resolveExecutableBinary ?? resolveExecutableBinary;
   const invalid: ConfiguredEntrypointInvalid[] = [];
-  // #4249: every JS hook shares the identical interpreterCandidates array
-  // (all derived from the same process.execPath), and every .sh hook shares
-  // ['bash'] — a typical install has a dozen-plus entries pointing at the
-  // same few candidate lists. resolveExecutableBinary re-walks PATH per
-  // candidate; cache by (platform, candidate) so that walk happens once per
-  // distinct pair per call, not once per entry.
-  const resolvedCandidateCache = new Map<string, boolean>();
-  const candidateResolves = (candidate: string, platform: string | undefined): boolean => {
-    const cacheKey = `${platform ?? ''} ${candidate}`;
-    let resolved = resolvedCandidateCache.get(cacheKey);
-    if (resolved === undefined) {
-      resolved = resolve(candidate, { platform, requireExecutable: true }) !== null;
-      resolvedCandidateCache.set(cacheKey, resolved);
-    }
-    return resolved;
-  };
-
   for (const entry of entries) {
     let scriptOk = false;
     try {
@@ -3456,7 +3439,7 @@ function validateConfiguredEntrypoints(
       }
     }
     if (entry.interpreterCandidates && !entry.interpreterCandidates.some(candidate =>
-      candidateResolves(candidate, entry.platform),
+      resolve(candidate, { platform: entry.platform, requireExecutable: true }) !== null,
     )) {
       invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'interpreter', path: entry.interpreterCandidates.join(' | '), reason: 'unresolved-interpreter' });
     }

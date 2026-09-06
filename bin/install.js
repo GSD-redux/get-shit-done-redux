@@ -13202,16 +13202,7 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
   // covered (see docs/how-to/update-gsd.md). For the settings-json surface
   // this ordering means a failing validation never reaches this function's
   // own write at all.
-  //
-  // entrypointsAlreadyValidated skips re-running the same statSync/accessSync
-  // work this function's caller (installAllRuntimes' finalize()) already did
-  // one line before calling this, over the identical aggregate set — every
-  // entrypoint would otherwise be checked twice on every install/update. A
-  // direct caller (bypassing installAllRuntimes — e.g. a test) leaves this
-  // unset and still gets the check.
-  if (!bannerOpts.entrypointsAlreadyValidated) {
-    assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
-  }
+  assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
 
   if (shouldInstallStatusline && plan.writesSharedSettings && !_hostBehaviors(runtime).skipSettingsUi) {
     if (!isGlobal && !forceStatusline) {
@@ -14170,10 +14161,6 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
             {
               shouldInstallBanner: !!shouldInstallBanner,
               bannerCommand: result.updateBannerCommand,
-              // already validated in the aggregate assertConfiguredEntrypoints
-              // call above, over the identical union this per-runtime slice
-              // is drawn from — see finishInstall's entrypointsAlreadyValidated.
-              entrypointsAlreadyValidated: true,
               configuredEntrypoints: selectedConfiguredEntrypoints(result),
             }
           );
