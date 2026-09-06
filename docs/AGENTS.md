@@ -396,12 +396,14 @@ the viewports that failed), and not captured with its reason (no dev server,
 auth-gated, or capture failure). A failed capture never reports as a successful
 one, and takes its own artifacts with it: each viewport that fails has the
 partial or zero-byte file it may have written removed, so a partial capture
-leaves only the shots that actually succeeded and a total failure leaves the
-review directory empty, and therefore removed. The directory is keyed to the
-phase, the second, and the audit's own process — two audits of the same phase
-starting in the same second do not share one, which is what makes that cleanup
-safe, since both would otherwise write the same three filenames and no per-file
-rule could tell them apart.
+leaves only the shots that actually succeeded, and a total failure removes the
+review directory outright. The directory is allocated atomically — `mkdir`
+without `-p`, retried under a fresh suffix when the name is taken — so it belongs
+to exactly one audit. That is what makes the cleanup safe to state without
+qualification: two audits of the same phase in the same second, or one shell
+running the audit twice, would otherwise share a directory and write the same
+three filenames, and no per-file rule could then tell whose capture it was
+deleting.
 
 ---
 
