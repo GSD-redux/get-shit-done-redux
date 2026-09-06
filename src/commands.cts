@@ -1624,6 +1624,11 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   const branchingStrategy = config['branching_strategy'] as string | undefined;
   if (branchingStrategy && branchingStrategy !== 'none') {
     let branchName: string | null = null;
+    // #4055 v2: the directory whose historical presence on HEAD proves this
+    // phase/milestone's own work already landed there — see the resurrection
+    // check below. Set alongside `branchName` in each strategy arm because
+    // both are derived from the same phaseInfo/milestone lookup.
+    let anchorPath: string | null = null;
     if (branchingStrategy === 'phase') {
       // Determine which phase we're committing for from the file paths.
       // #2539: the extraction is anchored to the directory SEGMENT immediately
@@ -1648,6 +1653,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
           branchName = (config['phase_branch_template'] as string)
             .replace('{phase}', normalizePhaseName(phaseInfo['phase_number']))
             .replace('{slug}', (phaseInfo['phase_slug'] as string) || 'phase');
+          anchorPath = (phaseInfo['directory'] as string) || null;
         }
       }
     } else if (branchingStrategy === 'milestone') {
@@ -1668,6 +1674,14 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         branchName = (config['milestone_branch_template'] as string)
           .replace('{milestone}', milestone.version)
           .replace('{slug}', generateSlugInternal(milestone.name) || 'milestone');
+        // The archived-phases directory milestone completion writes
+        // (archivePhaseDirectories, milestone.cts) — its presence in HEAD's
+        // history is the milestone-strategy analog of a phase's own
+        // directory: work that only lands there once the milestone branch
+        // has actually been integrated back.
+        anchorPath = toPosixPath(
+          path.relative(cwd, path.join(planningDir(cwd), 'milestones', `${milestone.version}-phases`))
+        );
       }
     }
     if (branchName) {
@@ -1687,24 +1701,37 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         // not silent about where the work is landing (#3207 AC3).
         const verify = execGit(['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd });
         if (verify.exitCode !== 0) {
-          // #4055: "does not currently exist" is NOT the same as "never
+          // #4055 v2: "does not currently exist" is NOT the same as "never
           // existed" — a phase/milestone branch that was merged and then
           // deleted also fails this verify, but checkout -b would silently
           // RESURRECT it: a fresh branch of the same name, created at HEAD,
           // that looks identical to the #1278 first-commit case but is
-          // actually a stale name being reused. Distinguish the two by asking
-          // whether HEAD's own ancestry already contains a merge commit for
-          // this branch name — that only happens if the branch existed and
-          // was merged. `--merges` limits the search to actual merge commits
-          // (a squash commit has one parent and never matches, but so does a
-          // never-created branch, so this errs toward the #1278 create path
-          // when it can't tell); `--fixed-strings` keeps branch names with
-          // `.` or other regex metacharacters (e.g. decimal phase slugs) from
-          // being misread as patterns.
-          const resurrection = execGit(
-            ['log', '--merges', '--fixed-strings', `--grep=${branchName}`, '--oneline', '-1'],
-            { cwd }
-          );
+          // actually a stale name being reused.
+          //
+          // Distinguish the two by content, not by commit-message pattern:
+          // ask whether HEAD's own ancestry already contains a commit that
+          // touched this phase/milestone's own directory (`anchorPath` —
+          // the phase's `.planning/phases/<n>-<slug>/` directory, or the
+          // milestone's archived `.planning/milestones/<v>-phases/`
+          // directory). That only happens once the branch's own work has
+          // actually landed on this history, and it holds regardless of how
+          // the branch was integrated: a `--no-ff` merge, a squash merge, or
+          // a rebase merge all bring the directory's changes in identically,
+          // where the prior `--merges --grep=<branchName>` heuristic saw
+          // only the first (squash/rebase are single-parent, so `--merges`
+          // never matched — the exact gap #4080 review shipped with). Unlike
+          // a `--grep` message search, a pathspec match is also precise: git
+          // only reports a commit here if it actually changed a file under
+          // `anchorPath`, so an unrelated commit that merely mentions the
+          // branch name in its message (or an old directory name that
+          // happens to be a substring of a renamed one) cannot false-match.
+          //
+          // A brand-new phase/milestone has nothing under `anchorPath` yet at
+          // this point in the commit (files are staged further below), so
+          // this correctly resolves to the #1278 create-and-switch path.
+          // anchorPath is set alongside branchName in both strategy arms
+          // above, so it is always non-null here.
+          const resurrection = execGit(['log', '--format=%H', '-1', '--', anchorPath as string], { cwd });
           if (resurrection.exitCode === 0 && resurrection.stdout.trim() !== '') {
             // Branch was merged into this history and deleted — do NOT
             // resurrect it. Commit in place, surfaced non-silently like the

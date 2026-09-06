@@ -2046,6 +2046,188 @@ describe('commit command', () => {
     );
   });
 
+  // #4055 v2 (PR #4080 review): the first fix only detected resurrection via
+  // `git log --merges --grep=<branchName>`, which requires a real two-parent
+  // merge commit. A squash merge is single-parent and never matches, so the
+  // branch was still resurrected after a squash close-out — reproduced by all
+  // three review passes against the PR's own head commit. The replacement
+  // check is content-based (does HEAD's history already contain a commit that
+  // touched the phase's own directory), which a squash merge satisfies
+  // identically to a `--no-ff` merge.
+  test('#4055 v2: does not resurrect a phase branch closed out via squash merge', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 1: Setup\nGoal: Initial setup\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '01-CONTEXT.md'), '# Context\n'
+    );
+
+    const { TOOLS_PATH } = require('./helpers.cjs');
+    const baseBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+
+    const first = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): first',
+      '--files', '.planning/phases/01-setup/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(first, 'gsd-tools commit (#4055v2 squash first)');
+    assert.strictEqual(
+      gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim(),
+      'gsd/phase-01-setup',
+      'first commit must switch onto the phase branch'
+    );
+
+    // Squash merge — single-parent, no merge commit, message need not mention
+    // the branch name at all (mirrors GitHub's "Squash and merge").
+    gitOrThrow(['checkout', baseBranch], { cwd: tmpDir });
+    gitOrThrow(['merge', '--squash', 'gsd/phase-01-setup'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'Phase 01 (#1)'], { cwd: tmpDir });
+    gitOrThrow(['branch', '-D', 'gsd/phase-01-setup'], { cwd: tmpDir });
+
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '02-NOTES.md'), '# Notes\n'
+    );
+    const second = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): second',
+      '--files', '.planning/phases/01-setup/02-NOTES.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(second, 'gsd-tools commit (#4055v2 squash second)');
+
+    const afterBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(
+      afterBranch,
+      baseBranch,
+      `must not resurrect the squash-merged-and-deleted phase branch (expected to stay on "${baseBranch}", got "${afterBranch}")`
+    );
+    const stillDeleted = runGit(['rev-parse', '--verify', 'refs/heads/gsd/phase-01-setup'], { cwd: tmpDir });
+    assert.notStrictEqual(
+      stillDeleted.exitCode,
+      0,
+      'the deleted phase branch must not have been re-created'
+    );
+  });
+
+  // #4055 v2 (PR #4080 review): a rebase merge is also single-parent per
+  // replayed commit — no merge commit exists at all, so the message-grep
+  // heuristic could never have covered it either.
+  test('#4055 v2: does not resurrect a phase branch closed out via rebase merge', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-setup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 1: Setup\nGoal: Initial setup\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '01-CONTEXT.md'), '# Context\n'
+    );
+
+    const { TOOLS_PATH } = require('./helpers.cjs');
+    const baseBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+
+    const first = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): first',
+      '--files', '.planning/phases/01-setup/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(first, 'gsd-tools commit (#4055v2 rebase first)');
+    assert.strictEqual(
+      gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim(),
+      'gsd/phase-01-setup',
+      'first commit must switch onto the phase branch'
+    );
+
+    // Rebase merge — replays the phase branch's commits onto base as
+    // single-parent commits, then fast-forwards; no merge commit is created.
+    gitOrThrow(['rebase', baseBranch, 'gsd/phase-01-setup'], { cwd: tmpDir });
+    gitOrThrow(['checkout', baseBranch], { cwd: tmpDir });
+    gitOrThrow(['merge', '--ff-only', 'gsd/phase-01-setup'], { cwd: tmpDir });
+    gitOrThrow(['branch', '-D', 'gsd/phase-01-setup'], { cwd: tmpDir });
+
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '01-setup', '02-NOTES.md'), '# Notes\n'
+    );
+    const second = runNode([
+      TOOLS_PATH, 'commit', 'docs(01): second',
+      '--files', '.planning/phases/01-setup/02-NOTES.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(second, 'gsd-tools commit (#4055v2 rebase second)');
+
+    const afterBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(
+      afterBranch,
+      baseBranch,
+      `must not resurrect the rebase-merged-and-deleted phase branch (expected to stay on "${baseBranch}", got "${afterBranch}")`
+    );
+    const stillDeleted = runGit(['rev-parse', '--verify', 'refs/heads/gsd/phase-01-setup'], { cwd: tmpDir });
+    assert.notStrictEqual(
+      stillDeleted.exitCode,
+      0,
+      'the deleted phase branch must not have been re-created'
+    );
+  });
+
+  // #4055 v2 (PR #4080 review, Minor): the prior `--grep=<branchName>` check
+  // was an unanchored substring match — a merge commit that merely MENTIONS
+  // a branch name in its message (without ever having merged that branch)
+  // would false-positively block create-and-switch for a branch that never
+  // existed. The content-based check only matches a commit that actually
+  // touched the phase's own directory, so this must still create-and-switch.
+  test('#4055 v2: a branch name merely mentioned in an unrelated commit message does not block create-and-switch', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-other'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## Phase 2: Other\nGoal: Unrelated work\n'
+    );
+
+    // An unrelated merge commit whose message happens to name a phase-02
+    // branch that has never existed as a ref.
+    fs.writeFileSync(path.join(tmpDir, 'unrelated.txt'), 'unrelated\n');
+    gitOrThrow(['add', 'unrelated.txt'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', "docs: mention gsd/phase-02-other in migration guide"], { cwd: tmpDir });
+
+    const { TOOLS_PATH } = require('./helpers.cjs');
+    const baseBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '02-other', '01-CONTEXT.md'), '# Context\n'
+    );
+    const result = runNode([
+      TOOLS_PATH, 'commit', 'docs(02): first',
+      '--files', '.planning/phases/02-other/01-CONTEXT.md',
+    ], { cwd: tmpDir });
+    throwIfFailed(result, 'gsd-tools commit (#4055v2 false-positive)');
+
+    const afterBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(
+      afterBranch,
+      'gsd/phase-02-other',
+      `a never-existed branch merely named in an unrelated commit message must still be created-and-switched-to (expected "gsd/phase-02-other", got "${afterBranch}")`
+    );
+  });
+
   // #3734 — the phase arm of `query commit` must not treat a backlog sentinel
   // phase id as a real phase. /gsd-capture --backlog commits the sentinel phase
   // directory via add-backlog.md; pre-fix each capture created AND switched to a
