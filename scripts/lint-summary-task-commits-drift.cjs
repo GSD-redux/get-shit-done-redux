@@ -2,8 +2,8 @@
 'use strict';
 
 /**
- * Drift guard for issue #3926: pin the `## Task Commits` line shape across the
- * four SUMMARY templates.
+ * Drift guard for issue #3926: pin the `## Task Commits` line shape across
+ * every SUMMARY template in gsd-core/templates/.
  *
  * `gsd-core/workflows/code-review.md` derives a phase's own commit set by
  * slicing each `*-SUMMARY.md` between its `## Task Commits` heading and the
@@ -21,12 +21,12 @@
  *      heading (the parser's slice needs a terminator);
  *   2. inside that slice, every task line carries its hash in BACKTICKS.
  *
- * Deliberately NOT pinned: the hash's own spelling. Three templates ship the
- * literal placeholder `hash` and one ships `abc123f`, so requiring hex here
+ * Deliberately NOT pinned: the hash's own spelling. Some templates ship the
+ * literal placeholder `hash` and others `abc123f`, so requiring hex here
  * would fail on the shipped files; the hex filter belongs at parse time, where
  * it runs against real SUMMARYs. Nor is the trailing type token
- * (`(feat/fix/test/refactor)`) pinned — `summary.md` carries it and the other
- * three do not, and the parser does not read it.
+ * (`(feat/fix/test/refactor)`) pinned — only some templates carry it, and the
+ * parser does not read it either way.
  */
 
 const fs = require('fs');
@@ -35,12 +35,33 @@ const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 
-const TEMPLATES = [
-  'gsd-core/templates/summary.md',
-  'gsd-core/templates/summary-minimal.md',
-  'gsd-core/templates/summary-standard.md',
-  'gsd-core/templates/summary-complex.md',
-];
+const TEMPLATE_DIR = 'gsd-core/templates';
+// Every SUMMARY template, not a list of the four that exist today. The parser
+// reads whichever template produced the SUMMARY on disk, so the guard's set has
+// to be the DIRECTORY's set: a hardcoded list silently stops covering the
+// domain the moment a fifth `summary-*.md` lands, and a template whose Task
+// Commits line shape differs is exactly what this guard exists to refuse.
+const TEMPLATE_RE = /^summary(-[A-Za-z0-9]+)*\.md$/;
+
+/**
+ * Enumerate the SUMMARY templates. Throws rather than returning an empty set:
+ * zero templates means the directory moved or the pattern stopped matching, and
+ * a guard that silently checks nothing reports `ok` over an unguarded domain.
+ */
+function listTemplates(root = ROOT) {
+  const dir = path.join(root, TEMPLATE_DIR);
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (error) {
+    throw new ExitError(1, `lint-summary-task-commits-drift: cannot read ${TEMPLATE_DIR}: ${error.message}`);
+  }
+  const found = entries.filter((name) => TEMPLATE_RE.test(name)).sort();
+  if (found.length === 0) {
+    throw new ExitError(1, `lint-summary-task-commits-drift: no SUMMARY templates matched ${TEMPLATE_RE} in ${TEMPLATE_DIR} — the guard would check nothing`);
+  }
+  return found.map((name) => `${TEMPLATE_DIR}/${name}`);
+}
 
 const HEADING = /^## Task Commits[ \t]*$/;
 const NEXT_HEADING = /^## /;
@@ -61,11 +82,18 @@ function sliceSection(lines) {
   return { body: lines.slice(start + 1, end), terminated: end < lines.length };
 }
 
-function main() {
+/**
+ * Pure driver: return the drift failures for `root`, one string per finding.
+ * Separated from `main` so the guard is exercisable against a fixture tree —
+ * the sibling `lint-table-schema-drift.cjs` exports its own driver for the
+ * same reason. A guard with no fail-first test is a guard nothing has ever
+ * seen fire.
+ */
+function findSummaryTaskCommitsDrift(root = ROOT) {
   const failures = [];
 
-  for (const rel of TEMPLATES) {
-    const target = path.join(ROOT, rel);
+  for (const rel of listTemplates(root)) {
+    const target = path.join(root, rel);
     let content;
     try {
       content = fs.readFileSync(target, 'utf8');
@@ -96,8 +124,15 @@ function main() {
     }
   }
 
+  return failures;
+}
+
+function main() {
+  const templates = listTemplates(ROOT);
+  const failures = findSummaryTaskCommitsDrift(ROOT);
+
   if (failures.length === 0) {
-    process.stdout.write(`ok summary-task-commits-drift: ${TEMPLATES.length} templates\n`);
+    process.stdout.write(`ok summary-task-commits-drift: ${templates.length} templates\n`);
     return 0;
   }
 
@@ -111,4 +146,6 @@ function main() {
   return 1;
 }
 
-runMain(main);
+if (require.main === module) runMain(main);
+
+module.exports = { findSummaryTaskCommitsDrift, listTemplates, sliceSection, TEMPLATE_DIR, TEMPLATE_RE };
