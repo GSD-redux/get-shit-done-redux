@@ -209,3 +209,130 @@ describe('#1928 Antigravity preserved (shared surface with the removed gemini ru
     assert.ok(!/\bskill\b/.test(toolsLine), 'Skill is still excluded (would be an invalid backend tool name)');
   });
 });
+
+// ---------------------------------------------------------------------------
+// D. #4347 — the shell resolver and the JS registry cannot silently diverge
+//
+// The JS resolver dropped `gemini` in #1928 and a test pins the absence
+// (tests/declarative-reference-antigravity.test.cjs:307). The SHELL resolver's
+// `_gsd_at` chain in gsd-core/workflows/_runtime-launcher.snippet.sh is a flat
+// hand-written list fanned out to 120+ files by scripts/sync-runtime-launcher.cjs,
+// and nothing compared it against the registry — so it kept probing
+// `${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/`. On a host that exports
+// GEMINI_CONFIG_DIR the two resolvers picked different installs from the same
+// environment.
+//
+// This block is the missing binding: every runtime-home env var the shell side
+// probes must be one the JS side recognizes, whichever way a future
+// remove-vs-keep call goes.
+// ---------------------------------------------------------------------------
+
+// allow-test-rule: source-text-is-the-product #4347 — the launcher snippet is a
+// SHELL fragment inlined into Markdown; there is no module to require, so its
+// text is the artifact under test (same contract as the Kimi guard parity test).
+const LAUNCHER_SNIPPET = path.join(ROOT, 'gsd-core', 'workflows', '_runtime-launcher.snippet.sh');
+
+// Shell-only env vars that are legitimate WITHOUT a registry runtime, each
+// because src/runtime-homes.cts declares the id in
+// LEGACY_NON_REGISTRY_RUNTIME_IDS and getGlobalConfigDir() carries a real
+// dedicated branch for it. That constant's own doc states the admission rule:
+// an id belongs here only after confirming the dedicated branch exists. Adding
+// a var here is therefore a deliberate, reviewable act — not a way to silence
+// this test.
+const LEGACY_SHELL_ONLY_HOME_VARS = new Set([
+  'GROK_AGENTS_HOME',   // grok — getGlobalConfigDir()'s ~/.agents branch
+]);
+
+// Not runtime homes: the chain's own locals and the generic XDG base that two
+// registry descriptors (kilo, opencode) already declare as a fallback.
+const NON_RUNTIME_HOME_VARS = new Set(['RUNTIME_DIR', 'HOME', 'XDG_CONFIG_HOME', '_GSD_SHIM_NAME']);
+
+function registryHomeEnvVars() {
+  const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+  const out = new Set();
+  for (const entry of Object.values(runtimes)) {
+    for (const name of entry?.runtime?.configHome?.env ?? []) out.add(name);
+  }
+  return out;
+}
+
+// Every `${VAR:-default}` expansion that names a RUNTIME HOME — i.e. one whose
+// quoted arm resolves a `/gsd-core/bin/` shim path. Scoped that way so the
+// chain's own locals (`${GSD_TOOLS:-}`, `${CLAUDE_ENV_FILE:-}`) are not mistaken
+// for runtime homes, and so the nested XDG form
+// (`${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}`) is
+// still swept.
+function shellHomeEnvVars(text) {
+  const out = new Set();
+  for (const match of text.matchAll(/\$\{([A-Z_][A-Z0-9_]*):-/g)) {
+    const name = match[1];
+    if (NON_RUNTIME_HOME_VARS.has(name)) continue;
+    const armEnd = text.indexOf('"', match.index);
+    const arm = armEnd === -1 ? text.slice(match.index) : text.slice(match.index, armEnd);
+    if (!arm.includes('/gsd-core/bin/')) continue;
+    out.add(name);
+  }
+  return out;
+}
+
+describe('#4347 shell launcher / JS registry runtime-home parity', () => {
+  test('every env var the launcher snippet probes is a registry-recognized runtime home', () => {
+    const recognized = registryHomeEnvVars();
+    const probed = shellHomeEnvVars(fs.readFileSync(LAUNCHER_SNIPPET, 'utf8'));
+
+    assert.ok(probed.size > 5, `precondition: the snippet must probe real runtime homes — got ${probed.size}`);
+    const orphans = [...probed].filter((name) => !recognized.has(name) && !LEGACY_SHELL_ONLY_HOME_VARS.has(name));
+    assert.deepEqual(orphans, [],
+      `the shell resolver probes ${orphans.join(', ')}, which the capability registry does not recognize as a ` +
+      'runtime home. Either the runtime is real (add it to the registry), or the arm is dead (remove it from ' +
+      '_runtime-launcher.snippet.sh and re-run `npm run sync:launcher`), or it is a deliberate legacy arm ' +
+      '(declare it in LEGACY_SHELL_ONLY_HOME_VARS with the reason).');
+  });
+
+  test('the registry runtime homes the launcher omits are omitted deliberately', () => {
+    // The reverse direction is intentionally NOT an equality: a registry
+    // runtime with no shell arm simply cannot be resolved by an entry-point
+    // script, which is a coverage question, not a divergence. Pinned as a
+    // named set so ADDING a runtime surfaces here instead of silently
+    // widening the gap.
+    const recognized = registryHomeEnvVars();
+    const probed = shellHomeEnvVars(fs.readFileSync(LAUNCHER_SNIPPET, 'utf8'));
+    const missing = [...recognized].filter((name) => !probed.has(name) && !NON_RUNTIME_HOME_VARS.has(name)).sort();
+    assert.deepEqual(missing, [
+      'COPILOT_HOME',        // copilot's secondary alias; COPILOT_CONFIG_DIR is probed
+      'KILO_CONFIG',         // kilo's file-path form; KILO_CONFIG_DIR is probed
+      'KIMI_CODE_HOME',
+      'KIMI_CONFIG_DIR',
+      'OPENCODE_CONFIG',     // opencode's file-path form; OPENCODE_CONFIG_DIR is probed
+      'PI_CODING_AGENT_DIR',
+      'ZCODE_CONFIG_DIR',
+    ], 'a registry runtime home gained or lost a launcher arm — confirm that is intended');
+  });
+
+  test('no propagated copy of the resolver carries an env var the snippet dropped', () => {
+    // AC4 of the issue: propagated copies move WITH the source, never as a
+    // hand-patched subset. `commands/` carries an older if/elif form that
+    // sync-runtime-launcher.cjs does not regenerate, so it is swept here too.
+    const roots = ['gsd-core/workflows', 'agents', 'commands'];
+    const offenders = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.name.endsWith('.md')) continue;
+        // allow-test-rule: source-text-is-the-product #4347 — the propagated
+        // resolver is inlined shell text inside Markdown; there is nothing to
+        // require.
+        const text = fs.readFileSync(full, 'utf8');
+        if (!text.includes('_GSD_SHIM_NAME')) continue;   // no resolver in this file
+        for (const name of shellHomeEnvVars(text)) {
+          if (registryHomeEnvVars().has(name) || LEGACY_SHELL_ONLY_HOME_VARS.has(name)) continue;
+          offenders.push(`${path.relative(ROOT, full)}: ${name}`);
+        }
+      }
+    };
+    for (const root of roots) walk(path.join(ROOT, root));
+    assert.deepEqual(offenders.sort(), [],
+      'a propagated resolver copy probes an env var the registry does not recognize — re-run `npm run sync:launcher`');
+  });
+});
