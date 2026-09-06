@@ -90,6 +90,31 @@ function runBashFile(scriptPath, options = {}) {
 }
 
 /**
+ * Create `dir` holding a single `node` entry that points at this interpreter,
+ * and return `dir` so a caller can unshift it onto a PATH. The fixtures that
+ * filter gsd_run-bearing directories out of PATH need this when node itself
+ * lives in one of the directories they removed.
+ *
+ * Windows symlinks need elevation, so a hard link is used there instead: it
+ * needs no privilege, but it cannot cross volumes, hence the copy fallback.
+ */
+function linkNodeShim(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  if (process.platform !== 'win32') {
+    fs.symlinkSync(process.execPath, path.join(dir, 'node'));
+    return dir;
+  }
+  const target = path.join(dir, 'node.exe');
+  try {
+    fs.linkSync(process.execPath, target);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(process.execPath, target);
+  }
+  return dir;
+}
+
+/**
  * Read the canonical preamble from the snippet file (all lines, no trailing newline).
  */
 function expectedPreamble() {
@@ -632,10 +657,7 @@ describe('runtime-launcher-parity (#373)', () => {
         .split(path.delimiter)
         .filter((p) => !hasExecutable(p, 'gsd_run'));
       if (!systemPaths.some((p) => hasExecutable(p, 'node'))) {
-        const nodeShimDir = path.join(fakeRuntime, 'node-shim');
-        fs.mkdirSync(nodeShimDir, { recursive: true });
-        fs.symlinkSync(process.execPath, path.join(nodeShimDir, 'node'));
-        systemPaths.unshift(nodeShimDir);
+        systemPaths.unshift(linkNodeShim(path.join(fakeRuntime, 'node-shim')));
       }
 
       const stdout = runBashFile(scriptPath, {
@@ -1031,9 +1053,6 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       // buildIsolatedPath() below for why). If node lives in the same directory
       // as gsd_run, create a dedicated shim dir with a symlink to node only
       // (no gsd_run there).
-      const nodeBinResult = runHookSeam('node', [], { interpreter: 'which' });
-      throwIfFailed(nodeBinResult, 'which node');
-      const nodeBin = nodeBinResult.stdout.trim();
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
         .filter((p) => {
@@ -1044,16 +1063,13 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
             return true;
           }
         });
-      // If node's dir was filtered (it contained gsd_run), create a shim dir
-      // with just a node symlink so the stub's shebang (#!/usr/bin/env node) resolves.
-      const nodeShimDir = path.join(fakeRuntime, 'node-shim');
+      // If node's dir was filtered (it contained gsd_run), add a shim dir with
+      // just node so the stub's shebang (#!/usr/bin/env node) resolves.
       if (!systemPaths.some((p) => {
         try { fs.accessSync(path.join(p, 'node'), fs.constants.X_OK); return true; }
         catch { return false; }
       })) {
-        fs.mkdirSync(nodeShimDir, { recursive: true });
-        fs.symlinkSync(nodeBin, path.join(nodeShimDir, 'node'));
-        systemPaths.unshift(nodeShimDir);
+        systemPaths.unshift(linkNodeShim(path.join(fakeRuntime, 'node-shim')));
       }
 
       const stdout = runBashFile(scriptPath, {
