@@ -1498,6 +1498,41 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     );
   });
 
+  // #4030 condition 1: the four hostile shapes the triage comment named, asserted
+  // even though this design makes them unreachable rather than merely rejected —
+  // `--phase` takes a token, never a path, and phaseDir is the directory the
+  // locator matched. "Unreachable by construction" is a claim, so it gets tests:
+  // traversal and absolute-path substitution here, symlink escape and nonexistent
+  // paths below.
+  for (const [label, token] of [
+    ['traversal', '../../etc'],
+    ['traversal with a real phase suffix', '../05-widgets'],
+    ['absolute-path substitution', '/etc'],
+    ['absolute path into the real phases dir', '/tmp/.planning/phases/05-widgets'],
+  ]) {
+    test(`[hostile] --phase ${label} resolves nothing and never escapes the project`, (t) => {
+      const dir = makePhaseProject('05-widgets');
+      t.after(() => cleanup(dir));
+      const result = renderWithPhase(dir, 'plan:pre', ['--phase', token, '--raw']);
+      assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+      const envelope = JSON.parse(result.stdout.trim());
+      assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+        `${token} must not resolve to a phase directory`);
+      assert.match((envelope.warnings || []).join('\n'), /did not match a phase directory/);
+    });
+  }
+
+  test('[hostile] a resolved phaseDir is always project-relative, never absolute', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--raw']);
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    const { phaseDir } = JSON.parse(result.stdout.trim()).context;
+    assert.strictEqual(phaseDir, '.planning/phases/05-widgets');
+    assert.ok(!path.isAbsolute(phaseDir), 'phaseDir must never be absolute');
+    assert.ok(!phaseDir.includes('..'), 'phaseDir must never contain a parent-dir segment');
+  });
+
   test('[negative] a symlinked phase directory is not resolved into context', (t) => {
     const dir = makePhaseProject('05-widgets');
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-phase-outside-'));
