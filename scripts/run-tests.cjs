@@ -221,6 +221,29 @@ function parseShardArg(value) {
   return { index, total };
 }
 
+// Parse RUN_TESTS_SHARD_RESERVE (#4070) — "<index>:<weight>", e.g. "1:77":
+// give shard `index` (1-based) a virtual head start of `weight` LPT weight
+// units before any real file is placed. This is an advisory operator knob,
+// not a CLI flag with a hard-error contract like --shard: it is set from a
+// GitHub Actions matrix expression (test.yml), so a malformed or absent value
+// must degrade to "no reserve" rather than take the whole job down — the same
+// fail-open precedent as positiveNumberEnv elsewhere in this file. Returns
+// `null` for anything malformed; the caller is responsible for checking
+// `index` against the shard total it actually has (this function has no
+// access to that).
+function parseShardReserve(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const m = /^(\d+):(-?\d+(?:\.\d+)?)$/.exec(trimmed);
+  if (!m) return null;
+  const index = Number(m[1]);
+  const weight = Number(m[2]);
+  if (!Number.isInteger(index) || index < 1) return null;
+  if (!Number.isFinite(weight) || weight < 0) return null;
+  return { index, weight };
+}
+
 // Deterministic partition of an ALREADY-SORTED file list. Without a weigher
 // this is the original round-robin (#1212):
 // Shard `index` (1-based) receives every file whose position k in the sorted
@@ -243,7 +266,20 @@ function parseShardArg(value) {
 // This is the same algorithm packChunks uses one level down (#2456/#2463), so
 // both layers now share one cost model. Omitting `weightOf` keeps the legacy
 // round-robin byte-identical — callers with no timing data lose nothing.
-function selectShard(sortedFiles, { index, total }, weightOf) {
+//
+// `initialWeights` (#4070, optional): per-bin starting weight, indexed 0..
+// total-1 (bin 0 = shard 1). Some shards carry a FIXED cost this function has
+// no other way to see — test.yml pins four aux suites to shard 1 only, so
+// shard 1's real cost is always "its LPT-balanced unit-test slice PLUS that
+// fixed aux cost," while shards 2..N carry only their slice. Giving bin 0 a
+// virtual head start before any file is placed makes LPT route FEWER files to
+// it, converging every bin's FINAL total (assigned weight + its initial
+// weight) toward equal instead of converging raw assigned weight toward
+// equal — which is what left shard 1 structurally overloaded. Only meaningful
+// on the weighted (LPT) path: the round-robin fallback below has no notion of
+// weight to rebalance around, so `initialWeights` is a no-op there — a caller
+// with no timing table has no basis to compute a meaningful reserve either.
+function selectShard(sortedFiles, { index, total }, weightOf, initialWeights) {
   if (total === 1) return sortedFiles;
   if (typeof weightOf !== 'function') {
     return sortedFiles.filter((_, k) => k % total === index - 1);
@@ -255,7 +291,15 @@ function selectShard(sortedFiles, { index, total }, weightOf) {
     const w = weightOf(file);
     return Number.isFinite(w) && w >= 0 ? w : 0;
   };
-  const bins = Array.from({ length: total }, () => ({ weight: 0, picks: [] }));
+  // Same clamp applied to a caller-supplied reserve: a hostile value (NaN,
+  // negative, Infinity — e.g. a malformed RUN_TESTS_SHARD_RESERVE) must
+  // degrade to "no reserve" rather than poisoning every subsequent
+  // lightest-bin comparison the same way an unclamped file weight would.
+  const safeInitial = (i) => {
+    const w = Array.isArray(initialWeights) ? initialWeights[i] : undefined;
+    return Number.isFinite(w) && w >= 0 ? w : 0;
+  };
+  const bins = Array.from({ length: total }, (_, i) => ({ weight: safeInitial(i), picks: [] }));
   // LPT: heaviest first, each into the currently-lightest bin. Ties break on
   // the caller's sort position, and the lightest-bin scan takes the FIRST
   // minimum, so the partition is byte-identical across Windows/macOS/Linux —
@@ -304,6 +348,124 @@ function positiveNumberEnv(raw, fallback) {
   if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// ── #4020: run-scoped temp root ─────────────────────────────────────────────
+//
+// Fixture trees leak under os.tmpdir() on the SUCCESS path (the untouched half
+// of #856): on a tmpfs /tmp a full run exhausts the filesystem, and the failure
+// surfaces as EDQUOT (errno -122) copyfile errors in whichever suite runs next
+// — actively misleading, twice misdiagnosed in the report. The bound is
+// runner-level, not per-fixture: 234 mkdtempSync sites are unauditable in one
+// place and every future fixture reintroduces the hazard, while a run-private
+// root + between-chunk sweep caps peak usage for every fixture at once.
+
+const RUN_TEMP_ROOT_PREFIX = 'gsd-test-run-';
+// Children the runner itself keeps alive across chunks — the sweep must spare
+// them (GSD_HOME's nested-spawn REUSE contract; the chunk-diagnostics events dir).
+const RESERVED_TEMP_PREFIXES = ['gsd-test-home-', 'gsd-run-tests-events-'];
+
+/**
+ * Create (or reuse) this run's private temp root and repoint the env at it.
+ *
+ * TMPDIR/TEMP/TMP all move, so every `mkdtempSync(os.tmpdir())` in a spawned
+ * test child lands inside the root — that is what makes a sweep scoped and
+ * safe. IDEMPOTENT exactly like the GSD_HOME sandbox below: a nested run-tests
+ * spawn (tests/run-tests-harness.test.cjs) inherits the root via env and must
+ * REUSE it, never mkdtemp a fresh root per invocation. An operator's TMPDIR
+ * redirect (the tmpfs workaround) keeps working: the root is created INSIDE the
+ * current tmpdir, so a disk-backed redirect stays disk-backed — and is now also
+ * cleaned at exit.
+ *
+ * Exported for in-process tests (tests/run-tests-temp-root.test.cjs).
+ */
+/** True when THIS process created the active run temp root (see setupRunTempRoot). */
+let createdRunTempRoot = false;
+
+function setupRunTempRoot() {
+  // Ownership (a nested run-tests spawn REUSES an inherited root and must never
+  // remove it on ITS exit — that would delete the outer run's root mid-suite,
+  // mass-ENOENTing every later fixture). PRECEDENCE: the FIRST SET var in
+  // TMPDIR > TEMP > TMP order decides — a set-but-not-a-run-root TMPDIR is an
+  // operator redirect (or a test sandboxing a child) and must WIN over leftover
+  // inherited TEMP/TMP, never be overridden by them (a CI-observed failure: the
+  // child redirected TMPDIR but inherited TEMP=<outer root>, and the any-of-three
+  // reuse check silently preferred the inherited root).
+  let inherited = '';
+  for (const key of ['TMPDIR', 'TEMP', 'TMP']) {
+    const v = process.env[key] || '';
+    if (!v) continue;
+    inherited = basename(v).startsWith(RUN_TEMP_ROOT_PREFIX) ? v : '';
+    break;
+  }
+  createdRunTempRoot = !inherited;
+  const root = inherited || mkdtempSync(join(tmpdir(), RUN_TEMP_ROOT_PREFIX));
+  for (const key of ['TMPDIR', 'TEMP', 'TMP']) process.env[key] = root;
+  return root;
+}
+
+/**
+ * Remove every non-reserved entry under the run root. Returns the removed
+ * count. `protect` is a set of absolute paths that must survive — the runner
+ * populates it with every ancestor of its SELECTED test files: a harness may
+ * stage synthetic test files under the temp root (tests/run-tests-harness.test.cjs
+ * writes 30 of them for its chunking rows), and a sweep that deleted them between
+ * chunks would make every later chunk fail with "Could not find". Best-effort per
+ * entry: a dir wedged open on Windows must not fail the run — the leak guard below
+ * is what makes persistent residue loud.
+ *
+ * Exported for in-process tests.
+ */
+function sweepRunTempRoot(root, protect = new Set()) {
+  let entries;
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of entries) {
+    if (RESERVED_TEMP_PREFIXES.some((p) => name.startsWith(p))) continue;
+    const full = join(root, name);
+    if (protect.has(full)) continue;
+    try {
+      rmSync(full, { recursive: true, force: true });
+      removed++;
+    } catch {
+      /* best-effort; the guard below reports persistent residue */
+    }
+  }
+  return removed;
+}
+
+/**
+ * Fail fast when post-sweep residue exceeds `limit` (#4020 acceptance 4):
+ * converting unbounded growth into a named-culprit runner error, BEFORE the
+ * temp filesystem fills and the failure metastasizes into unrelated
+ * EDQUOT/-122 copyfile errors. Leaked-directory COUNT is the proxy —
+ * statSync-walking multi-hundred-MB trees per chunk costs more than it
+ * protects. Override via RUN_TESTS_TMP_LEAK_LIMIT.
+ *
+ * Exported for in-process tests.
+ */
+function assertTempRootBounded(root, limit) {
+  const max = limit !== undefined ? limit
+    : positiveNumberEnv(process.env.RUN_TESTS_TMP_LEAK_LIMIT, 50);
+  let entries;
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return;
+  }
+  const leaked = entries.filter((n) => !RESERVED_TEMP_PREFIXES.some((p) => n.startsWith(p)));
+  if (leaked.length > max) {
+    throw new Error(
+      `run-tests: temp root leak — ${leaked.length} entries remain under ${root} after the ` +
+        `chunk sweep (limit ${max}). Likely culprits: ${leaked.slice(0, 5).join(', ')}. Failing ` +
+        `fast per #4020, before the temp filesystem fills and the failure surfaces as ` +
+        `unrelated EDQUOT/-122 copyfile errors in a later suite.`,
+    );
+  }
 }
 
 // Per-file measured durations, regenerated by scripts/gen-test-timings.cjs from
@@ -795,6 +957,34 @@ function rankChunkFilesByWeight(files, weightOf, timingsTable) {
     });
 }
 
+// #4020 / #4220: pure helper extracted from main()'s temp-sweep protection
+// block. Walks each selected file's ancestor directories, protecting every
+// one from a later temp-sweep, stopping either at runTempRoot or at the
+// filesystem root. Termination uses a FIXED-POINT check (stop when
+// dirnameImpl(cur) === cur) instead of a POSIX-only length sentinel
+// (`cur.length > 1`): path.posix.dirname('/') === '/' (length 1) correctly
+// stops, but path.win32.dirname('C:\\') === 'C:\\' (length 3) never
+// satisfies a length check, so the old logic spun forever on Windows
+// whenever a selected file lived outside runTempRoot — the common case,
+// since most selected test files live in the repo checkout, not the temp
+// root (root-caused every Windows CI shard timing out since #4207). The
+// injectable dirnameImpl lets tests exercise path.win32/path.posix behavior
+// directly without a real Windows/POSIX runner.
+function computeSweepProtectSet(selectedFiles, runTempRoot, dirnameImpl = require('path').dirname) {
+  const protectSet = new Set();
+  for (const f of selectedFiles) {
+    let cur = f;
+    while (cur && cur !== runTempRoot) {
+      const parent = dirnameImpl(cur);
+      if (parent === cur) break; // cur IS the filesystem root — never protect it, just stop
+      protectSet.add(cur);
+      cur = parent;
+    }
+    if (cur === runTempRoot) protectSet.add(f); // exact-file case
+  }
+  return protectSet;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const parsed = parseArgs(args);
@@ -878,10 +1068,36 @@ function main() {
   if (usingShard) {
     emptyBeforeShard = selectedNames.length === 0;
     shardInput = [...selectedNames].sort();
-    selectedNames = selectShard(shardInput, parsed.shard, fileWeightOf());
+    // #4070: RUN_TESTS_SHARD_RESERVE gives one shard a virtual head start in
+    // LPT weight units (same units fileWeightOf() already produces — no ms
+    // conversion needed) BEFORE any file is placed, so the packer routes
+    // fewer files to a shard that test.yml already knows carries a fixed
+    // extra cost outside this script's model (the aux suites pinned to shard
+    // 1 only). Every shard job of a run must build the IDENTICAL
+    // initialWeights array — the partition is recomputed independently in
+    // each shard's own process, so a value that differed between them would
+    // silently desync which files land where (the same hazard the `sig`
+    // cross-job fingerprint below already guards for the file list itself).
+    // Malformed/absent/out-of-range input degrades to no reserve — advisory,
+    // never gating, matching every other knob this script reads from the
+    // environment.
+    let initialWeights;
+    const reserve = parseShardReserve(process.env.RUN_TESTS_SHARD_RESERVE);
+    if (reserve && reserve.index <= parsed.shard.total) {
+      initialWeights = Array.from({ length: parsed.shard.total }, () => 0);
+      initialWeights[reserve.index - 1] = reserve.weight;
+    } else if (process.env.RUN_TESTS_SHARD_RESERVE) {
+      console.error(
+        `run-tests: RUN_TESTS_SHARD_RESERVE="${process.env.RUN_TESTS_SHARD_RESERVE}" is not a `
+        + `valid "<index>:<weight>" reserve for --shard total ${parsed.shard.total} — ignoring `
+        + '(no reserve applied)',
+      );
+    }
+    selectedNames = selectShard(shardInput, parsed.shard, fileWeightOf(), initialWeights);
   }
 
   const selected = selectedNames.map(f => join(testDir, f));
+
 
   if (selected.length === 0) {
     // A legitimately-empty shard: --shard was given, the pre-shard selection
@@ -923,6 +1139,32 @@ function main() {
   delete process.env.GSD_PROJECT;
   delete process.env.GSD_WORKSTREAM;
   delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+
+  // #4020: bound the run's temp footprint BEFORE any sandbox below mkdtemps, so
+  // every child allocation (fixtures, GSD_HOME, events) lands inside one root
+  // that is swept between chunks and removed on exit. Announced on stderr so an
+  // operator (and tests/run-tests-temp-root.test.cjs) can observe it.
+  const runTempRoot = setupRunTempRoot();
+  console.error(`run-tests: tmp-root=${runTempRoot}`);
+  // OWNERSHIP-GATED (#4020 review): only the process that CREATED the root
+  // removes it — a nested run-tests spawn (the harness regression test) reuses
+  // the outer run's root and must leave it standing mid-suite.
+  if (createdRunTempRoot) {
+    process.on('exit', () => {
+      try {
+        rmSync(runTempRoot, { recursive: true, force: true });
+      } catch {
+        /* best-effort; a wedged child dir must not block exit reporting */
+      }
+    });
+  }
+
+  // #4020: the temp sweep must never remove a directory holding a file a LATER
+  // chunk still runs — a harness may stage synthetic test files under the run
+  // root (tests/run-tests-harness.test.cjs's 30-file chunking fixture). Protect
+  // every ancestor of every selected file that lies INSIDE the run root.
+  const sweepProtectSet = computeSweepProtectSet(selected, runTempRoot);
+
   // Sandbox the overlay home so the loader's global scan ($GSD_HOME/.gsd/capabilities)
   // cannot read a developer's real installed capabilities during tests (ADR-1244 D2).
   // IDEMPOTENT: a nested run-tests spawn (e.g. tests/run-tests-harness.test.cjs)
@@ -1232,6 +1474,26 @@ function main() {
       } catch {
         // Best-effort; a missing/already-gone file is not an error here.
       }
+      // #4020: bound peak temp usage to ONE chunk, not the whole run — sweep
+      // the leaked fixture trees the chunk's tests left behind, then fail fast
+      // if residue persists (a fixture nothing cleans, wedged open), before the
+      // temp filesystem fills. OWNER-ONLY: a nested run-tests spawn (the harness
+      // regression test) REUSES the outer run's root and runs while the outer
+      // chunk's OTHER test files are live — its sweep would delete their
+      // fixtures mid-run (macOS CI: template.test.cjs's plan file vanished and
+      // its classifier silently fell back to 'standard'). Only the process that
+      // created the root manages its lifecycle; the inheritor leaves sweeping to
+      // the owner. PROTECTED (for the owner): ancestors of the runner's own
+      // selected files — a harness may stage synthetic test files under the temp
+      // root and later chunks still need them (tests/run-tests-harness.test.cjs
+      // #3597).
+      if (createdRunTempRoot) {
+        const swept = sweepRunTempRoot(runTempRoot, sweepProtectSet);
+        if (swept > 0) {
+          console.error(`run-tests: temp sweep after chunk ${i + 1}/${chunks.length} — removed ${swept} leaked entr${swept === 1 ? 'y' : 'ies'}`);
+        }
+        assertTempRootBounded(runTempRoot);
+      }
     } catch (err) {
       const elapsedMs = Number(process.hrtime.bigint() - chunkStartedAt) / 1e6;
       // When the per-chunk timeout fires, execFileSync kills the child and
@@ -1379,6 +1641,7 @@ module.exports = {
   ensureBuiltArtifacts,
   ensureBuiltHooks,
   parseShardArg,
+  parseShardReserve,
   selectShard,
   positiveNumberEnv,
   loadTestTimings,
@@ -1393,4 +1656,12 @@ module.exports = {
   selectExplicitFiles,
   selectFiles,
   walkTestFiles,
+  // #4020: run-scoped temp root — see the block above their definitions.
+  setupRunTempRoot,
+  sweepRunTempRoot,
+  assertTempRootBounded,
+  // #4220: extracted for in-process unit coverage of the ancestor-walk
+  // termination logic (Windows drive-root hang fix) without a real
+  // Windows/POSIX runner.
+  computeSweepProtectSet,
 };

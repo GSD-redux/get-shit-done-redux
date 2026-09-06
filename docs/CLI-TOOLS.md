@@ -93,6 +93,10 @@ node gsd-tools.cjs state patch --field1 val1 --field2 val2
 
 # Increment plan counter
 node gsd-tools.cjs state advance-plan
+# When no labeled plan position can be parsed (e.g. ## Current Position drifted
+# to pure narrative prose), declines with reason "plan_position_unreadable" plus
+# the disk-derived counts and the exact labeled lines to re-insert; STATE.md is
+# left byte-identical.
 
 # Record execution metrics
 node gsd-tools.cjs state record-metric --phase N --plan M --duration Xmin [--tasks N] [--files N]
@@ -282,6 +286,136 @@ from the DAG with the edge missing, since the edge cannot be invented. A
 consumer using `wave` for scheduling (`WAVE_FILTER`, the wave-safety check)
 is still working from the degraded assignment; only the diagnostic surfaces
 the loss.
+
+### The ROADMAP `**Requirements**:` line grammar
+
+`phase complete` reads each phase's `**Requirements**:` line to decide which
+REQ-IDs to mark. The grammar is deliberately small, and it is documented here
+because the command now warns about it (#3697) — a warning about a rule that
+cannot be looked up is not actionable.
+
+**The canonical form is a comma-separated list of REQ-IDs.** Square brackets are
+optional; a REQ-ID is `PREFIX-N`, where the prefix is a letter followed by
+letters or digits. Two tolerances are worth knowing because the warnings below
+do **not** fire on them: the line is split on commas *and whitespace*, so
+`REQ-01 REQ-02` selects both; and the ID shape is matched case-insensitively,
+so `req-01` is selected and marked. Write the comma list anyway — it is what
+every template and every example uses — but neither spelling is an error:
+
+```
+**Requirements**: REQ-01, REQ-02, REQ-03
+**Requirements**: [REQ-01, REQ-02, REQ-03]
+```
+
+**Ranges are not expanded** — `REQ-01 … REQ-05` selects the two endpoints and
+nothing between them, and `REQ-01..REQ-05` selects nothing at all, because the
+whole token fails the ID shape. This is a deliberate non-feature, not an
+oversight: the line is a traceability record, and silently inventing IDs that
+appear nowhere in `REQUIREMENTS.md` is worse than declining to.
+
+**A deliberately empty line is written `TBD` or `None`.** Those two words are
+the placeholder vocabulary, and they are matched as the line's leading token, so
+`None (per ADR-7)` and `**None**` are declared-empty too. **Any other wording
+that selects no REQ-IDs warns** — `Deferred`, `N/A`, `Pending`, `TBA`, a bare
+`-`, or free prose — because from the command's side an unrecognised word is
+indistinguishable from a line that was meant to cite requirements and failed
+to. A line whose only content is an HTML comment is not "other wording" and
+stays silent, so the shipped template's own `<!-- ... -->` does not warn.
+
+**Write each requirement as a bare ID, separated by a comma.** The line is
+split on commas and whitespace only, and nothing else is stripped, so anything
+attached to an ID takes the ID with it. `REQ-01; REQ-02` marks **only**
+`REQ-02`; so do `REQ-01 ;REQ-02`, `**REQ-01;** REQ-02` and an ID carrying a
+stray invisible character. Those are the cases the warning names — it reports
+the dropped ID, because this is the quietest way to lose a requirement here
+(the command reports `requirements_updated: true` either way).
+
+**What the warning does NOT reach.** Stated so its silence is not read as a
+clean bill, and enumerated rather than summarised, because each of these is a
+requirement that goes missing without a word. The check fires only when the
+thing touching the ID is a `;`, a `:`, or an invisible character:
+
+- **Markdown styling on its own is silent.** `**REQ-01**, REQ-02` drops
+  `REQ-01` and says nothing at all. Styling is not evidence that a separator
+  was meant. `**REQ-01**; REQ-02` is silent for the same reason — the `**`
+  sits between the ID and the `;`, so nothing is touching the ID.
+- **Any other attached punctuation is silent.** `REQ-01/ REQ-02`,
+  `REQ-01| REQ-02`, `REQ-01. REQ-02`, `REQ-01+ REQ-02`, `REQ-01> REQ-02` and
+  their full-width and non-ASCII equivalents (`；`, `，`, `؛`) each mark only
+  `REQ-02`. A fully crossed sweep — 21 separators against bare, leading-space,
+  trailing-space and both-spaces spellings, 84 combinations — found **34**
+  silent under-selections, every one of them a separator glued to exactly one
+  of the two IDs. Only `;` and `:` are in the set. Widening it is a live
+  option — say the word — but each past widening of this check first fired on
+  a citation, so it is not done blind.
+- **A dropped ID whose prefix matches nothing selected is silent.**
+  `REQ-01, REQ-02: login` is reported; `REQ-01, FOO-02: x` is not. A citation
+  is textually identical to a dropped requirement — `REQ-01, see ADR-7:
+  section 3` carries `ADR-7:` in exactly the shape `REQ-01;` has — and prefix
+  agreement is the only thing that separates them without guessing at prose.
+  Anything inside matched parentheses is left alone for the same reason:
+  `(see ADR-7: section 3)` is a citation.
+
+The prefix gate is not complete in the other direction either: a citation that
+*shares* a selected prefix — `REQ-01, see REQ-7: sec 3` — does warn, naming
+`REQ-7` as dropped. Nothing at the token level separates that from a real
+drop.
+
+**Dash spellings need a full ID on both sides.** `REQ-01-REQ-05` reads as a
+range; `REQ-01-05` does not, and neither does any of its typographic variants
+(en dash, em dash, minus sign, and the rest). The reason is that
+`PREFIX-<digits><dash><digits>` is also a date (`FY-2026-08`) and a sub-numbered
+ID (`API-2-01`), so warning on it would be noise on lines that are perfectly
+correct. `..`, `…`, `to`, `thru` and `through` have no such reading and do
+accept a bare numeric endpoint (`REQ-01..05`). The cost is that
+`REQ-01, REQ-02-05` is not reported; a bare `REQ-02-05` still is, because it
+selects nothing.
+
+**What warns, and in which of the three voices.** All go to `warnings[]` and
+none blocks completion:
+
+- *"could not be parsed as a comma-separated REQ-ID list"* — the line did not
+  yield the requirements it appears to name. That covers two cases, and the
+  message says which one it is: ID-shaped text on the line was **not**
+  selected, so something was demonstrably dropped; **or** the line selected
+  nothing at all while not being a `TBD`/`None` placeholder, in which case
+  there may be no ID-shaped text on it whatsoever (`Deferred` takes this
+  voice). Either way nothing was marked and the line needs fixing.
+- *"contains what reads as a range between two cited REQ-IDs"* — the separator
+  is the only thing in question: a separator between two cited IDs could equally
+  be a range or an annotation, and the command cannot tell them apart, so it
+  states both readings rather than asserting a failure that may not have
+  happened. It speaks about the **separator**, not about the whole line. It is
+  also the *weakest* of the three claims, so it yields to the other two: a
+  demonstrated drop elsewhere on the line makes it a misparse, and an
+  unexamined over-cap token makes the line unverified — a voice whose claim is
+  that nothing was dropped cannot speak over a token no rule read.
+
+**Each warning carries a machine-readable kind.** The prose goes to
+`warnings[]` as before — that field is unchanged and is still an array of
+strings — and the kind is emitted beside it as `requirements_line_warning`,
+one of `req-line-misparse`, `req-line-range-reading` or `req-line-unverified`.
+The field is absent entirely when the line is clean. Key on the kind rather
+than on the wording; the wording is free to improve.
+
+Either of those two voices may add a factual note naming **ID-shaped text on the
+line that was not selected**. Square brackets *are* stripped — `[REQ-01, REQ-02]`
+is the documented form — but parentheses are not, so `(REQ-02)` is not marked.
+The command cannot tell that from `(ADR-7)`, which is a citation and correctly
+ignored, so it names what it skipped and leaves the judgement to you. Where the
+skipped text is `PREFIX-<digits>-<digits>` — the shape the dash rule above
+declines to adjudicate, because `FY-2026-08` is a date and `API-2-01` is a
+legal requirement id and no rule separates them — it is still named, with that
+ambiguity stated alongside it. Naming it and saying why it is ambiguous beats
+both alternatives: filtering it hides a real dropped requirement, and reporting
+it bare asks you to check whether a date is a requirement.
+The third voice is for input the command could not examine: *"could not be
+checked ... the REQ-ID selection on this line is unverified"*. Range detection
+is bounded at 2,048 characters per token, so a longer token is not classified —
+and unclassified is reported, never treated as clean. Selection itself is *not*
+bounded, so a valid REQ-ID longer than that is still selected and marked
+normally; it only triggers this voice if something beside it could have formed a
+range with it, which is the case where the bound actually suppressed a check.
 
 ---
 
@@ -1027,8 +1161,17 @@ active window are still outstanding.
 
 ```bash
 # Complete a todo
-node gsd-tools.cjs todo complete <filename>
+node gsd-tools.cjs todo complete <filename> [--dry-run]
+```
 
+`--dry-run` previews the completion (a `dry_run`/`would_*` JSON payload naming
+the source, the destination, and the frontmatter keys it would set) without
+moving the file or touching anything on disk. A real completion moves the todo
+from `todos/pending/` to `todos/completed/` and upserts `completed:` and
+`status: completed` inside the file's frontmatter block. Unknown flags are
+rejected loudly.
+
+```bash
 # UAT audit — scan all phases for unresolved items
 node gsd-tools.cjs audit-uat
 

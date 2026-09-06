@@ -399,31 +399,24 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run (MUST fail), commit: `test({phase}-{plan}): add failing test for [feature]`
+**2-4. RED → GREEN → REFACTOR (#3990: stated ONCE; #4267: cited correctly):** execute the
+cycle exactly as the canonical `gsd-core/references/tdd.md` reference specifies (embedded when
+TDD applies) — the "Red-Green-Refactor Cycle" section's commit-scope contract, the "Gate
+Enforcement Rules" section's "Fail-Fast Rules" subsection, and the "Error Handling" section.
+The reference is the single source; do not improvise a variant.
 
-**3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
+## Plan-Level TDD Gate Enforcement (type: tdd plans, #4269: stated ONCE)
 
-**4. REFACTOR (if needed):** Clean up, run tests (MUST still pass), commit only if changes: `refactor({phase}-{plan}): clean up [feature]`
-
-**Error handling:** RED doesn't fail ��� investigate. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
-
-## Plan-Level TDD Gate Enforcement (type: tdd plans)
-
-When the plan frontmatter has `type: tdd`, the entire plan follows the RED/GREEN/REFACTOR cycle as a single feature. Gate sequence is mandatory:
-
-**Fail-fast rule:** If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
-
-**Gate sequence validation:** After completing the plan, verify in git log:
-1. A `test(...)` commit exists (RED gate)
-2. A `feat(...)` commit exists after it (GREEN gate)
-3. Optionally a `refactor(...)` commit exists after GREEN (REFACTOR gate)
-
-If RED or GREEN gate commits are missing, add a warning to SUMMARY.md under a `## TDD Gate Compliance` section.
+When the plan frontmatter has `type: tdd`, the mandatory RED/GREEN/REFACTOR gate sequence,
+its fail-fast rules (including the #3770 INVALID_RED / intentional-RED-evidence requirement
+enforced via `gsd_run check tdd-red-evidence`), and the `## TDD Gate Compliance` SUMMARY.md contract are
+specified in the canonical `gsd-core/references/tdd.md` "Gate Enforcement Rules" section
+(embedded when TDD applies). The reference is the single source; do not improvise a variant.
 </tdd_execution>
 
 ## MVP+TDD Gate
 
-**When the orchestrator passes both `MVP_MODE=true` and `TDD_MODE=true`:** Before running the implementation step of any task with `tdd="true"`, run the runtime gate from `~/.claude/gsd-core/references/execute-mvp-tdd.md` (Read it). If the gate trips, halt and report — do NOT proceed to the implementation step.
+**When the orchestrator passes `TDD_MODE=true` (#4011 — MVP not required):** Before running the implementation step of any task with `tdd="true"`, run the runtime gate from `~/.claude/gsd-core/references/execute-mvp-tdd.md` (Read it). If the gate trips, halt and report — do NOT proceed to the implementation step.
 
 **Halt-and-report protocol:**
 
@@ -486,19 +479,30 @@ Prefer **relative paths** for all Edit/Write operations inside a worktree. When 
 is unavoidable, always derive it from `git rev-parse --show-toplevel` run inside the worktree,
 not from a `pwd` captured in the orchestrator context.
 
-**0. Pre-commit HEAD safety assertion (worktree mode only, MANDATORY before every commit — #2924):**
-When running inside a Claude Code worktree (`.git` is a file, not a directory), assert HEAD is on a per-agent branch BEFORE staging or committing. If HEAD has drifted onto a protected ref, HALT — never self-recover via `git update-ref refs/heads/<protected>`:
+**0. Pre-commit HEAD safety assertion (MANDATORY — #2924, #3819):**
+Assert HEAD is not the protected/default branch before committing (#3819). If drifted onto it, HALT — never self-recover via `git update-ref refs/heads/<protected>`:
 ```bash
-if [ -f .git ]; then  # worktree
-  HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
-  ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  # Deny-list: never commit on a protected ref.
-  if [ "$HEAD_REF" = "DETACHED" ] || \
-     echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
-    echo "FATAL: refusing to commit — worktree HEAD is on '$ACTUAL_BRANCH' (expected per-agent branch)." >&2
-    echo "DO NOT use 'git update-ref' to rewind the protected branch — surface as blocker (#2924)." >&2
-    exit 1
+HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
+ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$HEAD_REF" = "DETACHED" ]; then
+  echo "FATAL: refusing to commit — HEAD is detached." >&2
+  exit 1
+fi
+# #3819: real default branch; override git.allow_default_branch_commits; else five-name fallback.
+IS_PROTECTED=$(gsd_run query git.base-branch --is-protected "$ACTUAL_BRANCH" 2>/dev/null) || IS_PROTECTED="__GSD_RUN_UNAVAILABLE__"
+if [ "$IS_PROTECTED" = "__GSD_RUN_UNAVAILABLE__" ] || [ -z "$IS_PROTECTED" ]; then
+  if echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
+    IS_PROTECTED="true"
+  else
+    IS_PROTECTED="false"
   fi
+fi
+if [ "$IS_PROTECTED" != "false" ]; then
+  echo "FATAL: refusing to commit — HEAD is on '$ACTUAL_BRANCH' (protected/default branch)." >&2
+  echo "Re-home onto a phase/agent branch (#2924, #3819); override: git.allow_default_branch_commits:true in .planning/config.json." >&2
+  exit 1
+fi
+if [ -f .git ]; then  # worktree
   # Positive allow-list: HEAD must be on a per-agent branch (`agent-<id>` or
   # legacy `worktree-agent-<id>`). This catches feature/* and any other
   # arbitrary branch that the deny-list would silently allow (#2924, #1995).
@@ -537,6 +541,18 @@ git add src/types/user.ts
 ```bash
 gsd_run query commit-to-subrepo "{type}({phase}-{plan}): {concise task description}" --files file1 file2 ...
 ```
+**0c. Plan commit ledger (#3968, single-repo — before the first commit):**
+Each Bash call is a FRESH shell, so the ledger persists on disk like the #3097 sentinel above
+(a variable would be unset at SUMMARY time and `rev-list ..HEAD` would measure zero).
+Per-plan filename, so sequential plans cannot contaminate each other:
+```bash
+_GSD_LEDGER="$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}"
+[ -f "$_GSD_LEDGER" ] || git rev-parse HEAD > "$_GSD_LEDGER"
+```
+The SUMMARY's `commits:` is MEASURED from this ledger, the base recorded as
+`plan_head_before:` for `/gsd:verify-work`'s same-instrument check. Multi-repo keeps commit-to-subrepo
+JSON hashes instead.
+
 Returns JSON with per-repo commit hashes: `{ committed: true, repos: { "backend": { hash: "abc", files: [...] }, ... } }`. Record all hashes for SUMMARY.
 
 **Otherwise (standard single-repo):**
@@ -578,8 +594,7 @@ back, those deletions appear on the main branch, destroying prior-wave work (#20
 - `git rm` on files not explicitly created by the current task
 - `git checkout -- .` or `git restore .` (blanket working-tree resets that discard files)
 - `git reset --hard` except inside the `<worktree_branch_check>` step at agent startup
-- `git update-ref refs/heads/<protected>` (where protected is `main`, `master`,
-  `develop`, `trunk`, or `release/*`). This is an absolute prohibition (#2924).
+- `git update-ref refs/heads/<protected>` (resolved protected branch, #2924, #3819). Prohibited.
   If you discover that your worktree HEAD is attached to a protected branch and your
   commits landed there, **DO NOT** "recover" by force-rewinding the protected ref —
   that silently destroys concurrent commits in multi-active scenarios (parallel
@@ -649,9 +664,21 @@ This file is the canonical output of this step. The orchestrator reads `.plannin
 actuals:
   tokens: 74000    # chars/4 over the files you actually changed
   tasks: 5         # tasks completed
-  commits: 7       # commits made
+  commits: 7       # MEASURED: git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD (#3968)
 ```
 These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
+
+**`commits:` is measured, never narrated (#3968).** At SUMMARY write, read the persisted
+ledger (protocol 0c — a fresh shell per Bash call; the base comes from disk):
+```bash
+PLAN_HEAD_BEFORE=$(cat "$(git rev-parse --git-dir)/gsd-plan-head-before-{phase}-{plan}")
+COMMITS_ACTUAL=$(git rev-list --count ${PLAN_HEAD_BEFORE}..HEAD)
+```
+Write BOTH into the frontmatter — `commits: ${COMMITS_ACTUAL}`,
+`plan_head_before: ${PLAN_HEAD_BEFORE}` — including when the count is `0`.
+A `0` with code changes means the changes sit UNCOMMITTED: **HALT — do not write the
+SUMMARY with a narrated count**; surface `git status --short` in your return. A `0` with no
+code changes (docs-only) is legitimate. `/gsd:verify-work` flags mismatches as BLOCKER.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 
@@ -785,6 +812,7 @@ gsd_run query state.add-blocker --text "Blocker description"
 </state_updates>
 
 <final_commit>
+This commit must re-run the Step 0 assertion above (#3819).
 ```bash
 gsd_run query commit "docs({phase}-{plan}): complete [plan-name] plan" --files \
   .planning/phases/XX-name/{phase}-{plan}-SUMMARY.md .planning/STATE.md .planning/ROADMAP.md .planning/REQUIREMENTS.md

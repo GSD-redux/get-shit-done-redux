@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter } = require('./helpers.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
@@ -1951,6 +1951,31 @@ describe('cmdInitQuick', () => {
     cleanup(tmpDir);
   });
 
+  test('init quick resolves the default researcher_model without overrides', () => {
+    // #3936: the quick research step dispatches gsd-phase-researcher, so init
+    // quick must resolve that agent's balanced-profile model without an override.
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.researcher_model, 'sonnet',
+      'default balanced profile should resolve the research agent model');
+  });
+
+  test('init quick resolves researcher_model from model_overrides', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-phase-researcher': 'openai/o4-mini' },
+    }));
+
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.researcher_model, 'openai/o4-mini',
+      'model_overrides["gsd-phase-researcher"] must reach init quick\'s researcher_model');
+  });
+
   test('with description generates slug and task_dir with YYMMDD-xxx format', () => {
     const result = runGsdTools('init quick "Fix login bug"', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -3241,19 +3266,7 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
    * it were stdout.
    */
   function captureInitVerifyWork(t, cwd, phase) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    initMod.cmdInitVerifyWork(cwd, phase, false);
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, () => initMod.cmdInitVerifyWork(cwd, phase, false));
     assert.ok(captured.length > 0, 'cmdInitVerifyWork produced no stdout output');
     return captured;
   }
@@ -3354,19 +3367,7 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   });
 
   function captureFd1(t, run) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    run();
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, run);
     assert.ok(captured.length > 0, 'command produced no stdout output');
     return JSON.parse(captured);
   }
@@ -3387,11 +3388,17 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   const phaseDirAbs = () => path.join(projectDir, '.planning', 'phases', '03-api');
 
   describe('cmdInitPlanPhase', () => {
+    // #4014 (epic #3473 B4-unreadable) matrix row 14: a readable, genuinely
+    // context-less phase dir reports context_scope 'complete' — the
+    // additive scope signal adjacent to has_context.
     test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
       const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
       assert.strictEqual(output.context_read_error ?? null, null);
+      assert.strictEqual(output.context_scope, 'complete');
     });
 
+    // #4014 matrix row 13: has_context stays false AND context_scope
+    // distinguishes this from genuine absence.
     test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
       injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
       const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
@@ -3399,6 +3406,9 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
         `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
       assert.ok(output.context_read_error.includes('03-api'),
         `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+      assert.strictEqual(output.has_context, false);
+      assert.strictEqual(output.context_scope, 'unreadable',
+        `an unreadable phase directory must report context_scope 'unreadable', distinct from a genuinely empty one; got: ${output.context_scope}`);
     });
 
     test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
@@ -3410,11 +3420,14 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
   });
 
   describe('cmdInitPhaseOp', () => {
+    // #4014 matrix row 14 (second surface).
     test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
       const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
       assert.strictEqual(output.context_read_error ?? null, null);
+      assert.strictEqual(output.context_scope, 'complete');
     });
 
+    // #4014 matrix row 13 (second surface).
     test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
       injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
       const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
@@ -3422,6 +3435,9 @@ describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absen
         `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
       assert.ok(output.context_read_error.includes('03-api'),
         `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+      assert.strictEqual(output.has_context, false);
+      assert.strictEqual(output.context_scope, 'unreadable',
+        `an unreadable phase directory must report context_scope 'unreadable', distinct from a genuinely empty one; got: ${output.context_scope}`);
     });
 
     test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
@@ -4572,6 +4588,117 @@ describe('init section manifest', () => {
     });
   });
 
+  describe('init tdd_mode: workflow.tdd_mode config flows through loadConfig (#4273 defect fix)', () => {
+    // Regression test for a pre-existing defect fixed alongside #4273's
+    // `phase.tdd-applicable` work: `loadConfig()` (src/config-loader.cts)
+    // had no flattened `tdd_mode` field, so every `(config.workflow ?? {})`
+    // call site in this file always read `{}` — `workflow.tdd_mode` set in
+    // `.planning/config.json` silently never reached `cmdInitExecutePhase`,
+    // `cmdInitPlanPhase`, or `cmdInitDebug`'s `tdd_mode` output field, despite
+    // `workflow.tdd_mode` being a documented config contract
+    // (gsd-core/references/tdd.md). `loadConfig()` now flattens
+    // `workflow.tdd_mode` onto `config.tdd_mode` — mirroring the existing
+    // `workflow.mvp_mode` -> `config.mvp_mode` pattern — and all three call
+    // sites read `config.tdd_mode` directly instead of the dead `wf['tdd_mode']`
+    // lookup. Before the fix, every assertion below would have failed
+    // (`body.tdd_mode` would read `false` regardless of the config value).
+    function writeWorkflowConfig(dir, workflowConfig) {
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: workflowConfig }));
+    }
+
+    test('executePhaseTddModeReflectsWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-exec-');
+      writeWorkflowConfig(dir, { tdd_mode: true });
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'tdd-exec');
+      assert.equal(body.tdd_mode, true, 'workflow.tdd_mode: true must flow through to the tdd_mode output field');
+    });
+
+    test('executePhaseTddModeFalseWhenConfigAbsent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-exec-absent-');
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'tdd-exec-absent');
+      assert.equal(body.tdd_mode, false);
+    });
+
+    test('planPhaseTddModeReflectsWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-plan-');
+      writeWorkflowConfig(dir, { tdd_mode: true });
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'tdd-plan');
+      assert.equal(body.tdd_mode, true, 'workflow.tdd_mode: true must flow through to the tdd_mode output field');
+    });
+
+    test('planPhaseTddModeFalseWhenConfigAbsent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-plan-absent-');
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'tdd-plan-absent');
+      assert.equal(body.tdd_mode, false);
+    });
+
+    test('debugTddModeReflectsWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-debug-');
+      writeWorkflowConfig(dir, { tdd_mode: true });
+      const body = parseOkJson(runSectionManifestCli(['init.debug'], dir), 'tdd-debug');
+      assert.equal(body.tdd_mode, true, 'workflow.tdd_mode: true must flow through to the tdd_mode output field');
+    });
+
+    test('debugTddModeFalseWhenConfigFalse', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-tdd-debug-false-');
+      writeWorkflowConfig(dir, { tdd_mode: false });
+      const body = parseOkJson(runSectionManifestCli(['init.debug'], dir), 'tdd-debug-false');
+      assert.equal(body.tdd_mode, false);
+    });
+  });
+
+  describe('init research_enabled/nyquist_validation_enabled: workflow.research + workflow.nyquist_validation config flow through loadConfig (#4273 defect fix)', () => {
+    // Regression test for the same dead-accessor class as the tdd_mode block
+    // above, found while fixing it: `cmdInitNewMilestone`'s `research_enabled`
+    // and `cmdInitPlanPhase`'s `research_enabled` / `nyquist_validation_enabled`
+    // all read through `(config.workflow ?? {})` (`wf`), which `loadConfig()`
+    // never populates — so all three fields were ALWAYS `undefined`,
+    // regardless of `.planning/config.json`. `loadConfig()` already flattens
+    // `workflow.research` -> `config.research` and `workflow.nyquist_validation`
+    // -> `config.nyquist_validation` (both default `true` when unset — see
+    // gsd-core/bin/shared/config-defaults.manifest.json); these call sites now
+    // read the flattened fields directly instead of the dead `wf[...]` lookup.
+    // Before the fix, every assertion below would have failed (`undefined`
+    // regardless of config, dropped entirely from the JSON output).
+    function writeWorkflowConfig(dir, workflowConfig) {
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: workflowConfig }));
+    }
+
+    test('newMilestoneResearchEnabledDefaultsTrue', (t) => {
+      const dir = fs.realpathSync(createFixture());
+      t.after(() => cleanup(dir));
+      const result = runGsdTools('init new-milestone', dir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const body = JSON.parse(result.output);
+      assert.strictEqual(body.research_enabled, true, 'workflow.research defaults to true and must flow through to research_enabled');
+    });
+
+    test('newMilestoneResearchEnabledReflectsWorkflowConfigFalse', (t) => {
+      const dir = fs.realpathSync(createFixture());
+      t.after(() => cleanup(dir));
+      writeWorkflowConfig(dir, { research: false });
+      const result = runGsdTools('init new-milestone', dir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const body = JSON.parse(result.output);
+      assert.strictEqual(body.research_enabled, false, 'workflow.research: false must flow through to research_enabled');
+    });
+
+    test('planPhaseResearchAndNyquistEnabledReflectWorkflowConfig', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-research-plan-');
+      writeWorkflowConfig(dir, { research: false, nyquist_validation: false });
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'research-plan');
+      assert.strictEqual(body.research_enabled, false, 'workflow.research: false must flow through to research_enabled');
+      assert.strictEqual(body.nyquist_validation_enabled, false, 'workflow.nyquist_validation: false must flow through to nyquist_validation_enabled');
+    });
+
+    test('planPhaseResearchAndNyquistEnabledDefaultTrueWhenConfigAbsent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-research-plan-absent-');
+      const body = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'research-plan-absent');
+      assert.strictEqual(body.research_enabled, true);
+      assert.strictEqual(body.nyquist_validation_enabled, true);
+    });
+  });
+
   // ── Row 62: stub <execution_context> @-refs still resolve (ADR-0002) ────
 
   describe('commands/gsd/execute-phase.md: <execution_context> @-refs resolve (#2932 row 62)', () => {
@@ -4742,6 +4869,70 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     const eight = (out.phases || []).find((p) => String(p.number).replace(/^0+/, '') === '8');
     assert.ok(eight, 'Phase 8 present in the phases array (roadmap-derived)');
     assert.equal(eight.directory, null, 'Phase 8 has no directory (corroborating the stray-only-disk shape)');
+  });
+
+  test('#4023: init.progress sorts decimal phase ids before choosing the roadmap frontier', (t) => {
+    const tmpDir = createTempProject('gsd-4023-init-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap',
+      '',
+      '## Milestone v1.1.0',
+      '',
+      '### Phase 12: Parent',
+      '**Goal:** g',
+      '',
+      '### Phase 12.1: Inserted fix',
+      '**Goal:** g',
+      '',
+      '### Phase 12.2: Second insert',
+      '**Goal:** g',
+      '',
+      '### Phase 12.10: Tenth insert',
+      '**Goal:** g',
+      '',
+      '### Phase 13: Follow-up',
+      '**Goal:** g',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.1.0',
+      'milestone_name: Active',
+      'status: executing',
+      'current_phase: 12.1',
+      'progress:',
+      '  total_phases: 13',
+      '  completed_phases: 11',
+      '  percent: 85',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 12.1',
+      'Status: Executing',
+      '',
+    ].join('\n'));
+    for (const dir of ['12.1-inserted-fix', '12.10-tenth-insert']) {
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', dir), { recursive: true });
+    }
+
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.deepEqual(
+      out.phases.map((phase) => String(phase.number).replace(/^0+(?=\d)/, '')),
+      ['12', '12.1', '12.2', '12.10', '13'],
+      'the disk/roadmap union follows component-wise phase-id order (12.2 before 12.10)',
+    );
+    assert.equal(
+      String(out.next_phase.number).replace(/^0+(?=\d)/, ''),
+      '12',
+      'the pending parent remains the frontier when an inserted decimal directory exists first',
+    );
   });
 
   test('#3581 (control): a pending roadmap-only phase outranks a later pending directory', (t) => {
@@ -4941,4 +5132,99 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #4040: partial-init routing signal (interrupted bootstrap detection)
+// ─────────────────────────────────────────────────────────────────────────────
 
+describe('#4040 partial-init completeness fields', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('#4040 init.progress: interrupted bootstrap (PROJECT.md only) is flagged init_incomplete', () => {
+    // Issue repro: bootstrap died after PROJECT.md + config.json, before
+    // REQUIREMENTS.md / ROADMAP.md / STATE.md.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.planning_exists, true);
+    assert.strictEqual(output.project_exists, true);
+    assert.strictEqual(output.requirements_exists, false);
+    assert.strictEqual(output.roadmap_exists, false);
+    assert.strictEqual(output.state_exists, false);
+    assert.strictEqual(output.milestones_exists, false);
+    assert.strictEqual(output.init_incomplete, true,
+      'interrupted bootstrap must be distinguishable from new project / between milestones');
+  });
+
+  test('#4040 init.progress: complete project is not init_incomplete', () => {
+    writePlanningDocs(tmpDir); // STATE.md + ROADMAP.md + REQUIREMENTS.md
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_exists, true);
+    assert.strictEqual(output.init_incomplete, false);
+  });
+
+  test('#4040 init.progress: between-milestones archive state is not init_incomplete', () => {
+    // milestone.complete archives ROADMAP (and REQUIREMENTS) but leaves
+    // MILESTONES.md + STATE.md — Route F territory, NOT a partial bootstrap.
+    writePlanningDocs(tmpDir, { roadmap: false, requirements: false });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'MILESTONES.md'), '# Milestones\n\n## v1.0\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.milestones_exists, true);
+    assert.strictEqual(output.init_incomplete, false,
+      'an archived milestone (MILESTONES.md present) must keep the between-milestones route');
+  });
+
+  test('#4040 init.progress: empty .planning (config only) is init_incomplete, not "no planning"', () => {
+    // Bootstrap that died before even PROJECT.md: .planning/ exists, so the
+    // workflow must not claim "no planning structure found".
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init progress', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.planning_exists, true);
+    assert.strictEqual(output.project_exists, false);
+    assert.strictEqual(output.init_incomplete, true);
+  });
+
+  test('#4040 init.resume: interrupted bootstrap flagged init_incomplete', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init resume', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.requirements_exists, false);
+    assert.strictEqual(output.init_incomplete, true,
+      'resume must route to initialization recovery, not STATE.md reconstruction');
+  });
+
+  test('#4040 init.new-project: interrupted bootstrap flagged init_incomplete', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\nTest\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), '{}\n');
+
+    const result = runGsdTools('init new-project', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.init_incomplete, true,
+      'new-project gate must resume a partial bootstrap instead of erroring');
+  });
+});

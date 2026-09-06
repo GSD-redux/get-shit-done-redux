@@ -83,17 +83,12 @@ describe('config-field-docs', () => {
   });
 
   test('every CONFIG_DEFAULTS key appears in the doc', () => {
-    // Extract CONFIG_DEFAULTS keys from config-loader.cjs source (moved from core.cjs by ADR-857 phase 2e)
-    const coreSource = fs.readFileSync(CORE_PATH, 'utf-8');
-    const defaultsMatch = coreSource.match(
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own config-loader.cjs source, fixed-size author-controlled content
-      /const CONFIG_DEFAULTS\s*=\s*\{([\s\S]*?)\r?\n\};/
-    );
-    assert.ok(defaultsMatch, 'Could not find CONFIG_DEFAULTS in config-loader.cjs');
+    // Read CONFIG_DEFAULTS' actual keys straight from the module (moved from
+    // core.cjs by ADR-857 phase 2e) instead of regex-parsing its source text.
+    const { CONFIG_DEFAULTS } = require(CORE_PATH);
+    assert.ok(CONFIG_DEFAULTS && typeof CONFIG_DEFAULTS === 'object', 'Could not find CONFIG_DEFAULTS export in config-loader.cjs');
 
-    const body = defaultsMatch[1];
-    // Match property keys (word characters before the colon)
-    const keys = [...body.matchAll(/^\s*(\w+)\s*:/gm)].map(m => m[1]);
+    const keys = Object.keys(CONFIG_DEFAULTS);
     assert.ok(keys.length > 0, 'Could not extract any keys from CONFIG_DEFAULTS');
 
     // CONFIG_DEFAULTS uses flat keys; the doc may use namespaced equivalents.
@@ -217,6 +212,21 @@ describe('config-field-docs', () => {
       [],
       `KNOWN_TOP_LEVEL internal fields missing from planning-config.md: ${missing.join(', ')}`
     );
+  });
+
+  test('agent_tools is registered in the central schema and public configuration docs (#4032)', () => {
+    const manifest = JSON.parse(fs.readFileSync(CONFIG_SCHEMA_MANIFEST_PATH, 'utf-8'));
+    assert.ok(manifest.validKeys.includes('agent_tools'),
+      'agent_tools must be accepted by the central config schema');
+    const selectorPattern = manifest.dynamicKeyPatterns.find((entry) => entry.topLevel === 'agent_tools');
+    assert.ok(selectorPattern, 'agent_tools must register a dynamic selector pattern');
+    assert.ok(new RegExp(selectorPattern.source).test('agent_tools.gsd-executor'));
+    assert.ok(new RegExp(selectorPattern.source).test('agent_tools.*'));
+    const publicDocs = fs.readFileSync(DOCS_CONFIG_PATH, 'utf-8');
+    assert.ok(tableRowForKey(publicDocs, 'agent_tools.<selector>'),
+      'agent_tools must have a public configuration table row');
+    assert.match(publicDocs, /agents without a\s+`tools:` key inherit/i);
+    assert.match(publicDocs, /Codex.*parent.*MCP servers.*sandbox_mode/is);
   });
 
   test('documents sub_repos field (CONFIG_DEFAULTS, no namespace form)', () => {

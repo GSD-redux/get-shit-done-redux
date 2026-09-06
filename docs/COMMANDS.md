@@ -270,7 +270,7 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 | `--all` | No | Run every configured reviewer. Lanes are dispatched **sequentially by default**; set `review.parallel_lanes` to `true` to dispatch them concurrently within a single review pass |
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
-**Exit behavior:** Loop exits when both `current_high` and `current_actionable` hit zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. Escalation gate asks the user to proceed or review manually when `--max-cycles` is hit with HIGH or actionable non-HIGH concerns still open.
+**Exit behavior:** Loop exits when `current_high` and `current_actionable` hit zero; open `## Plan-Revision Conflicts` entries in REVIEWS.md must also be zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. At `--max-cycles`, the escalation gate offers proceed-or-review-manually for HIGH or actionable non-HIGH concerns, but only manual review when a plan-revision conflict is still open — "Proceed anyway" is never offered over an unresolved conflict.
 
 **Consensus gate (2+ reviewers only).** When two or more reviewers actually run in a cycle, a HIGH raised by exactly one of them is weighed by what the claim asserts before it counts toward `current_high`:
 
@@ -996,6 +996,31 @@ Granular flags are composable: `--discuss --research --validate` is equivalent t
 /gsd-quick list                     # List all quick tasks
 /gsd-quick status my-task-slug      # Show status of a quick task
 /gsd-quick resume my-task-slug      # Resume a quick task
+```
+
+### `/gsd-quick-batch`
+
+Batch several `/gsd-quick`-shaped tasks together — one coordinator plans, dispatches, and merges them as one run (#3676, epic #3344, ADR-1239 "Quick-batch binding"). See [Batch quick tasks](how-to/batch-quick-tasks.md) for a walkthrough.
+
+| Argument | Description |
+|----------|-------------|
+| Inline task list | A bulleted or numbered list, ≥2 items, one per line |
+| `--file <path>` | Read the task list from a file instead of inline text |
+
+| Flag | Description |
+|------|-------------|
+| `--jobs auto\|N` | `auto` (default) uses the negotiated dispatch capacity as-is; `N` caps effective concurrency at `min(task count, N, capacity)` |
+| `--validate` | Per-item plan-checker loop (max 2 iterations) + post-merge verification |
+| `--research` | Per-item researcher dispatched before planning |
+| `--resume <batch-id>` | Skip task-list parsing and batch creation; dispatch only the batch's still-eligible items |
+
+**Not supported in v1:** `--discuss` and `--full` are rejected with a usage error before any dispatch — run `/gsd-quick --discuss`/`--full` per item instead.
+
+```bash
+/gsd-quick-batch "- fix the login timeout\n- add the retry banner"   # inline list
+/gsd-quick-batch --file .planning/my-tasks.md                          # from a file
+/gsd-quick-batch --jobs 3 --validate "- item one\n- item two\n- item three"
+/gsd-quick-batch --resume 260101-abc                                    # resume an interrupted batch
 ```
 
 ### `/gsd-autonomous`
@@ -1811,6 +1836,8 @@ Reviewers reached through `--all` or `review.default_reviewers` behave different
 
 Its frontmatter records the model each reviewer resolved to, as `models:` (the model id, or `unknown`, with a `(reasoning=<level>)` suffix when GSD applied a reasoning effort to that lane) and `model_sources:` (how each value was determined — `pinned`, `served`, `requested`, `banner`, `transcript`, or `unknown`). See [Resolved model recording](CONFIGURATION.md#resolved-model-recording-2295).
 
+**Plan coverage manifest (#3301):** the assembled prompt tells every prompt-fed reviewer exactly which plan ids exist in this review and the total count, and asks for one heading-verbatim section per id before any cross-plan or overall-risk content — so a review that silently stops partway through a multi-plan phase is no longer indistinguishable from one that covered every plan. A mechanical check grades each reviewer's output against that same id list and records an optional `plan_coverage:` frontmatter block, present only when a reviewer's output does not mention every id (diagnostic only — it never blocks the run). CodeRabbit is not graded — it is a diff-only reviewer that never receives the prompt carrying the manifest.
+
 ```bash
 # set project default reviewers for no-flag /gsd-review runs
 gsd config-set review.default_reviewers '["gemini","codex"]'
@@ -2321,6 +2348,14 @@ Enable with:
 ```json
 { "hooks": { "community": true } }
 ```
+
+`gsd-validate-commit.sh` accepts the 10 Conventional Commits types (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`) by default. Extend the list with `hooks.commit_types` — an array of extra type names, added to (never replacing) the built-in ten:
+
+```json
+{ "hooks": { "community": true, "commit_types": ["enhance", "enh", "revert"] } }
+```
+
+Each entry must match `^[a-z][a-z0-9-]*$` (lowercase letters, digits, hyphens); non-conforming or non-string entries are dropped rather than blocking the hook.
 
 ---
 

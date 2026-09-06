@@ -203,8 +203,24 @@ describe('ADR-857 Phase 6 capstone conformance (#1139)', () => {
     // Decision #1) — NOT the optional-feature inline logic this budget ratchets
     // toward capabilities — so its footprint legitimately raises the host-loop
     // ceiling rather than signalling an un-extracted optional feature.
+    //
+    // #3771: the plan-phase.md ceiling was raised from 94519 to accommodate the
+    // REVISION_CONFLICT persistence/routing gate (fail-closed conflict recording,
+    // the max-cycles escalation's OPEN_CONFLICTS branch). That protocol is core
+    // planner control flow, not an optional feature pending capability extraction
+    // — its footprint legitimately raises the host-loop ceiling, same rationale
+    // as #1298 above. Landed alongside an independent, unrelated same-file growth
+    // (the #4.6 context-drift pre-check) already on `next` when this PR rebased.
+    //
+    // #3916: raised again from 96700 to accommodate turning the REVISION_CONFLICT
+    // writer-side sanitize step from a prose instruction (an LLM applying it by hand,
+    // per a review finding across two rounds) into real, executed shell matching the
+    // reader gate's rigor, plus an adversarial-review fix (an `awk -v` escape-decoding forgery
+    // and a same-session conflict record never closed on resolution). Same rationale as #3771:
+    // conflict-record persistence is core planner control flow, not an un-extracted
+    // optional feature.
     const { lfByteCount } = require('../scripts/workflow-size.cjs');
-    const PRE_PHASE6 = { 'plan-phase.md': 94519, 'execute-phase.md': 93600 };
+    const PRE_PHASE6 = { 'plan-phase.md': 98300, 'execute-phase.md': 93600 };
     const notShrunk = [];
     for (const [file, frozen] of Object.entries(PRE_PHASE6)) {
       const now = lfByteCount(path.join(ROOT, 'gsd-core', 'workflows', file));
@@ -247,7 +263,7 @@ describe('ADR-857 phase 6 — capabilities must not bake install paths into the 
 
   test('generated capability-registry.cjs contains no ~/.claude install path', () => {
     const reg = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'), 'utf8');
-    // allow-test-rule: source-text-is-the-product
+    // allow-test-rule: source-text-is-the-product (#3464)
     const leakLines = reg.split(/\r?\n/).map((l, i) => [i + 1, l]).filter(([, l]) => LEAK.test(l)).map(([n]) => n);
     assert.deepEqual(leakLines, [],
       `capability-registry.cjs leaks ~/.claude install paths at line(s) ${leakLines.join(', ')} — the registry is copied verbatim to non-Claude runtimes (only workflow .md files are path-converted at install). Make the source capability fragment path-free.`);

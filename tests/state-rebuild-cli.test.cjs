@@ -18,6 +18,7 @@ const {
   createTempProject,
   cleanup,
   runGsdTools,
+  captureFdSync,
 } = require('./helpers.cjs');
 const { withFaultyFs } = require('./helpers/faulty-deps.cjs');
 const stateMod = require('../gsd-core/bin/lib/state.cjs');
@@ -216,27 +217,12 @@ function hasRebuildLogSection(content) {
  * Run `fn` while capturing every fd-1 write `cmdStateRebuild`'s `output()`
  * performs (it writes via a raw `fs.writeSync(1, ...)`, never
  * `console.log`/`process.stdout.write` — same seam `tests/io.test.cjs`
- * exercises for bug #1008). Standalone helper with no test context, so the
- * try/finally restore is CONTRIBUTING-compliant (same shape as
- * `withFaultyFs`).
+ * exercises for bug #1008). Delegates to the shared, safe helper (#4306) —
+ * see `tests/helpers.cjs`'s `captureFdSync` for why a hand-rolled version
+ * that fabricates a byte count instead of forwarding is unsafe.
  */
 function captureStdout(fn) {
-  const chunks = [];
-  const original = fs.writeSync;
-  fs.writeSync = (fd, data, offset, length) => {
-    if (fd !== 1) return original(fd, data, offset, length);
-    const chunk = Buffer.isBuffer(data)
-      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-      : String(data);
-    chunks.push(chunk);
-    return Buffer.byteLength(chunk, 'utf8');
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = original;
-  }
-  return chunks.join('');
+  return captureFdSync(1, fn);
 }
 
 // ---------------------------------------------------------------------------

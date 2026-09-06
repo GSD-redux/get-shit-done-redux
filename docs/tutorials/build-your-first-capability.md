@@ -180,7 +180,7 @@ The envelope is `{ point, activeHooks, rendered }`. Your contribution appears in
 }
 ```
 
-Notice that `fragment.inline` now holds the materialised text from `fragments/plan-pre.md` — GSD inlined it at load time, while keeping the original `path` for reference. The top-level `rendered` field of the envelope contains the same fragment formatted as a `<contribution from="hello-note" into="planner">…</contribution>` block, which is what the planner actually receives.
+Notice that `fragment.inline` now holds the materialised text from `fragments/plan-pre.md` — GSD inlined it at load time, while keeping the original `path` for reference. The top-level `rendered` field is an unfiltered diagnostic digest across kinds and roles; planner hosts do not paste it. They read `activeHooks` in registry order and inject only active `kind: "contribution"` entries whose `into` is `planner`, using each entry's `fragment.inline` and resolved `configValues`.
 
 ---
 
@@ -192,7 +192,9 @@ Planning is driven by a slash command, not a `gsd` subcommand. In your AI assist
 /gsd-plan-phase
 ```
 
-When the planner runs, the `plan:pre` hook set is rendered into its prompt, so it receives the `hello-note` contribution and, following the fragment's instruction, records a one-line note in `HELLO.md`.
+When the planner runs — whether from `/gsd-plan-phase` or `/gsd-quick` — the active planner-targeted `plan:pre` contributions are injected into its prompt, so it receives `hello-note` and, following the fragment's instruction, records a one-line note in `HELLO.md`. In `/gsd-quick --full` and `/gsd-quick --validate`, the same rendered hook snapshot is reused if the plan checker sends the plan back to the planner for revision.
+
+The first-party security capability is enabled by default and also contributes at `plan:pre` into the planner role. Its guidance requires generated plans to include `<threat_model>` blocks and carries the configured ASVS level and blocking threshold. Disable `workflow.security_enforcement` if that behavior is not wanted. Contributions targeting any non-planner role are not inserted into Quick's planner prompts.
 
 You do not need to run a full planning session to confirm the wiring, though. The `loop render-hooks` command shows exactly what the loop would hand the planner — the same output you saw in Step 5:
 
@@ -200,7 +202,7 @@ You do not need to run a full planning session to confirm the wiring, though. Th
 gsd loop render-hooks plan:pre --raw
 ```
 
-Find `hello-note` in `activeHooks` and read the `rendered` field: the `<contribution from="hello-note" into="planner">` block is the literal text the planner receives. That confirms the capability is wired into the loop, without dispatching a single agent.
+Find `hello-note` in `activeHooks` and inspect its `fragment.inline`, `into`, and optional `configValues`. Those are the fields the planner host filters and injects. The unfiltered top-level `rendered` digest is useful for inspection, but it is not the planner prompt. This confirms the capability is wired into the loop without dispatching an agent.
 
 ---
 

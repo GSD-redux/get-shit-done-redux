@@ -26,6 +26,8 @@ const {
 } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 const {
   resolveLanePlan,
+  resolveLaneEffort,
+  resolveTimeoutMs,
   isEmptyReview,
   normalizeHost,
   fileRefPrompt,
@@ -45,6 +47,7 @@ const FULL_CONFIG = {
   'review.models.claude': 'C',
   'review.models.codex': 'X',
   'review.models.opencode': 'O',
+  'review.models.cursor': 'U',
   'review.models.agy': 'A',
   'review.models.kimi-code': 'K',
   'review.models.ollama': 'M',
@@ -84,7 +87,9 @@ const GOLDEN = [
   { slug: 'coderabbit', binary: 'coderabbit', argv: ['review', '--prompt-only'], stdin: false, out: 'stdout', timeout: 360000 },
   { slug: 'opencode', binary: 'opencode', argv: ['run', '--model', 'O', '--effort', 'high', '--format', 'json', '-'], stdin: true, out: 'stdout', timeout: 660000 },
   { slug: 'qwen', binary: 'qwen', argv: ['-'], stdin: true, out: 'stdout', timeout: 900000 },
-  { slug: 'cursor', binary: 'cursor-agent', argv: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
+  { slug: 'cursor', binary: 'cursor-agent', argv: ['-p', '--model', 'U', '--mode', 'ask', '--trust', '--output-format', 'text', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
+  // resolveLanePlan fully resolves {{nativeTimeout}} itself (#3274) — this row proves the
+  // unconfigured default reproduces the original literal exactly.
   { slug: 'antigravity', binary: 'agy', argv: ['--print-timeout', '540s', '--model', 'A', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 600000 },
   { slug: 'kimi-code', binary: 'kimi', argv: ['-m', 'K', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
 ];
@@ -137,6 +142,130 @@ describe('reviewer lane invocation — golden plans (the strangler-fig contract)
   });
 });
 
+describe('#3274 — timeoutConfigKey resolves the outer wall-clock cap', () => {
+  const AGY_FLOOR = REVIEWER_LANES.find((l) => l.slug === 'antigravity').timeoutFloorMs;
+  const AGY_KEY = REVIEWER_LANES.find((l) => l.slug === 'antigravity').timeoutConfigKey;
+
+  test('an absent config key falls back to timeoutFloorMs (row 1)', () => {
+    const r = resolve('antigravity', { config: {} });
+    assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('a configured positive number overrides timeoutFloorMs, seconds -> ms (row 2)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 900 } });
+    assert.equal(r.plan.timeoutMs, 900_000);
+  });
+
+  test('0 is treated as unset, not a zero-length timeout (row 3)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 0 } });
+    assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('a negative configured timeout is treated as unset (row 4)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: -5 } });
+    assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('NaN and Infinity are treated as unset (row 5)', () => {
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: NaN } }).plan.timeoutMs, AGY_FLOOR);
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: Infinity } }).plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('a non-number configured value is never coerced, falls back (row 6)', () => {
+    for (const bad of ['900', true, {}, [], 'null']) {
+      const r = resolve('antigravity', { config: { [AGY_KEY]: bad } });
+      assert.equal(r.plan.timeoutMs, AGY_FLOOR, `value ${JSON.stringify(bad)} must not resolve to a timeout`);
+    }
+  });
+
+  test('a lane with no timeoutConfigKey field falls back like an unset key (row 7)', () => {
+    const lane = { ...REVIEWER_LANES.find((l) => l.slug === 'gemini') };
+    delete lane.timeoutConfigKey;
+    const r = resolveLanePlan({ lane, configGet: () => 900, runDir: RUN, repoRoot: ROOT });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan.timeoutMs, lane.timeoutFloorMs);
+  });
+
+  test('resolveTimeoutMs: direct unit — unset falls back to floorMs', () => {
+    assert.equal(resolveTimeoutMs(null, 5000, () => undefined), 5000);
+    assert.equal(resolveTimeoutMs('some.key', 5000, () => undefined), 5000);
+  });
+
+  test('resolveTimeoutMs: direct unit — configured value overrides, seconds -> ms', () => {
+    assert.equal(resolveTimeoutMs('some.key', 5000, (k) => (k === 'some.key' ? 30 : undefined)), 30000);
+  });
+
+  test('boundary: 0 vs 1 vs a fractional second (row 8)', () => {
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: 0 } }).plan.timeoutMs, AGY_FLOOR);
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: 1 } }).plan.timeoutMs, 1000);
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: 0.5 } }).plan.timeoutMs, 500);
+  });
+
+  test("a non-antigravity lane's configured timeout does not touch argv (row 13)", () => {
+    const key = REVIEWER_LANES.find((l) => l.slug === 'gemini').timeoutConfigKey;
+    const unset = resolve('gemini', { config: {} });
+    const configured = resolve('gemini', { config: { [key]: 300 } });
+    assert.deepStrictEqual(configured.plan.argv, unset.plan.argv);
+    assert.notEqual(configured.plan.timeoutMs, unset.plan.timeoutMs);
+  });
+
+  test('property: any positive-second config resolves to exactly seconds * 1000 ms (row 20)', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 1_000_000 }), (seconds) => {
+        const r = resolve('antigravity', { config: { [AGY_KEY]: seconds } });
+        assert.equal(r.plan.timeoutMs, seconds * 1000);
+      }),
+      FC,
+    );
+  });
+
+  test('property: any hostile config value degrades to timeoutFloorMs, never throws (row 21)', () => {
+    const hostile = fc.oneof(
+      fc.string(),
+      fc.boolean(),
+      fc.object(),
+      fc.array(fc.anything()),
+      fc.constant(0),
+      fc.integer({ max: 0 }),
+      fc.constant(NaN),
+      fc.constant(Infinity),
+      fc.constant(-Infinity),
+    );
+    fc.assert(
+      fc.property(hostile, (value) => {
+        const r = resolve('antigravity', { config: { [AGY_KEY]: value } });
+        assert.equal(r.ok, true);
+        assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+      }),
+      FC,
+    );
+  });
+
+  test('a configured antigravity timeout derives both the outer cap and the native flag (row 10)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 900 } });
+    assert.equal(r.plan.timeoutMs, 900_000);
+    const i = r.plan.argv.indexOf('--print-timeout');
+    assert.equal(r.plan.argv[i + 1], '840s');
+  });
+
+  test('a native timeout below the 60s buffer clamps to 1s, never 0 or negative (row 11)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 30 } });
+    const i = r.plan.argv.indexOf('--print-timeout');
+    assert.equal(r.plan.argv[i + 1], '1s');
+  });
+
+  test('boundary around the 60-second native buffer (row 12)', () => {
+    const nativeFor = (seconds) => {
+      const r = resolve('antigravity', { config: { [AGY_KEY]: seconds } });
+      return r.plan.argv[r.plan.argv.indexOf('--print-timeout') + 1];
+    };
+    assert.equal(nativeFor(59), '1s');   // floor(59)-60 = -1 -> clamped
+    assert.equal(nativeFor(60), '1s');   // floor(60)-60 = 0 -> clamped
+    assert.equal(nativeFor(61), '1s');   // floor(61)-60 = 1
+    assert.equal(nativeFor(121), '61s'); // floor(121)-60 = 61
+  });
+});
+
 describe('reviewer lane invocation — model resolution', () => {
   test("antigravity resolves its model from review.models.agy, not the slug", () => {
     // The regression this locks: antigravity's slug is `antigravity` but its shipped key is
@@ -150,12 +279,33 @@ describe('reviewer lane invocation — model resolution', () => {
   });
 
   test('a lane declaring no model key emits no model argument', () => {
-    for (const slug of ['qwen', 'cursor', 'coderabbit']) {
+    for (const slug of ['qwen', 'coderabbit']) {
       const lane = REVIEWER_LANES.find((l) => l.slug === slug);
       assert.equal(lane.modelConfigKey, null, `${slug} should declare no model key`);
-      const r = resolve(slug, { config: { 'review.models.qwen': 'X', 'review.models.cursor': 'X' } });
+      const r = resolve(slug, { config: { 'review.models.qwen': 'X' } });
       assert.ok(!r.plan.argv.includes('X'));
     }
+  });
+
+  test('cursor now declares a model key and arg (#3653) — no longer null', () => {
+    const lane = REVIEWER_LANES.find((l) => l.slug === 'cursor');
+    assert.equal(lane.modelConfigKey, 'review.models.cursor');
+    assert.equal(lane.invoke.modelArg, '--model');
+  });
+
+  test('an unconfigured cursor lane invokes exactly as it does today (#3653, byte-identical)', () => {
+    const r = resolve('cursor', { config: {} });
+    assert.deepStrictEqual(
+      r.plan.argv,
+      ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', r.plan.argv[r.plan.argv.length - 1]],
+    );
+  });
+
+  test('a configured review.models.cursor reaches --model, positioned right after -p (#3653)', () => {
+    const r = resolve('cursor', { config: { 'review.models.cursor': 'cursor-grok-4.5-high' } });
+    const i = r.plan.argv.indexOf('-p');
+    assert.equal(r.plan.argv[i + 1], '--model');
+    assert.equal(r.plan.argv[i + 2], 'cursor-grok-4.5-high');
   });
 
   test('unset, empty, whitespace and the literal string "null" all mean unconfigured', () => {
@@ -571,5 +721,144 @@ describe('#2358 design principle: run-scoped temp dirs never collide across proj
       staleProjectAPath, laterProjectBPath,
       `phase ${phase} in two different runs must not resolve to the same prompt path`
     );
+  });
+});
+
+describe('#4255 — lane effort comes from REVIEW config, never from another agent', () => {
+  // Before this fix `review-lane plan` resolved every lane's effort by spawning
+  // `query resolve-execution gsd-plan-checker --host <slug>`. The agent id was a hardcoded
+  // literal, so `--host` chose only the argv RENDERING while the LEVEL always came from the
+  // installed plan-checker's frontmatter — `low` under every shipped model profile. A cross-AI
+  // review is the opposite workload from a fast structural verifier, the rendered argument is a
+  // CLI config OVERRIDE (so it beat the effort the operator had set for that CLI), and at `low` a
+  // large source-grounded prompt makes the model end its turn with no final message: the lane
+  // came back empty and its stub read as a crash.
+  //
+  // These rows pin the replacement. `renderArgv` is injected, so they assert the RESOLUTION —
+  // which level wins, and whether an argument is emitted at all — independently of any host's
+  // argv syntax. The syntax itself stays pinned by the GOLDEN table above.
+
+  /** Stand-in for the host renderer: echoes the level back in a recognisable shape. */
+  const render = (host, level) => ({ argv: ['-c', `effort=${level}`], value: level });
+  /** A host that declares no argv effort surface — renders nothing, as ADR-2481 requires. */
+  const renderNone = () => ({ argv: [], value: null });
+  const lane = (slug) => REVIEWER_LANES.find((l) => l.slug === slug);
+
+  test('the declared default is used when nothing is configured — high on the prompt-fed lanes', () => {
+    for (const slug of ['codex', 'claude', 'opencode']) {
+      const r = resolveLaneEffort(lane(slug), () => undefined, render);
+      assert.equal(r.value, 'high', `${slug} must default to high, not to another agent's level`);
+      assert.equal(r.source, 'lane-default');
+      assert.deepEqual(r.argv, ['-c', 'effort=high']);
+    }
+  });
+
+  test("a lane's own config key wins over the declared default", () => {
+    const r = resolveLaneEffort(lane('codex'), (k) => (k === 'review.effort.codex' ? 'xhigh' : undefined), render);
+    assert.equal(r.value, 'xhigh');
+    assert.equal(r.source, 'config');
+  });
+
+  test('each lane reads ONLY its own key — one lane’s effort never leaks into another', () => {
+    const configGet = (k) => (k === 'review.effort.codex' ? 'minimal' : undefined);
+    assert.equal(resolveLaneEffort(lane('codex'), configGet, render).value, 'minimal');
+    assert.equal(resolveLaneEffort(lane('claude'), configGet, render).value, 'high',
+      'claude must fall back to its OWN default, not pick up the codex key');
+  });
+
+  test('a configured `inherit` emits NO argument, so the reviewer CLI’s own config decides', () => {
+    const r = resolveLaneEffort(lane('codex'), () => 'inherit', render);
+    assert.deepEqual(r.argv, []);
+    assert.equal(r.value, null);
+    assert.equal(r.source, 'none');
+  });
+
+  test('a lane declaring no review effort at all emits no argument', () => {
+    // The non-vacuity half of the row above: `none` must be reachable from the DECLARATION too,
+    // not only from an explicit `inherit`. Nine shipped lanes have no effort channel to feed.
+    for (const l of REVIEWER_LANES.filter((x) => x.effortConfigKey === null)) {
+      const r = resolveLaneEffort(l, () => 'high', render);
+      assert.deepEqual(r.argv, [], `${l.slug} declares no effort key and must emit nothing`);
+      assert.equal(r.source, 'none');
+    }
+  });
+
+  test('an unrecognized level is REFUSED, not forwarded to the CLI', () => {
+    // Forwarding a typo renders an argument the CLI rejects, which kills the lane outright — a
+    // strictly worse outcome than the level the operator meant. Fall back to the declared default.
+    for (const bogus of ['hihg', 'HIGH ', 'very-high', '', '  ', 'null']) {
+      const r = resolveLaneEffort(lane('codex'), () => bogus, render);
+      assert.equal(r.value, 'high', `'${bogus}' must fall back to the lane default`);
+      assert.equal(r.source, 'lane-default');
+    }
+  });
+
+  test('a non-string configured value is ignored rather than rendered', () => {
+    for (const bogus of [42, true, null, {}, ['high']]) {
+      const r = resolveLaneEffort(lane('codex'), () => bogus, render);
+      assert.equal(r.value, 'high', `${JSON.stringify(bogus)} must not reach the renderer`);
+    }
+  });
+
+  test('the host’s negotiated surface still decides — a renderer that emits nothing yields none', () => {
+    // ADR-1239/#2481's trust-boundary invariant: a lane cannot talk a host into accepting an
+    // argument its negotiated effortSurface does not declare, however the lane is configured.
+    const r = resolveLaneEffort(lane('codex'), () => 'xhigh', renderNone);
+    assert.deepEqual(r.argv, []);
+    assert.equal(r.source, 'none');
+  });
+
+  test('the documented clamp is what the catalog actually does', () => {
+    // The configuration reference tells the operator which levels survive per host, and a prose
+    // claim about behaviour is a claim that can rot. Pin it against the real renderer so the two
+    // cannot drift. (No file is read here — the lane's clamp table IS the thing being asserted.)
+    const mc = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const seen = {};
+    for (const host of ['codex', 'claude', 'opencode']) {
+      seen[host] = Object.fromEntries(
+        ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+          .map((l) => [l, mc.renderEffortArgv(host, l, 'argv').value]),
+      );
+    }
+    assert.equal(seen.codex.minimal, 'low', 'codex clamps minimal to low');
+    assert.equal(seen.claude.minimal, 'low', 'claude clamps minimal to low');
+    assert.equal(seen.opencode.minimal, 'minimal', 'opencode accepts minimal as-is');
+    for (const host of ['codex', 'claude', 'opencode']) {
+      for (const l of ['low', 'medium', 'high', 'xhigh', 'max']) {
+        assert.equal(seen[host][l], l, `${host} must pass ${l} through unchanged`);
+      }
+    }
+  });
+
+  test('the renderer’s clamped value is recorded, not the level asked for', () => {
+    // #2295 records the effort in REVIEWS.md as `model (reasoning=LEVEL)`. When a host clamps
+    // (`max` -> `xhigh` on codex), the recorded level must be what actually ran.
+    const clamping = () => ({ argv: ['-c', 'effort=xhigh'], value: 'xhigh' });
+    const r = resolveLaneEffort(lane('codex'), () => 'max', clamping);
+    assert.equal(r.value, 'xhigh', 'the clamped level is what ran, so it is what is recorded');
+  });
+
+  test('a malformed lane object degrades to no effort instead of throwing', () => {
+    // The resolver is called from gsd-tools.cjs (untyped) with a lane looked up by slug, which
+    // can miss. Losing one lane's effort is recoverable; a throw there takes down every lane.
+    for (const bad of [null, undefined, {}, { slug: 'x' }]) {
+      assert.deepEqual(resolveLaneEffort(bad, () => 'high', render).argv, []);
+    }
+  });
+
+  test('resolved effort reaches argv only for lanes declaring effortChannel argv', () => {
+    for (const l of REVIEWER_LANES) {
+      const eff = resolveLaneEffort(l, () => undefined, render);
+      const r = resolveLanePlan({
+        lane: l, configGet: () => undefined, runDir: RUN, repoRoot: ROOT,
+        effortArgs: eff.argv, effortValue: eff.value,
+      });
+      if (!r.ok || r.plan.transport !== 'spawn') continue;
+      const carriesEffort = r.plan.argv.some((a) => String(a).startsWith('effort='));
+      assert.equal(carriesEffort, l.invoke.effortChannel === 'argv',
+        `${l.slug}: effort argv must appear exactly when the lane declares the channel`);
+      assert.equal(r.plan.effort, l.invoke.effortChannel === 'argv' ? 'high' : null,
+        `${l.slug}: the recorded effort must match what actually expanded`);
+    }
   });
 });

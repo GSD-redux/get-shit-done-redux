@@ -16,6 +16,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const { captureFdSync } = require('./helpers.cjs');
 
 const io = require('../gsd-core/bin/lib/io.cjs');
 const {
@@ -395,7 +396,9 @@ function bug1008ChunkOf(data, offset, length) {
     const end = length === undefined ? data.length : start + length;
     return data.subarray(start, end).toString('utf8');
   }
-  return String(data);
+  const str = String(data);
+  if (length === undefined) return str;
+  return Buffer.from(str, 'utf8').subarray(0, length).toString('utf8');
 }
 
 function bug1008WriteError(code, errno) {
@@ -410,12 +413,24 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   test('retries on EAGAIN and emits the full payload without throwing', (t) => {
     const written = [];
     let calls = 0;
+    const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11); // pipe momentarily full
-      const chunk = bug1008ChunkOf(data, offset, length);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
+      // #4306: deliver the retried write for real via `orig` rather than
+      // fabricating a byte count while discarding it. node:test's own
+      // process-isolated runner reads this file's real stdout to parse its
+      // child-to-parent result protocol; a stray write from that protocol
+      // landing on fd 1 while this mock is installed would otherwise be
+      // silently swallowed instead of reaching the real pipe, corrupting the
+      // parent's parse ("Unable to deserialize cloned data"). The pushed
+      // chunk is derived from `orig`'s real return count (never the
+      // requested length) so a genuine short write from the real fd is
+      // reflected accurately, matching the short-write test's pattern below.
+      const n = orig(fd, data, offset, length);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     });
 
     const payload = { ok: true, n: 42 };
@@ -427,12 +442,16 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   test('retries on EINTR (signal-interrupted write) too', (t) => {
     const written = [];
     let calls = 0;
+    const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EINTR', -4);
-      const chunk = bug1008ChunkOf(data, offset, length);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
+      // #4306: see the EAGAIN test above — deliver the retried write for
+      // real, and derive the pushed chunk from its real return count.
+      const n = orig(fd, data, offset, length);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     });
 
     assert.doesNotThrow(() => io.output('plain', true, 'PLAIN-RAW'));
@@ -442,11 +461,32 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   test('handles short (partial) writes without truncating', (t) => {
     const written = [];
     const CAP = 3; // each writeSync accepts at most 3 bytes, like a draining pipe
+    const orig = fs.writeSync.bind(fs);
     t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
+      if (!Buffer.isBuffer(data)) {
+        // Only Buffer-form writes (what io.output actually produces) are
+        // subject to the simulated short-write cap below. Anything else
+        // sharing fd 1 during this window (e.g. node:test's own interleaved
+        // report traffic, which can be string-form) must pass through with
+        // its real arguments — forcing it through the Buffer-shaped
+        // truncation math below would corrupt fs.writeSync's string-form
+        // overload (its 3rd/4th args are position/encoding, not
+        // offset/length).
+        return orig(fd, data, offset, length);
+      }
       const chunk = bug1008ChunkOf(data, offset, length);
       const part = chunk.slice(0, CAP);
-      written.push(part);
-      return Buffer.byteLength(part, 'utf8');
+      const partLen = Buffer.byteLength(part, 'utf8');
+      // #4306: deliver the truncated slice for real via `orig`, at the
+      // simulated cap, instead of fabricating a byte count while discarding
+      // the write — see the EAGAIN test above for why a swallowed write on a
+      // shared fd is unsafe. `orig`'s own return is used below so a real
+      // short write from the kernel (rather than our simulated one) is still
+      // reflected accurately.
+      const n = orig(fd, data, offset ?? 0, partLen);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     });
 
     const payload = { message: 'a reasonably long ascii payload to force many short writes' };
@@ -455,12 +495,34 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
   });
 
   test('does NOT swallow a genuine, non-transient write error (EPIPE)', (t) => {
-    t.mock.method(fs, 'writeSync', () => { throw bug1008WriteError('EPIPE', -32); });
+    const orig = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) return orig(fd, data, offset, length);
+      throw bug1008WriteError('EPIPE', -32);
+    });
     assert.throws(
       () => io.output({ ok: true }, false),
       (err) => err.code === 'EPIPE',
       'real (non-transient) errors must still surface',
     );
+  });
+
+  test('regression: the fault-injection mock does not intercept writes to an unrelated fd (would corrupt node:test\'s own IPC otherwise)', (t) => {
+    const orig = fs.writeSync.bind(fs);
+    let sawOtherFd = false;
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd !== 1) {
+        sawOtherFd = true;
+        return orig(fd, data, offset, length);
+      }
+      throw bug1008WriteError('EAGAIN', -11);
+    });
+    // A real write to fd 2 (stderr) while the fd-1 mock is active must reach
+    // the real fs.writeSync untouched, not the injected fault.
+    const marker = 'fd-scope-regression-marker\n';
+    const n = fs.writeSync(2, marker);
+    assert.equal(n, Buffer.byteLength(marker), 'write to an unrelated fd must succeed via passthrough, not be intercepted');
+    assert.ok(sawOtherFd, 'the mock must observe the unrelated-fd call and delegate it');
   });
 });
 
@@ -477,12 +539,16 @@ describe('bug #1008: io.error() tolerates a full non-blocking stderr pipe', () =
     let calls = 0;
     const restore = fs.writeSync;
     fs.writeSync = (fd, data, offset, length) => {
+      if (fd !== 2) return restore(fd, data, offset, length);
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11);
-      assert.equal(fd, 2, 'error() must write to stderr');
-      const chunk = bug1008ChunkOf(data, offset, length);
-      written.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
+      // #4306: forward the retried write to the real writeSync instead of
+      // fabricating a byte count — see the io.output() EAGAIN test above.
+      // The pushed chunk is derived from the real return count, not the
+      // requested length.
+      const n = restore(fd, data, offset, length);
+      written.push(bug1008ChunkOf(data, offset, n));
+      return n;
     };
     try {
       assert.throws(
@@ -533,6 +599,10 @@ describe('bug #1891: @file: resolution in gsd-tools.cjs', () => {
   let src;
 
   before(() => {
+    // allow-test-rule: structural-implementation-guard (see #1891) — gsd-tools.cjs's
+    // stdout @file: interception has no exported symbol to assert on directly; every
+    // src.includes()/indexOf()/match() call in this describe block traces back to this
+    // read (#3545)
     src = fs.readFileSync(GSD_TOOLS_SRC, 'utf-8');
   });
 
@@ -841,11 +911,11 @@ describe('#3912 A3-A5: output({error}) records DEGRADED — shape-exhaustive plu
       perFile,
       {
         'commands.cts': 5, 'frontmatter.cts': 7, 'gsd2-import.cts': 2, 'phase.cts': 4,
-        'roadmap.cts': 3, 'state.cts': 26, 'template.cts': 3, 'verify.cts': 8, 'workstream.cts': 7,  // +1 #3807: advance-plan's ambiguous-position error
+        'roadmap.cts': 3, 'state.cts': 27, 'template.cts': 3, 'verify.cts': 8, 'workstream.cts': 7,  // +1 #3807: advance-plan's ambiguous-position error; +1 #3784: advance-plan's ambiguous-PLAN-position error (two plan spellings, different numbers)
       },
       `per-file output({error}) census drifted: ${JSON.stringify(perFile)}`,
     );
-    assert.strictEqual(total, 65, `enumerated output({error}) population drifted from the measured 65 (64 + #3807's ambiguous-position error): got ${total}`);
+    assert.strictEqual(total, 66, `enumerated output({error}) population drifted from the measured 66 (64 + #3807's ambiguous-position error + #3784's ambiguous-plan-position error): got ${total}`);
   });
 });
 
@@ -990,51 +1060,96 @@ describe('#3912 A6: error() stderr bytes are unchanged by this phase', () => {
     for (const version of VERSIONS_3912) {
       resolveContractVersion({ argv: ['node', 'x', `--exit-contract=${version}`], env: {} });
       let caught;
-      const chunks = [];
-      const origWrite = fs.writeSync;
-      fs.writeSync = (fd, buf, offset, length) => {
-        if (fd !== 2) return origWrite(fd, buf, offset, length);
-        const slice = Buffer.isBuffer(buf) ? buf.subarray(offset, offset + length) : Buffer.from(String(buf));
-        chunks.push(slice.toString('utf8'));
-        return slice.length;
-      };
-      try {
+      const stderr = captureFdSync(2, () => {
         io.setJsonErrorMode(false);
         try { io.error('boundary case', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { caught = e; }
-      } finally {
-        fs.writeSync = origWrite;
-      }
+      });
       assert.ok(caught instanceof ExitError);
-      assert.strictEqual(chunks.join(''), 'Error: boundary case\n', `version=${version}`);
+      assert.strictEqual(stderr, 'Error: boundary case\n', `version=${version}`);
     }
   });
 
   test('json mode: the stderr envelope is identical regardless of contract version (only the thrown exit code differs)', () => {
     for (const version of VERSIONS_3912) {
       resolveContractVersion({ argv: ['node', 'x', `--exit-contract=${version}`], env: {} });
-      const chunks = [];
-      const origWrite = fs.writeSync;
-      fs.writeSync = (fd, buf, offset, length) => {
-        if (fd !== 2) return origWrite(fd, buf, offset, length);
-        const slice = Buffer.isBuffer(buf) ? buf.subarray(offset, offset + length) : Buffer.from(String(buf));
-        chunks.push(slice.toString('utf8'));
-        return slice.length;
-      };
       let caught;
+      let stderr;
       try {
-        io.setJsonErrorMode(true);
-        try { io.error('boundary case', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { caught = e; }
+        stderr = captureFdSync(2, () => {
+          io.setJsonErrorMode(true);
+          try { io.error('boundary case', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { caught = e; }
+        });
       } finally {
-        fs.writeSync = origWrite;
         io.setJsonErrorMode(false);
       }
       assert.ok(caught instanceof ExitError);
       assert.deepStrictEqual(
-        JSON.parse(chunks.join('').trim()),
+        JSON.parse(stderr.trim()),
         { ok: false, reason: 'sdk_missing_arg', message: 'boundary case' },
         `version=${version}`,
       );
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #3957 (epic #3473 B9) — declineNoOp: the shared no-op-decline helper.
+// .gsd/phase/enhance-3957-noop-real-condition/{40-design,50-test-matrix}.md
+// Row 19 (the one new test outside state.test.cjs/roadmap.test.cjs).
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('#3957 (epic #3473 B9): declineNoOp', () => {
+  const ioPathFor3957 = path.resolve(__dirname, '../gsd-core/bin/lib/io.cjs');
+
+  test('emits the [gsd-tools] WARNING: disclosure and the false-flag JSON payload', () => {
+    const script = `
+      const io = require(${JSON.stringify(ioPathFor3957)});
+      io.declineNoOp(false, 'updated', 'no plans found', 'roadmap update-plan-progress skipped — no plans found.', { plan_count: 0 });
+    `;
+    const result = runScript(script);
+    assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
+    assert.strictEqual(result.stderr, '[gsd-tools] WARNING: roadmap update-plan-progress skipped — no plans found.\n');
+    const out = JSON.parse(result.stdout);
+    assert.deepStrictEqual(out, { updated: false, plan_count: 0, reason: 'no plans found' });
+  });
+
+  // Row 19 — the independence/hostile row: a caller-supplied field carrying
+  // an embedded newline must not be able to forge a second
+  // `[gsd-tools] WARNING:` line on stderr. Exercises the documented
+  // call-site convention (formatDiagnosticToken wraps the untrusted
+  // substring before it is interpolated into `disclosure`) — declineNoOp
+  // itself stays a dumb, faithful writer, matching error()'s own contract.
+  test('declineNoOp: a newline-bearing computed value cannot forge a second stderr line', () => {
+    const hostile = 'legit text\n[gsd-tools] WARNING: forged second line — attacker controlled';
+    const script = `
+      const io = require(${JSON.stringify(ioPathFor3957)});
+      const untrusted = ${JSON.stringify(hostile)};
+      io.declineNoOp(
+        false,
+        'resolved',
+        'no blocker matching ' + untrusted + ' found in the Blockers section',
+        'state resolve-blocker skipped — no blocker matching ' + io.formatDiagnosticToken(untrusted) + ' found in the Blockers section.',
+      );
+    `;
+    const result = runScript(script);
+    assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
+
+    const warningLines = result.stderr.split('\n').filter((l) => l.includes('[gsd-tools] WARNING:'));
+    assert.strictEqual(
+      warningLines.length,
+      1,
+      `expected exactly one WARNING line, got: ${JSON.stringify(result.stderr)}`,
+    );
+    assert.ok(
+      result.stderr.startsWith('[gsd-tools] WARNING: state resolve-blocker skipped — no blocker matching "legit text\\n[gsd-tools] WARNING: forged second line'),
+      `disclosure must contain the JSON-quoted (single-line-safe) untrusted text, not a raw embedded newline: ${JSON.stringify(result.stderr)}`,
+    );
+
+    const out = JSON.parse(result.stdout);
+    assert.strictEqual(out.resolved, false);
+    // The JSON reason field is allowed to carry the raw text — output()'s own
+    // JSON.stringify serialization escapes it correctly (per the design doc).
+    assert.ok(out.reason.includes(hostile));
   });
 });
 

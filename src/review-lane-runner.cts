@@ -420,12 +420,20 @@ export async function probeLane(
  * `extraDiagnostics` carries the raw HTTP response body for the OpenAI-compatible lanes: an error
  * from such a server arrives with HTTP 4xx/5xx and the JSON in the BODY, so stderr alone is empty
  * and the body is the only evidence.
+ *
+ * `outcome` (#4255) carries the spawn's exit status so the stub can say WHICH empty it is. The
+ * header alone cannot: a crash, a timeout kill and a model that ended its turn without writing a
+ * final message all reach here as the same zero bytes, and the third is what a too-low reasoning
+ * effort produces on a large source-grounded prompt. A clean exit inside the timeout with no
+ * output is a stopped-short model, and the stub now says so — with the effort it ran at, which is
+ * the value the operator would change.
  */
 export function writeReviewOrStub(
   plan: LanePlan,
   content: string,
   deps: RunnerDeps,
   extraDiagnostics?: string,
+  outcome?: { status: number | null; errorCode?: string },
 ): { stubbed: boolean } {
   if (!isEmptyReview(content)) {
     deps.writeFile(plan.reviewPath, content.endsWith('\n') ? content : `${content}\n`);
@@ -434,8 +442,55 @@ export function writeReviewOrStub(
   const stderr = deps.exists(plan.errPath) ? deps.readFile(plan.errPath) : '';
   const parts = [`${plan.slug} review failed or returned empty output. stderr:`, stderr];
   if (extraDiagnostics) parts.push('Raw response body:', extraDiagnostics);
+  parts.push(emptyOutputDiagnosis(plan, outcome));
   deps.writeFile(plan.reviewPath, `${parts.join('\n')}\n`);
   return { stubbed: true };
+}
+
+/**
+ * One line naming the effort the lane ran at and how the process ended (#4255).
+ *
+ * Kept out of the header so the `failed or returned empty output` string every downstream reader
+ * greps for is untouched — this is an added line, not a reworded one.
+ */
+export function emptyOutputDiagnosis(
+  plan: LanePlan,
+  outcome?: { status: number | null; errorCode?: string },
+): string {
+  // `effort` lives on the spawn plan only. An HTTP lane reaches a server directly and has no
+  // reviewer CLI at all, so naming one there would be a lie about what ran (Codex review of
+  // #4255) — the two transports get different, accurate wording.
+  const spawned = plan.transport === 'spawn';
+  const level = spawned ? plan.effort : null;
+  const effort = level
+    ? `ran at effort=${level}`
+    : spawned
+      ? "ran with no effort argument, so the reviewer CLI's own configuration applied"
+      : 'is an HTTP lane and carries no reasoning-effort setting';
+  if (!outcome) return `Diagnosis: ${plan.slug} ${effort}.`;
+  // Four endings, not two. `status` is null for BOTH a timeout kill and a process that never
+  // ran or died on a signal (ENOENT, SIGKILL) — reporting the latter as "status null" said
+  // nothing, and folding them together would attach the stopped-short hint to a crash.
+  const timedOut = outcome.errorCode === 'ETIMEDOUT';
+  const neverRan = !timedOut && outcome.status === null;
+  const cleanExit = outcome.status === 0;
+  const ending = timedOut
+    ? 'was killed by the outer timeout'
+    : neverRan
+      ? `did not exit normally (${outcome.errorCode ?? 'killed by a signal'})`
+      : cleanExit
+        ? 'exited cleanly inside the timeout'
+        : `exited with status ${String(outcome.status)}`;
+  // Hedged deliberately. A clean exit with no output is CONSISTENT with a model ending its turn
+  // without a final message — which is what too low an effort produces on a large prompt — but it
+  // is equally consistent with the CLI writing its output somewhere this lane did not read. The
+  // line points at the likeliest cause without asserting it.
+  const tail = cleanExit
+    ? ' — a clean exit that produced no output is most often a model ending its turn without'
+      + ' writing a final message rather than a crash; if this lane carries a reasoning effort,'
+      + ' raising it is the usual fix.'
+    : '.';
+  return `Diagnosis: ${plan.slug} ${effort} and ${ending}${tail}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -817,9 +872,13 @@ export function antigravityPrompt(promptPath: string, repoRoot: string): string 
  *    lane that fails to start is worse than one that runs on the prompt anchor alone.
  * 2. The self-report prompt variant above, swapped in for the standard file-ref text.
  *
- * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this flag
- * only if the binary's --help mentions it" as data would need a conditional, which is precisely
- * what the named-handler seam exists to absorb (ADR-2782 D6).
+ * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this
+ * flag only if the binary's --help mentions it" as data would need a conditional, which is
+ * precisely what the named-handler seam exists to absorb (ADR-2782 D6). The native
+ * `--print-timeout` VALUE (#3274) is NOT this handler's job — `resolveLanePlan`
+ * (review-lane-invocation.cts) resolves the `{{nativeTimeout}}` ARGV_PLACEHOLDER itself, exactly
+ * like `{{model}}`/`{{effort}}`/`{{output}}`/`{{prompt}}`, so `plan.argv` arrives here already fully
+ * resolved.
  */
 export function antigravityArgv(
   argv: readonly string[],
@@ -855,8 +914,62 @@ export function antigravityArgv(
  *
  * Mode 3 (a pre-session stall, which `--print-timeout` cannot bound because it cannot fire before a
  * session exists) leaves no log line at all, so its tell is stated rather than searched for.
+ *
+ * #3996 mode 4 (a headless tool-permission denial) exits 0 with empty stdout and a POPULATED
+ * transcript, and reports the cause only on stderr — so the stub carries the run's stderr
+ * (`evidence.stderr`, the same `plan.errPath` content the generic stub reads), and the mode-3
+ * tell is stated only when `antigravityFailureMode` rules a session out (a fresh conv-id or
+ * transcript growth past the watermark means one verifiably started). Asserting mode 3 over a
+ * transcript this code just read inverts who is better placed to know.
  */
-export function antigravityDiagnostic(deps: RunnerDeps): string {
+/**
+ * What actually failed, as a typed fact rather than a guess baked into prose. #3996.
+ *
+ * The session-started question is decidable at diagnostic time with the same staleness rule the
+ * layer-2 fallback uses: re-resolve the workspace's CURRENT conv-id and compare against the
+ * pre-spawn watermark. A conv-id that changed, or a transcript that grew past the watermark
+ * line count, means THIS invocation demonstrably reached a session — a pre-launch stall is
+ * ruled out. An unchanged conv-id with no growth means nothing new happened, which is the
+ * #2073 mode-3 shape even when a PRIOR session's transcript still exists on disk (existence
+ * alone would mis-diagnose mode 3 as mode 4 in any workspace with history).
+ */
+export const ANTIGRAVITY_FAILURE_MODE = Object.freeze({
+  /** A session ran this invocation (fresh conv-id, or transcript growth) but no review was recovered. */
+  SESSION_STARTED: 'session_started',
+  /** No session this invocation — the #2073 mode-3 stall tell is the right signpost. */
+  PRE_SESSION_STALL: 'pre_session_stall',
+} as const);
+
+export type AntigravityFailureMode =
+  (typeof ANTIGRAVITY_FAILURE_MODE)[keyof typeof ANTIGRAVITY_FAILURE_MODE];
+
+export function antigravityFailureMode(
+  workspace: string,
+  mark: TranscriptWatermark,
+  deps: RunnerDeps,
+): AntigravityFailureMode {
+  const convId = resolveWorkspaceConvId(workspace, deps);
+  if (!convId) return ANTIGRAVITY_FAILURE_MODE.PRE_SESSION_STALL;
+  // A different conv-id than the watermark saw = a fresh session this run, transcript or not.
+  if (convId !== mark.convId) return ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED;
+  const tx = transcriptPath(deps.homeDir, convId);
+  if (!deps.exists(tx)) return ANTIGRAVITY_FAILURE_MODE.PRE_SESSION_STALL;
+  try {
+    const lines = deps.readFile(tx).split(/\r?\n/).filter((l) => l.trim()).length;
+    return lines > mark.lines
+      ? ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED
+      : ANTIGRAVITY_FAILURE_MODE.PRE_SESSION_STALL;
+  } catch {
+    // #3118 fail-closed shape: the transcript indisputably exists but cannot be read — do not
+    // assert the stall case over a file this code cannot check.
+    return ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED;
+  }
+}
+
+export function antigravityDiagnostic(
+  deps: RunnerDeps,
+  evidence: { stderr?: string; mode?: AntigravityFailureMode } = {},
+): string {
   const lines = [
     'Antigravity review failed or returned empty output.',
   ];
@@ -878,10 +991,30 @@ export function antigravityDiagnostic(deps: RunnerDeps): string {
       /* an unreadable log is not worth failing the lane over */
     }
   }
-  lines.push(
-    'If no agy run started, that is the pre-session-stall case: check whether a new ' +
-      '~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch.',
-  );
+  // #3996: the stub carries agy's stderr, as the generic lane stub already does — mode 4 (a
+  // headless tool-permission denial) exits 0 with empty stdout and a populated transcript, and
+  // the stderr line is the only signal that names its cause.
+  const stderr = (evidence.stderr ?? '').trim();
+  if (stderr) lines.push('stderr:', stderr);
+  // #3996: mode 3's tell is stated only when its precondition holds — the mode is computed from
+  // the watermark (#3996 mode 3 in a workspace with history is a no-growth transcript, not an
+  // absent one), never guessed from prose.
+  if (evidence.mode === ANTIGRAVITY_FAILURE_MODE.SESSION_STARTED) {
+    lines.push(
+      'An agy session started this run but no review was recovered, so a pre-launch stall is ' +
+        'ruled out.' +
+        (stderr
+          ? ' See stderr above; a headless run that was auto-denied a tool permission reports ' +
+            'the cause and its fix there.'
+          : ' agy reported nothing on its error stream; inspect the transcript under ' +
+            '~/.gemini/antigravity-cli/brain/<conv-id>/ for where the session stopped.'),
+    );
+  } else {
+    lines.push(
+      'If no agy run started, that is the pre-session-stall case: check whether a new ' +
+        '~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch.',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -1122,7 +1255,13 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
       // pinned model that 404s server-side and exits 0 with empty output, so the model IS the
       // diagnosis — dropping it here would throw away the one piece of evidence the stub exists
       // to preserve.
-      deps.writeFile(plan.reviewPath, `${antigravityDiagnostic(deps)}\n`);
+      deps.writeFile(
+        plan.reviewPath,
+        `${antigravityDiagnostic(deps, {
+          stderr: errContent,
+          mode: antigravityFailureMode(repoRoot, mark, deps),
+        })}\n`,
+      );
       return { slug: plan.slug, ok: true, stubbed: true, model };
     }
   }
@@ -1134,7 +1273,7 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   // folded in as a diff observation, and the citation check must not change that surface.
   if (plan.evidenceClass !== 'diff-only') review = stampUngroundedReview(review);
 
-  const { stubbed } = writeReviewOrStub(plan, review, deps, extra);
+  const { stubbed } = writeReviewOrStub(plan, review, deps, extra, out);
   return { slug: plan.slug, ok: true, stubbed, model };
 }
 

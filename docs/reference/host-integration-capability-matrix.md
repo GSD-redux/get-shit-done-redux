@@ -86,6 +86,7 @@ Module entry and `.gsd/phase/feat-2871-trigger-resolution/40-design.md`.
 | dispatch.subagentToolkit | full | https://code.claude.com/docs/en/sub-agents | "If all tools remain selected, the subagent inherits all tools available to the main conversation." |
 | dispatch.backgroundDispatch | false | https://code.claude.com/docs/en/sub-agents | "Background subagents are limited to a depth of five and cannot spawn further, " |
 | dispatch.isolation | harness-worktree | https://code.claude.com/docs/en/sub-agents ; Claude Code Agent tool (`Agent(isolation="worktree")`) | The Claude Code Agent tool accepts an `isolation="worktree"` harness primitive — the host's own harness creates + binds a git worktree per executor; GSD passes the flag and calls no git itself (#2584) |
+| dispatch.maxConcurrency | 20 | https://code.claude.com/docs/en/sub-agents | The subagent documentation states a default concurrent-subagent limit of 20, configurable via the `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` environment variable (#3673). |
 
 Sources consulted:
 - https://code.claude.com/docs/en/sub-agents
@@ -124,6 +125,7 @@ Sources consulted:
 | dispatch.subagentToolkit | full | https://developers.openai.com/codex/multi-agent | "Subagents inherit the sandbox policy and tool surface from the parent session." |
 | dispatch.backgroundDispatch | true | https://github.com/openai/codex/blob/main/codex-rs/core/templates/collab/experimental_prompt.md | "Sub-agents have access to the same set of tools as you do so you must tell them if they are allowed to spawn sub-agents themselves or not." The config (codex-rs/config/src/config_toml.rs) exposes an |
 | dispatch.isolation | orchestrator-worktree | https://learn.chatgpt.com/docs/environments/git-worktrees ; https://github.com/openai/codex/blob/main/codex-rs/utils/cli/src/shared_options.rs | "Worktrees are available only in Codex in the ChatGPT desktop app." (no native CLI worktree) + `codex exec --cd <dir>` sets an explicit working root, so GSD creates+manages the worktree and points the executor at it (#2584) |
+| dispatch.maxConcurrency | undocumented | https://developers.openai.com/codex/config-reference | `agents.max_concurrent_threads_per_session` is a documented config key, but the reference states no numeric default — "Codex chooses the default" — so there is no single value to cite (#3673). |
 
 **GSD integration status — Phase D dogfood complete (#2088, ADR-1239).** Codex installs through the `declarative` embedding adapter (`createDeclarativeAdapter` → `installRuntimeArtifacts`); the hardcoded `runtime === 'codex'`/`isCodex` projection is folded into descriptor-driven `runtime.hostBehaviors`, and install/uninstall output is byte-parity-gated at the time (`tests/fixtures/golden-install-parity/codex.json`; superseded by the differential attribution check, #2724). Three capability upgrades land, each with a test driving the user-reachable surface:
 
@@ -169,6 +171,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | full | https://opencode.ai/docs/agents | "The 'general' subagent \"Has full tool access (except todo), so it can make file changes when needed.\"" |
 | dispatch.backgroundDispatch | false | https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/effect/runtime-flags.ts ; https://github.com/anomalyco/opencode/issues/29638 ; https://github.com/anomalyco/opencode/issues/14195 | "Concurrent dispatch requires the opt-in `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` flag (default `false`), so it cannot be relied on. #14195: \"the session loop does `tasks.pop()` to grab a single subtask, `await`s it, then `continue`s the loop — so even 3 simultaneous Task calls run sequentially.\" Declaring `true` would overstate the capability, against the fail-closed posture negotiation is built for. (#2598 — corrects #2087)" |
 | dispatch.isolation | orchestrator-worktree | https://opencode.ai/docs/cli ; opencode.ai/docs/plugins ; opencode issues #14195/#29638/#5887 | "`opencode run --dir <path>` sets an explicit working root at the process level" — native subagent dispatch is synchronous-only, so GSD creates + manages the worktree and process-spawns the executor into it via `--dir` (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://opencode.ai/docs/plugins
@@ -204,6 +207,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | full | https://cursor.com/docs/subagents | "Subagents can utilize MCP tools, inheriting all tools available to their parent agent, including those from configured s" |
 | dispatch.backgroundDispatch | true | https://cursor.com/docs/subagents (FAQ: Can subagents launch other subagents?) and https://cursor.com/docs/sdk/typescript (Subagents > Nested subagents) | FAQ: "As of Cursor 2.5, subagents have the capability to launch child subagents, enabling the creation of a hierarchical structure for coordinated tasks. This nested launching functionality requires T |
 | dispatch.isolation | harness-worktree | https://cursor.com/docs/cli/reference/parameters ; cursor.com/docs/cli/using ; cursor.com/docs/cli/changelog | "`-w, --worktree [name]` — cursor-agent creates/binds a git worktree per agent (`~/.cursor/worktrees/…`); native parallel-agent dispatch" (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://cursor.com/docs/subagents
@@ -241,6 +245,7 @@ Sources consulted:
 | dispatch.subagentToolkit | read-only | /cline/cline (Context7) — https://github.com/cline/cline/blob/main/docs/features/subagents.mdx | "Subagents are equipped with tools for read-only operations, including reading file contents (read_file), listing directo" |
 | dispatch.backgroundDispatch | false | https://docs.cline.bot/features/subagents (mirrored at https://github.com/cline/cline/blob/main/docs/features/subagents.mdx) | "They cannot edit files, use the browser, or spawn nested subagents" — and from the GitHub source: "subagents are restricted from editing files, using the browser, accessing MCP servers, or creating n |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://github.com/cline/cline/blob/main/docs/sdk/plugins.mdx
@@ -279,6 +284,7 @@ Sources consulted:
 | dispatch.subagentToolkit | read-only | https://hermes-agent.nousresearch.com/docs/guides/delegation-patterns | "Nested delegation is opt-in; by default, leaf subagents cannot call delegate_task, clarify, memory, send_message, or exe" |
 | dispatch.backgroundDispatch | false | https://github.com/nousresearch/hermes-agent/blob/main/website/docs/user-guide/features/delegation.md (via Context7 query of /nousresearch/hermes-agent) | "Nested delegation is an opt-in feature, requiring role=\"orchestrator\" for children and an increased max_spawn_depth from its default of 1. It can also be globally disabled with orchestrator_enabled |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation
@@ -306,7 +312,7 @@ Documentation gaps:
 | commandSurface | slash-file | https://github.com/alphaperseii3000/google-antigravity-docs/blob/master/google-antigravity-docs.md | "Workflows are saved as markdown files, providing a repeatable method for executing key processes. They can be invoked in the Agent using a s" |
 | modelMode | passive | https://dev.to/arindam_1729/antigravity-cli-a-hands-on-guide-to-googles-terminal-coding-agent-5bc7 | "Selection occurs via `-m` flag or `/model` command inside the TUI. No programmatic model request API is documented for extensions/skills" |
 | hookBus | host | https://www.aibuilderclub.com/blog/antigravity-cli-guide | "The CLI fires hooks, not the engine. These are JSON lifecycle interceptors (before tool call, after file edit, on session start)." |
-| stateIO | filesystem | https://www.explainx.ai/blog/antigravity-cli-features-sandbox-plugins-subagents-2026 | "Plugin staging at ~/.gemini/antigravity-cli/plugins/<name>/; skills at ~/.gemini/antigravity-cli/skills/" |
+| stateIO | filesystem | live `agy` 1.1.17 install probe — https://github.com/open-gsd/gsd-core/issues/3747 | "Global skills discovery scans ~/.gemini/config/skills/: a probe skill placed there is visible to `agy`, while an identical probe skill under the configHome is not. An earlier third-party blog claim about configHome skills placement was disproved by that probe; GSD installs global skills/agents under ~/.gemini/config (#3738)" |
 | transport | mcp | https://dev.to/arindam_1729/antigravity-cli-a-hands-on-guide-to-googles-terminal-coding-agent-5bc7 | "Both local (stdio) and remote (HTTP) Model Context Protocol servers are supported" |
 | runtime | go | https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/ | "Built in Go, Antigravity CLI is snappier and more responsive." |
 | effortSurface | undocumented | no authoritative doc — per-host reasoning-effort survey, #2481 (`09b535ac0`) | This host's documentation states no reasoning-effort setting, so the axis carries the fail-closed sentinel rather than inheriting a profile baseline. No host-specific URL is cited because the finding is an ABSENCE: #2481 surveyed all hosts for a reasoning-effort mechanism and found one only for claude/opencode/codex. |
@@ -317,12 +323,12 @@ Documentation gaps:
 | dispatch.subagentToolkit | full | https://antigravity.google/docs/cli/features | "Capabilities: Subagents have full access to tools such as code search, file editing, terminal commands, and web searches to complete their assigned tasks." (#2096 EoS migration — the page is JS-rendered/blank on a static fetch; confirmed via headless-browser render) |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — Multiple sources consulted: antigravity.google/docs/cli-subagents (returned blank/JS-rendered), antigravity.google/docs/agent (blank), github.com/google-antigravity/antigravity-cli README, Context7 /google-antigravity/antigravity-cli | All documentation consulted describes a two-level orchestrator→subagent architecture. Background subagents run asynchronously while the main agent continues accepting prompts. The DataCamp tutorial st |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://github.com/alphaperseii3000/google-antigravity-docs/blob/master/google-antigravity-docs.md
 - https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/
 - https://dev.to/arindam_1729/antigravity-cli-a-hands-on-guide-to-googles-terminal-coding-agent-5bc7
-- https://www.explainx.ai/blog/antigravity-cli-features-sandbox-plugins-subagents-2026
 - https://www.aibuilderclub.com/blog/antigravity-cli-guide
 - https://antigravity.google/docs/agents
 - https://antigravity.google/docs/hooks
@@ -356,6 +362,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | full | https://docs.augmentcode.com/cli/subagents | "If neither [tools nor disabled_tools] is specified, the subagent has access to all tools (default behavior)." |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — https://docs.augmentcode.com/cosmos/automations | The Augment Code (Cosmos) docs describe workers as 'sub-agents launched mid-session by a manager Expert using the worker-launch command. Each worker is its own session with its own messages and permis |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://docs.augmentcode.com/cli/plugins
@@ -420,6 +427,7 @@ upgrade coverage is in `tests/augment-upgrades.test.cjs`.
 | dispatch.subagentToolkit | full | https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/ | "When omitted, the subagent inherits all available tools from the parent session." |
 | dispatch.backgroundDispatch | false | https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/ (official Qwen Code documentation, 'Subagents' user guide page) and https://qwenlm.github.io/qwen-code-docs/en/design/fork-subagent/fork-subagent-design (Qwen Code fork-subagent design document, section '4. Recursive Fork Prevention') | The official user-facing Qwen Code docs state verbatim: "Fork children cannot create further forks. If a fork attempts spawning another fork, it receives an error instructing direct task execution ins |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://qwenlm.github.io/qwen-code-docs/en/developers/channel-plugins
@@ -457,6 +465,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | full | https://www.codebuddy.ai/docs/cli/sub-agents | "By default, sub-agents inherit all tools when the tools field is omitted ... Sub-agents can access MCP tools from config" |
 | dispatch.backgroundDispatch | false | https://www.codebuddy.ai/docs/cli/sub-agents | "This prevents infinite nesting of agents (sub-agents cannot spawn other sub-agents)" — the restriction is stated as universal in the Sub-Agents documentation page. The daemon/background docs (https:/ |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://www.codebuddy.ai/docs/cli/plugins
@@ -490,6 +499,7 @@ Sources consulted:
 | dispatch.subagentToolkit | full | https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli | "By default, custom agents have access to all tools. If you restrict an agent's access, a tools specification is added" |
 | dispatch.backgroundDispatch | false | https://code.visualstudio.com/docs/copilot/agents/subagents | "By default, subagents cannot spawn further subagents. This prevents infinite recursion when agents accidentally call themselves in a loop." The setting `chat.subagents.allowInvocationsFromSubagents` |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://github.com/github/copilot-cli/blob/main/README.md (via Context7 /github/copilot-cli)
@@ -526,6 +536,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://kilo.ai/docs/customize/custom-subagents | — |
 | dispatch.backgroundDispatch | false | https://kilo.ai/docs/automate/tools/new-task | "Importantly, subagents cannot spawn further subagents; only primary agents can use the `new_task` tool." |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://kilo.ai/docs/automate/extending/plugins
@@ -564,6 +575,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://docs.devin.ai/cli/subagents.md | — |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — https://docs.devin.ai/desktop/cascade/cascade and https://docs.devin.ai/desktop/devin-local (official Windsurf/Devin docs, via docs.windsurf.com redirects) | The Windsurf/Cascade docs describe a background planning agent only in these terms: "In the background, a specialized planning agent continuously refines the long-term plan while your selected model f |
 | dispatch.isolation | none | shipped descriptor (`dispatch.backgroundDispatch: undocumented`) | no documented background/concurrent-dispatch primitive — isolation is moot; same-wave plans run inline (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://docs.devin.ai/desktop/cascade/workflows
@@ -606,6 +618,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://docs.trae.ai/ide/agent | — |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — https://docs.trae.ai/ide/agent; https://github.com/bytedance/trae-agent/blob/main/docs/roadmap.md | Trae's official documentation (docs.trae.ai) and the trae-agent GitHub roadmap do not document background/async agent dispatch or whether a background-spawned agent can itself spawn further sub-agents |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://docs.trae.ai/ide/model-context-protocol
@@ -648,6 +661,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://moonshotai.github.io/kimi-cli/en/customization/agents.html | — |
 | dispatch.backgroundDispatch | true (#2095 Upgrade 2; was `false`) | https://moonshotai.github.io/kimi-cli/en/customization/agents.html | "Subagents support foreground and background modes. The `run_in_background` parameter allows tasks to execute asynchronously" (same evidence as dispatch.background above — the root agent's `Agent` tool call itself takes the `run_in_background` param) |
 | dispatch.isolation | orchestrator-worktree | https://github.com/moonshotai/kimi-cli/blob/main/docs/en/faq.md ; /docs/en/customization/agents.md | "`--work-dir` flag sets an explicit working directory"; concurrent "explore" subagents documented — GSD creates + manages the worktree and points the executor at it via `--work-dir` (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://moonshotai.github.io/kimi-cli/en/customization/hooks.html
@@ -688,6 +702,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | built-in-only | https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/agents.md | The three built-ins carry deliberately different tool surfaces — coder "Shares most of the main Agent's toolset; can run shell commands, maintain todo lists, enter Plan mode, and invoke Agent Skills"; explore "Performs read-only operations only and does not modify any files"; plan "Even shell commands are not available". No single `full`/`read-only` value covers the set, so the `built-in-only` member applies (degrades closed to `read-only` when negotiated). |
 | dispatch.backgroundDispatch | true | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md ; /docs/en/customization/agents.md | The `coder` built-in "can dispatch its own nested sub-agents" and the `Agent` tool's `run_in_background` is a call-time parameter available to it, so a background-dispatched sub-agent may itself dispatch further. `AgentSwarm` additionally fans out concurrently: "By default the tool ramps up concurrency without an upper limit (5 subagents start immediately, then 1 more every 700 ms); set `KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` to a positive integer to cap how many subagents run at the same time during that ramp, or leave it unset for no cap." |
 | dispatch.isolation | orchestrator-worktree | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md ; ADR-1239 §Codex-binding amendment | Neither `Agent` nor `AgentSwarm` exposes a working-directory/cwd parameter — sub-agents inherit the CLI's process cwd — and the CLI has no `--work-dir`-style flag (unlike `kimi`). GSD therefore creates, validates and merges the worktree itself and spawns the executor with that cwd (#2584). |
+| dispatch.maxConcurrency | undocumented | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md | `AgentSwarm` concurrency is configurable ("set `KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` to a positive integer to cap how many subagents run at the same time … or leave it unset for no cap") but the CLI states no bound as its OWN default — "By default the tool ramps up concurrency without an upper limit" — so there is no single default integer to cite, only a user-configurable env var (#3673). |
 
 **Negotiation note.** Because `dispatch.namedDispatch` is `false`, `negotiateHostCapabilities` caps `nested`, `maxDepth`, `background` and `backgroundDispatch` to `false`/`0` in the **effective** axes for structural consistency (`src/host-integration.cts`). The declared values above are still the host-capability record the matrix exists to hold; they are what a future named-dispatch upgrade would negotiate against.
 
@@ -732,6 +747,7 @@ Documentation gaps:
 | dispatch.subagentToolkit | full | https://zcode.z.ai/en/docs/subagents | "**general-purpose** is the default built-in subagent ... It has access to all tools"; custom subagents default to "All permissions by default" (inherits every tool). |
 | dispatch.backgroundDispatch | false | https://zcode.z.ai/en/docs/subagents | "Background execution is not enabled yet" — background dispatch is therefore impossible. |
 | dispatch.isolation | none | https://zcode.z.ai/en/docs/subagents (shipped descriptor: `dispatch.backgroundDispatch: false`) | "Background execution is not enabled yet" — no concurrent fan-out primitive, so same-wave plans run inline/sequentially (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://zcode.z.ai/en/docs/skill
@@ -774,6 +790,7 @@ EoS migration status (#2101, ADR-1239): ZCode's install is fully dogfooded throu
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://pi.dev/docs/latest/extensions | pi has no named-dispatch primitive (see `dispatch.namedDispatch`), so there is no subagent tool-surface to classify as `full`/`read-only`. |
 | dispatch.backgroundDispatch | false | no authoritative doc — searched: https://pi.dev/docs/latest/extensions | Same gap as `dispatch.background` — no background-dispatch primitive is documented, so a background-dispatched agent spawning further named sub-agents is not possible. |
 | dispatch.isolation | none | shipped descriptor (`dispatch.background: false`, `dispatch.backgroundDispatch: false`) | pi has no named-dispatch/background-dispatch primitive documented — cannot fan out concurrently, so isolation is moot (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://pi.dev
@@ -824,6 +841,7 @@ EoS migration status (#2102 Stage 2, ADR-1239): Stage 1's "in-process `gsd-core`
 | dispatch.subagentToolkit | undocumented | no authoritative doc found at authoring time | VS Code's subagent documentation does not state whether a subagent's tool surface is restricted to read-only tools or the full set an extension registers; recorded `undocumented` (fails closed to `read-only` in negotiation) rather than guessed. |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc found at authoring time | Whether a background-dispatched subagent can itself spawn further NAMED subagents (the #853 discriminator) is not stated in the sources reviewed; recorded `undocumented` (fails closed to `false`) rather than guessed. |
 | dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
+| dispatch.maxConcurrency | undocumented | not researched / no documented concurrent-subagent capacity for this axis | no authoritative source consulted for concurrent-executor capacity on this host — fails closed to `1` in negotiation (#3673) |
 
 Sources consulted:
 - https://code.visualstudio.com/api/references/vscode-api

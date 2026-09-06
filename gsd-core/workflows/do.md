@@ -13,7 +13,7 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --raw --default "" 2>/dev/null || echo "")
 ```
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 <step name="validate">
 **Check for input.**
@@ -41,23 +41,31 @@ Track whether `.planning/` exists — some routes require it, others don't.
 <step name="route">
 **Match intent to command.**
 
-Evaluate `$ARGUMENTS` against these routing rules. Apply the **first matching** rule:
+Evaluate `$ARGUMENTS` against these routing rules. Rules are ordered **most-specific first**: apply the **first matching** rule, and never let a generic keyword rule ("set up", "spike", "review") preempt a more specific operation that also matches ("set up this existing codebase", "wrap up the spike findings", "review the changed source code").
 
 | If the text describes... | Route to | Why |
 |--------------------------|----------|-----|
-| Starting a new greenfield project, "set up", "initialize" | `/gsd:new-project` | Needs full project initialization |
-| First-time setup for an existing codebase, brownfield onboarding | `/gsd:onboard` | Safe map → docs ingest → project setup sequence |
+| First-time setup for an existing codebase, brownfield onboarding, "onboard this codebase" | `/gsd:onboard` | Safe map → docs ingest → project setup sequence |
+| Starting a new greenfield project, "set up", "initialize" (no existing codebase named) | `/gsd:new-project` | Needs full project initialization |
 | Mapping or analyzing an existing codebase map | `/gsd:map-codebase` | Codebase discovery or refresh |
 | A bug, error, crash, failure, or something broken | `/gsd:debug` | Needs systematic investigation |
-| Spiking, "test if", "will this work", "experiment", "prove this out", validate feasibility | `/gsd:spike` | Throwaway experiment to validate feasibility |
-| Sketching, "mockup", "what would this look like", "prototype the UI", "design this", explore visual direction | `/gsd:sketch` | Throwaway HTML mockups to explore design |
 | Wrapping up spikes, "package the spikes", "consolidate spike findings" | `/gsd:spike --wrap-up` | Package spike findings into reusable skill |
 | Wrapping up sketches, "package the designs", "consolidate sketch findings" | `/gsd:sketch --wrap-up` | Package sketch findings into reusable skill |
+| Spiking, "test if", "will this work", "experiment", "prove this out", validate feasibility | `/gsd:spike` | Throwaway experiment to validate feasibility |
+| Sketching, "mockup", "what would this look like", "prototype the UI", "design this", explore visual direction | `/gsd:sketch` | Throwaway HTML mockups to explore design |
+| Reviewing changed source code for bugs, security issues, or code quality ("code review the changes") | `/gsd:code-review` | Source review of phase-changed files |
+| Requesting peer review of phase plans from another AI CLI ("plan review", "review the plan") | `/gsd:review` | Cross-AI plan review |
+| Reviewing or hardening implemented UI ("visual audit", "review the UI") | `/gsd:ui-review` | Retroactive 6-pillar visual audit |
+| Verifying security mitigations of a completed phase ("security check", "secure phase N") | `/gsd:secure-phase` | Retroactive threat-mitigation verification |
+| Auditing milestone completion against original intent ("audit the milestone") | `/gsd:audit-milestone` | Milestone audit against original intent |
+| An autonomous audit-to-fix pass ("audit and fix", "audit the repo and fix what it finds") | `/gsd:audit-fix` | Audit-to-fix pipeline |
+| Generating or updating project documentation ("update the docs", "documentation update") | `/gsd:docs-update` | Docs verified against the codebase |
 | Exploring, researching, comparing, or "how does X work" | `/gsd:explore` | Socratic ideation and idea routing |
 | Discussing vision, "how should X look", brainstorming | `/gsd:discuss-phase` | Needs context gathering |
-| A complex task: refactoring, migration, multi-file architecture, system redesign | `/gsd:phase` | Needs a full phase with plan/build cycle |
 | Planning a specific phase or "plan phase N" | `/gsd:plan-phase` | Direct planning request |
-| Executing a phase or "build phase N", "run phase N" | `/gsd:execute-phase` | Direct execution request |
+| Executing a phase or "build phase N", "run phase N" (SDD dependency-aware wave execution) | `/gsd:execute-phase` | Direct execution request |
+| Adding, inserting, removing, or editing phases in the roadmap ("multi-phase", roadmap phase management) | `/gsd:phase` | Roadmap phase CRUD |
+| A complex task: refactoring, migration, multi-file architecture, system redesign | `/gsd:plan-phase` | Needs a full phase with plan/build cycle |
 | Running all remaining phases automatically | `/gsd:autonomous` | Full autonomous execution |
 | A review or quality concern about existing work | `/gsd:verify-work` | Needs verification |
 | Checking progress, status, "where am I" | `/gsd:progress` | Status check |
@@ -73,7 +81,7 @@ Evaluate `$ARGUMENTS` against these routing rules. Apply the **first matching** 
 
 ```
 "Refactor the authentication system" could be:
-1. /gsd:phase — Full planning cycle (recommended for multi-file refactors)
+1. /gsd:plan-phase — Full planning cycle (recommended for multi-file refactors)
 2. /gsd:quick — Quick execution (if scope is small and clear)
 
 Which approach fits better?
@@ -92,12 +100,33 @@ Which approach fits better?
 ```
 </step>
 
+<step name="confirm">
+**Confirm the route before dispatching (REQ-DO-03).**
+
+Before invoking anything, ask the user to confirm the displayed route via AskUserQuestion:
+
+```
+Route to {chosen command}?
+1. Yes — proceed with {chosen command} (recommended)
+2. Choose a different command
+3. Cancel — do not dispatch
+```
+
+- **Yes / proceed:** continue to the dispatch step.
+- **Choose a different command:** present the 2-3 next-best routes from the routing table as options and loop back through display + confirm with the new selection.
+- **Cancel:** stop. Do not invoke any command.
+
+**TEXT_MODE:** present the same choices as a plain-text numbered list and ask the user to type their choice number, exactly like other AskUserQuestion calls in this workflow.
+</step>
+
 <step name="dispatch">
-**Invoke the chosen command.**
+**Invoke the chosen command with only the arguments it accepts.**
 
-Run the selected `/gsd-*` command, passing `$ARGUMENTS` as args.
+Read the chosen command's frontmatter `argument-hint` (in `commands/gsd/<name>.md`) and forward **only arguments that command accepts**. Do NOT pass the full freeform sentence wholesale.
 
-If the chosen command expects a phase number and one wasn't provided in the text, extract it from context or ask via AskUserQuestion.
+- If the command expects a phase number or flags only (e.g. `/gsd:verify-work [phase number]`, `/gsd:plan-phase`, `/gsd:execute-phase`), extract the phase number / flags from the input; if none was provided, extract it from context or ask via AskUserQuestion. Drop the surrounding prose.
+- If the command explicitly accepts a freeform task description (e.g. `/gsd:quick`, `/gsd:debug`, `/gsd:spike`, `/gsd:sketch`), forward the relevant portion of `$ARGUMENTS` as the description.
+- If the command takes no arguments, invoke it without arguments.
 
 After invoking the command, stop. The dispatched command handles everything from here.
 </step>
@@ -110,6 +139,7 @@ After invoking the command, stop. The dispatched command handles everything from
 - [ ] Ambiguity resolved via user question (if needed)
 - [ ] Project existence checked for routes that require it
 - [ ] Routing decision displayed before dispatch
-- [ ] Command invoked with appropriate arguments
+- [ ] Route confirmed by the user before dispatch (REQ-DO-03), with TEXT_MODE equivalent
+- [ ] Command invoked with only the arguments it accepts (argument-hint aware; freeform text only where the command takes a freeform description)
 - [ ] No work done directly — dispatcher only
 </success_criteria>

@@ -40,7 +40,7 @@ try {
   else process.env.GSD_TEST_MODE = savedTestMode;
 }
 
-const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_DENY_PERMISSIONS, copyWithPathReplacement } = installExports || {};
+const { install, mergeClaudePermissions, GSD_CLAUDE_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS, GSD_CLAUDE_LEGACY_DENY_PERMISSIONS, copyWithPathReplacement } = installExports || {};
 
 const {
   installRuntimeArtifacts,
@@ -399,30 +399,27 @@ describe('mergeClaudePermissions (#768): exports and permission constants', () =
     }
   });
 
-  test('GSD_CLAUDE_DENY_PERMISSIONS is a non-empty array of strings', () => {
-    assert.ok(Array.isArray(GSD_CLAUDE_DENY_PERMISSIONS),
-      'GSD_CLAUDE_DENY_PERMISSIONS must be an array');
-    assert.ok(GSD_CLAUDE_DENY_PERMISSIONS.length > 0,
-      'GSD_CLAUDE_DENY_PERMISSIONS must not be empty');
-    for (const entry of GSD_CLAUDE_DENY_PERMISSIONS) {
-      assert.strictEqual(typeof entry, 'string', `deny entry must be a string, got: ${JSON.stringify(entry)}`);
-    }
+  test('GSD_CLAUDE_LEGACY_DENY_PERMISSIONS lists exactly the three retired Read() deny rules (#4221)', () => {
+    assert.ok(Array.isArray(GSD_CLAUDE_LEGACY_DENY_PERMISSIONS),
+      'GSD_CLAUDE_LEGACY_DENY_PERMISSIONS must be an array');
+    assert.deepStrictEqual(
+      [...GSD_CLAUDE_LEGACY_DENY_PERMISSIONS].sort(),
+      ['Read(.env)', 'Read(.env.*)', 'Read(.secrets)'].sort(),
+      'the legacy deny list must be exactly the three strings #768 used to write'
+    );
   });
 });
 
 describe('mergeClaudePermissions (#768): fresh settings object', () => {
-  test('populates permissions.allow and permissions.deny on empty settings', () => {
+  test('populates permissions.allow on empty settings and never creates permissions.deny (#4221)', () => {
     const settings = {};
     mergeClaudePermissions(settings);
     assert.ok(Array.isArray(settings.permissions?.allow), 'permissions.allow must be an array');
-    assert.ok(Array.isArray(settings.permissions?.deny), 'permissions.deny must be an array');
+    assert.strictEqual(settings.permissions.deny, undefined,
+      'permissions.deny must not be created — the Read(.env*) deny rules are retired (#4221)');
     for (const entry of GSD_CLAUDE_ALLOW_PERMISSIONS) {
       assert.ok(settings.permissions.allow.includes(entry),
         `permissions.allow must contain "${entry}"`);
-    }
-    for (const entry of GSD_CLAUDE_DENY_PERMISSIONS) {
-      assert.ok(settings.permissions.deny.includes(entry),
-        `permissions.deny must contain "${entry}"`);
     }
   });
 
@@ -455,15 +452,14 @@ describe('mergeClaudePermissions (#768): fresh settings object', () => {
       'permissions.allow must NOT contain the unmatched Write(STATE.md) form (#2278)');
   });
 
-  test('includes .env denial entries in deny', () => {
-    const settings = {};
+  test('never adds Read(.env*) / Read(.secrets) deny rules (#4221: retired in favor of gsd-secret-read-guard.js)', () => {
+    const settings = { permissions: { deny: ['WebSearch'] } };
     mergeClaudePermissions(settings);
-    assert.ok(settings.permissions.deny.includes('Read(.env)'),
-      'permissions.deny must contain Read(.env)');
-    assert.ok(settings.permissions.deny.includes('Read(.env.*)'),
-      'permissions.deny must contain Read(.env.*)');
-    assert.ok(settings.permissions.deny.includes('Read(.secrets)'),
-      'permissions.deny must contain Read(.secrets)');
+    for (const entry of GSD_CLAUDE_LEGACY_DENY_PERMISSIONS) {
+      assert.ok(!settings.permissions.deny.includes(entry),
+        `permissions.deny must NOT contain the retired "${entry}"`);
+    }
+    assert.deepStrictEqual(settings.permissions.deny, ['WebSearch']);
   });
 });
 
@@ -481,11 +477,11 @@ describe('mergeClaudePermissions (#768): non-destructive merge', () => {
       'existing allow entries must be preserved');
     assert.ok(settings.permissions.deny.includes('WebSearch'),
       'existing deny entries must be preserved');
-    // GSD entries must be added
+    // GSD allow entries must be added; the retired deny rules must not be
     assert.ok(settings.permissions.allow.includes('Bash(npx gsd-core *)'),
       'GSD allow entry must be added');
-    assert.ok(settings.permissions.deny.includes('Read(.env)'),
-      'GSD deny entry must be added');
+    assert.ok(!settings.permissions.deny.includes('Read(.env)'),
+      'the retired Read(.env) deny rule must not be added (#4221)');
   });
 
   test('does not duplicate entries on repeated calls (idempotent)', () => {
@@ -496,10 +492,8 @@ describe('mergeClaudePermissions (#768): non-destructive merge', () => {
       const count = settings.permissions.allow.filter((e) => e === entry).length;
       assert.strictEqual(count, 1, `allow entry "${entry}" must appear exactly once after two merges`);
     }
-    for (const entry of GSD_CLAUDE_DENY_PERMISSIONS) {
-      const count = settings.permissions.deny.filter((e) => e === entry).length;
-      assert.strictEqual(count, 1, `deny entry "${entry}" must appear exactly once after two merges`);
-    }
+    assert.strictEqual(settings.permissions.deny, undefined,
+      'permissions.deny must still be absent after two merges (#4221)');
   });
 
   test('preserves other permission sub-keys (ask, disableBypassPermissionsMode)', () => {
@@ -648,6 +642,105 @@ describe('mergeClaudePermissions (#2278): legacy Write(...) → Edit(...) migrat
   });
 });
 
+// ─── #4221 — the Read(.env*) / Read(.secrets) deny rules are retired in favor
+// of the managed gsd-secret-read-guard.js hook. A merge against an existing
+// install must remove exactly the retired strings and leave no `deny: []`.
+describe('mergeClaudePermissions (#4221): legacy Read(.env*) deny-rule retirement', () => {
+  test('existing install with the three retired rules + a user entry: retired rules removed, user entry kept', () => {
+    const settings = {
+      permissions: {
+        allow: ['Bash(git *)'],
+        deny: ['Read(.env)', 'Read(.env.*)', 'Read(.secrets)', 'WebSearch'],
+      },
+    };
+    mergeClaudePermissions(settings);
+    assert.deepStrictEqual(settings.permissions.deny, ['WebSearch']);
+    assert.ok(settings.permissions.allow.includes('Bash(git *)'));
+  });
+
+  test('a partial set of retired rules is removed', () => {
+    const settings = { permissions: { deny: ['WebSearch', 'Read(.env.*)'] } };
+    mergeClaudePermissions(settings);
+    assert.deepStrictEqual(settings.permissions.deny, ['WebSearch']);
+  });
+
+  test('near-miss user strings are not byte-equal and survive', () => {
+    const settings = { permissions: { deny: ['Read(./.env)', 'Read(.env) ', 'read(.env)', 'Read(.env.*.bak)'] } };
+    mergeClaudePermissions(settings);
+    assert.deepStrictEqual(settings.permissions.deny, ['Read(./.env)', 'Read(.env) ', 'read(.env)', 'Read(.env.*.bak)']);
+  });
+
+  test('idempotent across repeated merges', () => {
+    const settings = { permissions: { deny: ['Read(.env)', 'WebSearch'] } };
+    mergeClaudePermissions(settings);
+    mergeClaudePermissions(settings);
+    assert.deepStrictEqual(settings.permissions.deny, ['WebSearch']);
+  });
+
+  test('a GSD-only deny array is deleted, not left as an empty array', () => {
+    const settings = { permissions: { deny: ['Read(.env)', 'Read(.env.*)', 'Read(.secrets)'] } };
+    mergeClaudePermissions(settings);
+    assert.strictEqual(settings.permissions.deny, undefined,
+      'a deny array emptied by the retirement filter must be removed (no `"deny": []` residue)');
+    assert.ok(Array.isArray(settings.permissions.allow), 'allow is still populated');
+  });
+
+  test('a pre-existing empty deny array the user wrote is preserved untouched', () => {
+    const settings = { permissions: { deny: [] } };
+    mergeClaudePermissions(settings);
+    assert.deepStrictEqual(settings.permissions.deny, []);
+  });
+
+  test('a malformed non-array deny is still repaired to an empty array', () => {
+    const settings = { permissions: { deny: 'Read(.env)' } };
+    mergeClaudePermissions(settings);
+    assert.deepStrictEqual(settings.permissions.deny, []);
+  });
+
+  test('uninstall: GSD-only allow + deny leaves no permissions key at all', (t) => {
+    const root = createTempDir('gsd-claude-perm-uninstall-4221-');
+    t.after(() => cleanup(root));
+    const runOpts = { env: { ...process.env, HOME: root, USERPROFILE: root }, timeoutMs: INSTALL_TIMEOUT_MS };
+
+    const r1 = runNode([INSTALL_SCRIPT, '--claude', '--global', '--config-dir', root], runOpts);
+    assert.strictEqual(r1.exitCode, 0, `install failed: ${r1.stderr}`);
+
+    const settingsPath = path.join(root, 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    settings.permissions.deny = ['Read(.env)', 'Read(.env.*)', 'Read(.secrets)'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+
+    const r2 = runNode([INSTALL_SCRIPT, '--claude', '--global', '--config-dir', root, '--uninstall'], runOpts);
+    assert.strictEqual(r2.exitCode, 0, `uninstall failed: ${r2.stderr}`);
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.strictEqual(after.permissions, undefined,
+      'with only GSD-owned allow and deny entries, uninstall must remove the whole permissions key');
+  });
+
+  test('uninstall: a foreign allow entry keeps permissions.allow while the emptied deny key goes', (t) => {
+    const root = createTempDir('gsd-claude-perm-uninstall-4221-foreign-');
+    t.after(() => cleanup(root));
+    const runOpts = { env: { ...process.env, HOME: root, USERPROFILE: root }, timeoutMs: INSTALL_TIMEOUT_MS };
+
+    const r1 = runNode([INSTALL_SCRIPT, '--claude', '--global', '--config-dir', root], runOpts);
+    assert.strictEqual(r1.exitCode, 0, `install failed: ${r1.stderr}`);
+
+    const settingsPath = path.join(root, 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    settings.permissions.allow.push('Bash(git *)');
+    settings.permissions.deny = ['Read(.env)', 'Read(.env.*)', 'Read(.secrets)'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+
+    const r2 = runNode([INSTALL_SCRIPT, '--claude', '--global', '--config-dir', root, '--uninstall'], runOpts);
+    assert.strictEqual(r2.exitCode, 0, `uninstall failed: ${r2.stderr}`);
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepStrictEqual(after.permissions.allow, ['Bash(git *)']);
+    assert.strictEqual(after.permissions.deny, undefined, 'emptied deny key must be removed');
+  });
+});
+
 describe('mergeClaudePermissions (#768): end-to-end install writes permissions to settings.json', () => {
   test('--claude --global install writes GSD allow/deny entries to settings.json', (t) => {
     const root = createTempDir('gsd-claude-perm-install-');
@@ -667,15 +760,13 @@ describe('mergeClaudePermissions (#768): end-to-end install writes permissions t
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.ok(Array.isArray(settings.permissions?.allow),
       'settings.json must have permissions.allow array');
-    assert.ok(Array.isArray(settings.permissions?.deny),
-      'settings.json must have permissions.deny array');
+    assert.strictEqual(settings.permissions.deny, undefined,
+      'a fresh install must not write permissions.deny at all (#4221)');
 
     assert.ok(settings.permissions.allow.includes('Bash(npx gsd-core *)'),
       'settings.json permissions.allow must include Bash(npx gsd-core *)');
     assert.ok(settings.permissions.allow.includes('Read(.planning/*)'),
       'settings.json permissions.allow must include Read(.planning/*)');
-    assert.ok(settings.permissions.deny.includes('Read(.env)'),
-      'settings.json permissions.deny must include Read(.env)');
   });
 
   test('non-claude runtime (antigravity) does NOT write GSD allow/deny permissions to settings.json', (t) => {
@@ -724,11 +815,8 @@ describe('mergeClaudePermissions (#768): end-to-end install writes permissions t
       assert.strictEqual(count, 1,
         `allow entry "${entry}" must appear exactly once after two installs`);
     }
-    for (const entry of GSD_CLAUDE_DENY_PERMISSIONS) {
-      const count = (settings.permissions?.deny ?? []).filter((e) => e === entry).length;
-      assert.strictEqual(count, 1,
-        `deny entry "${entry}" must appear exactly once after two installs`);
-    }
+    assert.strictEqual(settings.permissions?.deny, undefined,
+      'permissions.deny must still be absent after two installs (#4221)');
   });
 
   test('--claude --global uninstall removes GSD permission entries from settings.json', (t) => {
@@ -753,9 +841,10 @@ describe('mergeClaudePermissions (#768): end-to-end install writes permissions t
     assert.ok((afterInstall.permissions?.allow ?? []).includes('Bash(npx gsd-core *)'),
       'permissions.allow must contain GSD entry after install');
 
-    // Now add a user permission to make sure we don't nuke it
+    // Now add a user permission to make sure we don't nuke it, and simulate
+    // a pre-#4221 install that still carries the retired deny rules.
     afterInstall.permissions.allow.push('Bash(git *)');
-    afterInstall.permissions.deny.push('WebSearch');
+    afterInstall.permissions.deny = ['Read(.env)', 'Read(.env.*)', 'Read(.secrets)', 'WebSearch'];
     fs.writeFileSync(settingsPath, JSON.stringify(afterInstall, null, 2) + '\n');
 
     // Uninstall
@@ -774,13 +863,15 @@ describe('mergeClaudePermissions (#768): end-to-end install writes permissions t
       'GSD Bash allow entry must be removed by uninstall');
     assert.ok(!allow.includes('Read(.planning/*)'),
       'GSD Read(.planning/*) allow entry must be removed by uninstall');
-    assert.ok(!deny.includes('Read(.env)'),
-      'GSD Read(.env) deny entry must be removed by uninstall');
+    for (const entry of GSD_CLAUDE_LEGACY_DENY_PERMISSIONS) {
+      assert.ok(!deny.includes(entry),
+        `retired GSD deny entry "${entry}" must be removed by uninstall (#4221)`);
+    }
 
     // User entries must survive
     assert.ok(allow.includes('Bash(git *)'),
       'user Bash(git *) allow entry must survive uninstall');
-    assert.ok(deny.includes('WebSearch'),
+    assert.deepStrictEqual(afterUninstall.permissions.deny, ['WebSearch'],
       'user WebSearch deny entry must survive uninstall');
   });
 

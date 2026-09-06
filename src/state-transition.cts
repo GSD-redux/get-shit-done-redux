@@ -20,7 +20,7 @@ import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stat
 import { KNOWN_TEMPLATE_DEFAULTS, toFiniteNumber } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
-import { deriveProgressFromRoadmap, clampPercent } from './phase-lifecycle.cjs';
+import { deriveProgressFromRoadmap, clampPercent, clampPercentFromFraction } from './phase-lifecycle.cjs';
 import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateMdSchemaMod = require('./state-md-schema.cjs');
@@ -28,6 +28,47 @@ const { STATE_FIELD_SCHEMA } = stateMdSchemaMod;
 type StateFieldSchema = stateMdSchemaMod.StateFieldSchema;
 
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, FRONTMATTER_UNPARSEABLE } = frontmatter;
+
+export function formatProgressMachineSegment(percent: number): string {
+  // ADR-3180 Decision 7: rounding and the 100 ceiling belong to the
+  // completion-ratio kernel. The floor is added here because this helper is
+  // also fed persisted frontmatter values (hand-editable, unlike the
+  // count-shaped entries into that kernel), and `'░'.repeat` throws on a
+  // negative count. Bar and printed percent use the clamped value so the two
+  // halves of the segment can never disagree.
+  const clamped = Math.max(0, clampPercentFromFraction(percent / 100));
+  const filled = Math.round(clamped / 10);
+  return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${clamped}%`;
+}
+
+// Consumers (a future STATE.md writer that bypasses all three reintroduces the
+// #4213 divergence class): `cmdStateUpdateProgress` and `syncCore`'s progress
+// intent (both in this module) plus the post-sync body reconciliation in
+// `applyPostSyncPreservation` (src/state.cts). `cmdStateSync` never reaches
+// that reconciliation — ADR-3408 §8.3: `state sync` lets the body win, so
+// preservation must NOT run — which is why its correctness comes from
+// `syncCore`'s call here.
+export function stateReplaceProgressPercent(content: string, percent: number): string | null {
+  const body = stripFrontmatter(content);
+  // #2177: bold `**Progress:**` anywhere in the body wins outright; the plain
+  // `^Progress:` form is the fallback only when no bold line exists, so an
+  // earlier free-text line starting with `Progress:` cannot capture the
+  // rewrite ahead of the real status line.
+  const boldProgressPattern = /(\*\*Progress:\*\*[ \t]*)([^\r\n]*)/i;
+  const plainProgressPattern = /^(Progress:[ \t]*)([^\r\n]*)/im;
+  const pattern = boldProgressPattern.test(body)
+    ? boldProgressPattern
+    : plainProgressPattern.test(body)
+      ? plainProgressPattern
+      : null;
+  if (!pattern) return null;
+  const machineSegment = /(?:\[[^\]\r\n]*\][ \t]*)?\d{1,3}%/;
+  const progress = formatProgressMachineSegment(percent);
+  const updatedBody = body.replace(pattern, (_match: string, prefix: string, value: string) => (
+    `${prefix}${machineSegment.test(value) ? value.replace(machineSegment, progress) : progress}`
+  ));
+  return content.slice(0, content.length - body.length) + updatedBody;
+}
 
 /**
  * ADR-3473 §8.1 (#3881, consequence 2 wiring): does `existingFm` carry the
@@ -1289,6 +1330,93 @@ function mutateCurrentPositionResume(
 }
 
 /**
+ * The two value grammars `Current Plan` / `Plan` accept, ANCHORED to the whole
+ * value. These are the executable half of `STATE_FIELD_SCHEMA.current_plan`'s
+ * declared `acceptedShapes` (`['N', 'N of M']`); ADR-3473 §8.8 keeps the parser
+ * hand-written and has rows 23/24/25 assert the two agree, so widening one
+ * without the other goes red rather than drifting.
+ *
+ * Anchoring is the whole point. An unanchored `/of\s+(\d+)/` reads a total out
+ * of prose — `Current Plan: 4 — blocked on review of 2 PRs` yields `4 of 2`,
+ * which is `currentPlan >= totalPlans`, which WRITES a terminal
+ * "Phase complete" status into the user's STATE.md. Refusing to guess is the
+ * behaviour #3840/`308c17505` settled for a malformed feature `order`, and it
+ * applies here for the same reason: a wrong parse and a right one are
+ * output-identical to the caller.
+ *
+ * The anchor that does the work is the one at the START. A trailing remainder
+ * is allowed after the total because `Plan: 2 of 5 in current phase` is a real,
+ * tested shape this field has always carried — the suffix is a human note, not
+ * a second number. Prose is still refused, because the refusal comes from
+ * requiring `of <total>` to follow the leading number IMMEDIATELY: in
+ * `4 — blocked on review of 2 PRs` what follows `4` is ` — blocked`, so there
+ * is nothing for the total to be read from.
+ *
+ * BOTH grammars carry the same trailing tolerance, deliberately. An earlier
+ * revision anchored `N` hard (`/^(\d+)\s*$/`) while leaving `N of M` open,
+ * which hard-errored on values base parsed happily via `parseInt`:
+ * `Total Plans in Phase: 5 phases` and `Current Plan: 3 (blocked)`. #3784's own
+ * brief puts "validating or normalizing plan numbers beyond this transition's
+ * read/write" out of scope, so refusing an annotation nobody complained about
+ * was a narrowing this issue does not license. The prose defect is closed by
+ * the START anchor, not by forbidding suffixes: with a `Total Plans in Phase`
+ * sibling present the total never comes from the value's text at all, and
+ * without one `4 — blocked on review of 2 PRs` still fails `N of M` because
+ * ` — blocked` does not follow the leading number with `of`.
+ *
+ * CRLF survives, but state the mechanism accurately: `stateExtractField`'s own
+ * `(.+)` capture stops before the `\r` — JS `.` excludes CR as a
+ * LineTerminator — so the value these grammars receive is already CR-free on
+ * the common path. The trailing group is what covers the case where a CR does
+ * reach here, and `\s` matching CR is why it works. It is belt-and-braces, not
+ * the primary defence.
+ */
+/** The two body field names a plan position is ever written under. */
+type PlanFieldName = 'Plan' | 'Current Plan';
+
+const PLAN_SHAPE_N = /^(\d+)(?:\s.*)?$/;
+const PLAN_SHAPE_N_OF_M = /^(\d+)\s+of\s+(\d+)(?:\s.*)?$/;
+
+/**
+ * Parse a decimal group into a plan number, or `null` if it is not a value we
+ * are willing to do arithmetic on.
+ *
+ * `parseInt` is deliberately not used on the raw field: it truncates (`"2 of 5"`
+ * -> 2), accepts a sign (`"+2"`), and silently loses precision past
+ * `Number.MAX_SAFE_INTEGER`, where the number we report and the string we write
+ * back stop agreeing. The grammars above already exclude signs and trailing
+ * text, so the only remaining hazard is magnitude.
+ */
+function planNumberFrom(digits: string): number | null {
+  const n = Number(digits);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Advance the leading integer of a written plan value, preserving everything
+ * the author wrote around it: the zero-padding width ("04" -> "05") and any
+ * trailing remainder ("2 of 99" -> "3 of 99", and the `\r` of a CRLF file).
+ *
+ * The three parse branches disagree about the field NAME and about whether a
+ * total is carried inline, but they agree completely about this: only the
+ * leading digits are the plan number, and nothing else on the line belongs to
+ * this transition. Writing `String(newPlan)` instead — as the legacy branch
+ * did — discards the author's text on a branch nobody was reading.
+ *
+ * padStart never truncates, so 09 -> 10 widens rather than clipping.
+ */
+function bumpLeadingNumber(raw: string, next: number): string | null {
+  const digits = /^\d+/.exec(raw);
+  // Total rather than pass-through. `raw.replace(/^\d+/, …)` returns the input
+  // unchanged when there are no leading digits, so `+2` advanced in `data` and
+  // wrote the file untouched — the command reported progress it had not made
+  // and could be re-run forever. The grammars make that unreachable today;
+  // returning null keeps it unreachable if a fourth branch is ever added.
+  if (!digits) return null;
+  return raw.replace(/^\d+/, () => String(next).padStart(digits[0].length, '0'));
+}
+
+/**
  * Update fields within the ## Current Position section for advancePlan.
  * Mirrors `updateCurrentPositionFields` (state.cts:496) byte-for-behaviour:
  * only replaces Status / Last Activity when the existing value is a known
@@ -1301,7 +1429,15 @@ function mutateCurrentPositionResume(
  */
 function mutateCurrentPositionForAdvance(
   content: string,
-  fields: { phase?: string; status?: string; lastActivity?: string; plan?: string },
+  fields: {
+    phase?: string;
+    status?: string;
+    lastActivity?: string;
+    /** Value for a section line spelled `Plan:`. */
+    plan?: string;
+    /** Value for a section line spelled `Current Plan:`. */
+    currentPlan?: string;
+  },
   statusDefaults: string[] | null | undefined,
   lastActivityDefaults: string[] | null | undefined,
 ): string {
@@ -1338,15 +1474,72 @@ function mutateCurrentPositionForAdvance(
     if (replaced !== null && replaced !== sectionBody) { sectionBody = replaced; mutated = true; }
   }
 
-  if (fields.plan) {
+  if (fields.plan || fields.currentPlan) {
     // Plan is always replaced — system-derived, not executor-authored.
-    if (/^Plan:/m.test(sectionBody)) {
-      sectionBody = sectionBody.replace(/^Plan:.*$/m, `Plan: ${fields.plan}`);
-      mutated = true;
-    } else {
-      const replaced = stateReplaceField(sectionBody, 'Plan', fields.plan);
-      if (replaced !== null) { sectionBody = replaced; mutated = true; }
-    }
+    //
+    // Which NAME to write is decided by what the SECTION carries, not by which
+    // header field the value was read from. Mirroring the header was wrong in
+    // both directions: a legacy header with a `Current Plan:` section line left
+    // the section a plan behind, and a hybrid header with a `Plan:` section line
+    // mutated nothing at all. The invariant is per-name — every site spelled
+    // `Current Plan` gets the `Current Plan` value, every `Plan` site gets the
+    // `Plan` value — so both are passed in and each is written where its own
+    // name appears.
+    //
+    // Title-Case LITERALS reach both the regex and stateReplaceField
+    // (ADR-3408 §8.3(b)): a literal cannot collide with a lowercase/snake_case
+    // frontmatter key, whatever the caller passed.
+    //
+    // The replacements go through a replacer FUNCTION, never a replacement
+    // string. `fields.plan` is derived from file content, and `String.replace`
+    // expands `$&`, `` $` `` and `$'` in a replacement string — a STATE.md
+    // carrying `Current Plan: 04 of 06 $&` would splice part of itself into the
+    // document. `stateReplaceField` already uses a function for this reason;
+    // these arms now agree with it.
+    // Each name is written INDEPENDENTLY, and each falls back on its own.
+    //
+    // Two defects lived in the previous shape, both of which produced the
+    // split-brain document this arm exists to prevent:
+    //
+    //   - The fallback was guarded by `!mutated`, and `mutated` is FUNCTION-wide
+    //     — already set by the `phase`/`status`/`lastActivity` arms above, which
+    //     `advancePlanCore` always populates. A section spelled `**Current
+    //     Plan:**` (bold) or as a pipe-table row therefore skipped its fallback
+    //     because an UNRELATED field had been refreshed, and the section stayed a
+    //     plan behind the header.
+    //   - The fallback then picked ONE name by ternary. In the legacy shape both
+    //     values are populated, so it always chose `Current Plan` and a
+    //     `**Plan:**` section line — which base did write — got nothing.
+    //
+    // `planWritten` is local, so nothing outside this arm can satisfy its guard.
+    let planWritten = false;
+    const writePlanField = (name: PlanFieldName, value: string | undefined): void => {
+      if (!value) return;
+      // Plain `Name:` line first. Title-Case LITERALS reach both the regex and
+      // stateReplaceField (ADR-3408 §8.3(b)), and the replacement goes through a
+      // replacer FUNCTION so a `$&` / `` $` `` / `$'` in the author's text is not
+      // expanded into the document.
+      if (name === 'Current Plan') {
+        if (/^Current Plan:/m.test(sectionBody)) {
+          sectionBody = sectionBody.replace(/^Current Plan:.*$/m, () => `Current Plan: ${value}`);
+          planWritten = true;
+          return;
+        }
+        const replaced = stateReplaceField(sectionBody, 'Current Plan', value);
+        if (replaced !== null) { sectionBody = replaced; planWritten = true; }
+        return;
+      }
+      if (/^Plan:/m.test(sectionBody)) {
+        sectionBody = sectionBody.replace(/^Plan:.*$/m, () => `Plan: ${value}`);
+        planWritten = true;
+        return;
+      }
+      const replaced = stateReplaceField(sectionBody, 'Plan', value);
+      if (replaced !== null) { sectionBody = replaced; planWritten = true; }
+    };
+    writePlanField('Current Plan', fields.currentPlan);
+    writePlanField('Plan', fields.plan);
+    if (planWritten) mutated = true;
   }
 
   if (!mutated) return content;
@@ -1360,8 +1553,10 @@ function mutateCurrentPositionForAdvance(
 /**
  * Apply an `advancePlan` transition to STATE.md content.
  *
- * Parses Current Plan / Total Plans (legacy separate fields or compound
- * "Plan: X of Y" format), increments the plan number, updates body fields
+ * Parses Current Plan / Total Plans in any of three shapes — the legacy
+ * separate fields, the compound "Plan: X of Y", or the hybrid
+ * "Current Plan: X of Y" (legacy name, compound value, no Total Plans
+ * sibling) — increments the plan number, updates body fields
  * and the ## Current Position section. When currentPlan >= totalPlans,
  * takes the phase-complete branch (sets Status to "Phase complete — ready
  * for verification") instead of advancing.
@@ -1410,30 +1605,108 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     }
   }
 
-  // Parse plan number — legacy first, then compound.
+  // Parse plan number — legacy pair first, then the hybrid, then compound.
+  //
+  // These branches decide ONE thing: which numbers the advance is computed
+  // from. They deliberately do not record which FIELD supplied them, because
+  // the write path no longer asks — every spelling is written back from its own
+  // raw text (#3791 review round 6, B1/M1). An earlier revision tracked a
+  // `planSourceField`/`planRawValue` pair here and then wrote the OTHER
+  // spelling from this one's numbers, which is precisely how a field ended up
+  // holding a value nothing had derived for it.
   const legacyPlan = stateExtractField(content, 'Current Plan');
   const legacyTotal = stateExtractField(content, 'Total Plans in Phase');
   const planField = stateExtractField(content, 'Plan');
 
-  let currentPlan: number;
-  let totalPlans: number;
-  let useCompoundFormat = false;
+  // Every branch below reads its numbers out of an ANCHORED match's capture
+  // groups. Nothing here calls parseInt on a raw field value, so a value the
+  // grammar does not fully describe cannot half-parse into a plausible number.
+  const legacyNMatch = legacyPlan ? PLAN_SHAPE_N.exec(legacyPlan) : null;
+  const legacyNofMMatch = legacyPlan ? PLAN_SHAPE_N_OF_M.exec(legacyPlan) : null;
+  const totalNMatch = legacyTotal ? PLAN_SHAPE_N.exec(legacyTotal) : null;
+  const planNofMMatch = planField ? PLAN_SHAPE_N_OF_M.exec(planField) : null;
+  const planNMatch = planField ? PLAN_SHAPE_N.exec(planField) : null;
 
-  if (legacyPlan && legacyTotal) {
-    currentPlan = parseInt(legacyPlan, 10);
-    totalPlans = parseInt(legacyTotal, 10);
-  } else if (planField) {
-    currentPlan = parseInt(planField, 10);
-    const ofMatch = planField.match(/of\s+(\d+)/);
-    totalPlans = ofMatch ? parseInt(ofMatch[1], 10) : NaN;
-    useCompoundFormat = true;
-  } else {
-    currentPlan = NaN;
-    totalPlans = NaN;
+  let parsedCurrent: number | null = null;
+  let parsedTotal: number | null = null;
+
+  if (legacyPlan && legacyTotal && (legacyNMatch || legacyNofMMatch) && totalNMatch) {
+    // Legacy pair wins whenever both fields are present and both are readable,
+    // even if the Current Plan value also carries an "of M" — the explicit
+    // sibling field is the stated intent, so it supplies the total.
+    parsedCurrent = planNumberFrom((legacyNMatch ?? legacyNofMMatch)![1]);
+    parsedTotal = planNumberFrom(totalNMatch[1]);
+  } else if (legacyNofMMatch) {
+    // Hybrid: legacy field name, compound value, no readable Total Plans
+    // sibling. Written by hand (and by agents) often enough to be worth
+    // reading — #3784.
+    parsedCurrent = planNumberFrom(legacyNofMMatch[1]);
+    parsedTotal = planNumberFrom(legacyNofMMatch[2]);
+  } else if (planNofMMatch) {
+    parsedCurrent = planNumberFrom(planNofMMatch[1]);
+    parsedTotal = planNumberFrom(planNofMMatch[2]);
   }
+  // No branch for a bare `Plan: N` paired with a `Total Plans in Phase: M`
+  // sibling and no `Current Plan` at all (#3791 review round 6, M2). A revision
+  // of this PR accepted it; base did not (its `else if (planField)` arm had no
+  // `of M` match and errored via NaN), and it is out of #3784's scope, which is
+  // the hybrid `Current Plan: N of M`. It cannot be given the schema-row +
+  // forcing-test coupling the other shapes have, either: `Plan` is body-only,
+  // `buildStateFrontmatter` never reads it into frontmatter, so there is no
+  // `current_*` key to hang a row on. An accepted shape with no schema row and
+  // no forcing test is exactly the drift this diff is otherwise built to
+  // prevent, so the shape is refused and named in the error instead.
 
-  if (isNaN(currentPlan) || isNaN(totalPlans)) {
+  if (parsedCurrent === null || parsedTotal === null) {
     return { content: reassemble(body), updated: [], data: { error: true } };
+  }
+  const currentPlan = parsedCurrent;
+  const totalPlans = parsedTotal;
+
+  // Each SPELLING's own plan number, read from its own value (#3791 review
+  // round 6, B1/M1). The parse above picks ONE field to advance FROM; these are
+  // what each field independently claims, and they are the only honest basis
+  // for writing that field back.
+  const legacyOwnCurrent = legacyNMatch || legacyNofMMatch
+    ? planNumberFrom((legacyNMatch ?? legacyNofMMatch)![1])
+    : null;
+  const planOwnCurrent = planNofMMatch || planNMatch
+    ? planNumberFrom((planNofMMatch ?? planNMatch)![1])
+    : null;
+
+  // A document carrying BOTH spellings with DIFFERENT plan numbers disagrees
+  // with itself, and no rule here can say which half is right. Refuse.
+  //
+  // This is the #3807 posture one field over: name the conflict, let the caller
+  // resolve it, never pick. The alternative shipped in an earlier revision of
+  // this PR and was the round-6 Blocker — with `Plan` as the parse source, the
+  // write path re-stamped `Current Plan`'s value with the number it had just
+  // derived from `Plan`, so `Current Plan: 7` beside `Plan: 2 of 5` silently
+  // became `Current Plan: 3`. A number with no relationship to the field it was
+  // written into, no error, no diagnostic.
+  //
+  // Placed BEFORE the phase-complete branch deliberately. Guarding only the
+  // normal advance leaves `Current Plan: 7` beside `Plan: 5 of 5` writing a
+  // terminal "Phase complete — ready for verification" into a document whose
+  // two spellings never agreed on where execution was.
+  //
+  // Differing TOTALS are NOT a disagreement about position and are preserved,
+  // not resolved: `Current Plan: 2` / `Total Plans in Phase: 5` beside
+  // `Plan: 2 of 9` advances to `3` and `3 of 9`. Reconciling the two totals
+  // would be this transition inventing an answer to a question nobody asked it.
+  if (legacyOwnCurrent !== null && planOwnCurrent !== null && legacyOwnCurrent !== planOwnCurrent) {
+    return {
+      content: reassemble(body),
+      updated: [],
+      data: {
+        error: true,
+        reason: 'ambiguous_plan_position',
+        plan_candidates: [
+          `Current Plan: ${legacyPlan}`,
+          `Plan: ${planField}`,
+        ],
+      },
+    };
   }
 
   const updated: string[] = [];
@@ -1460,13 +1733,73 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
 
   // Normal advance branch.
   const newPlan = currentPlan + 1;
-  let planDisplayValue: string;
-  if (useCompoundFormat) {
-    planDisplayValue = (planField as string).replace(/^\d+/, String(newPlan));
+  // The value each SPELLING should carry after the advance. A document may hold
+  // both names (a `Current Plan:` header and a `Plan:` line in the section, or
+  // the reverse), and each has always rendered differently — the legacy field
+  // holds a bare/padded number while the section's `Plan:` line holds the
+  // compound `N of M`.
+  //
+  // Each is advanced from ITS OWN raw text, never from the other's numbers
+  // (#3791 review round 6, B1/M1). `bumpLeadingNumber` replaces only the leading
+  // digits, so the field's zero-padding width, its own ` of M` and any trailing
+  // annotation all survive — which is what the changeset claims, and what the
+  // previous revision did only for whichever field happened to be the parse
+  // source. The other field it re-stamped from numbers that were never its own.
+  const advanceOwn = (raw: string | null, own: number | null): string | undefined => {
+    if (raw === null) return undefined;
+    // Present but unreadable (`Plan: TBD`). Leave it exactly as authored: this
+    // transition cannot advance what it cannot read, and writing a derived
+    // number over it is the fabrication B1 was filed for. Stale-and-untouched is
+    // honest; refusing the whole document because an unrelated line is
+    // unreadable would be a narrowing #3784 does not license.
+    if (own === null) return undefined;
+    return bumpLeadingNumber(raw, newPlan) ?? undefined;
+  };
+  // Title-Case LITERALS to stateReplaceField (ADR-3408 §8.3(b)): a literal
+  // cannot collide with a lowercase/snake_case frontmatter key, so it is safe
+  // regardless of how the content argument was derived. `body` here is in fact
+  // `stripFrontmatter(content)`, but the write-path drift guard does not do
+  // dataflow tracking (by design), and satisfying its invariant by construction
+  // is better than asking a reader to re-derive that it holds.
+  // One value per SPELLING, then write both names everywhere they appear.
+  //
+  //   `Current Plan` — whatever the author wrote, advanced in place: padding
+  //                    and any ` of M` preserved.
+  //   `Plan`         — likewise, so its OWN total survives. `Plan: 2 of 9`
+  //                    beside a `Total Plans in Phase: 5` advances to
+  //                    `3 of 9`, not `3 of 5`: the two totals disagreeing is
+  //                    the document's business, not this transition's to
+  //                    reconcile.
+  //
+  // The two are deliberately different strings for the legacy shape, which is
+  // why this is a per-name value rather than one shared display value. Writing
+  // only the name the value was PARSED from is what left the other name stale:
+  // a `**Plan:** 2 of 6` header beside a `Current Plan:` line advanced one and
+  // not the other, in whichever direction the precedence happened to fall.
+  //
+  // Each write is a no-op when that name is absent (`stateReplaceField` returns
+  // null), so a document carrying only one spelling is unaffected — and
+  // `undefined` means "present but not advanceable", which is left untouched
+  // rather than overwritten.
+  const currentPlanDisplayValue = advanceOwn(legacyPlan, legacyOwnCurrent);
+  const planDisplayValue = planField === null
+    // No top-level `Plan:` field to advance, but the `## Current Position`
+    // section may still carry a `Plan:` line in a shape `stateExtractField`
+    // does not read. There is no raw text here to preserve, so it gets the
+    // compound rendering that line has always carried.
+    ? `${newPlan} of ${totalPlans}`
+    : advanceOwn(planField, planOwnCurrent);
+  if (currentPlanDisplayValue !== undefined) {
+    body = stateReplaceField(body, 'Current Plan', currentPlanDisplayValue) || body;
+  }
+  // Only touch `Plan` when the document actually declares one. Writing it
+  // unconditionally meant a `stateReplaceField` whose first match could be any
+  // `Plan:` line anywhere in the body — including prose outside
+  // `## Current Position` that was never a field. `planField` is the read of
+  // that same field from the top of this function, so the write is scoped to a
+  // document that has one.
+  if (planField !== null && planDisplayValue !== undefined) {
     body = stateReplaceField(body, 'Plan', planDisplayValue) || body;
-  } else {
-    planDisplayValue = `${newPlan} of ${totalPlans}`;
-    body = stateReplaceField(body, 'Current Plan', String(newPlan)) || body;
   }
   body = stateReplaceFieldIfTemplate(body, 'Status', statusDefaults, 'Ready to execute') || body;
   body = stateReplaceFieldIfTemplate(body, 'Last Activity', lastActivityDefaults, today) || body;
@@ -1474,9 +1807,21 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   body = mutateCurrentPositionForAdvance(body, {
     status: 'Ready to execute',
     lastActivity: today,
+    // Both spellings, each with its own value. The section writes whichever
+    // name it actually carries; passing only the header's name is what left
+    // two sites disagreeing about where execution is.
     plan: planDisplayValue,
+    currentPlan: currentPlanDisplayValue,
   }, statusDefaults, lastActivityDefaults);
-  updated.push('Current Plan', 'Status', 'Last Activity', 'Current Position');
+  // Report `Current Plan` only when it actually moved. The write above is
+  // conditional now — a `Current Plan:` that is present but unreadable is left
+  // as authored — so an unconditional push here would report progress this
+  // transition had not made, which is the same sin `bumpLeadingNumber` returns
+  // null to avoid. `reconcileReportedFields` at the `state.cts` caller would
+  // catch it against the persisted bytes, but `transitionCore`'s own `updated`
+  // is consumed directly too and has to be true on its own.
+  if (currentPlanDisplayValue !== undefined) updated.push('Current Plan');
+  updated.push('Status', 'Last Activity', 'Current Position');
 
   return {
     content: reassemble(body),
@@ -2467,13 +2812,12 @@ function syncCore(
     if (currentProgress) {
       const currentPercent = parseInt(currentProgress.replace(/[^\d]/g, ''), 10);
       if (currentPercent !== intent.percent) {
-        const barWidth = 10;
-        const filled = Math.round((intent.percent / 100) * barWidth);
-        const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-        const progressStr = `[${bar}] ${intent.percent}%`;
-        changes.push(`Progress: ${currentProgress} -> ${progressStr}`);
-        const result = stateReplaceField(modified, 'Progress', progressStr);
-        if (result) { modified = result; updated.push('Progress'); }
+        const result = stateReplaceProgressPercent(modified, intent.percent);
+        if (result) {
+          const progressStr = formatProgressMachineSegment(intent.percent);
+          changes.push(`Progress: ${currentProgress} -> ${progressStr}`);
+          modified = result; updated.push('Progress');
+        }
       }
     }
   }

@@ -1643,6 +1643,28 @@ function validateRuntimeBody(cap) {
           ' (or "undocumented") (got: ' + JSON.stringify(d.isolation) + ')',
         );
       }
+
+      // maxConcurrency — ADR-1239 Phase 1 (#3673). A numeric dispatch
+      // sub-field (not a closed-vocabulary enum member — same numeric
+      // dispatch sub-field treatment as maxDepth above; unlike maxDepth,
+      // 0 and negative values are invalid — 1 is the fail-closed floor, not
+      // a legitimate "no concurrency" declaration).
+      // OPTIONAL, like isolation: added after existing descriptors, so an
+      // omitted maxConcurrency is legitimate — negotiateHostCapabilities
+      // degrades it to 1 (the safe floor) and warns, exactly as for any
+      // other undeclared dispatch sub-field. Only a PRESENT value is
+      // checked against the positive-safe-integer contract.
+      if (d.maxConcurrency === undefined) {
+        // absent — nothing to validate; negotiateHostCapabilities fails it closed.
+      } else if (
+        d.maxConcurrency !== 'undocumented' &&
+        (!Number.isSafeInteger(d.maxConcurrency) || d.maxConcurrency < 1)
+      ) {
+        errors.push(
+          'runtime.hostIntegration.dispatch.maxConcurrency must be a positive safe integer or "undocumented" ' +
+          '(got: ' + JSON.stringify(d.maxConcurrency) + ')',
+        );
+      }
     }
   }
 
@@ -1824,8 +1846,28 @@ const KNOWN_REVIEWER_FIELDS = new Set([
   // missed a configured model and silently disabled the pinned-model escape hatch
   // #2073 added. A convention one shipped lane already violates is not a contract.
   'modelConfigKey',
+  // `timeoutConfigKey` added by #3274, same optional/backward-compatible shape as
+  // `modelConfigKey` above: a manifest authored before this field existed must keep validating.
+  'timeoutConfigKey',
+  // `effortConfigKey` / `defaultEffort` added by #4255, same optional/backward-compatible shape
+  // as the two above. Lane effort used to be resolved by querying the `gsd-plan-checker` AGENT
+  // through a hardcoded id, so every prompt-fed lane ran at that verifier's frontmatter effort;
+  // it is a property of the review, so the lane declares it. A manifest authored before these
+  // fields existed must keep validating — absent is read as "this lane declares no review
+  // effort", which emits no effort argument at all.
+  'effortConfigKey',
+  'defaultEffort',
   'handler',
 ]);
+
+/**
+ * The effort levels a lane may declare as its review default (#4255, #3533 vocabulary).
+ *
+ * `inherit` is deliberately NOT a member. It is a legitimate CONFIGURED value — it selects "emit
+ * no argument, the CLI's own configuration decides" — but as a DECLARED default it would be a
+ * second spelling of `null` and split one behaviour across two shapes.
+ */
+const REVIEWER_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
  * The closed `runtime.hostBehaviors` vocabulary (ADR-1016, closed via #2801).
@@ -2371,6 +2413,50 @@ function validateReviewerBodyFields(cap) {
     );
   }
 
+  // OPTIONAL, mirroring modelConfigKey's D4 forward/backward-compat treatment (#3274): a manifest
+  // authored before this field existed must keep validating. Absent/null means "no override for
+  // this lane, use timeoutFloorMs". An empty string is neither absent nor a key, and is rejected.
+  if (r.timeoutConfigKey !== undefined && r.timeoutConfigKey !== null &&
+      (typeof r.timeoutConfigKey !== 'string' || r.timeoutConfigKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.timeoutConfigKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.timeoutConfigKey) + ')',
+    );
+  }
+
+  // OPTIONAL, mirroring the two keys above (#4255). Absent/null means "this lane declares no
+  // review effort", which is the shape that emits no effort argument at all — the correct state
+  // for the nine lanes with no effort channel to feed. An empty string is neither.
+  if (r.effortConfigKey !== undefined && r.effortConfigKey !== null &&
+      (typeof r.effortConfigKey !== 'string' || r.effortConfigKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.effortConfigKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.effortConfigKey) + ')',
+    );
+  }
+
+  // A declared default must be a level the effort axis knows, or the lane would render an
+  // argument the reviewer CLI rejects and kill itself on every run. Closed vocabulary, checked
+  // here rather than at resolution time so a malformed manifest fails at the trust boundary.
+  if (r.defaultEffort !== undefined && r.defaultEffort !== null
+      && !(typeof r.defaultEffort === 'string' && REVIEWER_EFFORT_LEVELS.has(r.defaultEffort))) {
+    errors.push(
+      ctx + ' reviewer.defaultEffort must be one of ' +
+      Array.from(REVIEWER_EFFORT_LEVELS).join('/') + ' or null ' +
+      '(got: ' + describeValue(r.defaultEffort) + ')',
+    );
+  }
+
+  // A default with nothing to configure it through is a value the operator cannot change — the
+  // shape #4255 exists to end. Declared together or not at all.
+  if ((r.defaultEffort !== undefined && r.defaultEffort !== null)
+      && (r.effortConfigKey === undefined || r.effortConfigKey === null)) {
+    errors.push(
+      ctx + ' reviewer.defaultEffort is declared without an effortConfigKey, so the level ' +
+      'could never be overridden',
+    );
+  }
+
   // `null` is the declared "no per-lane budget"; an empty string is not.
   if (r.promptBudgetKey !== null && (typeof r.promptBudgetKey !== 'string' || r.promptBudgetKey.length === 0)) {
     errors.push(
@@ -2858,6 +2944,10 @@ function validateStep(step, prefix, declaredSkills, declaredAgents) {
     errors.push(prefix + '.when must be a string if present');
   }
 
+  if (step.pointFrom !== undefined && typeof step.pointFrom !== 'string') {
+    errors.push(prefix + '.pointFrom must be a string if present');
+  }
+
   if (step.fragment !== undefined) {
     errors.push(...validateFragment(step.fragment, prefix + '.fragment'));
   }
@@ -2992,6 +3082,31 @@ function validateAgainstContract(cap, capId) {
       ) {
         errors.push(
           prefix + ' step.when "' + step.when + '" is not defined in capability config keys',
+        );
+      }
+    }
+  }
+
+  // pointFrom (#3661): selects which of possibly several same-capability steps is
+  // active for its own `point`, based on an enum config key. Require it references
+  // an enum key in cap.config whose values include THIS step's own point — otherwise
+  // the step could never activate (a silently-dead step).
+  for (const step of cap.steps) {
+    if (step.pointFrom !== undefined) {
+      if (typeof step.pointFrom !== 'string') continue; // already reported above
+      const slice = typeof cap.config === 'object' && cap.config !== null ? cap.config[step.pointFrom] : undefined;
+      if (!slice || typeof slice !== 'object') {
+        errors.push(
+          prefix + ' step.pointFrom "' + step.pointFrom + '" is not defined in capability config keys',
+        );
+      } else if (slice.type !== 'enum') {
+        errors.push(
+          prefix + ' step.pointFrom "' + step.pointFrom + '" must reference an enum config key (got type: ' + slice.type + ')',
+        );
+      } else if (!Array.isArray(slice.values) || !slice.values.includes(step.point)) {
+        errors.push(
+          prefix + ' step.pointFrom "' + step.pointFrom + '" enum values do not include this step\'s own point "' +
+          step.point + '" — the step could never activate',
         );
       }
     }
@@ -3605,11 +3720,12 @@ const HOOK_GROUP_KINDS = Object.freeze({
  * double-report.
  *
  * KNOWN LIMITATION (#3606): coverage is the UNION across all call sites for a
- * point in the five STEP_WORKFLOWS host files. Consumers outside that universe
- * (quick.md, autonomous.md, code-review*.md, audit-milestone.md,
+ * point in HOST_LOOP_FILES. Quick's plan:pre planner contribution seam has an
+ * additional generator-owned per-file check. Other consumers outside that
+ * universe (autonomous.md, code-review*.md, audit-milestone.md,
  * secure-phase.md, validate-phase.md) are not per-file checked — a narrowed
- * consumer there passes as long as one host file covers the point. Per-file
- * coverage maps are the tightening path.
+ * consumer there passes as long as one host file covers the point. More
+ * per-file coverage maps are the tightening path.
  *
  * @param {object}   cap       Validated capability object.
  * @param {Map<string, Set<string>>} wiredKinds  Per point, the hook kinds the

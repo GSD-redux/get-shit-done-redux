@@ -476,6 +476,7 @@
 | `gsd-worktree-path-guard.js` | `PreToolUse` | ワークツリールート外の絶対パスを持つ Edit/Write/MultiEdit をハードブロック（PR #579、#260） |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | プロジェクトの解決済みディスパッチ分離が `harness-worktree` の場合、ハーネス分離パラメータを欠く executor の `Agent()` ディスパッチをハードブロック（#3045） |
 | `gsd-write-guard.js` | `PreToolUse` | キュレーションされた `.planning/` アーティファクト（ROADMAP.md、マイルストーンロードマップ、STATE.md）を大幅に縮小するファイル全体の `Write` をハードブロック。使い捨てセンチネル `.planning/.gsd-allow-shrink`（ワークフローステップ）または `GSD_ALLOW_PLANNING_SHRINK=1`（対話時）でオーバーライド（#2255、#973 の修正 3） |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Read / Grep / Bash による `.env`、`.env.<suffix>`（`.env.example` などのテンプレートは除外）、`.secrets` の読み取りをハードブロック。インストーラが書き込んでいた `Read(.env*)` の deny ルールを置き換える（#4221） |
 | `gsd-session-state.sh` | `SessionStart` | シェルベースランタイム向けのセッション状態追跡 |
 | `gsd-validate-commit.sh` | `PreToolUse` | Conventional Commit 適用のためのコミットバリデーション |
 | `gsd-phase-boundary.sh` | `PostToolUse` | ワークフロー遷移のためのフェーズ境界検出 |

@@ -94,9 +94,10 @@ After completion, create SUMMARY.md with:
 **RED - Write failing test:**
 1. Create test file following project conventions
 2. Write test describing expected behavior (from `<behavior>` element)
-3. Run test - it MUST fail
-4. If test passes: feature exists or test is wrong. Investigate.
-5. Commit: `test({phase}-{plan}): add failing test for [feature]`
+3. Run test - it MUST fail **intentionally** (#3770): the TARGET test you named must be the test that fails, on an assertion for the planned behavior. A nonzero exit alone is NOT RED — syntax errors, zero-test discovery, fixture crashes, parser errors, and unrelated assertions are INVALID_RED and must not authorize GREEN.
+4. Persist the RED evidence record (command, exit code, failing test, expected result, actual result) and verify it: `gsd_run check tdd-red-evidence <record.json>`. Only verdict `RED_EVIDENCE_OK` satisfies the RED gate; `INVALID_RED` blocks GREEN until the RED phase is fixed.
+5. If test passes: feature exists or test is wrong. Investigate.
+6. Commit: `test({phase}-{plan}): add failing test for [feature]`
 
 **GREEN - Implement to pass:**
 1. Write minimal code to make test pass
@@ -256,26 +257,30 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 
 | Gate | Required | Commit Pattern | Validation |
 |------|----------|---------------|------------|
-| RED | Yes | `test({phase}-{plan}): ...` | Test exists AND fails before implementation |
+| RED | Yes | `test({phase}-{plan}): ...` | Test exists AND fails before implementation — intentionally: `check tdd-red-evidence` returns `RED_EVIDENCE_OK` (target test failed on an assertion for the behavior; anything else is INVALID_RED) |
 | GREEN | Yes | `feat({phase}-{plan}): ...` | Test passes after implementation |
 | REFACTOR | No | `refactor({phase}-{plan}): ...` | Tests still pass after cleanup |
 
 ### Fail-Fast Rules
 
 1. **Unexpected GREEN in RED phase:** If the test passes before any implementation code is written, STOP. The feature may already exist or the test is wrong. Investigate before proceeding.
-2. **Missing RED commit:** If no `test(...)` commit precedes the `feat(...)` commit, the TDD discipline was violated. Flag in SUMMARY.md.
-3. **REFACTOR breaks tests:** Undo the refactor immediately. Commit was premature — refactor in smaller steps.
+2. **INVALID_RED in RED phase (#3770):** A nonzero exit is not RED by itself. Zero-test discovery, fixture/load crashes, nonzero exits with no failing test, unrelated failing tests, and unexpected greens all classify as INVALID_RED (`gsd_run check tdd-red-evidence`). STOP and fix the RED phase — do NOT proceed to GREEN.
+3. **Missing RED commit:** If no `test(...)` commit precedes the `feat(...)` commit, the TDD discipline was violated. Flag in SUMMARY.md.
+4. **REFACTOR breaks tests:** Undo the refactor immediately. Commit was premature — refactor in smaller steps.
 
 ### Executor Gate Validation
 
 After completing a `type: tdd` plan, the executor validates the git log:
 ```bash
+# The commit protocol promises no zero-padding for ${PHASE}/${PLAN} — strip both and
+# match the commit-scope position anchored (#4003).
+PHASE_N=$((10#${PHASE})); PLAN_N=$((10#${PLAN}))
 # Check for RED gate commit
-git log --oneline --grep="^test(${PHASE}-${PLAN})" | head -1
+git log --oneline -E --grep="^test\((0*${PHASE_N})-(0*${PLAN_N})\):" | head -1
 # Check for GREEN gate commit  
-git log --oneline --grep="^feat(${PHASE}-${PLAN})" | head -1
+git log --oneline -E --grep="^feat\((0*${PHASE_N})-(0*${PLAN_N})\):" | head -1
 # Check for optional REFACTOR gate commit
-git log --oneline --grep="^refactor(${PHASE}-${PLAN})" | head -1
+git log --oneline -E --grep="^refactor\((0*${PHASE_N})-(0*${PLAN_N})\):" | head -1
 ```
 
 If RED or GREEN gate commits are missing, add a `## TDD Gate Compliance` section to SUMMARY.md with the violation details.

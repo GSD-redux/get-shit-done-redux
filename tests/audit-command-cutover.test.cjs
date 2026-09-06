@@ -2094,10 +2094,12 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.match(fs.readFileSync(filePath, 'utf-8'), /status: acknowledged/);
 
       // A table row embedded in the entry's span is still refused — a
-      // non-contiguous span cannot anchor a safe write.
-      const tabled = ['## Deferred Items', '', '### Tabled finding', '', '- a bullet', '| x | y |', ''].join('\n');
+      // non-contiguous span cannot anchor a safe write. The row sits BETWEEN
+      // two entry lines: a row after the entry's last line is outside its
+      // span, and that write is anchored and safe (#3702 round 5).
+      const tabled = ['## Deferred Items', '', '### Tabled finding', '', '- a bullet', '| x | y |', '- more evidence', ''].join('\n');
       fs.writeFileSync(filePath, tabled);
-      const refuse = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Tabled finding  - a bullet', '--milestone', 'v1.0']);
+      const refuse = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Tabled finding  - a bullet - more evidence', '--milestone', 'v1.0']);
       assert.equal(refuse.success, false, 'table-embedded spans must still refuse');
       assert.match(refuse.error, /GFM table row/i);
       assert.equal(fs.readFileSync(filePath, 'utf-8'), tabled, 'file must be byte-identical — nothing written on refusal');
@@ -2110,6 +2112,43 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.equal(nf.success, false, 'prose-only headings contribute no entry');
       assert.match(nf.error, /no deferred item matched/i);
       assert.equal(fs.readFileSync(filePath, 'utf-8'), proseOnly, 'file must be byte-identical');
+    });
+
+    test('#3702 round 2 (m3, updated for #3781): a heading-delimited file written with `*`, `+` or `1.` SURFACES its entries, and the CLI writer acknowledges them', () => {
+      // Before #3702 such a file parsed to zero entries and `complete-milestone`
+      // closed over it silently. It now yields entries; under #3781 (merged in
+      // round 5) the heading shape is acknowledgeable, so the milestone loop
+      // suppresses them through the same two CLI calls it makes for a hyphen
+      // file: the listing that puts the entry in front of the writer, and the
+      // acknowledge that takes it. (Until #3781 the writer refused the shape
+      // and the loop halted — that contract is gone from `next`.)
+      const fixtures = [['*', '02-star'], ['+', '03-plus'], ['1.', '04-ordered']];
+      const files = new Map();
+      for (const [marker, slug] of fixtures) {
+        const phaseDir = planningPath('phases', slug);
+        fs.mkdirSync(phaseDir, { recursive: true });
+        const filePath = path.join(phaseDir, 'deferred-items.md');
+        const before = ['## Deferred Items', '', `### Out of scope under ${slug}`, '', `${marker} **What:** detail.`, ''].join('\n');
+        fs.writeFileSync(filePath, before);
+        files.set(slug, { filePath, before });
+      }
+
+      const listed = audit(tmpDir).items.deferred_items.filter((i) => /^Out of scope under /.test(i.text));
+      assert.equal(listed.length, fixtures.length, `every marker's heading entry must be listed: ${JSON.stringify(listed)}`);
+
+      for (const item of listed) {
+        const slug = /under (\S+)/.exec(item.text)[1];
+        const { filePath, before } = files.get(slug);
+        // `--text` is the audit's own reported text, exactly as the loop passes it.
+        const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', slug.slice(0, 2), '--file', 'deferred-items.md', '--text', item.text, '--milestone', 'v1.0']);
+        assert.equal(result.success, true, `${slug}: a widened-marker heading entry must acknowledge; stderr: ${result.error}`);
+        const after = fs.readFileSync(filePath, 'utf-8');
+        assert.notEqual(after, before, `${slug}: the file must carry the marker`);
+        assert.match(after, /status: acknowledged/, slug);
+      }
+      // And the loop's next listing no longer surfaces them.
+      const relisted = audit(tmpDir).items.deferred_items.filter((i) => /^Out of scope under /.test(i.text));
+      assert.equal(relisted.length, 0, `acknowledged entries must leave the listing: ${JSON.stringify(relisted)}`);
     });
 
     // ── F1 (#3458 follow-up review, HIGH): the writer must splice by the

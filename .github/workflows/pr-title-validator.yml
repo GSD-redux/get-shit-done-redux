@@ -94,6 +94,17 @@ jobs:
             const matcherPath = `${process.env.GITHUB_WORKSPACE}/scripts/release-notes/conventional-title.cjs`;
 
             const pr = context.payload.pull_request;
+
+            // #4196: Dependabot PR titles (e.g. "chore(deps): bump ...")
+            // never carry `(#<issue>)` — there's no issue to link (its
+            // alerts live in the Security tab, not as repo issues). Exempt
+            // by author login, not title/branch shape, since that field is
+            // authenticated by GitHub and not forgeable.
+            if (pr.user && pr.user.login === 'dependabot[bot]') {
+              core.info('PR opened by dependabot[bot] — skipping title convention check.');
+              return;
+            }
+
             const title = pr.title || '';
             const warnOnly = process.env.WARN_ONLY === 'true';
 

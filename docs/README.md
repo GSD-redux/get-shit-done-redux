@@ -47,10 +47,12 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Verify a dependency-compatibility claim](how-to/verify-a-dependency-compatibility-claim.md) — act on a compatibility claim the researcher left `[ASSUMED]`, and tell "nothing declared" apart from "a constraint is declared" and "the lookup failed"
 - [Execute a phase](how-to/execute-a-phase.md) — run plans in parallel waves with fresh-context subagents
 - [Enable parallel reviewer lanes](how-to/enable-parallel-reviewer-lanes.md) — cut a multi-reviewer `/gsd-review` pass toward its slowest lane, and tell a rate-limited lane apart from one that was never selected
+- [Enable concurrent per-plan planners in chunked mode](how-to/enable-concurrent-chunked-planning.md) — dispatch chunked `/gsd-plan-phase`'s per-plan Tasks together within one outline Wave instead of one at a time, and know when the setting has no effect
 - [Verify and ship](how-to/verify-and-ship.md) — walk through completed work, diagnose failures, and create the PR
 - [Catch complexity before it compounds](how-to/act-on-a-refactor-proposal.md) — enable the post-execute refactor hook, read a proposal's score vs. anchor delta, and accept or decline it
 - [Run phases autonomously](how-to/run-phases-autonomously.md) — use autonomous mode for unattended phase execution
 - [Handle quick and fast tasks](how-to/handle-quick-and-fast-tasks.md) — use `/gsd-quick` and `/gsd-fast` for ad-hoc work outside the phase loop
+- [Batch quick tasks](how-to/batch-quick-tasks.md) — run several `/gsd-quick`-shaped tasks together with `/gsd-quick-batch`, understand capacity/isolation, and recover a failed or interrupted batch
 - [Configure model profiles](how-to/configure-model-profiles.md) — switch between quality, balanced, and budget model tiers
 - [Control which host runtime GSD reports](how-to/control-the-reported-host-runtime.md) — read the `agent_runtime` ladder, understand what host detection looks at, and pin the runtime when detection is not what you want
 - [Set up cross-AI review](how-to/set-up-cross-ai-review.md) — configure a second AI to review code produced by the primary agent

@@ -46,7 +46,7 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --raw --default "
 gsd_run query audit-open
 ```
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 If the output contains open items (any section with count > 0):
 
@@ -775,7 +775,10 @@ CURRENT_BRANCH=$(git branch --show-current)
 git checkout ${BASE_BRANCH}
 
 if [ "$BRANCHING_STRATEGY" = "phase" ]; then
-  for branch in $PHASE_BRANCHES; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  for branch in $(printf '%s' "$PHASE_BRANCHES"); do
     git merge --squash "$branch"
     # Strip .planning/ from staging if commit_docs is false
     if [ "$COMMIT_DOCS" = "false" ]; then
@@ -804,7 +807,10 @@ CURRENT_BRANCH=$(git branch --show-current)
 git checkout ${BASE_BRANCH}
 
 if [ "$BRANCHING_STRATEGY" = "phase" ]; then
-  for branch in $PHASE_BRANCHES; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  for branch in $(printf '%s' "$PHASE_BRANCHES"); do
     git merge --no-ff --no-commit "$branch"
     # Strip .planning/ from staging if commit_docs is false
     if [ "$COMMIT_DOCS" = "false" ]; then
@@ -830,7 +836,10 @@ git checkout "$CURRENT_BRANCH"
 
 ```bash
 if [ "$BRANCHING_STRATEGY" = "phase" ]; then
-  for branch in $PHASE_BRANCHES; do
+  # Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+  # `$VAR` word-splits under bash but not zsh, collapsing every element onto
+  # one iteration there.
+  for branch in $(printf '%s' "$PHASE_BRANCHES"); do
     git branch -d "$branch" 2>/dev/null || git branch -D "$branch"
   done
 fi

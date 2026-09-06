@@ -32,7 +32,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
-const { readFileNormalized } = require('./helpers.cjs');
+const { readFileNormalized, readWorkflowCombined, createTempDir, cleanup } = require('./helpers.cjs');
+const { runHook, OUTCOME } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fc = require('fast-check');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'plan-review-convergence.md');
@@ -41,6 +43,7 @@ const CONFIG_DOC_PATH = path.join(__dirname, '..', 'docs', 'CONFIGURATION.md');
 const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
 const PLANNER_REVIEWS_PATH = path.join(__dirname, '..', 'gsd-core', 'references', 'planner-reviews.md');
 const PLAN_CHECKER_PATH = path.join(__dirname, '..', 'agents', 'gsd-plan-checker.md');
+const WORKFLOW_REVIEW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
 
 // #2315: the workflow's reviewer-resolution block pipes through `jq`, which is
 // a documented production dependency (review.md:244 "install jq if missing")
@@ -810,6 +813,25 @@ describe('plan-review-convergence workflow: escalation gate (#2306)', () => {
       'workflow must support TEXT_MODE for plain-text escalation prompt'
     );
   });
+
+  test('#3771 "Proceed anyway" is withheld at max cycles when a plan-revision conflict is open', () => {
+    const maxCyclesSection = workflow.slice(workflow.indexOf('**Max cycles check:**'));
+    const branchPoint = maxCyclesSection.indexOf('**Otherwise (`OPEN_CONFLICTS` == 0):**');
+    assert.notEqual(branchPoint, -1,
+      'the max-cycles escalation must branch on OPEN_CONFLICTS before offering "Proceed anyway"');
+    const openConflictBranch = maxCyclesSection.slice(0, branchPoint);
+    const noConflictBranch = maxCyclesSection.slice(branchPoint);
+    // Match the actual OFFER shapes (a numbered option or an AskUserQuestion label), not any
+    // sentence that merely mentions the phrase while explaining it is withheld.
+    const offersProceedAnyway = (text) =>
+      /1\.\s*Proceed anyway/.test(text) || /label:\s*"Proceed anyway"/.test(text);
+    assert.ok(!offersProceedAnyway(openConflictBranch),
+      'an open plan-revision conflict is a blocker — the branch reached while OPEN_CONFLICTS > 0 must never offer to accept it silently');
+    assert.match(openConflictBranch, /blocker/i,
+      'the open-conflict branch must tell the user why "Proceed anyway" is unavailable');
+    assert.ok(offersProceedAnyway(noConflictBranch),
+      '"Proceed anyway" must still be offered when there is no open conflict, only HIGH/actionable concerns');
+  });
 });
 
 // ─── Workflow: stall detection — behavioral ───────────────────────────────
@@ -993,6 +1015,148 @@ describe('plan-review-convergence reviews-mode incorporation contract (#724)', (
       planChecker.includes('CYCLE_SUMMARY') &&
         (planChecker.includes('Do NOT look for') || planChecker.includes('do NOT look for')),
       'CYCLE_SUMMARY must appear in plan-checker only as a prohibited pattern, not as a parsing instruction'
+    );
+  });
+});
+
+// ─── Reviews-mode ledger canonicalization (#3806) ──────────────────────────
+//
+// #3806: reviews-mode requires actionable findings to be incorporated or
+// explicitly deferred/rejected IN PLAN.md (#724/#728), but nothing canonized
+// WHERE in PLAN.md, WHAT SHAPE, or how a line reference survives REVIEWS.md
+// being rewritten wholesale every round. Two independently-invented, mutually
+// incompatible disposition formats were observed across two consecutive
+// rounds of the same phase. The fix promotes the existing Step-4 return-
+// payload tables (`### Review Feedback Addressed` / `### Review Feedback
+// Deferred`) into a canonical `## Review Dispositions Ledger` PLAN.md
+// section, stated ONCE in planner-reviews.md and referenced — not restated —
+// from plan-phase.md and gsd-plan-checker.md. These tests are the parity
+// assertion the maintainer's verdict required (condition 3): they fail if
+// the three seams diverge.
+
+describe('plan-review-convergence reviews-mode ledger canonicalization (#3806)', () => {
+  const plannerReviews = fs.readFileSync(PLANNER_REVIEWS_PATH, 'utf8');
+  const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+  const planChecker = fs.readFileSync(PLAN_CHECKER_PATH, 'utf8');
+  const reviewWorkflow = fs.readFileSync(WORKFLOW_REVIEW_PATH, 'utf8');
+
+  const LEDGER_HEADING_RE = /^##\s+(Review Dispositions Ledger[^\r\n]{0,200})$/m;
+
+  test('planner-reviews.md defines the canonical "Review Dispositions Ledger" heading exactly once', () => {
+    // Counts only the REAL heading occurrence, skipping any fenced code-block
+    // example that happens to show the same heading text as sample content
+    // (planner-reviews.md's worked example does this deliberately, so a plan-
+    // writing agent has a full copyable sample including its own top heading).
+    const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+    let inFence = false;
+    let realHeadingCount = 0;
+    for (const line of splitLines(plannerReviews)) {
+      if (line.trimStart().startsWith('```')) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      if (line.trim() === '## Review Dispositions Ledger') realHeadingCount += 1;
+    }
+    assert.equal(
+      realHeadingCount,
+      1,
+      'references/planner-reviews.md must define the real (non-fenced-example) "## Review Dispositions Ledger" heading exactly once — this is the single canonical statement of the ledger contract (#3806)'
+    );
+  });
+
+  test('plan-phase.md references the canonical ledger instead of restating its shape', () => {
+    const headingMatch = plannerReviews.match(LEDGER_HEADING_RE);
+    assert.ok(headingMatch, 'precondition: canonical heading must exist in planner-reviews.md');
+    const canonicalHeading = headingMatch[1].trim();
+
+    assert.match(
+      planPhase,
+      /references\/planner-reviews\.md/,
+      'plan-phase.md <review_incorporation_contract> must point at references/planner-reviews.md for the ledger shape (#3806)'
+    );
+    assert.ok(
+      planPhase.includes(canonicalHeading),
+      `plan-phase.md must name the live canonical heading ("${canonicalHeading}") — if planner-reviews.md renames it without updating this reference, this fails (#3806 parity)`
+    );
+    assert.doesNotMatch(
+      planPhase,
+      /^##\s+Review Dispositions Ledger[^\r\n]*$/m,
+      'plan-phase.md must NOT define its own competing "## Review Dispositions Ledger" heading — the contract is stated once, in planner-reviews.md, never restated (#3806)'
+    );
+  });
+
+  test('gsd-plan-checker.md references the canonical ledger instead of restating its shape', () => {
+    const headingMatch = plannerReviews.match(LEDGER_HEADING_RE);
+    assert.ok(headingMatch, 'precondition: canonical heading must exist in planner-reviews.md');
+    const canonicalHeading = headingMatch[1].trim();
+
+    assert.match(
+      planChecker,
+      /references\/planner-reviews\.md/,
+      'gsd-plan-checker.md Review Incorporation dimension must point at references/planner-reviews.md for the ledger shape (#3806)'
+    );
+    assert.ok(
+      planChecker.includes(canonicalHeading),
+      `gsd-plan-checker.md must name the live canonical heading ("${canonicalHeading}") — if planner-reviews.md renames it without updating this reference, this fails (#3806 parity)`
+    );
+    assert.doesNotMatch(
+      planChecker,
+      /^##\s+Review Dispositions Ledger[^\r\n]*$/m,
+      'gsd-plan-checker.md must NOT define its own competing "## Review Dispositions Ledger" heading — the contract is stated once, in planner-reviews.md, never restated (#3806)'
+    );
+  });
+
+  test('planner-reviews.md documents round-scoping and the L##@{sha} anchor format', () => {
+    assert.match(
+      plannerReviews,
+      /###\s+Round\s*\{?N\}?/,
+      'canonical ledger must define a per-round subsection (e.g. "### Round {N} — ...") so successive reviews-mode rounds do not collide or overwrite each other (#3806)'
+    );
+    assert.match(
+      plannerReviews,
+      /L##@\{?REVIEWS_sha\}?/,
+      'canonical ledger must define the L##@{REVIEWS_sha} line-anchor format — a bare line number is meaningless once REVIEWS.md is rewritten wholesale next round (#3806)'
+    );
+  });
+
+  test('planner-reviews.md documents append-only supersession, not in-place edits', () => {
+    assert.match(
+      plannerReviews,
+      /append-only/i,
+      'canonical ledger must state the append-only rule: a later round never edits or deletes a prior round\'s tables (#3806)'
+    );
+    assert.match(
+      plannerReviews,
+      /supersed/i,
+      'canonical ledger must define how a later round overturns an earlier verdict (a new row naming what it supersedes), not by editing history (#3806)'
+    );
+  });
+
+  test('planner-reviews.md keeps the ledger\'s Concern/Reason fields free text (no closed enum introduced)', () => {
+    // Condition 4 of the maintainer's verdict: the reviewer roster is
+    // capability-owned and third parties can add reviewers, so `{reviewer}`
+    // must never become a closed enum. Guard against the ledger promotion
+    // accidentally introducing one (e.g. "must be one of: Codex, Claude, ...").
+    assert.ok(
+      !/reviewer\s+must\s+be\s+one\s+of/i.test(plannerReviews),
+      'the ledger must not introduce a closed reviewer/severity enum — the field stays free text (#3806 condition 4)'
+    );
+  });
+
+  test('workflows/review.md still commits REVIEWS.md as its own commit (anchor precondition)', () => {
+    // The L##@{sha} anchor format is only meaningful if REVIEWS.md snapshots
+    // are actually addressable by commit. If this ever stops being true, the
+    // anchoring half of the #3806 contract silently becomes unfulfillable.
+    assert.match(
+      reviewWorkflow,
+      /REVIEWS\.md/,
+      'workflows/review.md must still reference REVIEWS.md as a committed artifact — the #3806 ledger anchors against its commit sha'
+    );
+    assert.match(
+      reviewWorkflow,
+      /commit["\s]/,
+      'workflows/review.md must still run a commit step for REVIEWS.md — without it, {REVIEWS_sha} has nothing to point at'
     );
   });
 });
@@ -2186,5 +2350,191 @@ describe('#2398 — reviewer-instances cross-reference', () => {
     assert.ok(/consensus gate/.test(ref), 'the reference must name the gate');
     assert.ok(/plan-review-convergence|current_high/.test(ref),
       'and must point at where it takes effect, so a reader configuring instances finds it');
+  });
+});
+
+// ── #3899 ────────────────────────────────────────────────────────────────────
+//
+// The line that resolves REVIEWS.md is real shell an orchestrator executes, and it
+// was wrong: `REVIEWS_FILE=$(ls ${phase_dir}/${padded_phase}-REVIEWS.md 2>/dev/null)`
+// word-splits an unquoted `${phase_dir}`, so a project path containing a space
+// resolves to the empty string with `ls`'s error discarded — and the workflow then
+// blamed the review agent for a path-quoting defect. A glob metacharacter is worse:
+// it does not resolve to empty, it resolves to whatever sibling the pattern happens
+// to match, so the convergence loop reads a different phase's REVIEWS.md and never
+// notices.
+//
+// Every text assertion in this file would have passed against that line. So this
+// block EXECUTES the fragment against real fixtures instead of reading it.
+
+/**
+ * The REVIEWS.md resolution fragment, extracted from the workflow and RUN.
+ *
+ * Anchored to the post-review verification step, not searched document-wide: filtering
+ * the whole file for "a bash fence that assigns REVIEWS_FILE" would keep passing if the
+ * real fence stopped assigning it and some unrelated fence started — the harness would
+ * then execute the wrong block and report green. The span runs from the step's opening
+ * sentence to the next `###` heading, which is the same boundary the #1956 fact-drift
+ * suite anchors on above (`AFTER_AGENT_LINE`).
+ */
+function extractReviewsFileResolution3899() {
+  // The workflow markdown IS the runtime instruction; this fence is the shell an
+  // orchestrator runs. It is extracted to be executed below, not string-matched.
+  const workflow = readWorkflowCombined(WORKFLOW_PATH);
+  const start = workflow.search(/^After agent returns, verify REVIEWS\.md exists/m);
+  assert.ok(start >= 0, 'workflow must retain the "After agent returns…" verification step');
+  const rest = workflow.slice(start);
+  const nextHeading = rest.search(/^### /m);
+  const span = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+
+  const blocks = span.split('```').filter((f) => /^bash\n/.test(f) && /^REVIEWS_FILE=/m.test(f));
+  assert.equal(
+    blocks.length,
+    1,
+    `expected exactly one bash fence assigning REVIEWS_FILE in the verification step, found ${blocks.length}`,
+  );
+  return blocks[0].replace(/^bash\n/, '');
+}
+
+/** Run the extracted fragment with `phase_dir` / `padded_phase` bound, and echo what it resolved. */
+function runReviewsFileResolution3899(phaseDir, paddedPhase = '01') {
+  const dir = createTempDir('gsd-3899-gate-');
+  try {
+    const script = path.join(dir, 'resolve.sh');
+    fs.writeFileSync(
+      script,
+      `${extractReviewsFileResolution3899()}\nprintf '%s' "\${REVIEWS_FILE}"\n`,
+    );
+    return runHook(script, [], {
+      interpreter: 'bash',
+      env: { ...process.env, phase_dir: phaseDir, padded_phase: paddedPhase },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+  } finally {
+    cleanup(dir);
+  }
+}
+
+/**
+ * Build a phase directory literally named `dirName` under a fresh temp root and hand
+ * its absolute path to `fn`. `siblings` create decoy phase directories beside it, each
+ * carrying its own REVIEWS.md — that is what turns a glob metacharacter from
+ * "resolves by accident" into "resolves to the wrong file".
+ */
+function withPhaseDir3899(dirName, { reviews = 'real', siblings = [] }, fn) {
+  const root = createTempDir('gsd-3899-phase-');
+  try {
+    for (const sibling of siblings) {
+      fs.mkdirSync(path.join(root, sibling), { recursive: true });
+      fs.writeFileSync(path.join(root, sibling, '01-REVIEWS.md'), 'decoy\n');
+    }
+    const phaseDir = path.join(root, dirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    const reviewsFile = path.join(phaseDir, '01-REVIEWS.md');
+    if (reviews !== null) fs.writeFileSync(reviewsFile, `${reviews}\n`);
+    return fn(phaseDir, reviewsFile);
+  } finally {
+    cleanup(root);
+  }
+}
+
+describe('#3899 REVIEWS.md path resolution is path-safe and fails closed', () => {
+  const posixOnly = { skip: process.platform === 'win32' ? 'POSIX-only bash fragment' : false };
+
+  test('a phase_dir containing a space resolves to the real file', posixOnly, () => {
+    withPhaseDir3899('My Projects', {}, (phaseDir, reviewsFile) => {
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.equal(r.exitCode, 0, `guard rejected an existing file: ${r.stderr}`);
+      assert.equal(r.stdout, reviewsFile);
+    });
+  });
+
+  test('a glob metacharacter resolves to the real file, never a decoy sibling', posixOnly, () => {
+    // `glob[1]dir` is a bash character class matching the literal directory `glob1dir`,
+    // so the unquoted form silently reads the decoy's REVIEWS.md and reports success.
+    withPhaseDir3899('glob[1]dir', { siblings: ['glob1dir'] }, (phaseDir, reviewsFile) => {
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.equal(r.exitCode, 0, `guard rejected an existing file: ${r.stderr}`);
+      assert.equal(r.stdout, reviewsFile);
+      assert.equal(fs.readFileSync(r.stdout, 'utf8').trim(), 'real');
+    });
+  });
+
+  test('a missing reviews file exits non-zero and names the path, not the agent', posixOnly, () => {
+    withPhaseDir3899('My Projects', { reviews: null }, (phaseDir, reviewsFile) => {
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'an absent reviews file must fail closed');
+      assert.ok(
+        r.stderr.includes(reviewsFile),
+        `the error must identify the expected location, got: ${r.stderr}`,
+      );
+      assert.ok(
+        !/review agent did not produce/i.test(r.stderr),
+        `a path failure must not be attributed to the review agent, got: ${r.stderr}`,
+      );
+    });
+  });
+
+  test('an empty phase_dir fails with a diagnostic naming phase_dir', posixOnly, () => {
+    const r = runReviewsFileResolution3899('');
+    assert.equal(r.outcome, OUTCOME.EXITED);
+    assert.notEqual(r.exitCode, 0, 'an empty phase_dir must fail closed');
+    assert.match(r.stderr, /phase_dir/, `the error must identify phase_dir, got: ${r.stderr}`);
+  });
+
+  // This -r arm is developer-box-only when CI runs as root or on Windows.
+  test('an unreadable reviews file exits non-zero', {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permission bits'
+        : typeof process.getuid === 'function' && process.getuid() === 0
+          ? 'root bypasses the read permission bit'
+          : false,
+  }, () => {
+    withPhaseDir3899('My Projects', {}, (phaseDir, reviewsFile) => {
+      fs.chmodSync(reviewsFile, 0o000);
+      const r = runReviewsFileResolution3899(phaseDir);
+      fs.chmodSync(reviewsFile, 0o600); // let cleanup() remove it
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'an unreadable reviews file must fail closed');
+      assert.ok(r.stderr.includes(reviewsFile), `the error must name the path, got: ${r.stderr}`);
+    });
+  });
+
+  test('a directory standing in for the reviews file exits non-zero', posixOnly, () => {
+    withPhaseDir3899('My Projects', { reviews: null }, (phaseDir, reviewsFile) => {
+      // `[ -r ]` alone is true for a readable DIRECTORY, so the gate would pass and hand
+      // a directory to the consumers that read the file.
+      fs.mkdirSync(reviewsFile);
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'a directory is not a reviews file — it must fail closed');
+      assert.ok(r.stderr.includes(reviewsFile), `the error must name the path, got: ${r.stderr}`);
+    });
+  });
+
+  test('the resolution keeps no silent-empty path — no subshell, no discarded stderr', () => {
+    const fragment = extractReviewsFileResolution3899();
+    const lines = fragment.split('\n');
+    const assignment = lines.find((line) => /^REVIEWS_FILE=/.test(line));
+    assert.ok(assignment, 'no REVIEWS_FILE assignment in the extracted fence');
+    // Both subshell spellings: `$(ls …)` is what shipped, and a backtick rewrite would
+    // reintroduce the identical word-splitting through a form `$(`-only matching misses.
+    assert.ok(
+      !/\$\(|`/.test(assignment),
+      `the assignment must not run a subshell, got: ${assignment}`,
+    );
+    // Scoped to the lines that touch REVIEWS_FILE rather than the whole fence: an unrelated
+    // future redirect elsewhere in the block is not this bug, and banning it globally would
+    // red the suite for a change that cannot reintroduce the defect.
+    const discarded = lines.filter((l) => /REVIEWS_FILE/.test(l) && /2>\s*\/dev\/null/.test(l));
+    assert.deepEqual(
+      discarded,
+      [],
+      'the existence check must not discard stderr — that is what hid the path error',
+    );
   });
 });

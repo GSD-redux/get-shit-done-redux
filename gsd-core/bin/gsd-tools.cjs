@@ -30,6 +30,9 @@
  *   list-todos [area]                  Count and enumerate pending todos
  *   list-seeds [status]                List captured seeds (optional status filter)
  *   verify-path-exists <path>          Check file/directory existence
+ *   quick-tasks-migrate                Migrate STATE.md's "Quick Tasks Completed"
+ *                                      table onto the canonical schema (#3730).
+ *                                      No-op when absent or already canonical.
  *   quick-tasks-append --task <text>   Append a row to STATE.md's "Quick Tasks
  *                                      Completed" table (schema-backed via
  *                                      markdown-table.cjs; #2133/ADR-2143).
@@ -334,6 +337,11 @@ const { routePhaseCommand } = require('./lib/phase-command-router.cjs');
 const { routePhasesCommand } = require('./lib/phases-command-router.cjs');
 const { routeValidateCommand } = require('./lib/validate-command-router.cjs');
 const { routeRoadmapCommand } = require('./lib/roadmap-command-router.cjs');
+// #3676 (Phase 4, epic #3344): quick-batch is a first-party, always-on
+// command family (like `/gsd:quick`) — wired directly into
+// HOST_COMMAND_ROUTERS, not the opt-in capability-registry/`activationKey`
+// path graphify uses.
+const { routeQuickBatchCommand } = require('./lib/quick-batch-command-router.cjs');
 const { routeCapabilityCommand } = require('./lib/capability-command-router.cjs');
 const { routeAgentCommand, AGENT_FAILURE_CLASSES } = require('./lib/agent-command-router.cjs');
 const smartEntryMod = require('./lib/smart-entry.cjs');
@@ -1177,6 +1185,34 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     commands.cmdVerifyPathExists(cwd, args[1], raw);
   }
 
+  function routeQuickTasksMigrate({ cwd, raw }) {
+    // #3730 (option b, maintainer decision 2026-09-02): the supported repair
+    // path for a legacy Quick Tasks table GSD's own pre-registry prose created.
+    // Silent no-op when the section is absent or the table is already canonical
+    // — the quick/fast workflows call this before their first append, so the
+    // migration runs exactly once, on the first quick run, unprompted otherwise.
+    const statePath = path.join(cwd, '.planning', 'STATE.md');
+    if (!fs.existsSync(statePath)) {
+      output({ ok: true, migrated: false, reason: `STATE.md not found at ${statePath}` }, raw);
+      return;
+    }
+    const { migrateQuickTasksTable } = require('./lib/markdown-table.cjs');
+    let report;
+    state.readModifyWriteStateMd(statePath, (content) => {
+      const result = migrateQuickTasksTable(content);
+      if (!result.ok) {
+        throw new ExitError(1, `⚠ quick-tasks-migrate: ${result.reason}`);
+      }
+      report = result.value;
+      return result.value.content;
+    }, cwd, { resync: false });
+    output({
+      ok: true,
+      migrated: report.migrated,
+      ...(report.migrated ? { from: report.from, rows: report.rows } : {}),
+    }, raw);
+  }
+
   function routeQuickTasksAppend({ args, cwd, raw, error }) {
     // #2133 / ADR-2143 §3,§7: schema-backed replacement for fast.md's inline
           // `awk NF-2` Quick Tasks column arithmetic. Row construction is delegated
@@ -1286,7 +1322,8 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const fsx = require('node:fs');
     const os = require('node:os');
     const { REVIEWER_LANES, mergeReviewerLanes } = require('./lib/review-lane-descriptor.cjs');
-    const { resolveLanePlan } = require('./lib/review-lane-invocation.cjs');
+    const { resolveLanePlan, resolveLaneEffort } = require('./lib/review-lane-invocation.cjs');
+    const modelCatalog = require('./lib/model-catalog.cjs');
     const runner = require('./lib/review-lane-runner.cjs');
     const cfgLoader = require('./lib/config-loader.cjs');
     const capabilityLoader = require('./lib/capability-loader.cjs');
@@ -1298,13 +1335,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const sub = args[1];
     // Fail fast on an unrecognized subcommand. Without this check, `sub` fell through
     // to the `sub !== 'invoke'` usage-error branch far below (after loading the
-    // capability registry AND building a per-lane plan for every lane — which itself
-    // spawns one child `query resolve-execution` process per lane via `effortFor`,
-    // up to 12 subprocess spawns for the default lane set) before ever reporting the
-    // error. That made an invalid subcommand slow instead of instant, and under bench
-    // load (many sequential node spawns) `review-lane bogus` could exceed a caller's
-    // spawn timeout and be killed before writing anything to stderr — the CI-observed
-    // failure was empty stdout AND stderr, not the expected usage message (#3148).
+    // capability registry AND building a per-lane plan for every lane) before ever
+    // reporting the error. That made an invalid subcommand slow instead of instant, and
+    // under bench load `review-lane bogus` could exceed a caller's spawn timeout and be
+    // killed before writing anything to stderr — the CI-observed failure was empty stdout
+    // AND stderr, not the expected usage message (#3148). The plan path used to be far
+    // heavier still: it spawned one child `query resolve-execution` process PER LANE to
+    // fetch effort, up to 12 subprocess spawns for the default set. #4255 resolves effort
+    // in-process from the lane's own declaration, so that cost is gone; the fail-fast
+    // check stays because building 12 plans is still work an unrecognized sub should skip.
     // `plan`/`invoke` are the only subs that need the expensive plan-building path
     // below; `sections`/`flags` return earlier still. Anything else errors here, before
     // any of that work starts.
@@ -1391,46 +1430,29 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return;
     }
 
-    // Effort argv is resolved per lane by the host's own execution policy, through the SAME
-    // `resolve-execution` surface the bash legs used (`--host <slug>`), so the host's negotiated
-    // effortSurface still decides whether an argument is emitted and the catalog still owns the
-    // syntax (ADR-1239 #2481, ADR-443's escalation ladder). `cmdResolveExecution` writes to
-    // stdout and exits, so it cannot be called in-process for a value — this spawns the same
-    // bounded query the legs did, once per selected lane. A lane whose slug is not a known host
-    // resolves to no effort argument at all.
+    // Effort argv is resolved from the LANE's own review configuration (#4255), then rendered
+    // through the host's negotiated `effortSurface` so ADR-1239/#2481's trust-boundary invariant
+    // still decides whether an argument is emitted at all and the catalog still owns the syntax.
     //
-    // NOT `--raw` and NOT `--pick` (#2295). `--raw` prints only the resolved EFFORT ('low') with
-    // no host-specific rendering at all. `--pick effort_argv_string` used to be the answer — the
-    // rendered array re-joined into a string ('-c model_reasoning_effort=low') — but the caller
-    // then had to `.split(/\s+/)` that string back apart to get an argv array, and re-splitting a
-    // string the callee just joined is a lossy round trip: any argv element that legitimately
-    // contains a space would come back split into two argv elements, corrupting the very argv it
-    // was rendered to preserve. Reading the UNPICKED object instead gives both `effort_argv` (a
-    // real string array, used verbatim, no re-splitting) and `effort_argv_value` (the bare level,
-    // #2295's `plan.effort`) from the one spawn.
-    const EMPTY_EFFORT = { argv: [], value: null };
-    const effortFor = (slug) => {
+    // What this replaced: a `query resolve-execution gsd-plan-checker --host <slug>` spawn per
+    // lane. The agent id was a hardcoded literal, so the `--host` argument chose only the argv
+    // RENDERING while the LEVEL always came from the installed plan-checker's frontmatter — `low`
+    // under every shipped model profile. Every prompt-fed reviewer therefore ran at a fast
+    // structural verifier's effort, and because the rendered argument is a CLI config override it
+    // silently beat the effort the operator had configured for that CLI. At `low` a large
+    // source-grounded prompt makes a model end its turn with no final message, so the lane came
+    // back empty and the stub read as a crash.
+    //
+    // `resolveLaneEffort` is pure and lives beside the other lane resolution; this closure only
+    // injects the rendering, which needs the registry and the catalog.
+    const renderLaneEffort = (host, level) => {
       try {
-        const r = cp.spawnSync(
-          process.execPath,
-          [__filename, 'query', 'resolve-execution', 'gsd-plan-checker', '--host', slug],
-          { cwd, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
-        );
-        if (r.status !== 0) return EMPTY_EFFORT;
-        let parsed;
-        try {
-          parsed = JSON.parse(String(r.stdout || ''));
-        } catch { return EMPTY_EFFORT; }
-        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return EMPTY_EFFORT;
-        const argv = Array.isArray(parsed.effort_argv)
-          ? parsed.effort_argv.filter((a) => typeof a === 'string' && a !== '')
-          : [];
-        const value = typeof parsed.effort_argv_value === 'string' && parsed.effort_argv_value
-          ? parsed.effort_argv_value
-          : null;
-        return { argv, value };
-      } catch { return EMPTY_EFFORT; }
+        const surface = commands.effortSurfaceForHost(cwd, host);
+        const r = modelCatalog.renderEffortArgv(host, level, surface);
+        return { argv: Array.isArray(r && r.argv) ? r.argv : [], value: (r && r.value) || null };
+      } catch { return { argv: [], value: null }; }
     };
+    const effortFor = (lane) => resolveLaneEffort(lane, configGet, renderLaneEffort);
 
     /**
      * Per-lane prompt budget (#2797 semantics, preserved exactly).
@@ -1462,7 +1484,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       // so losing all of them to one bad manifest is strictly worse. Belt and braces on purpose.
       let r;
       try {
-        const effort = effortFor(slug);
+        const effort = effortFor(lane);
         r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effort.argv, effortValue: effort.value });
       } catch (e) {
         return { slug, ok: false, reason: 'malformed_lane', detail: `resolver threw: ${e && e.message ? e.message : String(e)}` };
@@ -1622,7 +1644,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           `model override (it declares no modelConfigKey). The review will use the CLI's own default.\n`,
         );
       }
-      const instanceEffort = effortFor(entry.slug);
+      const instanceEffort = effortFor(lane);
       const overridden = resolveLanePlan({
         lane,
         configGet: (k) => (key && k === key ? instanceModel : configGet(k)),
@@ -1883,6 +1905,112 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
     } else {
       process.stdout.write(isolation);
+    }
+  }
+
+  /**
+   * #3673 (ADR-1239 Phase 1) — typed, PURE-READ query exposing the negotiated
+   * `dispatch.maxConcurrency` numeric sub-field. Sibling of `dispatch-isolation`
+   * above, but — per the #3673 design doc's explicit rejection of a write path
+   * for this query — writes NOTHING: no sentinel file, no side effect at all.
+   * A read-only capacity lookup for a later (Phase 4) scheduler to consult.
+   *
+   * Precedence:
+   *   1. GSD_DISPATCH_MAX_CONCURRENCY, if it parses as a positive safe
+   *      integer → source: "live". A malformed value (non-numeric, zero,
+   *      negative, fractional) is treated exactly as if the variable were
+   *      unset — it falls through to tier 2, never errors.
+   *   2. registry.runtimes[id].runtime.hostIntegration.dispatch.maxConcurrency,
+   *      if it is a positive safe integer → source: "descriptor". The
+   *      "undocumented" sentinel and any other malformed shape fall through
+   *      to tier 3.
+   *   3. 1 (the fail-closed floor) → source: "fallback".
+   *
+   * `isPositiveSafeInteger`, required below from `./lib/host-integration.cjs`,
+   * is the SAME exported predicate src/host-integration.cts's
+   * negotiateHostCapabilities applies to the descriptor value — applied
+   * identically to both the env value and the descriptor value here so the
+   * two tiers can never silently disagree on what counts as valid.
+   *
+   * `reason` names why the WINNING tier (or the fallback) was chosen: "ok" on
+   * the happy path (live or descriptor honored), else "missing" (descriptor
+   * omitted the field), "undocumented" (descriptor sentinel), "non_integer"
+   * (fractional or NaN), "unsafe_integer" (integer but outside
+   * Number.isSafeInteger's range), "non_positive" (zero or negative),
+   * "non_numeric" (string/object/array/null/boolean), or "unknown_runtime"
+   * (no registry entry for the resolved runtime id — resolution itself never
+   * throws; failure fails closed to the same fallback tier).
+   *
+   * Output:
+   *   --raw   → prints exactly one positive integer, nothing else
+   *   --json  → prints { runtime, capacity, declared, source, reason }
+   *   default → same as --raw
+   */
+  function routeDispatchCapacity({ args, cwd, raw }) {
+    const { UNDOCUMENTED, isPositiveSafeInteger } = require('./lib/host-integration.cjs');
+
+    let runtimeId = null;
+    let runtimeEntry = null;
+    try {
+      const { resolveRuntime } = require('./lib/runtime-slash.cjs');
+      runtimeId = resolveRuntime(cwd);
+      const registry = require('./lib/capability-registry.cjs');
+      runtimeEntry = registry.runtimes != null ? registry.runtimes[runtimeId] : null;
+    } catch {
+      runtimeEntry = null;
+    }
+    const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.maxConcurrency ?? null;
+
+    let liveValue = null;
+    const rawEnv = process.env.GSD_DISPATCH_MAX_CONCURRENCY;
+    if (typeof rawEnv === 'string' && rawEnv.trim().length > 0) {
+      const parsed = Number(rawEnv.trim());
+      if (isPositiveSafeInteger(parsed)) {
+        liveValue = parsed;
+      }
+    }
+
+    let capacity;
+    let source;
+    let reason;
+    if (liveValue !== null) {
+      capacity = liveValue;
+      source = 'live';
+      reason = 'ok';
+    } else if (runtimeEntry == null) {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'unknown_runtime';
+    } else if (declared === UNDOCUMENTED) {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'undocumented';
+    } else if (isPositiveSafeInteger(declared)) {
+      capacity = declared;
+      source = 'descriptor';
+      reason = 'ok';
+    } else if (declared === null || declared === undefined) {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'missing';
+    } else if (typeof declared !== 'number') {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'non_numeric';
+    } else if (!Number.isSafeInteger(declared)) {
+      capacity = 1;
+      source = 'fallback';
+      reason = Number.isInteger(declared) ? 'unsafe_integer' : 'non_integer';
+    } else {
+      capacity = 1;
+      source = 'fallback';
+      reason = 'non_positive';
+    }
+
+    if (args.indexOf('--json') !== -1) {
+      output({ runtime: runtimeId, capacity, declared, source, reason }, raw);
+    } else {
+      process.stdout.write(String(capacity));
     }
   }
 
@@ -2571,7 +2699,20 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   function routeTodo({ args, cwd, raw, error }) {
     const subcommand = args[1];
           if (subcommand === 'complete') {
-            commands.cmdTodoComplete(cwd, args[2], raw);
+            // #4096: this verb's flag surface is closed. `--dry-run` is parsed
+            // and plumbed (mirroring routeMilestone / #2118), and any OTHER
+            // flag fails loudly instead of being silently ignored — an
+            // accepted-but-ignored safety flag converts a deliberate preview
+            // into the mutation it was meant to avoid. (`--raw` is spliced by
+            // the dispatcher before routing; it stays in the set as a guard
+            // against that splice ever moving.)
+            const TODO_COMPLETE_KNOWN_FLAGS = new Set(['--dry-run', '--raw']);
+            for (const a of args.slice(3)) {
+              if (typeof a === 'string' && a.startsWith('-') && !TODO_COMPLETE_KNOWN_FLAGS.has(a)) {
+                error(`Unknown flag for todo complete: ${a}`, ERROR_REASON.USAGE);
+              }
+            }
+            commands.cmdTodoComplete(cwd, args[2], { dryRun: args.includes('--dry-run') }, raw);
           } else if (subcommand === 'match-phase') {
             commands.cmdTodoMatchPhase(cwd, args[2], raw);
           } else {
@@ -4076,9 +4217,13 @@ const HOST_COMMAND_ROUTERS = {
     'list-seeds': routeListSeeds,
     'verify-path-exists': routeVerifyPathExists,
     'quick-tasks-append': routeQuickTasksAppend,
+    'quick-tasks-migrate': routeQuickTasksMigrate,
+    // #3676 (Phase 4, epic #3344): quick-batch coordination verbs.
+    'quick-batch': routeQuickBatchCommand,
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
+    'dispatch-capacity': routeDispatchCapacity,
     'inspect-dispatch-isolation': routeInspectDispatchIsolation,
     'record-dispatch-isolation': routeRecordDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
@@ -4338,8 +4483,8 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, planning, profile-questionnaire, ' +
-  'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
-  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
+  'profile-sample, progress, project-instruction-file, prompt-budget, quick-batch, quick-tasks-append, quick-tasks-migrate, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
+  'config-set-model-profile, dispatch-capacity, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +

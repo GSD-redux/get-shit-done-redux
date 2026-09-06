@@ -97,7 +97,19 @@ function countRoadmapPhases(roadmapPath: string, fallbackCount: number, cwd?: st
   try {
     if (!fs.existsSync(roadmapPath)) return fallbackCount;
     if (!cwd) return fallbackCount;
-    const filter = getMilestonePhaseFilter(cwd, versionOverride ?? null, null, ws ?? null);
+    // #2761 B1 (trek-e review): `undefined`, NOT `null`. The third argument
+    // discriminates "not resolved yet — resolve it from this workstream's
+    // config" (`undefined`) from "resolved, and it is not bracket" (`null`).
+    // This site meant the former and spelled the latter, so a workstream that
+    // opted into `phase_id_convention: "bracket"` had its ROADMAP scanned with
+    // the LEGACY grammar: the heading set came back empty, `phaseCount` was 0,
+    // and the count silently fell back to the on-disk directory count — the
+    // very degrade the #3185 rewrite of this function existed to remove.
+    // Measured on a bracket workstream whose milestone declares 3 phases:
+    // `null` -> 0 (fallback), `undefined` -> 3. A non-bracket workstream
+    // resolves to a value that compiles the same base grammar `null` did, so
+    // its count is unchanged (verified against a legacy control).
+    const filter = getMilestonePhaseFilter(cwd, versionOverride ?? null, undefined, ws ?? null);
     // A pass-all degrade (phaseCount 0) means the window declared no phases —
     // fall back rather than reporting a confident zero.
     return filter.phaseCount > 0 ? filter.phaseCount : fallbackCount;
@@ -550,7 +562,13 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   // filtering. Consulted only when it is genuinely scoped to a single milestone
   // (`versionScoped`); the unversioned whole-roadmap shape spans the project's
   // lifetime and would re-admit prior-milestone phases — the very defect here.
-  const headingFilter = getMilestonePhaseFilter(cwd, currentVersion, null, name);
+  //
+  // #2761 B1 (trek-e review): `undefined`, not `null` — same discriminator fix
+  // as `countRoadmapPhases` above. This site iterates workstreams by NAME, so
+  // it is exactly the caller that cannot set `GSD_WORKSTREAM`; spelling `null`
+  // pinned every workstream to the legacy grammar and made `headingScoped`
+  // unreachable (`phaseCount > 0` never held) on a bracket workstream.
+  const headingFilter = getMilestonePhaseFilter(cwd, currentVersion, undefined, name);
   const headingScoped = headingFilter.versionScoped && headingFilter.phaseCount > 0;
 
   // Phase keys the ROADMAP attributes to some OTHER milestone. A row carrying an

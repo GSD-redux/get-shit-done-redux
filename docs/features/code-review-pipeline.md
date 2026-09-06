@@ -16,13 +16,30 @@ group: v1.34.0 Features
 - REQ-REVIEW-05: Each fix MUST be committed atomically with a descriptive message
 - REQ-REVIEW-06: `--auto` flag MUST enable fix + re-review iteration loop, capped at 3 iterations
 - REQ-REVIEW-07: Feature MUST be gated by `workflow.code_review` config flag
+- REQ-REVIEW-08: `workflow.code_review_point` MUST select which loop point the automatic review step registers at (`execute:post` default, or `execute:wave:post`), independent of the `workflow.code_review` on/off gate and of manual `/gsd-code-review` invocation (#3661)
 
 **Config:**
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `workflow.code_review` | boolean | `true` | Enable code review commands |
+| `workflow.code_review_point` | string | `execute:post` | Loop point for the automatic review: `execute:post` (once per phase, default) or `execute:wave:post` (once per completed wave, scoped to what changed since the phase's prior review). See below. |
 | `workflow.code_review_depth` | string | `standard` | Default review depth: `quick`, `standard`, or `deep` |
 | `workflow.code_review_depth_overrides` | array | `[]` | Ordered `{ paths, depth }` rules that escalate depth for directories matched by path prefix against the changed-file set (#2554). See below. |
+
+**Reviewing per wave instead of per phase (#3661)**
+
+Setting `workflow.code_review_point` to `execute:wave:post` moves the automatic review from
+"once, after the whole phase's waves have all landed" to "once per completed wave." Each
+wave's review scopes to what changed since the phase's *previous* review — the whole phase's
+diff on the first wave, then just that wave's diff on every wave after — so review batches
+stay small instead of growing with the phase. A finding introduced early is caught after the
+wave that introduced it, not after the last wave of the phase.
+
+This only affects the *automatic* dispatch inside a wave-based phase execution. Manual
+`/gsd-code-review <phase>` runs are gated by `workflow.code_review` alone and are unaffected
+by this key. `/gsd-autonomous` and `/gsd-quick` have no wave granularity of their own, so
+setting this to `execute:wave:post` means automatic review does not run inside those two
+flows — the same way every other wave-scoped capability step already behaves for them.
 
 **Path-scoped code review depth overrides**
 

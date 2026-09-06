@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 Create structured `.planning/HANDOFF.json` and `.continue-here.md` handoff files to preserve complete work state across sessions. The JSON provides machine-readable state for `/gsd:resume-work`; the markdown provides human-readable context.
 </purpose>
@@ -15,13 +17,16 @@ Determine what kind of work is being paused and set the handoff destination acco
 
 ```bash
 # Check for active phase
-phase=$(( ls -lt .planning/phases/*/PLAN.md 2>/dev/null || true ) | head -1 | grep -oP 'phases/\K[^/]+' || true)
+phase=$(ls -t .planning/phases/*/PLAN.md 2>/dev/null | head -1 || true)
+phase=${phase:+$(basename "$(dirname "$phase")")}
 
 # Check for active spike
-spike=$(( ls -lt .planning/spikes/*/SPIKE.md .planning/spikes/*/DESIGN.md .planning/spikes/*/README.md 2>/dev/null || true ) | head -1 | grep -oP 'spikes/\K[^/]+' || true)
+spike=$(ls -t .planning/spikes/*/SPIKE.md .planning/spikes/*/DESIGN.md .planning/spikes/*/README.md 2>/dev/null | head -1 || true)
+spike=${spike:+$(basename "$(dirname "$spike")")}
 
 # Check for active sketch
-sketch=$(( ls -lt .planning/sketches/*/README.md .planning/sketches/*/index.html 2>/dev/null || true ) | head -1 | grep -oP 'sketches/\K[^/]+' || true)
+sketch=$(ls -t .planning/sketches/*/README.md .planning/sketches/*/index.html 2>/dev/null | head -1 || true)
+sketch=${sketch:+$(basename "$(dirname "$sketch")")}
 
 # Check for active deliberation
 deliberation=$(ls .planning/deliberations/*.md 2>/dev/null | head -1 || true)
@@ -103,13 +108,23 @@ timestamp=$(gsd_run query current-timestamp full --raw)
   "decisions": [
     {"decision": "{what}", "rationale": "{why}", "phase": "{phase_number}"}
   ],
-  "uncommitted_files": [],
+  "uncommitted_files": ["XY path", "..."],  # #3968: MEASURED — see below
   "next_action": "{specific first action when resuming}",
   "context_notes": "{mental state, approach, what you were thinking}"
 }
 ```
 
 Any recorded `async_jobs` entries are the primary resume context on the next session — check them first before treating a PLAN-without-SUMMARY as incomplete work.
+
+**`uncommitted_files` is measured, never asserted (#3968).** Populate it from an actual call,
+not from memory — a narrated `[]` over a dirty tree is how 14 plans' worth of uncommitted
+code went invisible in the wild:
+```bash
+UNCOMMITTED=$(git status --porcelain)
+# One array entry per line ("XY path"); truncate the list at 50 entries and note the
+# elided count, but NEVER round it to empty — a non-empty porcelain output is the single
+# most load-bearing fact a resume session needs.
+```
 </step>
 
 <step name="write">

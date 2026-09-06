@@ -10,7 +10,7 @@ const capabilities = {
   "ai-integration": {
     "id": "ai-integration",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "AI design contract",
     "description": "AI-SPEC design contract workflow for phases that build AI systems; owns the AI integration command, agents, and workflow.ai_integration_phase activation key.",
     "tier": "full",
@@ -95,7 +95,7 @@ const capabilities = {
   "antigravity": {
     "id": "antigravity",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Antigravity",
     "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
@@ -183,7 +183,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -214,7 +215,7 @@ const capabilities = {
         "binary": "agy",
         "args": [
           "--print-timeout",
-          "540s",
+          "{{nativeTimeout}}",
           "{{model}}",
           "-p",
           "{{prompt}}"
@@ -225,12 +226,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 600000,
+      "timeoutConfigKey": "review.timeouts.antigravity",
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "antigravity"
     },
     "config": {
@@ -243,13 +247,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+      },
+      "review.timeouts.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "assumption-delta": {
     "id": "assumption-delta",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Assumption-delta architecture checkpoint",
     "description": "Rarely-firing advisory checkpoint that triggers when a phase makes something plural, optional, or chosen that used to be singular, required, or derived. Surfaces one identity-model question (promote the new general representation to primary, or add it alongside?) so a silent primary-key drift does not accumulate into a later user-facing bug. Non-blocking; fires only on a detected signal.",
     "tier": "full",
@@ -295,7 +304,7 @@ const capabilities = {
   "audit": {
     "id": "audit",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Audit",
     "description": "Open-artifact audit and UAT-gap audit for milestone close gates; exposes `gsd-tools audit-uat` (cross-phase UAT outstanding items) and `gsd-tools audit-open` (structured open-artifact scan across debug, tasks, threads, todos, seeds, UAT, verification, context-questions).",
     "tier": "full",
@@ -332,7 +341,7 @@ const capabilities = {
   "augment": {
     "id": "augment",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Augment Code",
     "description": "Augment Code CLI — commands + nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -431,7 +440,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -445,7 +455,7 @@ const capabilities = {
   "broken-windows": {
     "id": "broken-windows",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Broken-windows ledger",
     "description": "Cross-phase defect register accumulating stubs, TODOs, skipped tests, unrun verifies, and unmet truths into .planning/WINDOWS.md. When enforcement is enabled, it blocks /gsd-ship while any window is open unless explicitly waived with a recorded reason. Operationalizes GSD's no-defer discipline as a tracked artifact (issue #1950).",
     "tier": "full",
@@ -491,7 +501,7 @@ const capabilities = {
   "claude": {
     "id": "claude",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Claude Code",
     "description": "Anthropic Claude Code — primary development runtime; tier-1 support with full hook surface and skills-based global install.",
     "tier": "core",
@@ -575,7 +585,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": 20
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -634,12 +645,15 @@ const capabilities = {
         }
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.claude",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
+      "effortConfigKey": "review.effort.claude",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -652,13 +666,23 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
   "claude-orchestration": {
     "id": "claude-orchestration",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Claude orchestration (Workflow backend)",
     "description": "Default-off, BETA, claude-only capability that adopts Claude Code's Workflow tool (the engine behind /effort ultracode) as an optional parallel-execution backend for the GSD loop. When the runtime exposes the Workflow tool and claude_orchestration.execution_backend resolves to 'workflow', execute-phase emits a generated Workflow script (waves -> parallel() barriers, plans -> agent({ agentType: 'gsd-executor', isolation: 'worktree' }), files_modified overlap -> separate sequential stages, resumeFromRunId wired to the phase run id, shared token budget) that composes the SAME gsd-executor agent and worktree isolation the inline path uses, restoring the wave parallelism the #853 backgrounded-agent nesting limitation forces inline on Claude Code. (The plan-checker and verifier remain inline until separately wired — this capability delivers the parallel-execution backend, not those gates.) Also folds the ultraplan plan-offload under one runtime gate (plan:* surface). On any runtime lacking the Workflow tool, or when the capability is disabled, behaviour is byte-identical to today (inline/manual dispatch). Detection + emission live in gsd-core/bin/lib/claude-orchestration.cjs (pure, fail-closed). Mirrors the existing gsd-ultraplan-phase BETA-isolation posture.",
     "tier": "full",
@@ -746,7 +770,7 @@ const capabilities = {
   "cline": {
     "id": "cline",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Cline",
     "description": "Cline (VS Code extension) — global-only nested-skill layout; cline-rules hook surface (.clinerules); no hook events emitted; tier-2 support.",
     "tier": "core",
@@ -816,7 +840,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -838,7 +863,7 @@ const capabilities = {
   "code-review": {
     "id": "code-review",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Code review",
     "description": "Source-file code review and review-fix workflow support for completed execution work.",
     "tier": "full",
@@ -875,6 +900,15 @@ const capabilities = {
         ],
         "default": "standard",
         "description": "Default depth for code review when no --depth override is supplied."
+      },
+      "workflow.code_review_point": {
+        "type": "enum",
+        "values": [
+          "execute:post",
+          "execute:wave:post"
+        ],
+        "default": "execute:post",
+        "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff."
       }
     },
     "steps": [
@@ -890,6 +924,20 @@ const capabilities = {
           "SUMMARY.md"
         ],
         "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
+        "onError": "skip"
+      },
+      {
+        "point": "execute:wave:post",
+        "ref": {
+          "skill": "code-review"
+        },
+        "produces": [
+          "REVIEW.md"
+        ],
+        "consumes": [],
+        "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
         "onError": "skip"
       }
     ],
@@ -899,7 +947,7 @@ const capabilities = {
   "codebuddy": {
     "id": "codebuddy",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "CodeBuddy",
     "description": "CodeBuddy (Tencent) — converted commands + skills artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -999,7 +1047,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1016,7 +1065,7 @@ const capabilities = {
   "coderabbit": {
     "id": "coderabbit",
     "role": "reviewer",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "CodeRabbit",
     "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Reviews the working-tree diff (`coderabbit review --prompt-only`), not the source tree, and accepts neither a prompt nor a model flag; findings are down-weighted in consensus (evidenceClass: diff-only).",
     "tier": "full",
@@ -1046,12 +1095,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 360000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "CodeRabbit",
       "evidenceClass": "diff-only",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -1065,7 +1117,7 @@ const capabilities = {
   "codex": {
     "id": "codex",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "OpenAI Codex CLI",
     "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
     "tier": "core",
@@ -1149,7 +1201,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1203,12 +1256,15 @@ const capabilities = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.codex",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
+      "effortConfigKey": "review.effort.codex",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -1221,13 +1277,23 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
   "copilot": {
     "id": "copilot",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "GitHub Copilot",
     "description": "GitHub Copilot (VS Code) — markdown config format; copilot-inline hook surface; no hook events emitted; flat skill nesting (unconfirmed recursive loader); tier-2 support.",
     "tier": "core",
@@ -1306,7 +1372,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1326,7 +1393,7 @@ const capabilities = {
   "cursor": {
     "id": "cursor",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Cursor",
     "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
@@ -1405,7 +1472,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -1453,6 +1521,7 @@ const capabilities = {
         "binary": "cursor-agent",
         "args": [
           "-p",
+          "{{model}}",
           "--mode",
           "ask",
           "--trust",
@@ -1462,19 +1531,27 @@ const capabilities = {
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
-        "modelArg": null,
+        "modelArg": "--model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-      "modelConfigKey": null,
+      "modelConfigKey": "review.models.cursor",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
+      "review.models.cursor": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Cursor reviewer lane."
+      },
       "review.max_prompt_tokens_per_reviewer.cursor": {
         "type": "number",
         "default": -1,
@@ -1485,7 +1562,7 @@ const capabilities = {
   "drift": {
     "id": "drift",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Drift detection gates",
     "description": "Drift detection gates for the planning loop. At execute:wave:post: a blocking schema drift gate (detects schema files changed without a database push) and a non-blocking codebase drift gate (detects structural additions not reflected in STRUCTURE.md). At plan:pre: a non-blocking, warn-only codebase drift gate (gated on workflow.plan_drift_precheck) that flags a stale codebase map before planning, so plans are authored against a fresh STRUCTURE.md instead of discovering drift mid-execution.",
     "tier": "full",
@@ -1526,6 +1603,20 @@ const capabilities = {
         "type": "boolean",
         "default": true,
         "description": "Enable the non-blocking codebase drift pre-check at plan:pre, before /gsd:plan-phase spawns the planner. When enabled, a stale STRUCTURE.md (structural additions exceeding drift_threshold) is surfaced up front as a warn-only advisory pointing to /gsd:map-codebase; it never blocks planning and never spawns the mapper agent. Separate from schema_drift_gate so autonomous/CI runs can silence the plan-time advisory while keeping the execute:wave:post gates enabled."
+      },
+      "workflow.context_drift_precheck": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable the non-blocking context-drift pre-check at plan:pre, before /gsd:plan-phase reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own — an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see workflow.context_drift_action); never blocks planning on its own."
+      },
+      "workflow.context_drift_action": {
+        "type": "enum",
+        "values": [
+          "warn",
+          "block"
+        ],
+        "default": "warn",
+        "description": "Action taken by the context-drift gate when a stale upstream artifact is found: warn (advisory message naming the stale artifacts and how to regenerate them) or block (halt plan-phase until the artifacts are regenerated or the check is disabled)."
       }
     },
     "steps": [],
@@ -1557,15 +1648,24 @@ const capabilities = {
         "when": "workflow.plan_drift_precheck",
         "blocking": false,
         "onError": "skip"
+      },
+      {
+        "point": "plan:pre",
+        "check": {
+          "query": "verify.context-drift"
+        },
+        "when": "workflow.context_drift_precheck",
+        "blocking": false,
+        "onError": "skip"
       }
     ]
   },
   "external-job": {
     "id": "external-job",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Async external-job scheduler adapter",
-    "description": "Default-off producer of the async external-job manifest (#1164). At execute:wave:post an executor can externalize long-running compute (SLURM first, scheduler-pluggable), commit a .planning/async-jobs/<job>.json manifest, defer SUMMARY.md, and return external_job_waiting. The core loop (#1165) consumes the manifest; this capability is the only thing that writes it. NOTE on contribution point: #1164 specifies execute:wave:pre, but execute-phase.md only dispatches execute:wave:post today (wave:pre is declared in the loop host contract but not rendered); wiring wave:pre dispatch is a core-loop change #1164 explicitly puts out of scope, so this capability registers at wave:post and the executor honors the runtime_budget classification guidance before running any tagged task. The adapter (scripts/slurm-adapter.cjs) reads external_job.submit_timeout_ms / poll_timeout_ms / artifact_dir through the canonical capability-config seam (env override > config > registry default).",
+    "description": "Default-off producer of the async external-job manifest (#1164). At execute:wave:post an executor can externalize long-running compute (SLURM first, scheduler-pluggable), commit a .planning/async-jobs/<job>.json manifest, defer SUMMARY.md, and return external_job_waiting. The core loop (#1165) consumes the manifest; this capability is the only thing that writes it. NOTE on contribution point: #1164 specifies classification at execute:wave:pre and recording at execute:wave:post. This capability still contributes executor guidance at wave:post; execute-phase now renders wave:pre entries and dispatches generic step hooks there independently. Moving external-job classification to wave:pre is a separate capability change, not part of #4148. The adapter (scripts/slurm-adapter.cjs) reads external_job.submit_timeout_ms / poll_timeout_ms / artifact_dir through the canonical capability-config seam (env override > config > registry default).",
     "tier": "full",
     "requires": [],
     "engines": {
@@ -1617,7 +1717,7 @@ const capabilities = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-post.md",
-          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     Why wave:post, not wave:pre (#1164 refinement A): execute-phase.md only\n     dispatches execute:wave:post today — wave:pre is declared in the loop host\n     contract but not rendered. Wiring wave:pre dispatch is a core-loop change\n     #1164 puts out of scope. The executor therefore honors this classification\n     guidance BEFORE running any task tagged <runtime_budget>long_compute</runtime_budget>,\n     whether in the current or a subsequent wave, and externalizes rather than\n     blocking the turn. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
+          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     #1164 specifies classification at wave:pre and recording at wave:post. This\n     capability still contributes executor guidance at wave:post; execute-phase\n     now renders wave:pre entries and dispatches generic step hooks there. Moving\n     external-job classification is a separate capability change, not part of\n     #4148. Until then, this guidance cannot classify the wave that already ran. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
         },
         "produces": [
           ".planning/async-jobs/<job>.json"
@@ -1646,7 +1746,7 @@ const capabilities = {
   "gap-analysis": {
     "id": "gap-analysis",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Post-planning gap analysis",
     "description": "Proactive, non-blocking post-planning coverage report. After all PLAN.md files are generated, cross-references every REQ-ID and D-ID from REQUIREMENTS.md and CONTEXT.md against plan bodies. Emits a Source | Item | Status table. Does not block phase advancement.",
     "tier": "standard",
@@ -1687,7 +1787,7 @@ const capabilities = {
   "gemini": {
     "id": "gemini",
     "role": "reviewer",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Gemini CLI",
     "description": "Google Gemini CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Spawned as `gemini -p - -m <model>` with the plan piped on stdin.",
     "tier": "full",
@@ -1718,12 +1818,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": "review.timeouts.gemini",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Gemini",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
       "modelConfigKey": "review.models.gemini",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -1736,13 +1839,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.gemini": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Gemini reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "graphify": {
     "id": "graphify",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Knowledge graph",
     "description": "Build, query, and inspect the project knowledge graph in `.planning/graphs/`; exposes graphify CLI subcommands (build, query, status, diff) and the /gsd-graphify skill.",
     "tier": "full",
@@ -1783,7 +1891,7 @@ const capabilities = {
   "hermes": {
     "id": "hermes",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Hermes Agent",
     "description": "Hermes Agent (NousResearch) — skills nest under skills/gsd/ category bucket; nested skill layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -1880,7 +1988,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -1894,7 +2003,7 @@ const capabilities = {
   "intel": {
     "id": "intel",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Codebase intelligence",
     "description": "Code-intelligence store for codebase querying, diff, snapshot, and API-surface extraction; exposes `gsd-tools intel` subcommands (query, status, update, diff, snapshot, patch-meta, validate, extract-exports, api-surface) and backs `/gsd-map-codebase` and `gsd-intel-updater`.",
     "tier": "full",
@@ -1946,7 +2055,7 @@ const capabilities = {
   "kilo": {
     "id": "kilo",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Kilo Code",
     "description": "Kilo Code — XDG-based config dir; global skills at ~/.kilo/skills (separate from XDG config); flat command/ + skills artifact layout; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -2048,7 +2157,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -2075,7 +2185,7 @@ const capabilities = {
   "kimi": {
     "id": "kimi",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Kimi CLI",
     "description": "Kimi CLI (Moonshot AI) — generic agents root at ~/.config/agents; skills + kimi-agents artifact layout; native config.toml [[hooks]] bus at ~/.kimi/config.toml; background dispatch; tier-2 support.",
     "tier": "core",
@@ -2147,7 +2257,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -2170,14 +2281,15 @@ const capabilities = {
         "verificationStyle": "kimi",
         "agentManifestStyle": "kimi-nested",
         "doneBannerStyle": "kimi-agent-file",
-        "skipSharedHooksInstall": true
+        "skipSharedHooksInstall": true,
+        "noPathRewrite": true
       }
     }
   },
   "kimi-code": {
     "id": "kimi-code",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Kimi Code CLI",
     "description": "Kimi Code CLI (Moonshot AI, Node) — Agent Skills auto-discovered at ~/.kimi-code/skills; global AGENTS.md at ~/.kimi-code/AGENTS.md; native config.toml + [[hooks]] bus; three built-in subagents (coder/explore/plan), NO custom named subagents; background dispatch; tier-2 support. Distinct from Python kimi-cli (the 'kimi' capability) per ADR-1239 EoS — Kimi Code cannot dispatch named subagents so the kimi-agents YAML layout does NOT apply; persona injection rides the existing ${AGENT_SKILLS_*} workflow fallback. Install-layout, agent-install-check, and install-time decision (kimi vs kimi-code) land in follow-up PRs; this descriptor is the EoS foundation.",
     "tier": "core",
@@ -2262,7 +2374,8 @@ const capabilities = {
             "explore",
             "plan"
           ],
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -2311,12 +2424,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": "review.timeouts.kimi-code",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -2329,13 +2445,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "live-dom-uat": {
     "id": "live-dom-uat",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Live-DOM UAT",
     "description": "Default-off live-DOM verification (#2856). Confines browser MCP reach to one purpose-built agent (gsd-dom-verifier) that carries the browser globs in its own tools: line, registered as an additive step hook at execute:wave:post. agents/gsd-executor.md is deliberately NOT widened: for a first-party agent the static tool list is the only control that exists, no capability can grant tools to one (ADR-1244 D2), no hook kind grants tool permissions (ADR-857 D4), and there is no per-dispatch tool override. Gated by activationKey workflow.live_dom_uat (default false), so with the key off the capability resolves inactive and the hook does not render at all. NOTE on the browser profile lock: chrome-devtools-mcp holds an exclusive lock on $HOME/.cache/chrome-devtools-mcp/chrome-profile, and --isolated is a flag on the user's own MCP-server registration that GSD cannot pass. Concurrent execution waves sharing one profile will therefore collide; the step tolerates and reports that (onError: skip, never blocking) rather than pretending to coordinate a resource it does not own.",
     "tier": "full",
@@ -2388,7 +2509,7 @@ const capabilities = {
   "llama-cpp": {
     "id": "llama-cpp",
     "role": "reviewer",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "llama.cpp",
     "description": "llama.cpp server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.llama_cpp_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`llama-cpp`, required by KEBAB_RE); `reviewer.slug` stays snake (`llama_cpp`) to match the shipped roster and the `review.llama_cpp_host` config key (ADR-2782's three-namespace trap).",
     "tier": "full",
@@ -2417,12 +2538,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
+      "timeoutConfigKey": "review.timeouts.llama_cpp",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "llama.cpp",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
       "modelConfigKey": "review.models.llama_cpp",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2440,13 +2564,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.llama_cpp": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "lm-studio": {
     "id": "lm-studio",
     "role": "reviewer",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "LM Studio",
     "description": "LM Studio local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.lm_studio_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`lm-studio`, required by KEBAB_RE); `reviewer.slug` stays snake (`lm_studio`) to match the shipped roster and the `review.lm_studio_host` config key (ADR-2782's three-namespace trap).",
     "tier": "full",
@@ -2475,12 +2604,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
+      "timeoutConfigKey": "review.timeouts.lm_studio",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "LM Studio",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
       "modelConfigKey": "review.models.lm_studio",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2498,13 +2630,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.lm_studio": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "mempalace": {
     "id": "mempalace",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "MemPalace memory",
     "description": "Cross-session, cross-project memory: deliberate recall before discuss/plan and verbatim capture + temporal-KG sync at phase boundaries, via the MemPalace MCP server and CLI.",
     "tier": "full",
@@ -2678,7 +2815,7 @@ const capabilities = {
   "nyquist": {
     "id": "nyquist",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Nyquist validation",
     "description": "Validation coverage audit that maps executed work back to tests and manual-only evidence.",
     "tier": "full",
@@ -2728,7 +2865,7 @@ const capabilities = {
   "ollama": {
     "id": "ollama",
     "role": "reviewer",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Ollama",
     "description": "Ollama local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.ollama_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq.",
     "tier": "full",
@@ -2757,12 +2894,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
+      "timeoutConfigKey": "review.timeouts.ollama",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Ollama",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
       "modelConfigKey": "review.models.ollama",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "openai-compatible"
     },
     "config": {
@@ -2780,13 +2920,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.ollama": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Ollama reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "opencode": {
     "id": "opencode",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "OpenCode",
     "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -2883,7 +3028,8 @@ const capabilities = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -2943,12 +3089,15 @@ const capabilities = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 660000,
+      "timeoutConfigKey": "review.timeouts.opencode",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
+      "effortConfigKey": "review.effort.opencode",
+      "defaultEffort": "high",
       "handler": "opencode"
     },
     "config": {
@@ -2961,13 +3110,23 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
   "pattern-mapper": {
     "id": "pattern-mapper",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Pattern mapping",
     "description": "Optional codebase-pattern mapping before planning; owns the pattern mapper agent and workflow.pattern_mapper activation key.",
     "tier": "full",
@@ -3021,7 +3180,7 @@ const capabilities = {
   "pi": {
     "id": "pi",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "pi",
     "description": "pi (pi.dev) — bun-runtime programmatic-CLI; TS ExtensionAPI (registerCommand/registerTool/registerProvider/pi.on); single native-extension file at ~/.pi/agent/extensions/gsd.js (.js, not .cjs — pi's extension auto-discovery accepts only .ts/.js, #2470); no shared-settings hook surface; tier-2 support.",
     "tier": "core",
@@ -3067,7 +3226,8 @@ const capabilities = {
           "background": false,
           "backgroundDispatch": false,
           "subagentToolkit": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -3090,7 +3250,7 @@ const capabilities = {
   "profile-pipeline": {
     "id": "profile-pipeline",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Developer profiling pipeline",
     "description": "Developer behavioral profiling from Claude Code session history; scans session JSONL files, extracts and samples user messages, and generates profile artifacts (USER-PROFILE.md, dev-preferences.md, CLAUDE.md sections). Exposes eight `gsd-tools` commands: scan-sessions, extract-messages, profile-sample (pipeline phase) and write-profile, profile-questionnaire, generate-dev-preferences, generate-claude-profile, generate-claude-md (output phase). Backs the /gsd-profile-user skill and gsd-user-profiler agent.",
     "tier": "full",
@@ -3167,7 +3327,7 @@ const capabilities = {
   "qwen": {
     "id": "qwen",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Qwen Code",
     "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -3251,7 +3411,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -3294,12 +3455,15 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -3313,7 +3477,7 @@ const capabilities = {
   "refactor-trigger": {
     "id": "refactor-trigger",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Complexity-triggered refactor",
     "description": "Measures the complexity of the code a phase touched and, when a function crosses a configured threshold or jumps past its recorded anchor, surfaces a scoped refactor proposal at .planning/phases/<N>/<NN>-REFACTOR.md. Advisory by default — it never edits code and never blocks. Opt-in strict mode blocks /gsd-ship while a proposal is untriaged; a declined proposal is recorded in the broken-windows ledger when that capability is present. Operationalizes 'refactor early, refactor often' as continuous pressure instead of a thing you have to remember (issue #1953).",
     "tier": "full",
@@ -3380,7 +3544,7 @@ const capabilities = {
   "research": {
     "id": "research",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Phase research",
     "description": "Optional phase research before planning; owns the phase researcher agent and workflow.research activation key.",
     "tier": "standard",
@@ -3432,7 +3596,7 @@ const capabilities = {
   "schema-gate": {
     "id": "schema-gate",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Schema push detection gate",
     "description": "Detects ORM schema-relevant files in the phase scope during planning and injects a mandatory [BLOCKING] schema push task into the plan. Prevents false-positive verification where build/types pass because TypeScript types come from config, not the live database.",
     "tier": "full",
@@ -3478,7 +3642,7 @@ const capabilities = {
   "security": {
     "id": "security",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Security enforcement",
     "description": "Threat mitigation verification and ship-time security blocking for phases with security enforcement enabled.",
     "tier": "full",
@@ -3577,7 +3741,7 @@ const capabilities = {
   "tdd": {
     "id": "tdd",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Test-driven development",
     "description": "Injects TDD heuristics into the planner and enforces RED/GREEN gate compliance on type:tdd plans after execution. Owns workflow.tdd_mode; the --tdd CLI flag is the ephemeral override.",
     "tier": "full",
@@ -3630,7 +3794,7 @@ const capabilities = {
   "trae": {
     "id": "trae",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Trae IDE",
     "description": "Trae IDE — nested-skill artifact layout; no hook surface (profile-marker-only config); tier-2 support.",
     "tier": "core",
@@ -3708,7 +3872,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "engine",
@@ -3727,7 +3892,7 @@ const capabilities = {
   "ui": {
     "id": "ui",
     "role": "feature",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "UI design contracts",
     "description": "UI-SPEC design contract + retrospective UI audit for frontend phases.",
     "tier": "full",
@@ -3822,7 +3987,7 @@ const capabilities = {
   "vscode": {
     "id": "vscode",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "VS Code",
     "description": "VS Code — Marketplace/VSIX extension; no file-projected config directory; IDE-profile reference host (active vscode.lm model, engine-owned hook bus, sandboxed globalState/workspaceState stateIO).",
     "tier": "core",
@@ -3865,7 +4030,8 @@ const capabilities = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "engine",
@@ -3879,7 +4045,7 @@ const capabilities = {
   "windsurf": {
     "id": "windsurf",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Windsurf",
     "description": "Windsurf (Codeium) — workspace workflow artifact layout for slash commands; Cascade native hooks.json blocking hook bus (pre_write_code, pre_run_command); tier-2 support.",
     "tier": "core",
@@ -3950,7 +4116,8 @@ const capabilities = {
           "background": "undocumented",
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -3970,7 +4137,7 @@ const capabilities = {
   "zcode": {
     "id": "zcode",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "ZCode",
     "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
     "tier": "core",
@@ -4064,7 +4231,8 @@ const capabilities = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -4339,6 +4507,16 @@ const byLoopPoint = {
         "onError": "skip"
       },
       {
+        "capId": "drift",
+        "point": "plan:pre",
+        "check": {
+          "query": "verify.context-drift"
+        },
+        "when": "workflow.context_drift_precheck",
+        "blocking": false,
+        "onError": "skip"
+      },
+      {
         "capId": "ui",
         "point": "plan:pre",
         "check": {
@@ -4438,6 +4616,20 @@ const byLoopPoint = {
   "execute:wave:post": {
     "steps": [
       {
+        "capId": "code-review",
+        "point": "execute:wave:post",
+        "ref": {
+          "skill": "code-review"
+        },
+        "produces": [
+          "REVIEW.md"
+        ],
+        "consumes": [],
+        "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
+        "onError": "skip"
+      },
+      {
         "capId": "live-dom-uat",
         "point": "execute:wave:post",
         "ref": {
@@ -4464,7 +4656,7 @@ const byLoopPoint = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-post.md",
-          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     Why wave:post, not wave:pre (#1164 refinement A): execute-phase.md only\n     dispatches execute:wave:post today — wave:pre is declared in the loop host\n     contract but not rendered. Wiring wave:pre dispatch is a core-loop change\n     #1164 puts out of scope. The executor therefore honors this classification\n     guidance BEFORE running any task tagged <runtime_budget>long_compute</runtime_budget>,\n     whether in the current or a subsequent wave, and externalizes rather than\n     blocking the turn. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
+          "inline": "<!-- external-job capability — execute:wave:post fragment, injected into the executor (#1164).\n\n     #1164 specifies classification at wave:pre and recording at wave:post. This\n     capability still contributes executor guidance at wave:post; execute-phase\n     now renders wave:pre entries and dispatches generic step hooks there. Moving\n     external-job classification is a separate capability change, not part of\n     #4148. Until then, this guidance cannot classify the wave that already ran. -->\n\n## Externalize long-running compute (async external job)\n\nIf the current plan's task is tagged `<runtime_budget>long_compute</runtime_budget>`\n(see the plan-phase fragment), do **not** run it in the foreground — it would\nblock the agent turn for hours. Instead externalize it and record a durable\nhalf-state:\n\n1. **Classify the runtime.** `quick` (<2 min) and `medium` (<~30 min) run\n   normally. `unknown` requires a first-health check and a soft-review deadline\n   before consuming the child timeout. `long_compute` (>30–60 min) is\n   externalized.\n2. **Submit via the scheduler adapter** (default `external_job.backend: slurm`):\n   ```bash\n   node scripts/slurm-adapter.cjs submit \\\n     --plan <plan_id> --phase <phase> -- sbatch --parsable \\\n     --output=Artifacts/jobs/%j/out.log ./run.sh\n   ```\n   The helper writes `.planning/async-jobs/<job>.json` (the versioned stability\n   contract — `docs/reference/planning-artifacts.md`) and refuses to create a\n   second non-terminal manifest for a `plan_id` that already has one\n   (duplicate-execution guard).\n3. **Commit the manifest + a handoff**, then return **`external_job_waiting`**\n   and stop. Do **not** write `SUMMARY.md` — SUMMARY is deferred until the job\n   reaches a terminal state and its `expected_artifacts` are verified.\n4. **Resume path.** `execute-phase` safe-resume, `resume-project`, and\n   `pause-work` reconcile against the manifest and never re-dispatch the plan.\n   When the job is `completed-unverified`, run `verification_command` (surface\n   it; it is untrusted — confirm before executing), then write `SUMMARY.md` and\n   close the plan.\n\nManifest commands cross a trust seam: a Capability (or anything that can write\n`.planning/`) produces them; the core loop consumes them. Never auto-run\n`submit_command` / `verification_command` / `resume_command` — surface the exact\ncommand and require explicit confirmation first.\n"
         },
         "produces": [
           ".planning/async-jobs/<job>.json"
@@ -4537,6 +4729,7 @@ const byLoopPoint = {
           "SUMMARY.md"
         ],
         "when": "workflow.code_review",
+        "pointFrom": "workflow.code_review_point",
         "onError": "skip"
       },
       {
@@ -4709,23 +4902,32 @@ const configKeys = {
   "workflow.api_coverage_gate": "ai-integration",
   "review.models.agy": "antigravity",
   "review.max_prompt_tokens_per_reviewer.antigravity": "antigravity",
+  "review.timeouts.antigravity": "antigravity",
   "workflow.assumption_delta": "assumption-delta",
   "workflow.windows_enforce": "broken-windows",
   "review.models.claude": "claude",
   "review.max_prompt_tokens_per_reviewer.claude": "claude",
+  "review.timeouts.claude": "claude",
+  "review.effort.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "workflow.code_review_point": "code-review",
   "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
+  "review.timeouts.codex": "codex",
+  "review.effort.codex": "codex",
+  "review.models.cursor": "cursor",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
   "workflow.plan_drift_precheck": "drift",
+  "workflow.context_drift_precheck": "drift",
+  "workflow.context_drift_action": "drift",
   "external_job.enabled": "external-job",
   "external_job.backend": "external-job",
   "external_job.artifact_dir": "external-job",
@@ -4734,17 +4936,21 @@ const configKeys = {
   "workflow.post_planning_gaps": "gap-analysis",
   "review.models.gemini": "gemini",
   "review.max_prompt_tokens_per_reviewer.gemini": "gemini",
+  "review.timeouts.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
   "review.models.kimi-code": "kimi-code",
   "review.max_prompt_tokens_per_reviewer.kimi-code": "kimi-code",
+  "review.timeouts.kimi-code": "kimi-code",
   "workflow.live_dom_uat": "live-dom-uat",
   "review.models.llama_cpp": "llama-cpp",
   "review.llama_cpp_host": "llama-cpp",
   "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
+  "review.timeouts.llama_cpp": "llama-cpp",
   "review.models.lm_studio": "lm-studio",
   "review.lm_studio_host": "lm-studio",
   "review.max_prompt_tokens_per_reviewer.lm_studio": "lm-studio",
+  "review.timeouts.lm_studio": "lm-studio",
   "mempalace.enabled": "mempalace",
   "mempalace.memory_mode": "mempalace",
   "mempalace.wing": "mempalace",
@@ -4759,8 +4965,11 @@ const configKeys = {
   "review.models.ollama": "ollama",
   "review.ollama_host": "ollama",
   "review.max_prompt_tokens_per_reviewer.ollama": "ollama",
+  "review.timeouts.ollama": "ollama",
   "review.models.opencode": "opencode",
   "review.max_prompt_tokens_per_reviewer.opencode": "opencode",
+  "review.timeouts.opencode": "opencode",
+  "review.effort.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
   "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
@@ -4804,6 +5013,12 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
   },
+  "review.timeouts.antigravity": {
+    "owner": "antigravity",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "workflow.assumption_delta": {
     "owner": "assumption-delta",
     "type": "boolean",
@@ -4827,6 +5042,18 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.claude": {
+    "owner": "claude",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.effort.claude": {
+    "owner": "claude",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
   },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
@@ -4868,6 +5095,16 @@ const configSchema = {
       "deep"
     ]
   },
+  "workflow.code_review_point": {
+    "owner": "code-review",
+    "type": "enum",
+    "default": "execute:post",
+    "description": "Loop point at which the code-review step registers — execute:post reviews once per phase (default); execute:wave:post reviews once per completed wave, scoped to that wave's diff.",
+    "values": [
+      "execute:post",
+      "execute:wave:post"
+    ]
+  },
   "review.max_prompt_tokens_per_reviewer.coderabbit": {
     "owner": "coderabbit",
     "type": "number",
@@ -4885,6 +5122,24 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.codex": {
+    "owner": "codex",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.effort.codex": {
+    "owner": "codex",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
+  },
+  "review.models.cursor": {
+    "owner": "cursor",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Cursor reviewer lane."
   },
   "review.max_prompt_tokens_per_reviewer.cursor": {
     "owner": "cursor",
@@ -4919,6 +5174,22 @@ const configSchema = {
     "type": "boolean",
     "default": true,
     "description": "Enable the non-blocking codebase drift pre-check at plan:pre, before /gsd:plan-phase spawns the planner. When enabled, a stale STRUCTURE.md (structural additions exceeding drift_threshold) is surfaced up front as a warn-only advisory pointing to /gsd:map-codebase; it never blocks planning and never spawns the mapper agent. Separate from schema_drift_gate so autonomous/CI runs can silence the plan-time advisory while keeping the execute:wave:post gates enabled."
+  },
+  "workflow.context_drift_precheck": {
+    "owner": "drift",
+    "type": "boolean",
+    "default": true,
+    "description": "Enable the non-blocking context-drift pre-check at plan:pre, before /gsd:plan-phase reuses an existing RESEARCH.md/PATTERNS.md/VALIDATION.md/SPEC.md. Compares each artifact's effective last-changed time (git commit time, falling back to mtime for uncommitted edits) against CONTEXT.md's own — an artifact that predates CONTEXT.md's newest decision was derived from a premise that has since changed. Warn-only by default (see workflow.context_drift_action); never blocks planning on its own."
+  },
+  "workflow.context_drift_action": {
+    "owner": "drift",
+    "type": "enum",
+    "default": "warn",
+    "description": "Action taken by the context-drift gate when a stale upstream artifact is found: warn (advisory message naming the stale artifacts and how to regenerate them) or block (halt plan-phase until the artifacts are regenerated or the check is disabled).",
+    "values": [
+      "warn",
+      "block"
+    ]
   },
   "external_job.enabled": {
     "owner": "external-job",
@@ -4971,6 +5242,12 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
+  "review.timeouts.gemini": {
+    "owner": "gemini",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Gemini reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "graphify.enabled": {
     "owner": "graphify",
     "type": "boolean",
@@ -4994,6 +5271,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.kimi-code": {
+    "owner": "kimi-code",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
   "workflow.live_dom_uat": {
     "owner": "live-dom-uat",
@@ -5019,6 +5302,12 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
+  "review.timeouts.llama_cpp": {
+    "owner": "llama-cpp",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "review.models.lm_studio": {
     "owner": "lm-studio",
     "type": "string",
@@ -5036,6 +5325,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.lm_studio": {
+    "owner": "lm-studio",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
   "mempalace.enabled": {
     "owner": "mempalace",
@@ -5126,6 +5421,12 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
+  "review.timeouts.ollama": {
+    "owner": "ollama",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Ollama reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "review.models.opencode": {
     "owner": "opencode",
     "type": "string",
@@ -5137,6 +5438,18 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.opencode": {
+    "owner": "opencode",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.effort.opencode": {
+    "owner": "opencode",
+    "type": "string",
+    "default": "",
+    "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
   },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
@@ -5247,7 +5560,7 @@ const runtimes = {
   "antigravity": {
     "id": "antigravity",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Antigravity",
     "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
@@ -5335,7 +5648,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5366,7 +5680,7 @@ const runtimes = {
         "binary": "agy",
         "args": [
           "--print-timeout",
-          "540s",
+          "{{nativeTimeout}}",
           "{{model}}",
           "-p",
           "{{prompt}}"
@@ -5377,12 +5691,15 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 600000,
+      "timeoutConfigKey": "review.timeouts.antigravity",
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": "antigravity"
     },
     "config": {
@@ -5395,13 +5712,18 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+      },
+      "review.timeouts.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "augment": {
     "id": "augment",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Augment Code",
     "description": "Augment Code CLI — commands + nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -5500,7 +5822,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5514,7 +5837,7 @@ const runtimes = {
   "claude": {
     "id": "claude",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Claude Code",
     "description": "Anthropic Claude Code — primary development runtime; tier-1 support with full hook surface and skills-based global install.",
     "tier": "core",
@@ -5598,7 +5921,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": 20
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5657,12 +5981,15 @@ const runtimes = {
         }
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.claude",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
+      "effortConfigKey": "review.effort.claude",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -5675,13 +6002,23 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
   "cline": {
     "id": "cline",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Cline",
     "description": "Cline (VS Code extension) — global-only nested-skill layout; cline-rules hook surface (.clinerules); no hook events emitted; tier-2 support.",
     "tier": "core",
@@ -5751,7 +6088,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -5773,7 +6111,7 @@ const runtimes = {
   "codebuddy": {
     "id": "codebuddy",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "CodeBuddy",
     "description": "CodeBuddy (Tencent) — converted commands + skills artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -5873,7 +6211,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -5890,7 +6229,7 @@ const runtimes = {
   "codex": {
     "id": "codex",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "OpenAI Codex CLI",
     "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
     "tier": "core",
@@ -5974,7 +6313,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6028,12 +6368,15 @@ const runtimes = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.codex",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
+      "effortConfigKey": "review.effort.codex",
+      "defaultEffort": "high",
       "handler": null
     },
     "config": {
@@ -6046,13 +6389,23 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
   "copilot": {
     "id": "copilot",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "GitHub Copilot",
     "description": "GitHub Copilot (VS Code) — markdown config format; copilot-inline hook surface; no hook events emitted; flat skill nesting (unconfirmed recursive loader); tier-2 support.",
     "tier": "core",
@@ -6131,7 +6484,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6151,7 +6505,7 @@ const runtimes = {
   "cursor": {
     "id": "cursor",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Cursor",
     "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
@@ -6230,7 +6584,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": true,
-          "isolation": "harness-worktree"
+          "isolation": "harness-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6278,6 +6633,7 @@ const runtimes = {
         "binary": "cursor-agent",
         "args": [
           "-p",
+          "{{model}}",
           "--mode",
           "ask",
           "--trust",
@@ -6287,19 +6643,27 @@ const runtimes = {
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
-        "modelArg": null,
+        "modelArg": "--model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
-      "modelConfigKey": null,
+      "modelConfigKey": "review.models.cursor",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
+      "review.models.cursor": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Cursor reviewer lane."
+      },
       "review.max_prompt_tokens_per_reviewer.cursor": {
         "type": "number",
         "default": -1,
@@ -6310,7 +6674,7 @@ const runtimes = {
   "hermes": {
     "id": "hermes",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Hermes Agent",
     "description": "Hermes Agent (NousResearch) — skills nest under skills/gsd/ category bucket; nested skill layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -6407,7 +6771,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "read-only",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6421,7 +6786,7 @@ const runtimes = {
   "kilo": {
     "id": "kilo",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Kilo Code",
     "description": "Kilo Code — XDG-based config dir; global skills at ~/.kilo/skills (separate from XDG config); flat command/ + skills artifact layout; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -6523,7 +6888,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6550,7 +6916,7 @@ const runtimes = {
   "kimi": {
     "id": "kimi",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Kimi CLI",
     "description": "Kimi CLI (Moonshot AI) — generic agents root at ~/.config/agents; skills + kimi-agents artifact layout; native config.toml [[hooks]] bus at ~/.kimi/config.toml; background dispatch; tier-2 support.",
     "tier": "core",
@@ -6622,7 +6988,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": true,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6645,14 +7012,15 @@ const runtimes = {
         "verificationStyle": "kimi",
         "agentManifestStyle": "kimi-nested",
         "doneBannerStyle": "kimi-agent-file",
-        "skipSharedHooksInstall": true
+        "skipSharedHooksInstall": true,
+        "noPathRewrite": true
       }
     }
   },
   "kimi-code": {
     "id": "kimi-code",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Kimi Code CLI",
     "description": "Kimi Code CLI (Moonshot AI, Node) — Agent Skills auto-discovered at ~/.kimi-code/skills; global AGENTS.md at ~/.kimi-code/AGENTS.md; native config.toml + [[hooks]] bus; three built-in subagents (coder/explore/plan), NO custom named subagents; background dispatch; tier-2 support. Distinct from Python kimi-cli (the 'kimi' capability) per ADR-1239 EoS — Kimi Code cannot dispatch named subagents so the kimi-agents YAML layout does NOT apply; persona injection rides the existing ${AGENT_SKILLS_*} workflow fallback. Install-layout, agent-install-check, and install-time decision (kimi vs kimi-code) land in follow-up PRs; this descriptor is the EoS foundation.",
     "tier": "core",
@@ -6737,7 +7105,8 @@ const runtimes = {
             "explore",
             "plan"
           ],
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -6786,12 +7155,15 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": "review.timeouts.kimi-code",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -6804,13 +7176,18 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "opencode": {
     "id": "opencode",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "OpenCode",
     "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -6907,7 +7284,8 @@ const runtimes = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "orchestrator-worktree"
+          "isolation": "orchestrator-worktree",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -6967,12 +7345,15 @@ const runtimes = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 660000,
+      "timeoutConfigKey": "review.timeouts.opencode",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
+      "effortConfigKey": "review.effort.opencode",
+      "defaultEffort": "high",
       "handler": "opencode"
     },
     "config": {
@@ -6985,13 +7366,23 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+      },
+      "review.effort.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Reasoning effort for the OpenCode reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
       }
     }
   },
   "pi": {
     "id": "pi",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "pi",
     "description": "pi (pi.dev) — bun-runtime programmatic-CLI; TS ExtensionAPI (registerCommand/registerTool/registerProvider/pi.on); single native-extension file at ~/.pi/agent/extensions/gsd.js (.js, not .cjs — pi's extension auto-discovery accepts only .ts/.js, #2470); no shared-settings hook surface; tier-2 support.",
     "tier": "core",
@@ -7037,7 +7428,8 @@ const runtimes = {
           "background": false,
           "backgroundDispatch": false,
           "subagentToolkit": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "host",
@@ -7060,7 +7452,7 @@ const runtimes = {
   "qwen": {
     "id": "qwen",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Qwen Code",
     "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -7144,7 +7536,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7187,12 +7580,15 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
+      "effortConfigKey": null,
+      "defaultEffort": null,
       "handler": null
     },
     "config": {
@@ -7206,7 +7602,7 @@ const runtimes = {
   "trae": {
     "id": "trae",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Trae IDE",
     "description": "Trae IDE — nested-skill artifact layout; no hook surface (profile-marker-only config); tier-2 support.",
     "tier": "core",
@@ -7284,7 +7680,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "engine",
@@ -7303,7 +7700,7 @@ const runtimes = {
   "vscode": {
     "id": "vscode",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "VS Code",
     "description": "VS Code — Marketplace/VSIX extension; no file-projected config directory; IDE-profile reference host (active vscode.lm model, engine-owned hook bus, sandboxed globalState/workspaceState stateIO).",
     "tier": "core",
@@ -7346,7 +7743,8 @@ const runtimes = {
           "background": true,
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "undocumented"
+          "isolation": "undocumented",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "active",
         "hookBus": "engine",
@@ -7360,7 +7758,7 @@ const runtimes = {
   "windsurf": {
     "id": "windsurf",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "Windsurf",
     "description": "Windsurf (Codeium) — workspace workflow artifact layout for slash commands; Cascade native hooks.json blocking hook bus (pre_write_code, pre_run_command); tier-2 support.",
     "tier": "core",
@@ -7431,7 +7829,8 @@ const runtimes = {
           "background": "undocumented",
           "subagentToolkit": "undocumented",
           "backgroundDispatch": "undocumented",
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",
@@ -7451,7 +7850,7 @@ const runtimes = {
   "zcode": {
     "id": "zcode",
     "role": "runtime",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "title": "ZCode",
     "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
     "tier": "core",
@@ -7545,7 +7944,8 @@ const runtimes = {
           "background": false,
           "subagentToolkit": "full",
           "backgroundDispatch": false,
-          "isolation": "none"
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
         },
         "modelMode": "passive",
         "hookBus": "host",

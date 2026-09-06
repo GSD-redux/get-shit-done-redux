@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 # sync-skills — Cross-Runtime GSD Skill Sync
 
 **Command:** `/gsd-sync-skills`
@@ -30,14 +32,14 @@ IS_APPLY=false
 
 # Parse --from
 if [[ "$@" == *"--from"* ]]; then
-  FROM_RUNTIME=$(echo "$@" | grep -oP '(?<=--from )\S+')
+  FROM_RUNTIME=$(echo "$@" | sed -E 's/.*--from[[:space:]]+([^[:space:]]+).*/\1/')
 fi
 
 # Parse --to
 if [[ "$@" == *"--to all"* ]]; then
   TO_RUNTIMES=(antigravity augment claude cline codebuddy codex copilot cursor grok hermes kilo kimi kimi-code opencode pi qwen trae windsurf zcode)
 elif [[ "$@" == *"--to"* ]]; then
-  TO_RUNTIMES=( $(echo "$@" | grep -oP '(?<=--to )\S+') )
+  TO_RUNTIMES=( $(echo "$@" | sed -E 's/.*--to[[:space:]]+([^[:space:]]+).*/\1/') )
 fi
 
 # Parse --apply
@@ -237,12 +239,18 @@ mkdir -p "$DEST_ROOT"
 # empty. If per-runtime conversion is ever wired in, this is where it would go;
 # until then the cp -r must never run for a destination != source.
 
-for SKILL in $CREATE_LIST $UPDATE_LIST; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$VAR` word-splits under bash but not zsh, collapsing every element onto
+# one iteration there.
+for SKILL in $(printf '%s' "$CREATE_LIST") $(printf '%s' "$UPDATE_LIST"); do
   rm -rf "$DEST_ROOT/$SKILL"
   cp -r "$SRC_SKILLS_ROOT/$SKILL" "$DEST_ROOT/$SKILL"
 done
 
-for SKILL in $REMOVE_LIST; do
+# Rewrapped through unquoted command substitution (gsd-core#4109): a bare
+# `$VAR` word-splits under bash but not zsh, collapsing every element onto
+# one iteration there.
+for SKILL in $(printf '%s' "$REMOVE_LIST"); do
   rm -rf "$DEST_ROOT/$SKILL"
 done
 ```

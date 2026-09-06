@@ -260,6 +260,14 @@ export const VERIFY_COMMAND_ALIASES: CommandAlias[] = [
     ],
     "subcommand": "codebase-drift",
     "mutation": false
+  },
+  {
+    "canonical": "verify.context-drift",
+    "aliases": [
+      "verify context-drift"
+    ],
+    "subcommand": "context-drift",
+    "mutation": false
   }
 ];
 
@@ -310,6 +318,14 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
       "init quick"
     ],
     "subcommand": "quick",
+    "mutation": false
+  },
+  {
+    "canonical": "init.quick-batch",
+    "aliases": [
+      "init quick-batch"
+    ],
+    "subcommand": "quick-batch",
     "mutation": false
   },
   {

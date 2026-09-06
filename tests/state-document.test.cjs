@@ -132,6 +132,95 @@ describe('stateReplaceField — CRLF (#2880)', () => {
   });
 });
 
+// #4010: when a STATE.md body field is empty, the label-to-value gap `\s*` in
+// stateReplaceField's bold/plain patterns crossed the newline and `(.*)` ate the
+// following line, which the rebuild then discarded — silent data-loss. The fix
+// confines the gap to same-line whitespace (`[ \t]*`, mirroring the already-
+// correct read side at stateExtractField) and pins the separator to a single
+// space when the label line had none (no glued `**Status:**value`). These assert
+// the EXACT output so the glued shape cannot pass (ADR-3180 §7.7 same-line owner).
+describe('stateReplaceField — empty field preserves the following line (#4010)', () => {
+  test('bold empty field: value lands on the label line, next line survives, no glue', () => {
+    const input = '**Status:**\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('plain empty field: value lands on the label line, next line survives, no glue', () => {
+    const input = 'Status:\nCurrent Plan: 2 of 5';
+    const expected = 'Status: Executing Phase 5\nCurrent Plan: 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('bold empty field on a CRLF document preserves the following line', () => {
+    const input = '**Status:**\r\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\r\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('plain empty field on a CRLF document preserves the following line', () => {
+    const input = 'Status:\r\nCurrent Plan: 2 of 5';
+    const expected = 'Status: Executing Phase 5\r\nCurrent Plan: 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('non-empty bold field stays byte-identical to prior behaviour', () => {
+    const input = '**Status:** Planning\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  // Boundary: a NON-EMPTY field written with no label-to-value separator at all
+  // (a hand-edited `**Status:**Planning`). The narrowed `[ \t]*` gap captures
+  // nothing, so joinFieldReplacement synthesizes a single space — an intentional
+  // normalization, NOT byte-identical to the pre-fix glued output. Pins that the
+  // following line still survives and exactly one space is inserted, matching the
+  // scoped byte-identity claim in joinFieldReplacement's JSDoc. (#4010)
+  test('non-empty bold field with no separator gains one inserted space, next line survives', () => {
+    const input = '**Status:**Planning\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('E2E: transitionCore update of an empty field preserves the next line (ADR-3180 Decision 4(c))', () => {
+    const { transitionCore } = require('../gsd-core/bin/lib/state-transition.cjs');
+    const content = '## Current Position\n\n**Status:**\n**Current Plan:** 2 of 5';
+    const result = transitionCore(content, { kind: 'update', field: 'Status', value: 'Executing Phase 5' });
+    assert.equal(result.content, '## Current Position\n\n**Status:** Executing Phase 5\n**Current Plan:** 2 of 5');
+    assert.deepEqual(result.updated, ['Status']);
+  });
+
+  // Boundary: an empty field that is the LAST line (no following line at all).
+  // `.*` matches the empty tail with no newline to cross, so the value simply
+  // lands on the label line — nothing beyond it to preserve or corrupt.
+  test('bold empty field at end-of-document (no following line) gets the value on its line', () => {
+    assert.equal(stateReplaceField('**Status:**', 'Status', 'Executing Phase 5'), '**Status:** Executing Phase 5');
+  });
+
+  test('plain empty field at end-of-document (no following line) gets the value on its line', () => {
+    assert.equal(stateReplaceField('Status:', 'Status', 'Executing Phase 5'), 'Status: Executing Phase 5');
+  });
+
+  // Boundary: two consecutive empty fields. Only the targeted label line takes
+  // the value; the adjacent empty field's line must survive untouched (the read
+  // side matches the FIRST label, so the second empty field cannot be swallowed).
+  test('two consecutive empty fields: only the target is filled, the other empty field survives', () => {
+    const input = '**Status:**\n**Current Plan:**\n**Progress:** 3 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:**\n**Progress:** 3 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  // Boundary: an EMPTY new value on an empty field. joinFieldReplacement's
+  // needsSeparator branch must NOT synthesize a trailing space (value.length is
+  // 0), so the label line is left as the bare `**Status:**` and the following
+  // line is still preserved — no dangling separator, no line eaten.
+  test('empty new value on an empty field leaves a bare label and preserves the following line', () => {
+    const input = '**Status:**\n**Current Plan:** 2 of 5';
+    const expected = '**Status:**\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', ''), expected);
+  });
+});
+
 describe('stateExtractField (#2880)', () => {
   test('extracts from a two-cell row', () => {
     const input = '| Current Phase | 3 |';
@@ -222,6 +311,66 @@ describe('property: bounded mutation (#2880, ADR-2143 §4)', () => {
         },
       ),
       { seed: 20880, numRuns: 200 },
+    );
+  });
+});
+
+// The #4010 regression was, at heart, a line-boundary violation: replacing a
+// field crossed a newline and destroyed an adjacent line. This property pins the
+// invariant that guards it directly on the bold/plain branches (and the new
+// joinFieldReplacement helper) this fix touches: for any field name, any values
+// (including empty fields), and any new value, replacing one field changes ONLY
+// that field's line and never alters the total line count. (#4010)
+describe('property: bold/plain field replacement stays within its own line (#4010)', () => {
+  test('replacing a bold or plain field changes only the target line and never the line count', () => {
+    const safeValue = fc
+      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789 '.split('')), {
+        minLength: 0,
+        maxLength: 8,
+      })
+      .map((chars) => chars.join('').replace(/^ +| +$/g, '')); // trim; may be ''
+
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 6 }).chain((n) =>
+          fc.record({
+            n: fc.constant(n),
+            bold: fc.boolean(),
+            values: fc.array(safeValue, { minLength: n, maxLength: n }),
+            targetIndex: fc.integer({ min: 0, max: n - 1 }),
+            newValue: safeValue,
+          }),
+        ),
+        ({ n, bold, values, targetIndex, newValue }) => {
+          // Distinct single-digit names (Field0..Field5) so no field label is a
+          // prefix of another, and values (alphanumeric+space) can never contain
+          // a `:`/`*`, so the only line matching the target pattern is its own.
+          const fieldNames = Array.from({ length: n }, (_, i) => `Field${i}`);
+          const lines = fieldNames.map((name, i) => {
+            const label = bold ? `**${name}:**` : `${name}:`;
+            return values[i] === '' ? label : `${label} ${values[i]}`;
+          });
+          const doc = lines.join('\n');
+
+          const result = stateReplaceField(doc, fieldNames[targetIndex], newValue);
+          assert.notEqual(result, null);
+
+          const resultLines = result.split('\n');
+          // Core #4010 guarantee: no line eaten, none added — neighbours survive.
+          assert.equal(resultLines.length, lines.length);
+          for (let i = 0; i < lines.length; i++) {
+            if (i === targetIndex) continue;
+            assert.equal(resultLines[i], lines[i]);
+          }
+          // The target line still opens with its label and gained no newline.
+          const label = bold ? `**${fieldNames[targetIndex]}:**` : `${fieldNames[targetIndex]}:`;
+          assert.ok(
+            resultLines[targetIndex].startsWith(label),
+            `target line lost its label: ${JSON.stringify(resultLines[targetIndex])}`,
+          );
+        },
+      ),
+      { seed: 40100, numRuns: 300 },
     );
   });
 });
@@ -1637,6 +1786,337 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
 });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4094 — the #3354 milestone-unbounded withhold only protects
+// progress.total_phases. completed_phases / total_plans / completed_plans are
+// accumulated from the SAME phaseDirs walk (same IIFE, same loop) but were
+// returned unconditionally and assigned straight from cached.* on every
+// resyncing write, silently clobbering stored values under the exact
+// condition #3354 established the scan is untrustworthy for. Extend the
+// withhold-then-fall-back-to-stored pattern to all three siblings.
+// Matrix: .gsd/bug/fix-4094-milestone-withhold-all-counters/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4094 milestone-unbounded withhold — all four progress counters', () => {
+  // Local requires: this block sits after the closing brace of the section
+  // that owned the module-level beforeEach/afterEach destructure above, so
+  // (mirroring the #3642 block below) everything it needs is required here.
+  const { test, beforeEach, afterEach } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('fs');
+  const path = require('path');
+  const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+  const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+
+  /** Seed `.planning/phases/<padded>-phase-<n>` — local copy (the block-scoped seeder at the top of this file is not reachable from here). */
+  function seedPhaseDirs(dir, nums) {
+    for (const n of nums) {
+      const padded = String(n).padStart(2, '0');
+      const phaseDir = path.join(dir, '.planning', 'phases', `${padded}-phase-${n}`);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan\n');
+    }
+  }
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** The #3354/#4094 crux fixture: two milestone sections, asserted milestone matches neither. */
+  function buildSectionedRoadmap() {
+    const lines = ['# Roadmap', ''];
+    lines.push('## Milestone v2.0 — Alpha', '');
+    for (let i = 1; i <= 12; i++) lines.push(`### Phase ${i}: alpha-${i}`);
+    lines.push('');
+    lines.push('## Milestone v3.0 — Beta', '');
+    for (let i = 13; i <= 25; i++) lines.push(`### Phase ${i}: beta-${i}`);
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  /**
+   * STATE.md fixture with an explicit stored progress block. `counters`
+   * entries that are null/undefined are OMITTED from the frontmatter block
+   * (the partial-stored rows rely on that).
+   */
+  function buildStateMdWithCounters({ milestone = 'v1.0', counters = {} }) {
+    const { totalPhases, completedPhases, totalPlans, completedPlans } = counters;
+    const fm = [
+      '---',
+      'gsd_state_version: 1.0',
+      `milestone: ${milestone}`,
+      'milestone_name: Unbounded',
+      'current_phase: "01"',
+      'status: executing',
+    ];
+    const rows = [
+      ['total_phases', totalPhases],
+      ['completed_phases', completedPhases],
+      ['total_plans', totalPlans],
+      ['completed_plans', completedPlans],
+    ].filter(([, v]) => v !== null && v !== undefined);
+    if (rows.length > 0) {
+      fm.push('progress:');
+      for (const [k, v] of rows) fm.push(`  ${k}: ${v}`);
+    }
+    fm.push('---', '', '# GSD State', '', '## Current Position', '', '**Current Phase:** 01', '**Status:** Executing', '');
+    return fm.join('\n');
+  }
+
+  /** Read the PERSISTED progress block values straight out of STATE.md. */
+  function persistedProgress(dir) {
+    const raw = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
+    const lines = splitLines(raw);
+    const out = {};
+    let inProgress = false;
+    for (const line of lines) {
+      if (/^progress:\s*$/.test(line)) { inProgress = true; continue; }
+      if (!inProgress) continue;
+      const kv = line.match(/^ {2}(\w+): (.+)$/);
+      if (!kv) break; // progress block ended
+      out[kv[1]] = kv[2].trim();
+    }
+    return out;
+  }
+
+  function recordSession(dir, stoppedAt = 'Phase 1, Plan 1') {
+    return runNode(
+      [TOOLS_PATH, 'state', 'record-session', '--stopped-at', stoppedAt, '--resume-file', 'none'],
+      { cwd: dir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+  }
+
+  function stateJson(dir) {
+    const jsonResult = runGsdTools(['state', 'json', '--raw'], dir);
+    assert.ok(jsonResult.success, `state json --raw failed: ${jsonResult.error}`);
+    return JSON.parse(jsonResult.output);
+  }
+
+  // Row 1 — the failing-first regression: all four counters preserved.
+  test('#4094 stored completed_phases/total_plans/completed_plans are preserved alongside total_phases (milestoned-but-unbounded)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 25, completedPhases: 9, totalPlans: 60, completedPlans: 40 } }),
+    );
+    seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.total_phases, '25', `#4094: total_phases must keep the stored 25 (existing #3354 guard)`);
+    assert.strictEqual(p.completed_phases, '9', `#4094: completed_phases must keep the stored 9, not the disk-scan 0. Got ${p.completed_phases}`);
+    assert.strictEqual(p.total_plans, '60', `#4094: total_plans must keep the stored 60, not the disk-scan 4. Got ${p.total_plans}`);
+    assert.strictEqual(p.completed_plans, '40', `#4094: completed_plans must keep the stored 40, not the disk-scan 0. Got ${p.completed_plans}`);
+  });
+
+  // Row 2 — the #3573 roadmap-absent sibling of the same withhold.
+  test('#4094 roadmap-absent withhold preserves the three sibling counters too', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 5, completedPhases: 2, totalPlans: 11, completedPlans: 7 } }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.total_phases, '5', `#4094: total_phases must keep the stored 5`);
+    assert.strictEqual(p.completed_phases, '2', `#4094: completed_phases must keep the stored 2, not the disk-scan 0. Got ${p.completed_phases}`);
+    assert.strictEqual(p.total_plans, '11', `#4094: total_plans must keep the stored 11, not the disk-scan 1. Got ${p.total_plans}`);
+    assert.strictEqual(p.completed_plans, '7', `#4094: completed_plans must keep the stored 7, not the disk-scan 0. Got ${p.completed_plans}`);
+  });
+
+  // Row 3 — nothing stored: all four keys omitted, never written from the disk scan.
+  test('#4094 with nothing stored, all four counter keys are omitted', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), buildStateMdWithCounters({}));
+    seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    for (const key of ['total_phases', 'completed_phases', 'total_plans', 'completed_plans']) {
+      assert.ok(!(key in p), `#4094: with nothing stored, '${key}' must be omitted — never written from the disk scan. Got ${JSON.stringify(p)}`);
+    }
+  });
+
+  // Row 4 — partial stored block: stored ones preserved, unstated ones omitted.
+  test('#4094 partial stored block: stored counters preserved, absent counters omitted', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 25, totalPlans: 60 } }),
+    );
+    seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.total_phases, '25', `#4094: stored total_phases preserved`);
+    assert.strictEqual(p.total_plans, '60', `#4094: stored total_plans preserved. Got ${p.total_plans}`);
+    assert.ok(!('completed_phases' in p), `#4094: unstored completed_phases must be omitted. Got ${JSON.stringify(p)}`);
+    assert.ok(!('completed_plans' in p), `#4094: unstored completed_plans must be omitted. Got ${JSON.stringify(p)}`);
+  });
+
+  // Rows 5-8 — boundary hold-1/hold/hold+1 per counter: the gate is boolean,
+  // so preservation must not depend on how the stored value relates to the
+  // disk-scan value. Rows 5-7 are the three newly-protected counters; row 8
+  // (total_phases) is the already-green control.
+  const BOUNDARY_SPECS = [
+    { key: 'completed_phases', fixtureKey: 'completedPhases', disk: 0, name: 'completed_phases' },
+    { key: 'total_plans', fixtureKey: 'totalPlans', disk: 4, name: 'total_plans' },
+    { key: 'completed_plans', fixtureKey: 'completedPlans', disk: 0, name: 'completed_plans' },
+    { key: 'total_phases', fixtureKey: 'totalPhases', disk: 4, name: 'total_phases (control)' },
+  ];
+  for (const spec of BOUNDARY_SPECS) {
+    for (const delta of [-1, 0, 1]) {
+      test(`#4094 boundary: ${spec.name} preserved at disk${delta >= 0 ? '+' : ''}${delta}`, () => {
+        fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+        const stored = spec.disk + delta;
+        fs.writeFileSync(
+          path.join(tmpDir, '.planning', 'STATE.md'),
+          buildStateMdWithCounters({ counters: { [spec.fixtureKey]: stored } }),
+        );
+        seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+        const rec = recordSession(tmpDir);
+        assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+        const p = persistedProgress(tmpDir);
+        assert.strictEqual(
+          p[spec.key],
+          String(stored),
+          `#4094 boundary: ${spec.key} must keep the stored ${stored} regardless of the disk count ${spec.disk}. Got ${JSON.stringify(p)}`,
+        );
+      });
+    }
+  }
+
+  // Row 9 — legit-decrease negative space: on a BOUNDED milestone the disk
+  // scan stays authoritative and corrections still land downward.
+  test('#4094 bounded milestone: disk-scan corrections still land (plan deletion)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Milestone v1.0', '', ...[1, 2].map((i) => `### Phase ${i}: p${i}`), ''].join('\n'),
+    );
+    seedPhaseDirs(tmpDir, [1, 2]);
+    // One plan in phase 1, two plans in phase 2.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '02-phase-2', '02-02-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 2, completedPhases: 0, totalPlans: 3, completedPlans: 1 } }),
+    );
+
+    // Delete one of phase 2's plans — a legitimate decrease the scan must apply.
+    fs.unlinkSync(path.join(tmpDir, '.planning', 'phases', '02-phase-2', '02-02-PLAN.md'));
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.total_plans, '2', `#4094 negative space: bounded scan must correct total_plans 3 -> 2 after plan deletion. Got ${p.total_plans}`);
+  });
+
+  // Row 10 — legit-decrease negative space: superseded plans still excluded on a bounded milestone.
+  test('#4094 bounded milestone: superseded plans still excluded from counts', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Milestone v1.0', '', ...[1, 2].map((i) => `### Phase ${i}: p${i}`), ''].join('\n'),
+    );
+    seedPhaseDirs(tmpDir, [1, 2]);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '02-phase-2', '02-02-PLAN.md'),
+      '---\nstatus: superseded\n---\n# Superseded plan\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 2, completedPhases: 0, totalPlans: 3, completedPlans: 0 } }),
+    );
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.total_plans, '2', `#4094 negative space: superseded plan must drop from total_plans on a bounded milestone. Got ${p.total_plans}`);
+  });
+
+  // Row 11 — legit-decrease negative space: phase-directory removal still corrects counters when bounded.
+  test('#4094 bounded milestone: phase-directory removal still corrects counters', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap', '', '## Milestone v1.0', '', ...[1, 2].map((i) => `### Phase ${i}: p${i}`), ''].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 2, completedPhases: 0, totalPlans: 2, completedPlans: 0 } }),
+    );
+    seedPhaseDirs(tmpDir, [1, 2]);
+    // Removing a FIXTURE subdirectory (a phase dir), not the temp dir itself.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- deliberate fixture mutation inside tmpDir, not a temp-dir teardown
+    fs.rmSync(path.join(tmpDir, '.planning', 'phases', '02-phase-2'), { recursive: true });
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.total_phases, '2', `#4094 negative space: bounded roadmap keeps heading-derived total 2. Got ${p.total_phases}`);
+    assert.strictEqual(p.total_plans, '1', `#4094 negative space: bounded scan must correct total_plans 2 -> 1 after phase-dir removal. Got ${p.total_plans}`);
+  });
+
+  // Row 12 — read-surface parity: `state json` reports the preserved values.
+  test('#4094 state json reports preserved counters under the withhold', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), buildSectionedRoadmap());
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 25, completedPhases: 9, totalPlans: 60, completedPlans: 40 } }),
+    );
+    seedPhaseDirs(tmpDir, [1, 2, 3, 4]);
+
+    const rec = recordSession(tmpDir);
+    assert.ok(rec.exitCode === 0, `state record-session failed: ${rec.stderr}`);
+
+    const out = stateJson(tmpDir);
+    assert.strictEqual(Number(out.progress && out.progress.total_phases), 25, `#4094 json parity: total_phases 25`);
+    assert.strictEqual(Number(out.progress && out.progress.completed_phases), 9, `#4094 json parity: completed_phases must report the preserved 9. Got ${JSON.stringify(out.progress)}`);
+    assert.strictEqual(Number(out.progress && out.progress.total_plans), 60, `#4094 json parity: total_plans must report the preserved 60. Got ${JSON.stringify(out.progress)}`);
+    assert.strictEqual(Number(out.progress && out.progress.completed_plans), 40, `#4094 json parity: completed_plans must report the preserved 40. Got ${JSON.stringify(out.progress)}`);
+  });
+
+  // Row 13 — the `state sync` special write path keeps the stored counters too
+  // (same withhold, same gate — #3573 already threads the stored total there).
+  test('#4094 state sync keeps stored counters under the withhold', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      buildStateMdWithCounters({ counters: { totalPhases: 5, completedPhases: 2, totalPlans: 11, completedPlans: 7 } }),
+    );
+    seedPhaseDirs(tmpDir, [1]);
+
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'sync'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state sync failed: ${rec.stderr}`);
+
+    const p = persistedProgress(tmpDir);
+    assert.strictEqual(p.completed_phases, '2', `#4094: state sync must keep stored completed_phases 2. Got ${p.completed_phases}`);
+    assert.strictEqual(p.total_plans, '11', `#4094: state sync must keep stored total_plans 11. Got ${p.total_plans}`);
+    assert.strictEqual(p.completed_plans, '7', `#4094: state sync must keep stored completed_plans 7. Got ${p.completed_plans}`);
+  });
+});
 
 
 // ─────────────────────────────────────────────────────────────────────────────

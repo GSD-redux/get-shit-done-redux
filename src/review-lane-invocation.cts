@@ -255,6 +255,108 @@ export function normalizeHost(raw: string): string {
 }
 
 /**
+ * Resolve a lane's outer wall-clock timeout in milliseconds (#3274).
+ *
+ * `timeoutConfigKey` resolves in SECONDS — the user-facing convention this repo already uses for
+ * timeout-shaped config keys (`workflow.cross_ai_timeout`, `graphify.build_timeout`), distinct from
+ * the internal millisecond unit `timeoutFloorMs` carries. Anything that is not a positive finite
+ * number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config value
+ * silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0` and
+ * negative values are deliberately treated as unset too — a timeout has no legitimate zero or
+ * negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
+ */
+/**
+ * The reasoning effort a reviewer lane runs at, and its host-rendered argv (#4255).
+ *
+ * `argv` is spliced into `{{effort}}`; `value` is the bare level the runner folds into the
+ * recorded model designation (`gpt-5.6-sol (reasoning=high)`, #2295). Both are empty/null when
+ * this lane emits no effort argument, which is a real and correct outcome — see `resolveLaneEffort`.
+ */
+export interface LaneEffort {
+  argv: readonly string[];
+  value: string | null;
+  /** Where `value` came from, for diagnostics: the config key, the lane default, or nothing. */
+  source: 'config' | 'lane-default' | 'none';
+}
+
+/** Levels GSD's effort axis accepts (#3533). `inherit` selects the no-argument path. */
+const EFFORT_LEVELS: ReadonlySet<string> = new Set([
+  'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'inherit',
+]);
+
+/**
+ * Resolve one lane's reasoning effort from REVIEW configuration (#4255).
+ *
+ * Resolution order, highest first:
+ *   1. `lane.effortConfigKey` — the per-lane review effort the operator set
+ *   2. `lane.defaultEffort` — the lane's declared review default (`high` for prompt-fed,
+ *      source-grounded lanes)
+ *   3. nothing — no effort argument is emitted and the reviewer CLI's own configuration decides
+ *
+ * A configured `'inherit'` selects (3) explicitly. An unrecognized level is REFUSED rather than
+ * passed to the host: it falls back to the lane default, because forwarding a typo would render an
+ * argument the CLI rejects and kill the lane outright.
+ *
+ * What this function deliberately does NOT do is consult any agent's execution settings. Before
+ * #4255 the level came from `gsd-plan-checker`'s installed frontmatter through a hardcoded agent
+ * id, so every lane ran at a fast structural verifier's `low` — and, because the rendered argument
+ * is a CLI config override, it silently beat the effort the operator had configured for that CLI
+ * itself. A value inherited from an unrelated agent is worse than no value at all, which is why
+ * (3) emits nothing rather than falling back to some other agent's number.
+ *
+ * `renderArgv` is injected (the host table and the ADR-2481 surface negotiation live in
+ * `model-catalog` / `commands`, above this module's layer) so this stays a pure function of its
+ * inputs and the golden lane table can assert it without a spawn.
+ */
+export function resolveLaneEffort(
+  lane: ReviewerLane,
+  configGet: (key: string) => unknown,
+  renderArgv: (host: string, level: string) => { argv: readonly string[]; value: string | null },
+): LaneEffort {
+  const none: LaneEffort = { argv: [], value: null, source: 'none' };
+  if (!lane || typeof lane !== 'object') return none;
+  const configured = lane.effortConfigKey ? configString(configGet(lane.effortConfigKey)) : null;
+  const valid = configured !== null && EFFORT_LEVELS.has(configured) ? configured : null;
+  const level = valid ?? configString(lane.defaultEffort);
+  if (level === null || level === 'inherit') return none;
+  const rendered = renderArgv(lane.slug, level);
+  const argv = (rendered.argv ?? []).filter((a): a is string => typeof a === 'string' && a !== '');
+  if (argv.length === 0) return none;
+  return {
+    argv,
+    value: configString(rendered.value) ?? level,
+    source: valid !== null ? 'config' : 'lane-default',
+  };
+}
+
+export function resolveTimeoutMs(
+  timeoutConfigKey: string | null | undefined,
+  floorMs: number,
+  configGet: (key: string) => unknown,
+): number {
+  const configuredSeconds = typeof timeoutConfigKey === 'string' ? configGet(timeoutConfigKey) : undefined;
+  return typeof configuredSeconds === 'number' && Number.isFinite(configuredSeconds) && configuredSeconds > 0
+    ? configuredSeconds * 1000
+    : floorMs;
+}
+
+/** Buffer (seconds) a lane's native inner timeout sits under its resolved outer wall-clock cap
+ * (#3274). Matches the shipped 600s outer / 540s native relationship exactly when unconfigured:
+ * floor(600000/1000) - 60 = 540. */
+const NATIVE_TIMEOUT_BUFFER_SECONDS = 60;
+
+/**
+ * Render the `{{nativeTimeout}}` argv placeholder from a lane's resolved outer timeout (#3274).
+ *
+ * Clamped to a 1-second floor so a very small configured (or, today, only-ever-default) outer
+ * timeout never produces a zero or negative duration string a CLI would reject or misinterpret.
+ */
+export function nativeTimeoutToken(timeoutMs: number): string {
+  const seconds = Math.max(1, Math.floor(timeoutMs / 1000) - NATIVE_TIMEOUT_BUFFER_SECONDS);
+  return `${seconds}s`;
+}
+
+/**
  * Classify a lane's output as a review or as empty.
  *
  * WHITESPACE-ONLY COUNTS AS EMPTY, for every lane. The bash tested `[ ! -s file ]`, which counts
@@ -362,10 +464,11 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
   }
 
   const { promptPath, reviewPath, errPath } = artifactPaths(input.runDir, slug);
-  const timeoutMs =
+  const floorMs =
     typeof lane.timeoutFloorMs === 'number' && Number.isFinite(lane.timeoutFloorMs) && lane.timeoutFloorMs > 0
       ? lane.timeoutFloorMs
       : 900_000;
+  const timeoutMs = resolveTimeoutMs(lane.timeoutConfigKey, floorMs, input.configGet);
   const emptyOutput: EmptyOutputPolicy = lane.emptyOutput === 'handler-owned' ? 'handler-owned' : 'stub-with-stderr';
   // #3194: only an EXACT 'diff-only' declaration exempts a lane from evidence verification.
   // Anything else — including a missing or garbage value on a third-party overlay body —
@@ -503,6 +606,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
     '{{effort}}': effortExpansion,
     '{{output}}': outputExpansion,
     '{{prompt}}': promptExpansion,
+    '{{nativeTimeout}}': [nativeTimeoutToken(timeoutMs)],
   };
   const template = Array.isArray(inv.args)
     ? inv.args.filter((a): a is string => typeof a === 'string')

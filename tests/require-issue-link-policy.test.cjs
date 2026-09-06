@@ -184,6 +184,26 @@ describe('evaluateIssueLink', () => {
     assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE);
   });
 
+  // #4196: Dependabot has no mechanism to link a PR it opens to a repo
+  // issue (its alerts live in the Security tab, not as issues) — exempt by
+  // authenticated author login, with no reference and no source-file
+  // restriction, mirroring the backmerge exemption's structure above.
+  test('#4196: dependabot[bot] author is exempt with no reference at all, even on a source diff', () => {
+    const result = evaluateIssueLink(forkPr({
+      prBody: '', authorLogin: 'dependabot[bot]', changedFiles: ['src/init.cts'], changedFilesTotal: 1,
+    }));
+    assert.strictEqual(result.reason, ISSUE_LINK_REASON.OK_DEPENDABOT_EXEMPT);
+    assert.strictEqual(result.ok, true);
+  });
+
+  test('#4196 anti-forgery: an author login that merely CONTAINS "dependabot" is NOT exempt', () => {
+    const lookalikes = ['dependabot', 'Dependabot[bot]', 'not-dependabot[bot]', 'dependabot[bot] '];
+    for (const authorLogin of lookalikes) {
+      const result = evaluateIssueLink(forkPr({ prBody: '', authorLogin, changedFiles: ['src/init.cts'], changedFilesTotal: 1 }));
+      assert.strictEqual(result.reason, ISSUE_LINK_REASON.FAIL_NO_ISSUE_REFERENCE, `authorLogin: ${JSON.stringify(authorLogin)}`);
+    }
+  });
+
   // 16. hasClosingKeyword corpus parity — expected values come from the
   // shipped shell grep this regex replaces:
   //   grep -qiE '(closes|fixes|resolves)\s+#[0-9]+'

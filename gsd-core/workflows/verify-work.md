@@ -50,7 +50,7 @@ AGENT_SKILLS_CHECKER=$(gsd_run query agent-skills gsd-plan-checker)
 
 Parse JSON for: `planner_model`, `checker_model`, `commit_docs`, `phase_found`, `phase_dir`, `phase_number`, `phase_name`, `has_verification`, `uat_path`, `state_path`, `roadmap_path`, `response_language`.
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 ```bash
 # MVP mode detection via the centralized phase.mvp-mode resolver.
@@ -172,6 +172,27 @@ ls "$phase_dir"/*-SUMMARY.md 2>/dev/null || true
 ```
 
 Read each SUMMARY.md to extract testable deliverables.
+
+**Commit-claim reconciliation (#3968).** A SUMMARY's `commits:` frontmatter is a MEASURED
+number (the executor derives it from its on-disk plan commit ledger and records the base as
+`plan_head_before:`), and this is where that claim is checked against reality with the SAME
+instrument — the executor's own narration is never the last word. For each `*-SUMMARY.md`:
+```bash
+BASE=$(grep -oE '^plan_head_before: [0-9a-f]{7,40}' "$SUMMARY_FILE" | awk '{print $2}')
+CLAIMED=$(grep -oE '^commits: [0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' || echo absent)
+ACTUAL=$(git rev-list --count "${BASE}"..HEAD)
+```
+- A `commits: absent` or `plan_head_before: absent` SUMMARY (pre-#3968 legacy) is reported as
+  a WARNING with the measured git state, not a mismatch.
+- `ACTUAL == CLAIMED` is consistent. `ACTUAL == CLAIMED + 1` is ALSO consistent: the
+  SUMMARY/metadata commit itself lands after the executor measured, so exactly one
+  post-measurement commit is expected.
+- Anything else is a **BLOCKER** — the phase must not read as done: real project evidence
+  (#3968) showed 14 plans declaring `commits: 1` with zero git activity, their code sitting
+  uncommitted and one `git reset --hard` from loss. Record it as `commit_claim_mismatch`
+  with both numbers and the SUMMARY path; a mismatch means either the executor narrated
+  instead of measuring or commits were lost after the fact — both require reconciliation
+  before the phase can pass.
 </step>
 
 <step name="extract_tests">
@@ -836,7 +857,7 @@ Return one of:
 
 On return:
 - **VERIFICATION PASSED:** Proceed to `present_ready`
-- **ISSUES FOUND:** Proceed to `revision_loop`
+- **ISSUES FOUND:** Count BLOCKER + WARNING entries in the YAML issues block; an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If zero — every entry is explicitly INFO — display `ℹ advisory — {dimension}: {description}` per entry and proceed to `present_ready`; INFO is advisory and never enters the loop (#3724). Otherwise proceed to `revision_loop`
 </step>
 
 <step name="revision_loop">
@@ -869,6 +890,15 @@ ${AGENT_SKILLS_PLANNER}
 
 <instructions>
 Read existing PLAN.md files. Make targeted updates to address checker issues.
+
+`required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
+smaller or different mechanism reaching the same property addresses the issue in full — say which
+you used. Re-check locked decisions, capability guidance (CLAUDE.md, project skills) and the
+constraints these plans already encode BEFORE editing; if a hint would contradict one, or the
+property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict and
+the alternatives rather than applying or working around it. Full contract:
+`gsd-core/references/planner-revision.md`, which you load in revision mode.
+
 Do NOT replan from scratch unless issues are fundamental.
 </instructions>
 """,
@@ -880,7 +910,23 @@ Do NOT replan from scratch unless issues are fundamental.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
-After planner returns → spawn checker again (verify_gap_plans logic)
+**If the planner returns `## REVISION_CONFLICT`:** do NOT increment `iteration_count` and do NOT
+re-spawn the checker — a conflict is not resolvable by re-running the same loop, so it must not
+consume retry budget. Present the conflict table and its alternatives to the user and ask which
+to take: adopt a named alternative / override the named constraint and apply the hint / amend the
+constraint itself. Every option resolves the conflict; accepting the plans with the blocker still
+open is NOT offered here — that choice belongs to the max-iteration escalation below. Re-spawn
+the planner with the chosen resolution and then **re-evaluate its return from the top of this
+handler** — never fall through to the checker spawn below, because a second conflict is still a
+conflict, not a revised plan, and only a NON-conflict return may reach the checker or increment
+`iteration_count`.
+
+**Bounded:** a conflict naming the SAME `required_property` twice in a row (no successful revision in between) is a stall, and so is
+the THIRD conflict return of this loop whatever property it names — alternating property names
+would otherwise never trip the repeat rule. Stop re-spawning and route it to the same
+max-iteration escalation below.
+
+**On any other return** → spawn checker again (verify_gap_plans logic)
 Increment iteration_count
 
 **If iteration_count >= 3:**

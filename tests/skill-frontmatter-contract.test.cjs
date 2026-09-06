@@ -493,6 +493,10 @@ const KNOWN_SKILLS = new Set([
   'pr-branch.md',
   'profile-user.md',
   'progress.md',
+  // #3676 (epic #3344, ADR-1239 "Quick-batch binding"): genuinely new
+  // first-party command batching several /gsd:quick-shaped tasks together —
+  // not a consolidation of an existing skill.
+  'quick-batch.md',
   'quick.md',
   'resume-work.md',
   'review-backlog.md',
@@ -923,7 +927,12 @@ const DEFAULT_BUDGET = 60;
 // this FULL_BUDGET is a separate line-count budget for help/modes/full.md).
 // The size-budget test is non-recursive so full.md is not covered there; cap it here.
 // FULL ceiling lowered from 1500 → 844 (actualMax=784; #597 ratchet-down).
-const FULL_BUDGET = 844;
+// Raised 844 → 846 for #2529. #3676 (quick-batch, #4212) grew full.md 834 → 844,
+// landing it exactly on the ceiling with zero slack; the two lines this file then
+// takes — the pinned response-language directive and its blank separator — are a
+// coverage contract every workflow carries, not content creep, which is what this
+// budget guards. The ratchet rule is unchanged: actualMax 846, slack 0.
+const FULL_BUDGET = 846;
 
 // Grace bands:
 //   SMALL_GRACE — for the tiny brief/default/dispatcher files (≤ ~70 lines):

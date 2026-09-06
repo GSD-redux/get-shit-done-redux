@@ -20,6 +20,7 @@ const { describe, test, before, after, beforeEach, afterEach } = require('node:t
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('node:child_process');
 
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
@@ -55,6 +56,24 @@ function runHarness(testDir, args = [], extraEnv = {}) {
   // doesn't refuse to run with "recursive run() skipping running files".
   const env = { ...process.env, GSD_TEST_DIR: testDir, ...extraEnv };
   delete env.NODE_TEST_CONTEXT;
+  // #4070: strip RUN_TESTS_SHARD_RESERVE inherited from the OUTER job's own
+  // environment. test.yml sets it on the "Run unit tests" step for the real
+  // production shard 1 of the full-scope lane — and since these tests spawn
+  // run-tests.cjs as a CHILD of that same step, they inherit it via
+  // `...process.env` above like any other ambient var. Left unstripped, a
+  // reserve of 77 weight units utterly dwarfs these synthetic 9-file
+  // fixtures' combined weight (~0.3, since none of them are in the real
+  // timings table), so shard index 1 gets EVERY file routed away from it —
+  // a real, reproducible corruption of every test in this describe block,
+  // not a flake (confirmed live: CI run 33288554040, shard 2/3, 7 of these
+  // tests failed with exactly this signature). Deleted before `extraEnv` is
+  // applied above would be too late (spread order), so it is deleted here,
+  // AFTER composition, then only reinstated if a specific test opted in via
+  // extraEnv — preserving this file's one legitimate use (the #4070 E2E
+  // bounds-check test below, which sets it deliberately).
+  if (!Object.prototype.hasOwnProperty.call(extraEnv, 'RUN_TESTS_SHARD_RESERVE')) {
+    delete env.RUN_TESTS_SHARD_RESERVE;
+  }
   const r = runNode([HARNESS, ...args], {
     cwd: path.join(__dirname, '..'),
     env,
@@ -542,6 +561,56 @@ test('ambient GSD workstream vars are stripped by the runner', () => {
       assert.match(r.stderr, /sig=[0-9a-f]+/, 'shard diagnostics must emit an input fingerprint');
     });
 
+    // #4070 E2E: main()'s own bounds check on RUN_TESTS_SHARD_RESERVE — an
+    // index that does not exist for the shard total in play — is invisible to
+    // every pure in-memory selectShard/parseShardReserve test, because that
+    // check lives in main() itself (scripts/run-tests.cjs, the
+    // `reserve.index <= parsed.shard.total` guard and its console.error
+    // fallback), which only runs through the CLI subprocess seam. Proves both
+    // halves: the warning fires, AND the selection is provably unaffected
+    // (byte-identical to a control run with no RUN_TESTS_SHARD_RESERVE at
+    // all, both against the SAME injected timings table so the comparison
+    // isn't muddied by table drift).
+    test('RUN_TESTS_SHARD_RESERVE with an out-of-range index warns and is ignored (#4070)', () => {
+      seed(tmpDir, SHARD_NAMES);
+      const timings = {
+        schema_version: 1, unit: 'ms', timings: Object.fromEntries(
+          SHARD_NAMES.map((n, i) => [n, i % 3 === 0 ? 30000 : 100]),
+        ),
+      };
+      const tablePath = path.join(tmpDir, 'injected-timings-oob.json');
+      fs.writeFileSync(tablePath, JSON.stringify(timings));
+      try {
+        // --shard 1/3 → valid indices are 1..3. "5:999" is out of range.
+        const withBadReserve = runHarness(
+          tmpDir, ['--shard', '1/3'],
+          { RUN_TESTS_TIMINGS_FILE: tablePath, RUN_TESTS_SHARD_RESERVE: '5:999' },
+        );
+        assert.strictEqual(withBadReserve.status, 0, `stderr: ${withBadReserve.stderr}`);
+        assert.match(
+          withBadReserve.stderr,
+          /RUN_TESTS_SHARD_RESERVE="5:999" is not a valid .* for --shard total 3 — ignoring/,
+          `expected the out-of-range-index fallback warning; got stderr: ${withBadReserve.stderr}`,
+        );
+
+        const control = runHarness(
+          tmpDir, ['--shard', '1/3'],
+          { RUN_TESTS_TIMINGS_FILE: tablePath },
+        );
+        assert.strictEqual(control.status, 0, `stderr: ${control.stderr}`);
+        assert.doesNotMatch(control.stderr, /RUN_TESTS_SHARD_RESERVE/, 'control run must not warn — it sets no reserve at all');
+
+        const filesLine = (s) => (s.match(/files=\d+: (.*)$/m) || [])[1] || '';
+        assert.strictEqual(
+          filesLine(withBadReserve.stderr), filesLine(control.stderr),
+          'an out-of-range reserve index must select EXACTLY the same files as no reserve at all — '
+          + 'the fallback warning alone is not proof the reserve was actually ignored',
+        );
+      } finally {
+        try { fs.unlinkSync(tablePath); } catch { /* best effort */ }
+      }
+    });
+
     test('shard diagnostics report an identical input fingerprint across shards', () => {
       seed(tmpDir, SHARD_NAMES);
       // The cross-runner divergence guard: every shard of one run computes the
@@ -827,10 +896,29 @@ test('noop', () => {});
     // once (via `before`) and every assertion group below reads from those
     // captured results instead of spawning its own. This is the whole
     // savings — no assertion is weakened or removed.
-    const HANGS_FOREVER_BODY = `'use strict';
+    // The fixture served to the timeout-path run below (#4105). Parks on a
+    // SETTLING timer — the #4104 idiom — so the hang is a property of the
+    // FIXTURE on every Node line, not of the runtime: the retired
+    // `new Promise(() => {})` shape held NO libuv handle, so whether the
+    // spawned child hung was decided by the Node line's test-runner shutdown
+    // behavior (measured: v24/v26 happen to hold the loop open; v22.22.0
+    // exits on its own in ~60ms with `# cancelled 1`, so the chunk never
+    // reached the timeout path and T1/T4 below asserted nothing). The park
+    // must outlast the chunk bound below with wide margin (asserted
+    // structurally in the #4105 regression test), stays ~0% CPU while parked,
+    // and the settle guarantees the fixture SELF-TERMINATES if a kill orphans
+    // it — unlike `setInterval`-forever (never exits) or `while (true) {}`
+    // (100% CPU forever), the two shapes #4104's pairing note rules out.
+    const HANG_PARK_MS = 10_000;
+    const HANGS_BODY = `'use strict';
 const { test } = require('node:test');
-test('hangs forever', () => new Promise(() => {}));
+test('hangs forever', () => new Promise((resolve) => { setTimeout(resolve, ${HANG_PARK_MS}); }));
 `;
+
+    // The per-chunk timeout the timeout-path run below arms. Hoisted (#4105)
+    // so the #4105 fixture guard below asserts against the SAME bound the
+    // harness run uses, not a re-typed literal that can drift from it.
+    const CHUNK_TIMEOUT_MS_FOR_HANG_RUN = 2000;
 
     let successDir;
     let successRun;
@@ -855,10 +943,10 @@ test('hangs forever', () => new Promise(() => {}));
       // box that has to boot node --test, register the hang, and observe
       // the kill inside the window.
       timeoutDir = createTempDir('gsd-3889-timeout-');
-      fs.writeFileSync(path.join(timeoutDir, 'hangs.test.cjs'), HANGS_FOREVER_BODY, 'utf8');
+      fs.writeFileSync(path.join(timeoutDir, 'hangs.test.cjs'), HANGS_BODY, 'utf8');
       timeoutRun = runHarness(timeoutDir, [], {
         RUN_TESTS_NO_FORCE_EXIT: '1',
-        RUN_TESTS_CHUNK_TIMEOUT_MS: '2000',
+        RUN_TESTS_CHUNK_TIMEOUT_MS: String(CHUNK_TIMEOUT_MS_FOR_HANG_RUN),
       });
     });
 
@@ -921,7 +1009,8 @@ test('hangs forever', () => new Promise(() => {}));
     // T1: on a chunk timeout, the diagnostic must NAME the file that was
     // still executing — not merely list every file the chunk contained (the
     // pre-instrumentation behavior). A test that hangs INSIDE its own body
-    // (never resolving) keeps its test:start event unmatched by any
+    // (parks on a settling timer that outlasts the chunk bound, so it never
+    // resolves inside the window) keeps its test:start event unmatched by any
     // test:pass/test:fail in the ndjson companion reporter's output, which
     // is exactly the signal the diagnostic reads back on timeout.
     test('a chunk timeout names the file that was in flight when killed', () => {
@@ -1081,6 +1170,78 @@ test('hangs forever', () => new Promise(() => {}));
         /run-tests: chunk 1\/1 was killed after \d+ms/,
         `expected the new killed/elapsed line; STDERR:\n${timeoutRun.stderr}`,
       );
+    });
+
+    // Regression (#4105): T1/T4 above are only meaningful if the fixture
+    // above GENUINELY hangs, and the hang must be a property of the FIXTURE,
+    // not of the runtime's test-runner shutdown behavior. A never-settling
+    // `new Promise(() => {})` holds NO libuv handle, so whether the spawned
+    // child hangs is decided by the Node line: on v24/v26 the runner happens
+    // to hold the loop open, but on v22 the child exits on its own in ~60ms
+    // (`# cancelled 1`, rc=1) — the chunk then never reaches the timeout path
+    // and T1/T4 assert nothing about the timeout diagnostic (measured:
+    // v22.22.0 `node --test` exits after 61ms). RED at this test's introducing
+    // sha against the then-current body: on Node 24 it fails the
+    // self-termination arm (an unheld never-settling promise also never
+    // self-terminates on lines where the runner DOES hold it open), and on
+    // off-24 lines it fails the still-hanging arm. Deterministic guard, the
+    // #4104 self-exit regression's event-driven shape: spawn the EXACT served
+    // body directly — no harness, no runner, no polling — and observe that its
+    // natural 'exit' event (a) arrives no earlier than past the chunk bound
+    // the harness run above arms (it hangs by itself, without any runtime
+    // holding it up), and (b) carries a natural exit — exit code 0, no
+    // signal. The `{ timeout: 2 * HANG_PARK_MS }` backstop (the
+    // health-validation #663 pattern) fails an immortal body — one that never
+    // delivers 'exit' — instead of hanging the suite; a `{ timeout }` option
+    // is the no-elapsed-assertion-compliant bound. Liveness of a SUBPROCESS
+    // cannot be driven through the clock seam (mock.timers cannot reach
+    // inside a separately spawned node), so the guard asserts observable
+    // exit/signal/liveness behavior only — never a measured duration value
+    // (RULESET.TESTS.no-timing-assertion).
+    test('the #3889 hang fixture genuinely hangs by itself and self-terminates (#4105)', { timeout: 2 * HANG_PARK_MS }, (t, done) => {
+      // (a) Structural margin, single-sourced with the served body: the park
+      // must outlast the chunk bound by >= 4x, so a loaded box's scheduling
+      // jitter can never let the timer settle before the harness kill fires.
+      assert.ok(
+        HANG_PARK_MS >= 4 * CHUNK_TIMEOUT_MS_FOR_HANG_RUN,
+        `fixture park (${HANG_PARK_MS}ms) must exceed the chunk bound (${CHUNK_TIMEOUT_MS_FOR_HANG_RUN}ms) with margin`,
+      );
+      const dir = createTempDir('gsd-3889-hang-fixture-');
+      t.after(() => cleanup(dir));
+      const tf = path.join(dir, 'hangs.test.cjs');
+      fs.writeFileSync(tf, HANGS_BODY, 'utf8');
+      const child = spawn(process.execPath, [tf], { stdio: 'ignore' });
+      // The runner timeout above fails an immortal body; this hook guarantees
+      // the child is reaped on every exit path, including that one.
+      t.after(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } });
+      const spawnedAt = Date.now();
+      // Past the chunk bound the harness kills at: the fixture's natural exit
+      // must arrive no earlier than this — that is the vacuity guard. +400ms
+      // covers child spawn startup so the checkpoint measures the fixture,
+      // not boot time.
+      const stillHangingAt = spawnedAt + CHUNK_TIMEOUT_MS_FOR_HANG_RUN + 400;
+      // Fast-fail on a spawn error (execPath unspawnable): 'exit' never fires
+      // for a failed spawn, so without this the runner timeout would expire
+      // with a generic timeout message instead of the real cause (same
+      // hardening as #4104).
+      child.on('error', (err) => {
+        assert.fail(`could not spawn the fixture directly: ${err.message}`);
+      });
+      // `exitCode !== null` alone misses a SIGNALED exit (exitCode stays null
+      // when a signal ends the child); the assertions name signalCode as the
+      // failure when that happens.
+      child.on('exit', () => {
+        assert.ok(
+          Date.now() >= stillHangingAt,
+          `fixture must still be hanging past the ${CHUNK_TIMEOUT_MS_FOR_HANG_RUN}ms chunk bound — ` +
+            `it exited after only ${Date.now() - spawnedAt}ms ` +
+            '(#4105 regression: the hang is the runtime\'s, not the fixture\'s)',
+        );
+        assert.strictEqual(child.signalCode, null,
+          'fixture must SELF-terminate (natural exit) — a signal means we had to kill it (#4105/#4104 regression)');
+        assert.strictEqual(child.exitCode, 0, 'the parked fixture settles and its test passes cleanly');
+        done();
+      });
     });
   });
 });
@@ -1415,6 +1576,149 @@ describe('selectShard weight-aware partition (#2472)', () => {
   });
 });
 
+// ─── #4070: reserved-weight shard partition ─────────────────────────────────
+//
+// `test.yml`'s `scope: full` lane tacks four unsharded aux suites
+// (integration/security/install/slow) onto shard 1 only, outside this
+// packer's model entirely — it balances the UNIT-TEST slice as if all three
+// shards carried equal fixed cost, when shard 1 actually carries a fixed
+// aux-suite overhead the other two do not. `initialWeights` lets a caller
+// give one (or more) bins a virtual head start before LPT places any real
+// file, so the algorithm converges on equalizing FINAL total cost (reserve +
+// assigned files) instead of raw assigned-file weight alone — the same
+// "greedy into the lightest bin" placement rule, just with non-zero starting
+// points.
+describe('selectShard reserved-weight partition (#4070)', () => {
+  const fc = require('fast-check');
+
+  const uniform = Array.from({ length: 30 }, (_, i) => `u${String(i).padStart(3, '0')}.test.cjs`);
+  const uniformWeight = () => 10;
+
+  const finalTotals = (files, total, weightOf, initialWeights) => {
+    const out = [];
+    for (let i = 1; i <= total; i++) {
+      const assigned = selectShard(files, { index: i, total }, weightOf, initialWeights)
+        .reduce((a, f) => a + weightOf(f), 0);
+      out.push(assigned + ((initialWeights && initialWeights[i - 1]) || 0));
+    }
+    return out;
+  };
+
+  // The regression: without reserve support, bin 0 gets an EQUAL share of
+  // files despite already carrying a head start, so its true final total
+  // (assigned + reserve) sits well above the other bins' — exactly the shard
+  // 1 overload this issue reports. With reserve support, LPT starts bin 0
+  // "already heavier" and hands it fewer files so all three converge.
+  test('REGRESSION: an initial reserve on one bin rebalances the rest (#4070)', () => {
+    const reserve = 80; // 8 average-cost files' worth, on a 30-file/300-weight suite
+    const totals = finalTotals(uniform, 3, uniformWeight, [reserve, 0, 0]);
+    const spread = Math.max(...totals) - Math.min(...totals);
+    assert.ok(
+      spread <= uniformWeight(),
+      `a reserved bin must converge toward the others' final totals (within one file's `
+      + `weight), not just add the reserve on top of an equal share; got totals=${totals} `
+      + `(spread=${spread})`,
+    );
+    // The reserved bin must have been handed FEWER files than an unreserved bin —
+    // otherwise "rebalancing" did nothing and the reserve is purely additive.
+    const reservedBinFiles = selectShard(uniform, { index: 1, total: 3 }, uniformWeight, [reserve, 0, 0]).length;
+    const unreservedBinFiles = selectShard(uniform, { index: 2, total: 3 }, uniformWeight, [reserve, 0, 0]).length;
+    assert.ok(
+      reservedBinFiles < unreservedBinFiles,
+      `the reserved bin (${reservedBinFiles} files) must receive fewer files than an `
+      + `unreserved bin (${unreservedBinFiles}) — otherwise the reserve had no effect on `
+      + 'placement',
+    );
+  });
+
+  test('back-compat: omitting initialWeights reproduces the unreserved partition exactly', () => {
+    for (let i = 1; i <= 3; i++) {
+      assert.deepStrictEqual(
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight, undefined),
+      );
+    }
+  });
+
+  test('a zero reserve is a no-op', () => {
+    for (let i = 1; i <= 3; i++) {
+      assert.deepStrictEqual(
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight, [0, 0, 0]),
+      );
+    }
+  });
+
+  test('a reserve applies to any bin index, not only the first', () => {
+    const reserve = 80;
+    const totals = finalTotals(uniform, 3, uniformWeight, [0, reserve, 0]);
+    const spread = Math.max(...totals) - Math.min(...totals);
+    assert.ok(spread <= uniformWeight(), `expected convergence around index 2; got ${totals}`);
+    const reservedBinFiles = selectShard(uniform, { index: 2, total: 3 }, uniformWeight, [0, reserve, 0]).length;
+    const otherBinFiles = selectShard(uniform, { index: 1, total: 3 }, uniformWeight, [0, reserve, 0]).length;
+    assert.ok(reservedBinFiles < otherBinFiles, `reserved bin 2 should get fewer files; got ${reservedBinFiles} vs ${otherBinFiles}`);
+  });
+
+  test('REGRESSION: a reserve larger than the whole suite still terminates and assigns every file', () => {
+    const reserve = 1e9;
+    const shards = [];
+    for (let i = 1; i <= 3; i++) shards.push(selectShard(uniform, { index: i, total: 3 }, uniformWeight, [reserve, 0, 0]));
+    const flat = shards.flat();
+    assert.deepStrictEqual([...flat].sort(), [...uniform].sort(), 'every file must still be placed exactly once');
+    // The massively-reserved bin should get the fewest (possibly zero) files.
+    assert.ok(shards[0].length <= shards[1].length && shards[0].length <= shards[2].length);
+  });
+
+  test('REGRESSION: a hostile reserve value clamps to zero instead of poisoning placement', () => {
+    for (const hostile of [NaN, -5, Infinity]) {
+      const shards = [];
+      for (let i = 1; i <= 3; i++) shards.push(selectShard(uniform, { index: i, total: 3 }, uniformWeight, [hostile, 0, 0]));
+      const sizes = shards.map((s) => s.length);
+      assert.ok(
+        Math.max(...sizes) - Math.min(...sizes) <= 1,
+        `a hostile reserve (${hostile}) must clamp to 0, not collapse/starve a bin; sizes=${sizes}`,
+      );
+    }
+  });
+
+  // Generalizes the existing "no shard exceeds average + heaviest file" bound
+  // (#2472) to include a single reserved bin — but the Graham-style proof
+  // (the max-load bin was the argmin, hence <= average, at the moment its
+  // LAST item was placed) only applies to a bin that actually received at
+  // least one item. A reserve large enough that its bin never receives any
+  // real item stays at EXACTLY its initial reserve forever — no amount of
+  // routing real items elsewhere can dilute a fixed head start below itself
+  // — so the true bound is the LARGER of the classic Graham term and the
+  // single biggest reserve. (Counterexample that falsified the original,
+  // reserve-blind-to-domination version of this bound: weights=[1,1,1],
+  // total=2, reserve=6 on bin 0 — bin 0 receives zero items and stays at 6,
+  // while (sum+reserve)/total+max = 4.5+1 = 5.5 < 6.)
+  test('property: no shard exceeds max(reserve, average(+reserve) + heaviest file)', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: 1, max: 60000 }), { minLength: 3, maxLength: 60 }),
+        fc.integer({ min: 2, max: 6 }),
+        fc.integer({ min: 0, max: 200000 }),
+        fc.integer({ min: 0, max: 5 }),
+        (weights, total, reserve, reserveIdxRaw) => {
+          const files = weights.map((_, i) => `p${String(i).padStart(3, '0')}.test.cjs`);
+          const w = (f) => weights[Number(f.slice(1, 4))];
+          const reserveIdx = reserveIdxRaw % total;
+          const initialWeights = Array.from({ length: total }, (_, i) => (i === reserveIdx ? reserve : 0));
+          const sums = finalTotals(files, total, w, initialWeights);
+          const grahamBound = (weights.reduce((a, b) => a + b, 0) + reserve) / total + Math.max(...weights);
+          const bound = Math.max(reserve, grahamBound);
+          assert.ok(
+            Math.max(...sums) <= bound + 1e-9,
+            `bound violated: max=${Math.max(...sums)} bound=${bound} sums=${sums}`,
+          );
+        },
+      ),
+      { numRuns: 200, seed: 24724 },
+    );
+  });
+});
+
 describe('parseShardArg (#1212)', () => {
   test('parses i/n into { index, total }', () => {
     assert.deepStrictEqual(parseShardArg('2/3'), { index: 2, total: 3 });
@@ -1430,6 +1734,31 @@ describe('parseShardArg (#1212)', () => {
   }
 });
 
+// #4070: RUN_TESTS_SHARD_RESERVE env-var grammar — "<index>:<weight>", the
+// operator knob test.yml uses to tell the full-scope lane's unit-test shard
+// selection that shard 1 already carries a fixed aux-suite cost. Fail-open
+// on anything malformed (mirrors positiveNumberEnv's precedent elsewhere in
+// this file): a typo must degrade to "no reserve", never poison placement or
+// throw and take the whole CI job down with it.
+describe('parseShardReserve (#4070)', () => {
+  const { parseShardReserve } = require('../scripts/run-tests.cjs');
+
+  test('parses "<index>:<weight>" into { index, weight }', () => {
+    assert.deepEqual(parseShardReserve('1:77'), { index: 1, weight: 77 });
+    assert.deepEqual(parseShardReserve('2:0'), { index: 2, weight: 0 });
+    assert.deepEqual(parseShardReserve('3:12.5'), { index: 3, weight: 12.5 });
+  });
+
+  for (const v of [undefined, null, '', '  ', 'x', '1', '1:', ':77', '0:77', '-1:77', '1:-5', '1.5:77', '1:abc', 'a:b', '1:2:3']) {
+    test(`rejects malformed value ${JSON.stringify(v)}`, () => {
+      assert.equal(parseShardReserve(v), null, `expected null for ${JSON.stringify(v)}`);
+    });
+  }
+
+  test('whitespace around a valid value is tolerated', () => {
+    assert.deepEqual(parseShardReserve(' 1:77 '), { index: 1, weight: 77 });
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-969-test-infra-flake-hardening.test.cjs — consolidation epic #1969 (B6 #1975)
