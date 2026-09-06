@@ -459,6 +459,7 @@ GSD generates markdown files that become LLM system prompts. This means any user
 - `gsd-prompt-guard.js` — Scans Write/Edit calls to `.planning/` for injection patterns (always active, advisory-only)
 - `gsd-workflow-guard.js` — Warns on file edits outside GSD workflow context (opt-in via `hooks.workflow_guard`)
 - `gsd-write-guard.js` — Hard-blocks a whole-file `Write` that catastrophically shrinks a curated `.planning/` artifact (`ROADMAP.md`, milestone roadmaps, `STATE.md`) below 40% of its on-disk line count; files under 40 lines are exempt. The check is stateless per Write, comparing each payload against the file's *current* on-disk size — a single-shot collapse (the #973 shape) is blocked, but a sequence of individually-tolerated shrinks that erodes the file across several Writes is not detected. For a legitimate milestone reset or large deletion, bypass once with the single-use sentinel — write the target's path into `.planning/.gsd-allow-shrink` (fresh within 15 minutes; consumed by the allowed write) — or, interactively, with `GSD_ALLOW_PLANNING_SHRINK=1` in the runtime's environment. Scope the guarantee accordingly: this stops accidental and single-shot collapse, and is not a defense against a determined agent — the sentinel is a plain file, so anything with shell access can arm one; what it buys is that the bypass becomes a deliberate, path-bound, single-use and auditable action rather than a sentence to reason past (always active, blocking; #2255, fix 3 of #973)
+- `gsd-secret-read-guard.js` — Hard-blocks reads of secret files — `.env`, `.env.<suffix>` and `.secrets`, matched case-insensitively (`.ENV`, `.Secrets`) — through Read (`file_path`), Grep (an explicit `path`, or a `glob` that selects them, judged per brace alternative) and Bash (operands, input redirects, `$( )` / backtick / `<( )` bodies, and `git show <ref>:<path>` shapes). A shell interpreter (`bash`/`sh`/`zsh`/`dash`/`ksh`) has its script scanned however it arrives — `-c '…'`, a `<( )` file operand, a heredoc / here-string, or a pipe from a knowable `echo`/`printf` source (`echo cat .env | bash`) — as do `eval`'s joined operands, a `source`/`.` process-substitution operand, and `find … | xargs cat` pipelines (upstream literal names become the sub-command's read operands). `.env.example` / `.env.sample` / `.env.template` / `.env.dist` stay readable (they are the templates GSD's own phase prompt reads — a real secret stored under one of those names is not protected), and existence checks (`[ -f .env ]`, `ls .env*`, `test`, `stat`, `rm`, `touch`, `echo`, …) pass. Not covered, by construction: `$VAR` indirection (`bash -c "$CMD"`), shell globs (`cat .e*`), interpreter one-liners, a piped script from a non-`echo`/`printf` source (`cat gen.sh | bash`, `curl … | sh`), reads inside scripts the agent runs, and a Grep `glob: '*'` reaching a `.env` that is not gitignored — none are statically resolvable by a hook. This replaces the `Read(.env)` / `Read(.env.*)` / `Read(.secrets)` permission deny rules the installer used to write: on Claude Code ≥ 2.1.259 any `Read()` deny rule makes every `cd DIR && grep …` compound prompt for approval even in `auto` mode, while a hook denial is not a permission rule and applies in `auto` and `bypassPermissions` alike (always active, blocking; #4221)
 
 **CI Scanner:** `prompt-injection-scan.security.test.cjs` scans all agent, workflow, and command files for embedded injection vectors.
 
@@ -969,11 +970,6 @@ Since v1.3.1, the installer pre-populates `~/.claude/settings.json` (or
       "Edit(.planning/*)",
       "Read(STATE.md)",
       "Edit(STATE.md)"
-    ],
-    "deny": [
-      "Read(.env)",
-      "Read(.env.*)",
-      "Read(.secrets)"
     ]
   }
 }
@@ -983,6 +979,21 @@ These entries eliminate first-run approval prompts for GSD's own tool calls. The
 merge is non-destructive — your existing permissions are preserved and GSD entries
 are only appended. Uninstalling GSD removes exactly these entries and preserves
 any others.
+
+**Secret-file protection moved from deny rules to a hook (#4221).** Earlier
+versions also wrote three `permissions.deny` rules — `Read(.env)`,
+`Read(.env.*)` and `Read(.secrets)`. Claude Code 2.1.259 hardened the
+Bash-side enforcement of `Read()` deny rules so that *any* such rule makes every
+`cd DIR && grep …` / `cd DIR && cat …` compound prompt for approval, even in
+`auto` mode — and GSD's subagents emit hundreds of those per session. The same
+protection now ships as the always-on `gsd-secret-read-guard.js` PreToolUse hook
+(Read, Grep and Bash; see Runtime Hooks above for what it covers and its
+documented gaps). A hook denial is not a permission rule, so it never arms that
+check, and it applies in `auto` and `bypassPermissions` modes alike. On install
+and uninstall the three retired strings are removed from `permissions.deny`
+(and an emptied `deny` array is dropped). Note the removal is byte-exact: a
+rule you wrote by hand that is identical to one of the three is indistinguishable
+from the installer's and is removed as well — re-add it if you want both layers.
 
 ### Executor Subagent Gets "Permission denied" on Bash Commands
 

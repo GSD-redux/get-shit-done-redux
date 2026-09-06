@@ -10,7 +10,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, cleanup, captureFdSync } = require('./helpers.cjs');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 describe('roadmap get-phase command', () => {
@@ -1202,19 +1202,7 @@ describe('#3057 B3: roadmap update-plan-progress — verification staleness-chec
    * corrupts the captured payload into two concatenated JSON objects).
    */
   function captureUpdatePlanProgress(t, cwd, phaseNum) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false);
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, () => roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false));
     assert.ok(captured.length > 0, 'cmdRoadmapUpdatePlanProgress produced no stdout output');
     return captured;
   }
@@ -4374,26 +4362,16 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
 
   // Mirrors state.test.cjs's captureCliIO — see that file's doc comment.
   function captureCliIO(fn) {
-    const originalWriteSync = fs.writeSync;
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
-    let stdout = '';
     let stderr = '';
-    fs.writeSync = (fd, data, offset, length) => {
-      if (fd !== 1) return originalWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      stdout += chunk;
-      return Buffer.byteLength(chunk, 'utf8');
-    };
     process.stderr.write = (chunk) => {
       stderr += String(chunk);
       return true;
     };
+    let stdout;
     try {
-      fn();
+      stdout = captureFdSync(1, fn);
     } finally {
-      fs.writeSync = originalWriteSync;
       process.stderr.write = originalStderrWrite;
     }
     return { stdout, stderr };

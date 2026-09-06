@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 # --text mode — plain-text overlay (no AskUserQuestion)
 
 > **Lazy-loaded overlay.** Read this file from `workflows/discuss-phase.md`

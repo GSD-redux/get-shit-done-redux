@@ -26,6 +26,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const {
   parsePhaseFromProse,
   PHASE_NUMBER_TOKEN_SOURCE,
+  matchPhaseDirs,
   phaseKeyFromToken,
   phaseKeyFromDir,
   phaseHeadingPrefixSrcFor,
@@ -62,6 +63,10 @@ function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import coreUtilsMod = require('./core-utils.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
 const { isPhaseComplete } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -86,7 +91,7 @@ import { findProjectRoot } from './project-root.cjs';
 // it introduces no cycle on this path.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import milestoneLockMod = require('./milestone-lock.cjs');
-const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
+const { transitionCore, applyStatePreservation, sliceCurrentPositionSection, stateReplaceProgressPercent, formatProgressMachineSegment } = stateTransitionMod;
 // #3699: the frontmatter-key <-> body-field routing behind `state update`'s
 // failure explanation, and the classification table it falls back to.
 const { getFieldClassification, getFrontmatterBodySource, frontmatterKeyForBodyField } = stateTransitionMod;
@@ -107,6 +112,7 @@ import {
   shouldPreserveExistingProgress,
   stateExtractField,
   stateFieldValue,
+  toFiniteNumber,
   // #3696: the `last_activity` invariant that `state validate` (S008/S009) now
   // asserts. Both live in the field-semantics owner, not here, so `smart-entry`
   // and `state validate` cannot drift apart about the same field.
@@ -325,9 +331,12 @@ const _diskScanCache = new Map<string, {
   // ROADMAP total, so the caller must keep the pre-existing value (stored
   // frontmatter, body annotation) or omit the key. Never a scan result.
   totalPhases: number | null;
-  completedPhases: number;
-  totalPlans: number;
-  completedPlans: number;
+  // #4094: the three sibling counters carry the same null WITHHOLD sentinel
+  // under the same condition — they come from the identical phaseDirs walk,
+  // so when the walk's scope is untrustworthy they are withheld together.
+  completedPhases: number | null;
+  totalPlans: number | null;
+  completedPlans: number | null;
   milestoneBounded: boolean;
   // #3217 (ADR-3180 §7.6 rule 4, finding 1): the real `listMilestonePhaseDirs`
   // scope for `allMatchingDirs` below, threaded through the cache so the
@@ -890,6 +899,89 @@ function stateReplaceFieldWithFallback(content: string, primary: string, fallbac
   return content;
 }
 
+/**
+ * #4067: disk-derived plan-completion answer for advance-plan's phase-complete
+ * guard.
+ *
+ * `advancePlanCore` decides "phase complete" purely from STATE.md's scalar plan
+ * counter (`currentPlan >= totalPlans`). That counter cannot represent
+ * wave-parallel execution — a stale counter carried over from the prior phase
+ * (the reported trigger: `Plan: 7 of 7` surviving into a 10-plan phase) or a
+ * counter raced by N concurrent executors both let the phase-complete branch
+ * fire while sibling plans are mid-flight. This helper answers the completion
+ * question from disk instead, exactly the way `state update-progress`
+ * recalculates it: every plan in the Current Position phase's directory has a
+ * SUMMARY.md.
+ *
+ * Single-derivation discipline: plan/summary counting is owned by
+ * `scanPhasePlans` (src/plan-scan.cts, ADR-3180 §7.5) — this helper consumes
+ * it, never re-derives. It deliberately does NOT consult `isPhaseComplete`
+ * (§7.4): that owner answers the *verification* question (passing
+ * `*-VERIFICATION.md`), a different question from "are all plans executed?".
+ * Blocked summaries (#3345) are filtered from the pairing set with the same
+ * shared predicate `scanPhasePlans` uses, so the named outstanding list can
+ * never disagree with the count-based decision.
+ *
+ * FAIL-OPEN contract: returns `null` when the disk answer is UNAVAILABLE — no
+ * readable phases dir, no directory matching the position phase, or a scan
+ * whose scope is not COMPLETE (the scan may be blind to plans it knows exist).
+ * `null` means "the caller must fall back to the counter-derived decision",
+ * NOT "plans are outstanding"; worlds the seam cannot see (STATE.md with no
+ * Current Position `Phase:` line, milestone-archived layouts) keep today's
+ * behavior rather than being newly refused.
+ *
+ * Returns `{ dir, outstanding, planCount, summaryCount }` where `outstanding`
+ * is empty when every plan on disk is summarized (vacuously so for a zero-plan
+ * phase — #3168's zero-plan-phase posture). `planCount`/`summaryCount` are the
+ * countable disk facts behind `outstanding` (live plan files; summaries after
+ * the #3345 blocked filter) — #4093's recovery decline reports them to a
+ * caller whose STATE.md has lost its labeled plan position, so the suggested
+ * repair values are computed from the SAME set `outstanding` was, and can
+ * never disagree with a count-based decision either.
+ */
+function scanOutstanding(phasesDir: string, dir: string): { dir: string; outstanding: string[]; planCount: number; summaryCount: number } | null {
+  const phaseDirPath = path.join(phasesDir, dir);
+  const scan = scanPhasePlans(phaseDirPath);
+  if (scan.scope !== SCOPE.COMPLETE) return null;
+  // Blocked summaries (#3345) are filtered with the same shared predicate
+  // scanPhasePlans uses for its own count, so the named outstanding list can
+  // never disagree with a count-based decision.
+  const countableSummaries = scan.summaryFiles.filter(
+    (f) => !planDependencyGraphMod.isSummaryFileBlocked(path.join(phaseDirPath, f)),
+  );
+  const outstanding = coreUtilsMod.findUnsummarizedPlans(scan.planFiles, countableSummaries);
+  return { dir, outstanding, planCount: scan.planFiles.length, summaryCount: countableSummaries.length };
+}
+
+function unsummarizedPlansForPositionPhase(
+  cwd: string,
+  positionPhase: string,
+): { dir: string; outstanding: string[]; planCount: number; summaryCount: number } | null {
+  const phasesDir = planningPaths(cwd).phases;
+  // #3185 (ADR-3180 Decision 1): "which phase directories exist" is owned by
+  // listMilestonePhaseDirs — no hand-rolled readdirSync here. The owner
+  // handles an absent phasesDir as a real empty and refuses sentinels.
+  //
+  // Two passes, narrowest first: the CURRENT-MILESTONE window (so an archived
+  // milestone's stale `01-*` directory cannot shadow the live one), then —
+  // only when the window cannot answer (no bounded ROADMAP, or the position
+  // phase is simply not in it) — an unscoped read, which the owner documents
+  // as a real answer. This is a lookup of ONE phase token STATE.md names, not
+  // a milestone enumeration, so the unscoped retry is in-contract.
+  const convention = resolvePhaseIdConvention(cwd);
+  const windowed = listMilestonePhaseDirs(phasesDir, { cwd, phaseIdConvention: convention });
+  const candidateDirs = windowed.scope === SCOPE.COMPLETE ? windowed.value : [];
+  // Canonical phase-token → directory matching (phase-id owner, #2562): both
+  // sides of the comparison derived by the same function, never a local regex.
+  const { matches } = matchPhaseDirs(candidateDirs, positionPhase, convention);
+  if (matches.length > 0) return scanOutstanding(phasesDir, matches[0]);
+  const unscoped = listMilestonePhaseDirs(phasesDir);
+  if (unscoped.scope !== SCOPE.COMPLETE) return null;
+  const retry = matchPhaseDirs(unscoped.value, positionPhase, convention);
+  if (retry.matches.length === 0) return null;
+  return scanOutstanding(phasesDir, retry.matches[0]);
+}
+
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -915,6 +1007,16 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // STATE.md lock, so the position read and the claim read cannot interleave
   // with another session's Current Position write.
   let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+  // #4067: set when the disk-derived guard declines the phase-complete branch —
+  // named here so the post-lock output path can report it without re-deriving.
+  // Holder (not a bare let) so TypeScript's closure-unaware narrowing cannot
+  // collapse the post-lock read to `never` — the callback assigns it.
+  const outstandingRef: { value: { dir: string; outstanding: string[]; planCount: number; summaryCount: number } | null } = { value: null };
+  // #4093: the position phase token the callback resolved (Current Position
+  // `Phase:` line first, frontmatter `current_phase` as fallback), carried out
+  // so the generic parse-failure decline can derive recovery facts from disk
+  // without re-reading STATE.md outside the lock. Same holder idiom as above.
+  const positionPhaseRef: { value: string | null } = { value: null };
   const wrote = readModifyWriteStateMd(statePath, (content) => {
     // advance-plan has no phase argument of its own — the phase it advances is
     // whatever ## Current Position names. Compare that against the milestone
@@ -924,6 +1026,17 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     const body = stripFrontmatter(content);
     const positionScope = matchCurrentPositionSection(body) ?? body;
     const positionPhase = parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
+    // #4093: a Current Position section with ZERO labeled fields has no
+    // `Phase:` line either; frontmatter `current_phase` is the documented
+    // survivor of body drift (the reporter's document still carried it, and
+    // `buildStateFrontmatter` re-derives it from the body only when the body
+    // HAS the line). It feeds the recovery DECLINE only — never a write.
+    let fmPhase: string | null = null;
+    if (positionPhase === null) {
+      const fmToken = extractFrontmatter(content, statePath)['current_phase'];
+      fmPhase = typeof fmToken === 'string' && fmToken.trim() !== '' ? fmToken.trim() : null;
+    }
+    positionPhaseRef.value = positionPhase ?? fmPhase;
     if (positionPhase !== null) {
       milestoneConflict = milestoneLockMod.checkMilestonePosition(cwd, positionPhase);
       if (milestoneConflict) {
@@ -931,10 +1044,57 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }
     }
     const result = transitionCore(content, intent, deps);
+    // #4067: the transform's phase-complete branch is decided by STATE.md's
+    // scalar plan counter, which can neither carry a stale value across phases
+    // nor represent wave-parallel execution. Before letting that branch write
+    // "Phase complete — ready for verification", re-decide from disk (the same
+    // source state.update-progress recalculates from): every plan in the
+    // position phase's directory must have a SUMMARY.md. A non-empty
+    // outstanding list declines the ENTIRE write — STATE.md is returned
+    // byte-identical, so the decline is idempotent and safe for any number of
+    // concurrent callers (the disk answer is re-read under the STATE.md lock
+    // each call; the counter stays display-only). `null` (disk answer
+    // unavailable) fails open to the counter-derived decision, so every
+    // world this seam cannot see keeps today's behavior.
+    if (
+      result.data?.['advanced'] === false
+      && result.data?.['reason'] === 'last_plan'
+      && positionPhase !== null
+    ) {
+      const diskAnswer = unsummarizedPlansForPositionPhase(cwd, positionPhase);
+      if (diskAnswer !== null && diskAnswer.outstanding.length > 0) {
+        outstandingRef.value = diskAnswer;
+        resultData = result.data;
+        precomputedUpdated = [];
+        return content;
+      }
+    }
     resultData = result.data;
     precomputedUpdated = result.updated;
     return result.content;
   }, cwd, { divergedFields, preWriteState });
+
+  // #4067 decline path: plans remain unexecuted on disk. Shaped like the
+  // existing `last_plan` decline (advanced:false + machine-readable reason,
+  // exit 0) rather than a hard error — the caller did nothing wrong and
+  // STATE.md needs no repair; the remaining plans' executors will re-run this
+  // command, and the final one finds a fully-summarized phase and completes it.
+  const plansOutstanding = outstandingRef.value;
+  if (plansOutstanding !== null) {
+    declineNoOp(
+      raw,
+      'advanced',
+      'plans_outstanding',
+      `state advance-plan skipped — phase-complete declined: ${plansOutstanding.outstanding.length} plan(s) in .planning/phases/${plansOutstanding.dir} have no SUMMARY.md (${plansOutstanding.outstanding.join(', ')}). STATE.md was left unchanged; re-run once every plan has executed and written its summary.`,
+      {
+        advanced: false,
+        phase_dir: plansOutstanding.dir,
+        outstanding_plans: plansOutstanding.outstanding,
+        milestone_conflict: milestoneConflict,
+      },
+    );
+    return;
+  }
 
   // `!resultData` is a type guard, not a second failure mode: the callback
   // above assigns it unconditionally and only runs once STATE.md is known to
@@ -964,7 +1124,58 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }, raw, undefined);
       return;
     }
-    output({ error: advancePlanShapeError() }, raw, undefined);
+    // #4093: the generic terminus — no accepted labeled plan-position shape
+    // parsed anywhere in the document (the reporter's case: ## Current
+    // Position drifted to pure narrative prose with zero labeled fields).
+    // Every OTHER refusal above carries a machine-readable reason and the
+    // evidence to act on; this one stranded the caller at a bare sentence
+    // with no recovery path. Give it the same posture: a `reason` the caller
+    // can branch on, plus — when the position phase can be resolved and its
+    // directory scanned — the disk-derived facts and the exact labeled lines
+    // to re-insert. Nothing is WRITTEN: STATE.md is returned byte-identical
+    // (the callback already returned the original content for this path),
+    // so the decline is idempotent and no repair is guessed into the file —
+    // the caller (human or agent) applies the suggested lines and re-runs.
+    // Disk is the recovery source per #4067's posture; the values below are
+    // computed from the SAME `scanOutstanding` counts the plans_outstanding
+    // guard uses, so the two declines can never disagree about a phase.
+    const positionToken = positionPhaseRef.value;
+    const diskFacts = positionToken !== null
+      ? unsummarizedPlansForPositionPhase(cwd, positionToken)
+      : null;
+    if (diskFacts === null) {
+      // No resolvable phase (no Phase: line, no current_phase frontmatter, or
+      // no matching phase directory / incomplete scan): keep today's shape
+      // error, plus the reason so callers can tell this refusal from the
+      // ambiguous_* ones without string-matching the sentence.
+      output({ error: advancePlanShapeError(), reason: 'plan_position_unreadable' }, raw, undefined);
+      return;
+    }
+    const planCount = diskFacts.planCount;
+    const summarized = diskFacts.summaryCount;
+    // A summarized count below the plan count means the next plan to execute
+    // is summarized+1; an equal count means the phase is done on disk and the
+    // position line should say so (current = total; the next advance-plan run
+    // takes the #4067-guarded phase-complete branch from it). Zero plan files
+    // means disk has no opinion — suggest nothing rather than `1 of 0`.
+    const payload: Record<string, unknown> = {
+      error: advancePlanShapeError(),
+      reason: 'plan_position_unreadable',
+      phase_dir: diskFacts.dir,
+      disk: { plan_count: planCount, summarized_count: summarized },
+    };
+    if (planCount > 0) {
+      const current = summarized < planCount ? summarized + 1 : planCount;
+      payload['suggested'] = {
+        current_plan: current,
+        total_plans: planCount,
+        lines: [`Current Plan: ${current}`, `Total Plans in Phase: ${planCount}`],
+      };
+      payload['error'] =
+        `${advancePlanShapeError()} Disk for phase ${diskFacts.dir}: ${summarized} of ${planCount} plan(s) summarized. ` +
+        `Re-insert a labeled plan position at the top of ## Current Position (e.g. Current Plan: ${current} with Total Plans in Phase: ${planCount}), then re-run.`;
+    }
+    output(payload, raw, undefined);
     return;
   }
 
@@ -1177,7 +1388,7 @@ function computeUpdateProgressPreview(statePath: string, cwd: string): UpdatePro
   const existingFm = extractFrontmatter(preContent, statePath) as Record<string, unknown>;
   const preBody = stripFrontmatter(preContent);
   const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
-  const builtFm = buildStateFrontmatter(preBody, cwd, storedMilestone, readStoredTotalPhases(existingFm));
+  const builtFm = buildStateFrontmatter(preBody, cwd, storedMilestone, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm));
   const progress = builtFm['progress'] as Record<string, unknown> | undefined;
   const percent = progress && typeof progress['percent'] === 'number' ? progress['percent'] : null;
   const completedPlans = progress && typeof progress['completed_plans'] === 'number' ? progress['completed_plans'] : null;
@@ -1310,41 +1521,15 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     return;
   }
   const { percent, completedPlans: fmCompletedPlans, totalPlans: fmTotalPlans } = preview;
-  const barWidth = 10;
-  const filled = Math.round(percent / 100 * barWidth);
-  const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-  const progressStr = `[${bar}] ${percent}%`;
+  const progressStr = formatProgressMachineSegment(percent);
 
   let updated = false;
 
   readModifyWriteStateMd(statePath, (content) => {
-    // #2177: match against the BODY only. With /i the patterns below would
-    // otherwise hit the YAML frontmatter `progress:` key first (and `\s*` would
-    // eat its newline, mangling the nested block), while the body Progress: line
-    // — which frontmatter `percent` is re-derived from on every write — stays
-    // stale and silently reverts the update.
-    const body = stripFrontmatter(content);
-    const fmPrefix = content.slice(0, content.length - body.length);
-
-    // Swap only the machine segment ("[bar] NN%" or bare "NN%"), preserving any
-    // descriptive suffix an agent authored, e.g. "(2/4 plans done; blocked on…)".
-    const machineSegment = /(?:\[[^\]\r\n]*\][ \t]*)?\d{1,3}%/;
-    const replaceValue = (value: string) => machineSegment.test(value)
-      ? value.replace(machineSegment, progressStr)
-      : progressStr;
-
-    // Try **Progress:** bold format first, then plain Progress: format.
-    const boldProgressPattern = /(\*\*Progress:\*\*[ \t]*)([^\r\n]*)/i;
-    const plainProgressPattern = /^(Progress:[ \t]*)([^\r\n]*)/im;
-    const pattern = boldProgressPattern.test(body)
-      ? boldProgressPattern
-      : plainProgressPattern.test(body)
-        ? plainProgressPattern
-        : null;
-    if (!pattern) return content;
-
+    const result = stateReplaceProgressPercent(content, percent);
+    if (result === null) return content;
     updated = true;
-    return fmPrefix + body.replace(pattern, (_match, prefix: string, value: string) => `${prefix}${replaceValue(value)}`);
+    return result;
   }, cwd);
 
   if (updated) {
@@ -2506,7 +2691,20 @@ function countRoadmapPhaseHeadings(
  * a YAML frontmatter object. Allows hooks and scripts to read state
  * reliably via `state json` instead of fragile regex parsing.
  */
-function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, storedMilestone?: string | null, storedTotalPhases?: number | null): Record<string, unknown> {
+function buildStateFrontmatter(
+  bodyContent: string,
+  cwd: string | undefined,
+  storedMilestone?: string | null,
+  storedTotalPhases?: number | null,
+  // #4094: the stored siblings of storedTotalPhases, threaded from each call
+  // site exactly the same way — see readStoredProgressCounter below. Under the
+  // #3354/#3573 withhold condition the disk scan returns null for all four
+  // counters, and these stored values are what the progress block falls back
+  // to (else the keys are omitted).
+  storedCompletedPhases?: number | null,
+  storedTotalPlans?: number | null,
+  storedCompletedPlans?: number | null,
+): Record<string, unknown> {
   // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
   // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
   // below). Phase canonically lives in ## Current Position (templates/state.md);
@@ -2783,7 +2981,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             const milestonedButUnbounded = !milestoneBounded && roadmapHasAnyMilestoneSection;
             if (milestonedButUnbounded) {
               process.stderr.write(
-                `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries milestone section(s) — one (#3642) or several (#3354) — none matching it; the whole-document count would attribute a foreign section's phases to this milestone and the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3354/#3642)\n`
+                `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries milestone section(s) — one (#3642) or several (#3354) — none matching it; the whole-document count would attribute a foreign section's phases to this milestone and the on-disk phase-directory count would understate the declared total, so the progress counters (total_phases, completed_phases, total_plans, completed_plans) are left at their stored values. (#3354/#3642/#4094)\n`
               );
             }
             // #3573: the roadmap-absent sibling of the #3354 shape. With ROADMAP.md
@@ -2803,22 +3001,32 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
               storedMilestone.trim() !== '';
             if (roadmapAbsentWithAssertedMilestone) {
               process.stderr.write(
-                `gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3573)\n`
+                `gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so the progress counters (total_phases, completed_phases, total_plans, completed_plans) are left at their stored values. (#3573) (#4094)\n`
               );
             }
+            // #4094: the withhold condition covers ALL FOUR progress counters,
+            // not just total_phases. completed_phases / total_plans /
+            // completed_plans are accumulated from the exact same phaseDirs
+            // walk as total_phases (same loop, same scope, same filters), so
+            // whenever that walk's scope is known-untrustworthy — the exact
+            // condition #3354 established — they are equally untrustworthy.
+            // Pre-#4094 only totalPhases was nulled here, so every resyncing
+            // write silently clobbered the three stored siblings with the
+            // under-scoped disk numbers.
+            const diskCountsWithheld = milestonedButUnbounded || roadmapAbsentWithAssertedMilestone;
             return {
               // The two WITHHOLD shapes (#3354 milestoned-but-unbounded, #3573
               // roadmap-absent-with-asserted-milestone) must be evaluated BEFORE
               // safeToUseRoadmapCount — in the #3573 shape milestoneBounded is
               // vacuously true (its gate requires roadmapRaw), so the safe-count
               // arm would otherwise swallow the withhold.
-              totalPhases: (milestonedButUnbounded || roadmapAbsentWithAssertedMilestone)
+              totalPhases: diskCountsWithheld
                 ? null
                 : (safeToUseRoadmapCount ? Math.max(phaseDirs.length, roadmapPhaseCount) : phaseDirs.length),
               milestoneBounded,
-              completedPhases: diskCompletedPhases,
-              totalPlans: diskTotalPlans,
-              completedPlans: diskTotalSummaries,
+              completedPhases: diskCountsWithheld ? null : diskCompletedPhases,
+              totalPlans: diskCountsWithheld ? null : diskTotalPlans,
+              completedPlans: diskCountsWithheld ? null : diskTotalSummaries,
               phaseDirScope,
             };
           })();
@@ -2835,9 +3043,28 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
         } else if (storedTotalPhases !== null && storedTotalPhases !== undefined) {
           totalPhases = storedTotalPhases;
         }
-        completedPhases = cached.completedPhases;
-        totalPlans = cached.totalPlans;
-        completedPlans = cached.completedPlans;
+        // #4094: the same withhold-then-fall-back-to-stored pattern for the
+        // three sibling counters. They are derived from the identical
+        // phaseDirs walk, so cached.* === null here means the SAME withheld
+        // condition — keep the stored frontmatter value when the caller can
+        // supply it; else leave null (key omitted). Note completedPhases /
+        // completedPlans have NO body-annotation fallback (only the totals
+        // have body annotations), so an unstored-withheld counter is omitted.
+        if (cached.completedPhases !== null) {
+          completedPhases = cached.completedPhases;
+        } else if (storedCompletedPhases !== null && storedCompletedPhases !== undefined) {
+          completedPhases = storedCompletedPhases;
+        }
+        if (cached.totalPlans !== null) {
+          totalPlans = cached.totalPlans;
+        } else if (storedTotalPlans !== null && storedTotalPlans !== undefined) {
+          totalPlans = storedTotalPlans;
+        }
+        if (cached.completedPlans !== null) {
+          completedPlans = cached.completedPlans;
+        } else if (storedCompletedPlans !== null && storedCompletedPlans !== undefined) {
+          completedPlans = storedCompletedPlans;
+        }
         milestoneUnbounded = cached.milestoneBounded === false;
         diskScope = cached.phaseDirScope;
       }
@@ -3136,14 +3363,36 @@ function readStateHeadFreshness(
  * instead of being clobbered by the on-disk phase-directory count.
  */
 function readStoredTotalPhases(existingFm: Record<string, unknown> | null | undefined): number | null {
+  return readStoredProgressCounter(existingFm, 'total_phases');
+}
+
+/**
+ * #4094: the three sibling readers of readStoredTotalPhases, one per progress
+ * counter the #3354/#3573 withhold now protects. All four counters come from
+ * the same disk-scan walk and are withheld together; these readers feed the
+ * stored-value fallback for the three that previously had none.
+ */
+function readStoredProgressCounter(existingFm: Record<string, unknown> | null | undefined, key: string): number | null {
   if (!existingFm || typeof existingFm !== 'object') return null;
   const progress = existingFm['progress'];
   if (!progress || typeof progress !== 'object') return null;
-  const raw = (progress as Record<string, unknown>)['total_phases'];
+  const raw = (progress as Record<string, unknown>)[key];
   if (raw === null || raw === undefined) return null;
   if (typeof raw === 'string' && raw.trim() === '') return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+function readStoredCompletedPhases(existingFm: Record<string, unknown> | null | undefined): number | null {
+  return readStoredProgressCounter(existingFm, 'completed_phases');
+}
+
+function readStoredTotalPlans(existingFm: Record<string, unknown> | null | undefined): number | null {
+  return readStoredProgressCounter(existingFm, 'total_plans');
+}
+
+function readStoredCompletedPlans(existingFm: Record<string, unknown> | null | undefined): number | null {
+  return readStoredProgressCounter(existingFm, 'completed_plans');
 }
 
 function syncStateFrontmatter(
@@ -3193,7 +3442,7 @@ function syncStateFrontmatter(
   // milestoned-but-unbounded withhold can preserve it across the write
   // (the derived progress sub-block replaces the stored one wholesale below,
   // so an omitted key would otherwise DELETE the stored value).
-  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone, readStoredTotalPhases(existingFm));
+  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm));
 
   // Preserve existing frontmatter status when body-derived status is 'unknown'.
   // This prevents a missing Status: field in the body from overwriting a
@@ -3955,6 +4204,8 @@ function applyPostSyncPreservation(
     }
   }
 
+  let finalContent = syncedContent;
+
   if (preservation.mutated || authoritativeReasserted) {
     // #3742: preservation RESTORES frontmatter keys the body-derived rebuild
     // could not produce (e.g. `current_phase` on a layout with no body
@@ -3975,9 +4226,16 @@ function applyPostSyncPreservation(
     }
     const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
     const body = stripFrontmatter(syncedContent);
-    return `---\n${yamlStr}\n---\n\n${body}`;
+    finalContent = `---\n${yamlStr}\n---\n\n${body}`;
   }
-  return syncedContent;
+  const persistedPercent = toFiniteNumber(
+    preservation.postFm['progress'] && (preservation.postFm['progress'] as Record<string, unknown>)['percent'],
+  );
+  if (persistedPercent !== null) {
+    const reconciled = stateReplaceProgressPercent(finalContent, persistedPercent);
+    if (reconciled !== null) finalContent = reconciled;
+  }
+  return finalContent;
 }
 
 /**
@@ -4559,7 +4817,7 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   // reports the phase-directory count while the persisted file preserves the
   // stored total, exactly the write/read divergence #3354 closed for its shape.
   const storedMilestoneJson = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
-  const built = buildStateFrontmatter(body, cwd, storedMilestoneJson, readStoredTotalPhases(existingFm));
+  const built = buildStateFrontmatter(body, cwd, storedMilestoneJson, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm));
 
   // ADR-3408 §8.5 / D3: route stopped_at / paused_at / status / current_phase /
   // current_phase_name / current_plan through the SAME `preserve-when-unchanged`

@@ -185,17 +185,21 @@ quota / rate-limit failures; other failures keep the tier ladder. Leaving
 
 ## Using GSD on non-Anthropic runtimes
 
-If you installed GSD for Codex, OpenCode, Antigravity CLI, or Kilo, the installer already set `resolve_model_ids: "omit"` in your config. This tells GSD to skip Anthropic model ID resolution and let the runtime choose its own default model. No manual setup is needed for the basic case.
+If you installed GSD for Codex, OpenCode, Antigravity CLI, or Kilo, the installer already set `resolve_model_ids: "omit"` in your config. This prevents unresolved Anthropic model IDs from leaking into those runtimes. When `runtime` is set, runtime-native profile resolution still supplies any model and effort that the runtime adapter can transport. No manual setup is needed for the basic case.
 
-### Codex does not do tier routing — pin explicitly instead
+### Codex routes tiers at spawn time when supported
 
-**Codex agents inherit whatever model your Codex session is using.** GSD writes no `model` line into
-`~/.codex/agents/<agent>.toml`, so setting `model_profile` has no effect on Codex.
+GSD deliberately writes no profile-resolved `model` line into
+`~/.codex/agents/<agent>.toml` ([ADR-2313](../adr/2313-codex-passive-model-posture.md)).
+Instead, each Codex skill inspects the visible `spawn_agent` schema. When that schema advertises
+`model` and `reasoning_effort`, the skill passes the model and effort resolved from
+`model_profile` — including `adaptive` — on that individual spawn. When either field is absent,
+the skill omits that field and the child inherits the session or static agent configuration.
 
-This is deliberate ([ADR-2313](../adr/2313-codex-passive-model-posture.md)). A ChatGPT-account Codex
-session exposes only its own model, so a pinned tier model fails the request outright —
-`400 invalid_request_error: "The 'sonnet' model is not supported when using Codex with a ChatGPT
-account"` — and the agent never spawns.
+This keeps compatibility with older Codex schemas while allowing newer installations to route
+`gsd-planner`, `gsd-executor`, and other roles to their configured tiers. The fields are detected
+independently; support for typed `agent_type` dispatch does not imply support for either routing
+field.
 
 **To pin a model on Codex, name a real Codex model id per agent:**
 
@@ -209,7 +213,8 @@ account"` — and the agent never spawns.
 }
 ```
 
-Then re-run the installer, as with any `model_overrides` edit on Codex (see above).
+Then re-run the installer to materialize the override in the agent TOML as a fallback for spawn
+schemas that do not advertise inline `model` (see above).
 
 Two rules apply to what you can put there:
 

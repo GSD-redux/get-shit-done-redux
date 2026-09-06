@@ -40,6 +40,18 @@ const {
 const _manifest = loadSkillsManifest();
 const resolvedProfileFull = resolveProfile({ modes: [], manifest: _manifest });
 
+function installFromFixture(configDir) {
+  return installRuntimeArtifacts(
+    'claude',
+    configDir,
+    'global',
+    resolvedProfileFull,
+    undefined,
+    undefined,
+    { fs },
+  );
+}
+
 /**
  * Set up a configDir backed by a custom srcDir via .gsd-source marker.
  * Returns { configDir, srcDir } both under tmpDir.
@@ -50,6 +62,12 @@ function setupConfigDir(tmpDir, commandFiles) {
   for (const [name, content] of Object.entries(commandFiles)) {
     fs.writeFileSync(path.join(srcDir, name), content);
   }
+  // Claude's layout consumes commands and agents from one atomic provider.
+  // Keep the marker fixture complete so these tests exercise their custom
+  // command bytes instead of correctly falling back to the package corpus.
+  const agentsDir = path.join(tmpDir, 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.writeFileSync(path.join(agentsDir, 'gsd-fixture-agent.md'), '---\nname: gsd-fixture-agent\n---\n');
   const configDir = path.join(tmpDir, 'config');
   fs.mkdirSync(configDir, { recursive: true });
   // .gsd-source marker tells findInstallSourceRoot to use our custom srcDir
@@ -212,7 +230,7 @@ describe('installRuntimeArtifacts (claude global) — skill layout', () => {
       'health.md': '---\nname: gsd:health\ndescription: Check health\n---\n\nHealth body.',
     });
 
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     const skillsDir = path.join(configDir, 'skills');
     assert.ok(
@@ -238,7 +256,7 @@ describe('installRuntimeArtifacts (claude global) — skill layout', () => {
 
     // Production sequence: uninstall wipes gsd-* entries, install writes fresh ones
     uninstallRuntimeArtifacts('claude', configDir, 'global');
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     // Stale skill removed by uninstall
     assert.ok(
@@ -264,7 +282,7 @@ describe('installRuntimeArtifacts (claude global) — skill layout', () => {
     fs.writeFileSync(path.join(otherDir, 'SKILL.md'), 'custom content');
 
     // Install (no pre-uninstall: uninstall only removes gsd-* prefixed entries)
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     // Non-GSD skill preserved
     assert.ok(
@@ -291,15 +309,19 @@ describe('installRuntimeArtifacts (claude global) — skill layout', () => {
     // an empty dir — _copyStaged then copies nothing into skills/.
     const emptySrc = path.join(tmpDir, 'empty-commands', 'gsd');
     fs.mkdirSync(emptySrc, { recursive: true });
+    fs.writeFileSync(path.join(emptySrc, 'README.txt'), 'fixture only\n');
+    const agentsDir = path.join(tmpDir, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'gsd-fixture-agent.md'), '---\nname: gsd-fixture-agent\n---\n');
 
     const configDir = path.join(tmpDir, 'config-empty');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, '.gsd-source'), emptySrc + '\n');
 
-    // Should not throw
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    // Use the existing installer fs seam to supply this fixture corpus and
+    // skip production provisioning, which would intentionally replace it.
+    installFromFixture(configDir);
     const skillsDir = path.join(configDir, 'skills');
-    // If skills dir was created it must contain no gsd-* entries
     if (fs.existsSync(skillsDir)) {
       const gsdEntries = fs.readdirSync(skillsDir).filter(n => n.startsWith('gsd-'));
       assert.strictEqual(gsdEntries.length, 0, 'no gsd-* skills created when src has no .md files');
@@ -339,7 +361,7 @@ describe('installRuntimeArtifacts path replacement in Claude global skills (#165
       ].join('\n'),
     });
 
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     const content = fs.readFileSync(
       path.join(configDir, 'skills', 'gsd-manager', 'SKILL.md'), 'utf8'
@@ -363,7 +385,7 @@ describe('installRuntimeArtifacts path replacement in Claude global skills (#165
       'debug.md': '---\nname: gsd:debug\ndescription: Debug\n---\n\n@$HOME/.claude/gsd-core/workflows/debug.md',
     });
 
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     const content = fs.readFileSync(
       path.join(configDir, 'skills', 'gsd-debug', 'SKILL.md'), 'utf8'
@@ -383,7 +405,7 @@ describe('installRuntimeArtifacts path replacement in Claude global skills (#165
       'next.md': '---\nname: gsd:next\ndescription: Next\n---\n\n@~/.claude/gsd-core/workflows/next.md',
     });
 
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     const content = fs.readFileSync(
       path.join(configDir, 'skills', 'gsd-next', 'SKILL.md'), 'utf8'
@@ -422,7 +444,7 @@ describe('Legacy commands/gsd/ cleanup', () => {
 
     // installRuntimeArtifacts calls _runLegacyInstallMigrations which removes
     // commands/gsd/ for claude runtime (it's the legacy location for global).
-    installRuntimeArtifacts('claude', configDir, 'global', resolvedProfileFull);
+    installFromFixture(configDir);
 
     assert.ok(!fs.existsSync(legacyDir), 'legacy commands/gsd/ removed');
     assert.ok(

@@ -110,6 +110,8 @@ interface ApplySurfaceOptions {
   resolveAttribution?: (runtime: string) => string | null | undefined;
   homedir?: () => string;
   platform?: string;
+  /** Candidate state to publish only after every artifact kind materializes. */
+  surfaceState?: SurfaceState | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +237,7 @@ function normalizeSkillManifest(runtimeConfigDir: string, manifest: Map<string, 
  *   - registry is threaded into resolveProfile so capability skills
  *     participate in the base skill set and their requires: chains expand.
  */
-function resolveSurface(runtimeConfigDir: string, manifest: Map<string, string[]> | object, clusterMap?: ClusterMap | Record<string, string[]>, registry?: { capabilityClusters?: Record<string, string[]>; profileMembership?: Record<string, { tier: string; profiles: string[] }> }): { name: string; skills: Set<string>; agents: Set<string> } {
+function resolveSurface(runtimeConfigDir: string, manifest: Map<string, string[]> | object, clusterMap?: ClusterMap | Record<string, string[]>, registry?: { capabilityClusters?: Record<string, string[]>; profileMembership?: Record<string, { tier: string; profiles: string[] }> }, surfaceOverride?: SurfaceState | null): { name: string; skills: Set<string>; agents: Set<string> } {
   // Merge capability clusters into the cluster map when registry is provided.
   // The ADR-857 phase 4a HARD gate guarantees that when a capId matches a CLUSTERS
   // key, the values are EQUAL — so the spread is idempotent for matching names.
@@ -269,7 +271,7 @@ function resolveSurface(runtimeConfigDir: string, manifest: Map<string, string[]
     cm = merged;
   }
   const skillManifest = normalizeSkillManifest(runtimeConfigDir, manifest);
-  const surface = readSurface(runtimeConfigDir);
+  const surface = surfaceOverride === undefined ? readSurface(runtimeConfigDir) : surfaceOverride;
 
   // Determine base profile name: from surface state or from .gsd-profile marker
   const baseProfileName = (surface && surface.baseProfile)
@@ -382,10 +384,9 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
     os: deps.os, env: deps.env,
   });
   const skillManifest = normalizeSkillManifest(layout.configDir, manifest);
-  const resolved = resolveSurface(layout.configDir, skillManifest, clusterMap, registry);
-  // Profile toggles must converge retired surfaces too. Once a kind disappears
-  // from artifactLayout there is no normal sync pass left to prune it (#2644).
-  retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(layout.runtime, layout.configDir);
+  const hasCandidateState = opts !== undefined && Object.prototype.hasOwnProperty.call(opts, 'surfaceState');
+  const candidateState = hasCandidateState ? (opts.surfaceState ?? null) : undefined;
+  const resolved = resolveSurface(layout.configDir, skillManifest, clusterMap, registry, candidateState);
   // #1575: agents kind now mirrors createRuntimeArtifactInstallPlan — build
   // agentCtx (pathPrefix + attribution) and pass it to kind.stage() so
   // stageAgentsForRuntimeWithConverter applies the full inline-loop pipeline
@@ -420,7 +421,7 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
   // not referenced by any skill's _calls_agents_ manifest entry would be silently
   // dropped from the surface path. For tiered profiles (core/standard) or when
   // surface mods exist, pass the resolved set so only the filtered subset stages.
-  const _surfaceState = readSurface(layout.configDir);
+  const _surfaceState = candidateState === undefined ? readSurface(layout.configDir) : candidateState;
   const _baseProfileName = (_surfaceState && _surfaceState.baseProfile)
     ? _surfaceState.baseProfile
     : (readActiveProfile(layout.configDir) || 'full');
@@ -430,6 +431,7 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
     _surfaceState.explicitRemoves.length > 0
   );
   const _isUnmodifiedFull = _baseProfileName === 'full' && !_hasSurfaceMods;
+  const stagedKinds: { kind: ArtifactKind; staged: string; dest: string }[] = [];
   try {
     for (const kind of layout.kinds) {
       let staged: string;
@@ -463,7 +465,23 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
       // the parity test in tests/runtime-artifact-layout-surface.test.cjs
       // enforces that the two writers never diverge again.
       const dest = assertDestWithinConfigHome(kind.home ?? layout.configDir, kind.destSubpath);
-      _syncGsdDir(staged, dest, kind, skillManifest, layout.runtime);
+      stagedKinds.push({ kind, staged, dest });
+    }
+
+    // Do not mutate installed artifacts until every kind has staged
+    // successfully. A missing source provider therefore leaves both artifacts
+    // and the persisted surface state untouched.
+    retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(layout.runtime, layout.configDir);
+    for (const item of stagedKinds) {
+      _syncGsdDir(item.staged, item.dest, item.kind, skillManifest, layout.runtime);
+    }
+
+    if (hasCandidateState) {
+      if (candidateState === null) {
+        fs.rmSync(path.join(runtimeConfigDir, SURFACE_FILE_NAME), { force: true });
+      } else if (candidateState !== undefined) {
+        writeSurface(runtimeConfigDir, candidateState);
+      }
     }
   } finally {
     for (const dir of tempDirsToClean) {

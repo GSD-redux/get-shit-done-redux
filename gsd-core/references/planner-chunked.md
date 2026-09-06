@@ -23,7 +23,11 @@ Return:
 | {padded_phase}-02 | [brief objective] | 1 | none | REQ-003 |
 ```
 
-The orchestrator reads this table, then spawns one single-plan Task per row.
+The orchestrator reads this table, groups rows by `Wave` (ascending, blank treated as `1`), then
+spawns one single-plan Task per row — one Wave at a time, serially across Waves. Within a Wave,
+Tasks are spawned one at a time by default, or together (`run_in_background=true` on each, issued
+in one message) when `planning.chunked_parallel: true` and the host's negotiated dispatch capacity
+supports it (#3777; see `gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md` §8.5.2).
 
 ### single-plan
 

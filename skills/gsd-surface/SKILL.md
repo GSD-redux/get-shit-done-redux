@@ -64,16 +64,25 @@ Install profile: standard  (from .gsd-profile)
 
 ---
 
+## Mutation protocol
+
+Derive the next `surfaceState` in memory and pass it to `applySurface` as
+`opts.surfaceState`. Do not call `writeSurface` first: `applySurface` stages all
+artifact kinds before mutation and publishes the candidate state only after
+materialization succeeds. Pass `null` to reset to the install-time profile.
+
+---
+
 ## profile \<name\>
 
 1. Read current surface: `readSurface(runtimeConfigDir)` → if null, seed from `readActiveProfile(runtimeConfigDir)`.
 2. Set `surfaceState.baseProfile = name`.
-3. `writeSurface(runtimeConfigDir, surfaceState)`.
+3. Keep the new state in memory; do not write it directly.
 4. Resolve and re-apply:
    ```js
    const registry = require(runtimeConfigDir + '/gsd-core/bin/lib/capability-registry.cjs');
    const layout = resolveRuntimeArtifactLayout(runtime, runtimeConfigDir, scope);
-   applySurface(runtimeConfigDir, layout, manifest, CLUSTERS, registry);
+   applySurface(runtimeConfigDir, layout, manifest, CLUSTERS, registry, { surfaceState });
    ```
 5. Confirm: "Surface updated to profile `<name>`. N skills enabled."
 
@@ -87,11 +96,11 @@ Valid cluster names: `core_loop`, `audit_review`, `milestone`, `research_ideate`
 1. Validate cluster name against `Object.keys(CLUSTERS)`.
 2. Read or initialize surface state.
 3. Add cluster to `surfaceState.disabledClusters` (deduplicate).
-4. `writeSurface` → resolve layout → `applySurface`:
+4. Resolve layout and apply the in-memory candidate:
    ```js
    const registry = require(runtimeConfigDir + '/gsd-core/bin/lib/capability-registry.cjs');
    const layout = resolveRuntimeArtifactLayout(runtime, runtimeConfigDir, scope);
-   applySurface(runtimeConfigDir, layout, manifest, CLUSTERS, registry);
+   applySurface(runtimeConfigDir, layout, manifest, CLUSTERS, registry, { surfaceState });
    ```
 5. Confirm: "Disabled cluster `<cluster>`. N skills removed from surface."
 
@@ -101,11 +110,11 @@ Valid cluster names: `core_loop`, `audit_review`, `milestone`, `research_ideate`
 
 1. Read surface state; if null, nothing to enable — print "No surface delta active."
 2. Remove cluster from `surfaceState.disabledClusters`.
-3. `writeSurface` → resolve layout → `applySurface`:
+3. Resolve layout and apply the in-memory candidate:
    ```js
    const registry = require(runtimeConfigDir + '/gsd-core/bin/lib/capability-registry.cjs');
    const layout = resolveRuntimeArtifactLayout(runtime, runtimeConfigDir, scope);
-   applySurface(runtimeConfigDir, layout, manifest, CLUSTERS, registry);
+   applySurface(runtimeConfigDir, layout, manifest, CLUSTERS, registry, { surfaceState });
    ```
 4. Confirm: "Enabled cluster `<cluster>`. N skills added back to surface."
 
@@ -114,8 +123,9 @@ Valid cluster names: `core_loop`, `audit_review`, `milestone`, `research_ideate`
 ## reset
 
 1. Check if `.gsd-surface.json` exists.
-2. Delete it.
-3. Re-apply using only `readActiveProfile(runtimeConfigDir)` (install-time profile).
+2. Do not delete it directly.
+3. Re-apply with `{ surfaceState: null }`; the state file is removed only after
+   the install-time profile materializes successfully.
 4. Confirm: "Surface reset to install-time profile `<name>`."
 
 ---

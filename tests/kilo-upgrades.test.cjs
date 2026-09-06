@@ -319,13 +319,14 @@ before(() => {
   assert.equal(build.exitCode, 0, `build:hooks failed: ${build.stderr}`);
 });
 
-// The three PreToolUse guards the plugin spawns that ship today. When a new
+// The PreToolUse guards the plugin spawns that ship today. When a new
 // guard lands on the plugin's dispatch path, add it here.
 const PLUGIN_GUARD_HOOKS = [
   'gsd-prompt-guard.js',
   'gsd-read-guard.js',
   'gsd-worktree-path-guard.js',
   'gsd-workflow-guard.js',
+  'gsd-secret-read-guard.js',
 ];
 
 for (const scope of ['global', 'local']) {

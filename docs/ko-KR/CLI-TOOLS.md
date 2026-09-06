@@ -396,7 +396,7 @@ node gsd-tools.cjs progress [json|table|bar]
 node gsd-tools.cjs progress --json
 
 # 할 일 완료
-node gsd-tools.cjs todo complete <filename>
+node gsd-tools.cjs todo complete <filename> [--dry-run]
 
 # UAT 감사 — 모든 단계에서 미해결 항목 스캔
 node gsd-tools.cjs audit-uat

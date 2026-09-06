@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 Check project progress, summarize recent work and what's ahead, then intelligently route to the next action — either executing an existing plan or creating the next one. Provides situational awareness before continuing work.
 </purpose>
@@ -18,13 +20,33 @@ INIT=$(gsd_run query init.progress $FORENSIC_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
 
-Extract from init JSON: `project_exists`, `roadmap_exists`, `state_exists`, `phases`, `current_phase`, `next_phase`, `milestone_version`, `completed_count`, `phase_count`, `paused_at`, `state_path`, `roadmap_path`, `project_path`, `config_path`, `phase_mvp_mode`.
+Extract from init JSON: `project_exists`, `roadmap_exists`, `state_exists`, `requirements_exists`, `planning_exists`, `milestones_exists`, `init_incomplete`, `phases`, `current_phase`, `next_phase`, `milestone_version`, `completed_count`, `phase_count`, `paused_at`, `state_path`, `roadmap_path`, `project_path`, `config_path`, `phase_mvp_mode`.
 
 ```bash
 DISCUSS_MODE=$(gsd_run query config-get workflow.discuss_mode --raw 2>/dev/null || echo "discuss")
 ```
 
-If `project_exists` is false (no `.planning/` directory):
+**If `init_incomplete` is true (#4040 — interrupted bootstrap):**
+
+`.planning/` exists but the core initialization artifacts are missing (one or more of `REQUIREMENTS.md`, `ROADMAP.md`, `STATE.md` were never created — a bootstrap that stopped partway, e.g. after PROJECT.md). This is NOT a new project, NOT a missing STATE.md, and NOT a between-milestones state — do not fall through to any of those routes. Route to initialization recovery:
+
+```
+---
+
+## ⚠ Initialization Incomplete
+
+A partial `.planning/` was found: project initialization started but stopped before creating all core artifacts (missing: REQUIREMENTS.md, ROADMAP.md, STATE.md — whichever `requirements_exists` / `roadmap_exists` / `state_exists` report as false).
+
+`/clear` then:
+
+`/gsd:new-project` — resumes initialization from the first missing artifact; existing PROJECT.md (and any already-created artifacts) are kept, not regenerated.
+
+---
+```
+
+Exit. (The payload's `init_incomplete` is computed with the between-milestones archive case excluded — `MILESTONES.md` present means missing ROADMAP/REQUIREMENTS is archival, and that state still routes to Route F below.)
+
+If `init_incomplete` is false and `planning_exists` is false and `project_exists` is false (no `.planning/` directory at all):
 
 ```
 No planning structure found.
@@ -36,7 +58,7 @@ Exit.
 
 If missing STATE.md: suggest `/gsd:new-project`.
 
-**If ROADMAP.md missing but PROJECT.md exists:**
+**If ROADMAP.md missing but PROJECT.md exists (and `init_incomplete` is false):**
 
 This means a milestone was completed and archived. Go to **Route F** (between milestones).
 

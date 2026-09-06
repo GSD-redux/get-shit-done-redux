@@ -180,7 +180,7 @@ describe('B: hooks/hooks.json', () => {
     }
   });
 
-  test('all seven always-on hooks are wired', (t) => {
+  test('all eight always-on hooks are wired', (t) => {
     if (!hooksConfig) { t.skip('hooks.json could not be parsed'); return; }
     const REQUIRED_HOOKS = [
       'gsd-check-update.js',
@@ -188,6 +188,7 @@ describe('B: hooks/hooks.json', () => {
       'gsd-read-guard.js',
       'gsd-worktree-path-guard.js',
       'gsd-write-guard.js',
+      'gsd-secret-read-guard.js',
       'gsd-context-monitor.js',
       'gsd-read-injection-scanner.js',
     ];
@@ -792,6 +793,21 @@ describe('D: always-on hook contract drift guard', () => {
     );
     assert.equal(hooks[0].script, 'gsd-write-guard.js', 'hook must be gsd-write-guard.js');
     assert.equal(hooks[0].timeout, 5, 'gsd-write-guard.js must have timeout 5');
+  });
+
+  test('PreToolUse Read|Grep|Bash group: gsd-secret-read-guard.js (timeout 5)', () => {
+    const map = buildHookMap();
+    const groups = map['PreToolUse'];
+    assert.ok(groups, 'PreToolUse must be present in hooks.json');
+    // #4221: secret-file read guard — its own matcher group because it is the
+    // only guard that fires on Read/Grep/Bash (the reading tools).
+    const hooks = groups['Read|Grep|Bash'];
+    assert.ok(
+      Array.isArray(hooks) && hooks.length === 1,
+      `PreToolUse Read|Grep|Bash must have exactly 1 hook; got: ${JSON.stringify(hooks)}`
+    );
+    assert.equal(hooks[0].script, 'gsd-secret-read-guard.js', 'hook must be gsd-secret-read-guard.js');
+    assert.equal(hooks[0].timeout, 5, 'gsd-secret-read-guard.js must have timeout 5');
   });
 
   test('PostToolUse Bash|Edit|Write|MultiEdit|Agent|Task group: gsd-context-monitor.js (timeout 10)', () => {

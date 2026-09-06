@@ -447,6 +447,11 @@ describe('capability-writer: setCapabilityState', () => {
       const materialiseWarning = result.warnings.find((w) => w.includes('materialize failed'));
       assert.equal(materialiseWarning, undefined,
         `materialise failure must not appear in warnings, got: ${JSON.stringify(result.warnings)}`);
+      assert.equal(
+        readSurface(rcd),
+        null,
+        'a failed materialization must not publish the computed surface state',
+      );
     } finally {
       cleanup(rcd);
       cleanup(cwd);

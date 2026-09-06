@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <purpose>
 Execute a trivial task inline without subagent overhead. No PLAN.md, no Task spawning,
 no research, no plan checking. Just: understand → do → commit → log.

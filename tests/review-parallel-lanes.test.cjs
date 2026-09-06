@@ -708,6 +708,14 @@ function runWriteReviewsFlow(t, opts) {
     fs.writeFileSync(path.join(phaseDir, '.review-diagnostics'), 'blocking file, not a directory\n');
   }
 
+  // #4097: stage the run's OWN input copies exactly as prompt assembly
+  // (review.md's section-copy fence) writes them, so the preserve+cleanup
+  // block can be observed deciding input vs. evidence. `name` is a bare
+  // basename written into the fixture run dir.
+  for (const [name, content] of Object.entries(opts.seedFiles || {})) {
+    fs.writeFileSync(path.join(runDir, name), content);
+  }
+
   if (opts.jsonlLines && opts.jsonlLines.length > 0) {
     fs.writeFileSync(
       path.join(runDir, 'gsd-review-lane-results.jsonl'),
@@ -994,6 +1002,85 @@ describe('#3885 failed preservation leaves run_dir intact (no silent swallow)', 
       fs.readFileSync(path.join(result.runDir, 'gsd-review-codex.md'), 'utf-8'),
       LANE_FAILURE_MD('codex'),
     );
+  });
+});
+
+describe('#4097 the run\'s own input copies are not preserved as diagnostics', () => {
+  // The preserve+cleanup glob assumes every `gsd-review-*.md` in RUN_DIR is
+  // lane OUTPUT. But the workflow itself writes the run's assembled INPUTS
+  // into RUN_DIR under the same prefix at prompt-assembly time (review.md's
+  // section-copy fence): the combined prompt, instructions, roadmap, one copy
+  // of every plan under review, project/context/research/requirements
+  // sections, and the per-lane trimmed prompts. On a multi-plan phase those
+  // byte-identical `.planning/` duplicates bury the actual evidence (a
+  // handful of reviewer reports and `.err` sidecars) and grow the phase
+  // directory on every review run (#4097).
+  const INPUT_COPIES_4097 = {
+    'gsd-review-prompt.md': 'combined reviewer prompt\n',
+    'gsd-review-instructions.md': 'instructions section\n',
+    'gsd-review-roadmap.md': 'roadmap section\n',
+    'gsd-review-project.md': 'PROJECT.md copy\n',
+    'gsd-review-context.md': 'CONTEXT.md concatenation\n',
+    'gsd-review-research.md': 'RESEARCH.md concatenation\n',
+    'gsd-review-requirements.md': 'REQUIREMENTS.md copy\n',
+    'gsd-review-plan-12.6-01.md': 'plan 12.6-01 duplicate\n',
+    'gsd-review-plan-12.6-02.md': 'plan 12.6-02 duplicate\n',
+    // Per-lane trimmed prompt written by prepare_trimmed_prompt_for_reviewer
+    // — also a run input, also matched by the issue's `gsd-review-prompt*`
+    // exclusion prefix.
+    'gsd-review-prompt-claude.md': 'budget-trimmed prompt for lane claude\n',
+  };
+
+  test('inputCopiesAreNotSweptIntoDiagnostics_4097', (t) => {
+    const result = runWriteReviewsFlow(t, {
+      selected: 'claude',
+      jsonlLines: [{ slug: 'claude' }],
+      seedFiles: INPUT_COPIES_4097,
+      lanes: {
+        claude: { md: '# Claude review\nok\n', err: 'mild stderr warning\n' },
+      },
+    });
+
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.runDirExists, false, 'successful preservation must still clean up the run dir');
+    assert.equal(result.diagDirExists, true, 'real lane evidence must still be preserved');
+
+    const preserved = fs.existsSync(result.diagDir)
+      ? fs.readdirSync(result.diagDir).sort()
+      : [];
+    // Only the lane's own output belongs in the diagnostics folder.
+    assert.deepEqual(
+      preserved,
+      ['gsd-review-claude.err', 'gsd-review-claude.md'],
+      `diagnostics must hold exactly the lane report and stderr sidecar, not the run's input copies; got: ${preserved.join(', ')}`,
+    );
+    assert.equal(
+      fs.readFileSync(path.join(result.diagDir, 'gsd-review-claude.md'), 'utf-8'),
+      '# Claude review\nok\n',
+      'the lane report must be preserved byte-identically',
+    );
+    for (const inputName of Object.keys(INPUT_COPIES_4097)) {
+      assert.equal(
+        fs.existsSync(path.join(result.diagDir, inputName)),
+        false,
+        `input copy ${inputName} must NOT be swept into .review-diagnostics/ (#4097)`,
+      );
+    }
+  });
+
+  test('inputsOnlyRunLeavesNoDiagnosticsDir_4097', (t) => {
+    // Inputs only, no lane artifacts at all: inputs are not evidence, so
+    // this is the "nothing to preserve" branch — no diagnostics directory is
+    // created and cleanup proceeds (#4097 narrowing of #3352's glob).
+    const result = runWriteReviewsFlow(t, {
+      selected: 'claude',
+      jsonlLines: [],
+      seedFiles: INPUT_COPIES_4097,
+      lanes: {},
+    });
+
+    assert.equal(result.runDirExists, false, 'nothing to preserve is not a failure — run dir must still be removed');
+    assert.equal(result.diagDirExists, false, 'a run that produced only input copies has no evidence to preserve');
   });
 });
 

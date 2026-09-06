@@ -184,9 +184,72 @@ const REASON = Object.freeze({
   FAIL_USER_LINES_MISSING: 'fail_user_lines_missing',
 });
 
-function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashes }) {
+/**
+ * #4086: resolve where a backed-up file's INSTALLED counterpart lives.
+ * Primary is the config-dir-relative join (the manifest key's native form).
+ * For skills/ keys of a runtime whose skills kind declares a `home` override
+ * (codex global → $HOME/.agents/skills), the file lives OUTSIDE configDir, so
+ * when the primary path is absent we fall back to the runtime's ACTUAL skills
+ * root — derived from the same `resolveRuntimeArtifactLayout` seam the
+ * installer writes through. Returns the primary path unchanged whenever the
+ * fallback is impossible (no manifest, no runtime, no override, no file).
+ */
+function resolveInstalledPath(configDir, relPath, skillsRedirect) {
+  const primary = path.join(configDir, relPath);
+  if (!skillsRedirect) return primary;
+  const hashKey = relPath.replace(/\\/g, '/');
+  if (!hashKey.startsWith(skillsRedirect.prefix)) return primary;
+  if (fs.existsSync(primary)) return primary;
+  const alt = path.join(skillsRedirect.root, hashKey.slice(skillsRedirect.prefix.length));
+  return fs.existsSync(alt) ? alt : primary;
+}
+
+/**
+ * #4086: build the skills-root fallback descriptor for a config dir from its
+ * own gsd-file-manifest.json (runtime + scope) and the runtime-artifact
+ * layout seam. Returns null whenever any step is unavailable — the verifier
+ * then behaves exactly as before (config-dir-relative only). Lazy + guarded
+ * require: runtime-artifact-layout.cjs is a built lib; a layout-unaware
+ * invocation must never crash the gate.
+ */
+function resolveSkillsRedirect(configDir) {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'gsd-file-manifest.json'), 'utf8'),
+    );
+    if (!manifest || typeof manifest.runtime !== 'string' || !manifest.runtime) return null;
+    const scope = manifest.scope === 'local' ? 'local' : 'global';
+    const { resolveRuntimeArtifactLayout } = require('./lib/runtime-artifact-layout.cjs');
+    const layout = resolveRuntimeArtifactLayout(manifest.runtime, configDir, scope);
+    const kind = layout.kinds.find((k) => k.kind === 'skills');
+    if (!kind) return null;
+    const root = path.resolve(path.join(kind.home || configDir, kind.destSubpath));
+    const resolvedConfig = path.resolve(configDir);
+    if (root === resolvedConfig || root.startsWith(resolvedConfig + path.sep)) return null;
+    // Same descriptor-driven manifest prefix writeManifest uses for skills
+    // keys (hermes nests under 'skills/gsd/', everyone else 'skills/'), read
+    // from the same shipped registry the installer's _resolveHostBehaviors
+    // consults — never a re-derived literal (generative-fix-divergence guard).
+    let prefix = 'skills/';
+    try {
+      const { runtimes: registryRuntimes } = require('./lib/capability-registry.cjs');
+      const declared = registryRuntimes
+        && registryRuntimes[manifest.runtime]
+        && registryRuntimes[manifest.runtime].runtime
+        && registryRuntimes[manifest.runtime].runtime.hostBehaviors;
+      if (declared && typeof declared.skillsManifestPrefix === 'string') {
+        prefix = declared.skillsManifestPrefix;
+      }
+    } catch { /* keep default prefix */ }
+    return { root, prefix };
+  } catch {
+    return null;
+  }
+}
+
+function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashes, skillsRedirect }) {
   const backupPath = path.join(patchesDir, relPath);
-  const installedPath = path.join(configDir, relPath);
+  const installedPath = resolveInstalledPath(configDir, relPath, skillsRedirect);
   const result = { file: relPath, status: 'ok', missing: [], reason: null };
 
   if (!fs.existsSync(backupPath) || !fs.statSync(backupPath).isFile()) {
@@ -336,6 +399,9 @@ function main() {
   // Bug #3657: read pristine_hashes from backup-meta.json once and share
   // across all per-file verifications so each can detect drift independently.
   const pristineHashes = readPristineHashes(opts.patchesDir);
+  // #4086: skills-root fallback for runtimes whose skills kind declares a
+  // `home` override outside configDir (codex global → $HOME/.agents/skills).
+  const skillsRedirect = resolveSkillsRedirect(opts.configDir);
   const results = files.map((relPath) =>
     verifyFile({
       relPath,
@@ -343,6 +409,7 @@ function main() {
       configDir: opts.configDir,
       pristineDir: opts.pristineDir,
       pristineHashes,
+      skillsRedirect,
     }),
   );
 
@@ -396,4 +463,4 @@ if (require.main === module) {
   runMain(main);
 }
 
-module.exports = { computeUserAddedLines, isSignificantLine, verifyFile, walk, REASON, readPristineHashes, sha256 };
+module.exports = { computeUserAddedLines, isSignificantLine, verifyFile, walk, REASON, readPristineHashes, sha256, resolveInstalledPath, resolveSkillsRedirect };

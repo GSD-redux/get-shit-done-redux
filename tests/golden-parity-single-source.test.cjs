@@ -133,6 +133,7 @@ const { applySurface } = require('../gsd-core/bin/lib/surface.cjs');
 const { loadSkillsManifest, resolveProfile } = require('../gsd-core/bin/lib/install-profiles.cjs');
 const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
 const { cleanup, sandboxHome } = require('./helpers.cjs');
+const { runMinimalInstall } = require('./helpers/install-shared.cjs');
 
 const COMMANDS_GSD = path.join(ROOT, 'commands', 'gsd');
 
@@ -169,13 +170,14 @@ describe('#1575 — golden-parity: surface path matches install path for descrip
 
   for (const runtime of DESCRIPTOR_RUNTIMES) {
     test(`${runtime}: surface agents byte-identical to install agents`, (t) => {
-      const configDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-1575-${runtime}-`));
-      t.after(() => { try { cleanup(configDir); } catch { /* best-effort */ } });
+      const installed = runMinimalInstall({ runtime, scope: 'global' });
+      const { configDir, root } = installed;
+      t.after(() => { try { cleanup(root); } catch { /* best-effort */ } });
       // #3738: antigravity's skills/agents kinds declare a global `home`
-      // override resolved from os.homedir() — sandbox HOME to the configDir
+      // override resolved from os.homedir() — sandbox HOME to the install root
       // (the #3712 marker real-home-guard needs) so the override resolves
       // inside the sandbox instead of the runner's real home.
-      sandboxHome(t, configDir);
+      sandboxHome(t, root);
 
       // Step 1: install path writes agents
       installRuntimeArtifacts(runtime, configDir, 'global', parity1575Profile, resolveAttribution1575);
@@ -224,8 +226,10 @@ describe('#1575 — golden-parity: surface path matches install path for descrip
     // is a no-op (it replaces existing lines, doesn't add new ones). But this test
     // proves the agentCtx threading is correct for both paths regardless.
     const attrResolver = () => 'Test Bot <test@example.com>';
-    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1575-attr-'));
-    t.after(() => { try { cleanup(configDir); } catch { /* best-effort */ } });
+    const installed = runMinimalInstall({ runtime: 'cursor', scope: 'global' });
+    const { configDir, root } = installed;
+    t.after(() => { try { cleanup(root); } catch { /* best-effort */ } });
+    sandboxHome(t, root);
 
     installRuntimeArtifacts('cursor', configDir, 'global', parity1575Profile, attrResolver);
 
@@ -262,8 +266,9 @@ describe('#1575 — golden-parity: surface path matches install path for descrip
 
 describe('#1575 — surface path: no prune data-loss over pre-existing legacy agents', () => {
   test('pre-existing gsd-* agents not in staged set are pruned; user agents preserved', (t) => {
-    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1575-prune-'));
-    t.after(() => { try { cleanup(configDir); } catch { /* best-effort */ } });
+    const installed = runMinimalInstall({ runtime: 'copilot', scope: 'global' });
+    const { configDir, root } = installed;
+    t.after(() => { try { cleanup(root); } catch { /* best-effort */ } });
 
     // Seed a pre-existing legacy .agent.md (simulating a prior install)
     const agentsDir = path.join(configDir, 'agents');

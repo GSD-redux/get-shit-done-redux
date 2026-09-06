@@ -476,6 +476,7 @@ Listagem completa: `hooks/`.
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Bloqueia rigorosamente Edit/Write/MultiEdit com caminhos absolutos fora da raiz do worktree (PR #579, #260) |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | Bloqueia rigorosamente um dispatch `Agent()` de executor que não tenha o parâmetro de isolamento do harness quando o isolamento de dispatch resolvido do projeto é `harness-worktree` (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | Bloqueia rigorosamente um `Write` de arquivo inteiro que encolhe catastroficamente um artefato curado de `.planning/` (ROADMAP.md, roadmaps de milestone, STATE.md); override via o sentinela de uso único `.planning/.gsd-allow-shrink` (passos de workflow) ou `GSD_ALLOW_PLANNING_SHRINK=1` (interativo) (#2255, correção 3 de #973) |
+| `gsd-secret-read-guard.js` | `PreToolUse` | Bloqueia rigorosamente leituras de `.env`, `.env.<suffix>` (exceto templates como `.env.example`) e `.secrets` via Read / Grep / Bash; substitui as regras deny `Read(.env*)` que o instalador escrevia (#4221) |
 | `gsd-session-state.sh` | `SessionStart` | Rastreamento de estado de sessão para runtimes baseados em shell |
 | `gsd-validate-commit.sh` | `PreToolUse` | Validação de commit para aplicação de conventional-commit |
 | `gsd-phase-boundary.sh` | `PostToolUse` | Detecção de limite de fase para transições de workflow |
