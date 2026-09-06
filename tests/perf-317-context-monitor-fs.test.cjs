@@ -14,6 +14,7 @@
  *   - #2289 — output-envelope allowlist; side effects still run on silent events
  *   - #1974 — one-time critical-session breadcrumb
  *   - #3709 — PreCompact clears the warn sentinel AND the metrics bridge
+ *   - #4285 — WARNING/CRITICAL fire-points resolve from .planning/config.json
  * Extend this list when folding in the next one.
  */
 
@@ -41,18 +42,35 @@ const tmpDir = os.tmpdir();
  * @param {number}  [opts.usedPct]     - used_pct for bridge file
  * @param {boolean} [opts.writeWarn]   - if true, write a warn sentinel before spawn
  * @param {object}  [opts.warnData]    - content for warn sentinel (defaults to first-warn-like data)
+ * @param {object}  [opts.planningConfig] - when given, run in a throwaway project dir
+ *   holding this object as .planning/config.json (#4285). Mutually exclusive with
+ *   `cwd`, which the caller no longer chooses; the dir is removed on the way out.
  * @returns {{ exitCode: number, stdout: string }}
  */
 function runMonitorRaw(opts) {
   const {
     sessionId,
-    cwd = tmpDir,
     writeMetrics = false,
     remaining = 20,
     usedPct = 80,
     writeWarn = false,
     warnData = null,
+    planningConfig = null,
   } = opts;
+
+  // A staged config needs a project dir of its own; without one the caller's
+  // cwd (tmpDir by default) is used exactly as before.
+  const stagedCwd = planningConfig === null
+    ? null
+    : fs.mkdtempSync(path.join(tmpDir, 'gsd-4285-cfg-'));
+  if (stagedCwd !== null) {
+    fs.mkdirSync(path.join(stagedCwd, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(stagedCwd, '.planning', 'config.json'),
+      JSON.stringify(planningConfig)
+    );
+  }
+  const cwd = stagedCwd ?? opts.cwd ?? tmpDir;
 
   const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
   const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
@@ -90,6 +108,7 @@ function runMonitorRaw(opts) {
   } finally {
     try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
     try { fs.unlinkSync(warnPath); } catch { /* already absent */ }
+    if (stagedCwd !== null) cleanup(stagedCwd);
   }
 
   return { exitCode, stdout };
@@ -2492,4 +2511,191 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
     }
   });
 
+});
+
+// ─── #4285: WARNING/CRITICAL fire-points resolve from .planning/config.json ───
+
+describe('#4285 regression: context-monitor thresholds resolve from .planning/config.json', () => {
+  // Why these are behavioural spawns rather than unit calls on resolveThresholds:
+  // the value under test is not the resolver's return, it is WHICH fire-point the
+  // running hook compares `remaining_percentage` against. A unit test on the
+  // resolver would pass even if the resolved pair were never threaded to the two
+  // comparison sites, which is the whole of the change.
+  const sid = (tag) => `test-4285-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const severityOf = (stdout) => JSON.parse(stdout)?.hookSpecificOutput?.severity;
+
+  test('a raised warning threshold fires where the default is silent', () => {
+    // remaining 40 is ABOVE the default 35 → the hook is silent by default.
+    // The control below proves that; without it this test would pass on a hook
+    // that emits for every reading.
+    const control = runMonitorRaw({ sessionId: sid('raise-control'), writeMetrics: true, remaining: 40, usedPct: 60 });
+    assert.strictEqual(control.stdout, '',
+      'control: remaining 40 must be silent under the default 35 threshold — ' +
+      'if this emits, the test below proves nothing about the config key');
+
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('raise'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 45 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'resolving a configured threshold must not fail the hook');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a configured warning threshold of 45 must fire at remaining 40; still silent means ' +
+      'the hook is comparing against the hardcoded 35');
+    assert.strictEqual(severityOf(stdout), 'warning', 'crossing only the warning point is not CRITICAL');
+  });
+
+  test('a raised critical threshold escalates a reading the default calls WARNING', () => {
+    // remaining 32: default resolves warning (32 <= 35, 32 > 25). With critical
+    // moved to 35 the same reading is CRITICAL — so this pins the critical key
+    // specifically, not just "some threshold was read".
+    const control = runMonitorRaw({ sessionId: sid('crit-control'), writeMetrics: true, remaining: 32, usedPct: 68 });
+    assert.strictEqual(severityOf(control.stdout), 'warning',
+      'control: remaining 32 is a WARNING under the defaults');
+
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('crit'),
+      writeMetrics: true,
+      remaining: 32,
+      usedPct: 68,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: 35 } },
+    });
+
+    assert.strictEqual(severityOf(stdout), 'critical',
+      'a configured critical threshold of 35 must escalate remaining 32 to CRITICAL');
+  });
+
+  test('a lowered warning threshold silences a reading the default warns on', () => {
+    // The opposite direction — proves the key moves the fire-point rather than
+    // only ever adding warnings.
+    const control = runMonitorRaw({ sessionId: sid('lower-control'), writeMetrics: true, remaining: 30, usedPct: 70 });
+    assert.match(control.stdout, /CONTEXT WARNING/,
+      'control: remaining 30 warns under the defaults');
+
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('lower'),
+      writeMetrics: true,
+      remaining: 30,
+      usedPct: 70,
+      planningConfig: { hooks: { context_warning_threshold: 20, context_critical_threshold: 10 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'hook exits 0 when the configured thresholds silence it');
+    assert.strictEqual(stdout, '',
+      'with the pair moved to 20/10, remaining 30 is above the warning point and must be silent');
+  });
+
+  test('an unusable value falls back to that key\'s default rather than throwing', () => {
+    // One row per rejection reason. Each is run at remaining 40, where the
+    // DEFAULT is silent and the honoured value (45) is not — so "silent" is the
+    // unique signature of a rejected value, and the accepted-45 test above is
+    // this table's non-vacuity control.
+    const rejected = [
+      ['string', '45'],
+      ['above domain', 150],
+      ['negative', -5],
+      ['null', null],
+      ['boolean', true],
+      ['array', [45]],
+      ['object', {}],
+    ];
+
+    for (const [label, value] of rejected) {
+      const { exitCode, stdout } = runMonitorRaw({
+        sessionId: sid(`bad-${label.replace(/\W+/g, '-')}`),
+        writeMetrics: true,
+        remaining: 40,
+        usedPct: 60,
+        planningConfig: { hooks: { context_warning_threshold: value } },
+      });
+
+      assert.strictEqual(exitCode, 0, `${label}: an unusable threshold must never fail the hook`);
+      assert.strictEqual(stdout, '',
+        `${label}: an unusable threshold must fall back to the default 35, leaving remaining 40 silent`);
+    }
+  });
+
+  test('100 is inside the domain, not rejected as out of range', () => {
+    // The bound is inclusive on the top. 100 warns at every reading; if the
+    // range check were `< 100` this would fall back to 35 and go silent at
+    // remaining 40, which is exactly what the rejection table above asserts for
+    // a genuinely out-of-domain 150.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('bound-100'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 100 } },
+    });
+
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a warning threshold of 100 is in-domain and must fire at remaining 40');
+  });
+
+  test('an inconsistent pair falls back to BOTH defaults, not to the usable half', () => {
+    // warning 20 / critical 25 is inconsistent (critical >= warning). Honouring
+    // the warning half alone would leave remaining 30 SILENT; falling back to
+    // both defaults warns. The assertion distinguishes those two outcomes, so it
+    // fails if either side of the pair is honoured piecemeal.
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('pair'),
+      writeMetrics: true,
+      remaining: 30,
+      usedPct: 70,
+      planningConfig: { hooks: { context_warning_threshold: 20, context_critical_threshold: 25 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'an inconsistent pair must never fail the hook');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an inconsistent pair resolves to the defaults (35/25), which warn at remaining 30; ' +
+      'silence here would mean the warning half was honoured on its own');
+    assert.strictEqual(severityOf(stdout), 'warning',
+      'the default critical (25) is below remaining 30, so the fallback pair yields WARNING');
+  });
+
+  test('a single override is checked against the OTHER key\'s default', () => {
+    // Same rule as the row above, reached with one key set instead of two — the
+    // case the docs call out, because it is the one an operator hits by accident.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('single'),
+      writeMetrics: true,
+      remaining: 30,
+      usedPct: 70,
+      planningConfig: { hooks: { context_warning_threshold: 20 } },
+    });
+
+    assert.match(stdout, /CONTEXT WARNING/,
+      'warning 20 against the default critical 25 is inconsistent and resolves to 35/25, ' +
+      'which warns at remaining 30');
+  });
+
+  test('context_warnings:false still wins over configured thresholds', () => {
+    // A project that tuned the thresholds and later switched warnings off stays
+    // silent: the disable exit is unconditional, so no configured fire-point can
+    // resurrect it. NOT an ordering guard — measured: moving the resolution
+    // above the disable check leaves this row green, because allow() exits
+    // either way. The ordering is a cost choice (don't resolve on a path that
+    // exits), not an observable, so nothing here pins it.
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('disabled'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: {
+        hooks: {
+          context_warnings: false,
+          context_warning_threshold: 45,
+          context_critical_threshold: 30,
+        },
+      },
+    });
+
+    assert.strictEqual(exitCode, 0, 'hook exits 0 when warnings are disabled');
+    assert.strictEqual(stdout, '',
+      'context_warnings:false must silence the hook even when a threshold would have fired');
+  });
 });

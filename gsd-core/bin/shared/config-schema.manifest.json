@@ -75,6 +75,8 @@
     "planner.stall_threshold_minutes",
     "workflow.inline_plan_threshold",
     "hooks.context_warnings",
+    "hooks.context_warning_threshold",
+    "hooks.context_critical_threshold",
     "hooks.workflow_guard",
     "workflow.context_coverage_gate",
     "statusline.show_last_command",

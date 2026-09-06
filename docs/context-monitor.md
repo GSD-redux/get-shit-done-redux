@@ -28,6 +28,48 @@ breadcrumb bookkeeping.
 | WARNING | <= 35% | Wrap up current task, avoid starting new complex work |
 | CRITICAL | <= 25% | Stop immediately, save state (`/gsd-pause-work`) |
 
+### Tuning the fire-points
+
+35 and 25 are defaults, not fixed points. How much runway "35% remaining" buys
+depends on the window size and on what the phase is doing, so both are
+overridable per project in `.planning/config.json` (#4285):
+
+```jsonc
+{
+  "hooks": {
+    "context_warnings": true,
+    "context_warning_threshold": 45,
+    "context_critical_threshold": 30
+  }
+}
+```
+
+Editing the constants in `gsd-context-monitor.js` instead does not survive: the
+file is in the managed-hooks registry, so the next install re-stages the
+vendored body and the edit is gone without a conflict or a warning. A config key
+survives by construction.
+
+Both keys are optional and both are percentages of context window **remaining**,
+so a *larger* number fires *earlier*. Absent keys resolve to the defaults above,
+which is what every existing project gets.
+
+The hook never blocks a tool call, so it never throws on a bad value — it
+degrades:
+
+| config | resolved |
+|---|---|
+| key absent | the default (35 / 25) |
+| not a number, or outside 0-100 | the default for that key |
+| `critical >= warning` after resolution | **both** defaults — an inconsistent pair has no coherent reading, and honouring one side would silently discard the other |
+
+The pair check compares resolved values, so overriding only one key is still
+checked against the other's default: `context_warning_threshold: 20` on its own
+is inconsistent with the default critical of 25 and resolves back to 35 / 25.
+Move both when either crosses the other. `gsd-tools config-set` validates the
+0-100 domain per key but deliberately does not enforce the pair, because it
+writes one key per call and a two-step retune is transiently inconsistent on
+disk.
+
 ## Debounce
 
 To avoid spamming the agent with repeated warnings:

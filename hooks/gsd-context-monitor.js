@@ -14,6 +14,9 @@
 // Thresholds:
 //   WARNING  (remaining <= 35%): Agent should wrap up current task
 //   CRITICAL (remaining <= 25%): Agent should stop immediately and save state
+// Both fire-points are overridable per project via .planning/config.json
+// (hooks.context_warning_threshold / hooks.context_critical_threshold, #4285);
+// the values above are the defaults used when the keys are absent or unusable.
 //
 // Debounce: 5 tool uses between warnings to avoid spam
 // Severity escalation bypasses debounce (WARNING -> CRITICAL fires immediately)
@@ -30,8 +33,8 @@ const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
 // context warning is far cheaper than stalling the agent's work (#3911).
 const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
-const WARNING_THRESHOLD = 35;  // remaining_percentage <= 35%
-const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
+const WARNING_THRESHOLD = 35;  // remaining_percentage <= 35% (default, see resolveThresholds)
+const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25% (default, see resolveThresholds)
 const STALE_SECONDS = 60;      // ignore metrics older than 60s
 const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 // How long after a PreCompact readings stay suspect. The watermark records the
@@ -56,6 +59,41 @@ const COMPACT_GRACE_SECONDS = 60;
 // trio (Codex review of #3808, round 4). Note it also extends the mute: a
 // watermark this far ahead pushes first recovery from +61 to +66 (measured).
 const WATERMARK_SKEW_SECONDS = 5;
+
+// Resolve the two fire-points from the project's `.planning/config.json`
+// (#4285). The constants above are the DEFAULTS; a project overrides either one
+// through `hooks.context_warning_threshold` / `hooks.context_critical_threshold`,
+// which is what keeps a tuned fire-point alive across updates — this file is in
+// the MANAGED registry, so an edit to the constants is re-staged away by the
+// next install.
+//
+// TOTAL and never-throwing: this hook must not block the tool call it rides in
+// on, so every unusable input degrades to the default instead of raising.
+// Unusable is decided by Number.isFinite, which is type-strict (the string
+// "30" and true are both rejected, unlike the global isFinite), plus the 0-100
+// domain of the remaining_percentage these are compared against.
+//
+// The PAIR is validated too, and falls back TOGETHER. `critical >= warning` has
+// no coherent reading — critical fires deeper into the window than warning —
+// and honouring one side of an inconsistent pair silently picks which of the
+// operator's two numbers to discard. This also rejects a single override that
+// contradicts the OTHER key's default (warning 20 with critical absent, i.e.
+// 25); the resulting pair is the same nonsense either way. Set-time validation
+// cannot stand in for this check: `config-set` writes one key per call, so
+// tuning both (warning first, then critical) is transiently inconsistent on
+// disk, and refusing it there would block a legitimate configuration.
+function resolveThresholds(hooks) {
+  const defaults = { warning: WARNING_THRESHOLD, critical: CRITICAL_THRESHOLD };
+  if (!hooks || typeof hooks !== 'object') return defaults;
+
+  const usable = (value, fallback) =>
+    (Number.isFinite(value) && value >= 0 && value <= 100) ? value : fallback;
+
+  const warning = usable(hooks.context_warning_threshold, WARNING_THRESHOLD);
+  const critical = usable(hooks.context_critical_threshold, CRITICAL_THRESHOLD);
+
+  return critical < warning ? { warning, critical } : defaults;
+}
 
 // One DEFINITION of what counts as a lifecycle event name, shared by the #3709
 // PreCompact reset and the #2289 output-envelope allowlist. Two call sites, one
@@ -266,18 +304,26 @@ process.stdin.on('end', () => {
       allow(undefined);
     }
 
-    // Check if context warnings are disabled via config.
+    // Check if context warnings are disabled via config, and resolve the two
+    // fire-points from the same read (#4285 — one config read, not two).
     // Collapsed existsSync+readFileSync into a single read guarded by try/catch
     // (ENOENT or parse error → use defaults, same as old "planningDir absent" branch).
     const cwd = data.cwd || process.cwd();
+    let thresholds = { warning: WARNING_THRESHOLD, critical: CRITICAL_THRESHOLD };
     try {
       const configPath = path.join(cwd, '.planning', 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (config.hooks?.context_warnings === false) {
         allow(undefined);
       }
+      // After the disable check, not before: a disabled monitor exits above and
+      // never reaches a threshold, so resolving first would only add work to the
+      // path that does nothing. allow() exits the process (it does not throw),
+      // so this line is unreachable when warnings are off.
+      thresholds = resolveThresholds(config.hooks);
     } catch (e) {
-      // Missing or unparseable config → proceed with defaults (context warnings enabled)
+      // Missing or unparseable config → proceed with defaults (context warnings
+      // enabled, thresholds at the constants above, which `thresholds` already holds)
     }
 
     // If no metrics file, this is a subagent or fresh session -- exit silently.
@@ -352,7 +398,7 @@ process.stdin.on('end', () => {
     const usedPct = metrics.used_pct;
 
     // No warning needed
-    if (remaining > WARNING_THRESHOLD) {
+    if (remaining > thresholds.warning) {
       allow(undefined);
     }
 
@@ -389,7 +435,7 @@ process.stdin.on('end', () => {
 
     warnData.callsSinceWarn = (warnData.callsSinceWarn || 0) + 1;
 
-    const isCritical = remaining <= CRITICAL_THRESHOLD;
+    const isCritical = remaining <= thresholds.critical;
     const currentLevel = isCritical ? 'critical' : 'warning';
 
     // Emit immediately on first warning, then debounce subsequent ones
