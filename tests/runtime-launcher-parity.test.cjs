@@ -155,10 +155,15 @@ function hasGsdRun(dir) {
  * @returns {{ isolatedPath: string, nodeBinDir: string }}
  */
 function buildIsolatedPath(basePath = process.env.PATH) {
-  const filteredPath = (basePath || '/usr/bin:/bin')
+  // An empty PATH element means "the current directory" to a POSIX shell, so
+  // it is dropped along with the gsd_run-bearing dirs: keeping one would put
+  // the fixture's own cwd on PATH, and `path.join('', 'gsd_run')` probes cwd
+  // rather than a directory, so hasGsdRun cannot even see what it would admit.
+  // Joining the surviving dirs (rather than the filtered string) also keeps a
+  // fully-filtered PATH from ending in a delimiter, which means the same thing.
+  const filteredDirs = (basePath || '/usr/bin:/bin')
     .split(path.delimiter)
-    .filter((p) => !hasGsdRun(p))
-    .join(path.delimiter);
+    .filter((p) => p !== '' && !hasGsdRun(p));
 
   const nodeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-node-'));
   try {
@@ -168,7 +173,7 @@ function buildIsolatedPath(basePath = process.env.PATH) {
     throw err;
   }
 
-  return { isolatedPath: nodeBinDir + path.delimiter + filteredPath, nodeBinDir };
+  return { isolatedPath: [nodeBinDir, ...filteredDirs].join(path.delimiter), nodeBinDir };
 }
 
 /**
@@ -1410,6 +1415,23 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
         [],
         'every GSD_RUN_NAMES entry must be filtered out of the isolated PATH',
       );
+
+      // (iv) no empty element survives, in either of the two ways one appears:
+      // an ambient `::` in the input, and a PATH every entry of which was
+      // filtered. A POSIX shell reads an empty element as the current
+      // directory, which would put the fixture's own cwd back on PATH.
+      const emptyElementCases = {
+        ambient: `${emptyDir}${path.delimiter}${path.delimiter}${emptyDir}`,
+        fullyFiltered: fakeBinDir,
+      };
+      for (const [label, basePath] of Object.entries(emptyElementCases)) {
+        const probe = buildIsolatedPath(basePath);
+        t.after(() => cleanup(probe.nodeBinDir));
+        assert.ok(
+          !probe.isolatedPath.split(path.delimiter).includes(''),
+          `${label}: isolated PATH must carry no empty element (it would resolve cwd), got: ${probe.isolatedPath}`,
+        );
+      }
     },
   );
 
