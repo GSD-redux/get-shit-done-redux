@@ -654,6 +654,12 @@ export const STATUS_EXACT_TOKENS: Readonly<Record<string, string>> = Object.free
   // outranked `complete`.
   'phase complete — ready for verification': 'verifying',
   'all phases complete': 'completed',
+  // Legacy bare terminal form. ADR-2207/#2204 removed it from every WRITER
+  // (phase verbs write `All phases complete`; milestone close writes
+  // `<version> milestone complete`) — kept here as READER recognition so a
+  // legacy STATE.md still normalizes, exactly the way KNOWN_TEMPLATE_DEFAULTS
+  // keeps the other legacy Status strings.
+  'milestone complete': 'completed',
   unknown: 'unknown',
 } as const);
 

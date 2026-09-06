@@ -788,10 +788,16 @@ stopped_at: Plan 2 of Phase 3
   });
 
   test('normalizes various status values', () => {
+    // #4186: recognition is an ANCHORED whole-field vocabulary match. The
+    // vocabulary's own values normalize to their token; prefix/suffix NARRATIVE
+    // prose ('Paused at Plan 3') passes through verbatim — a visible paragraph
+    // beats a guessed token — and the legacy bare `Milestone complete` stays
+    // recognized (reader-side legacy vocabulary, ADR-2207 removed the writers).
     const statusTests = [
       { input: 'In progress', expected: 'executing' },
       { input: 'Ready to execute', expected: 'executing' },
-      { input: 'Paused at Plan 3', expected: 'paused' },
+      { input: 'Paused', expected: 'paused' },
+      { input: 'Paused at Plan 3', expected: 'Paused at Plan 3' },
       { input: 'Ready to plan', expected: 'planning' },
       { input: 'Phase complete — ready for verification', expected: 'verifying' },
       { input: 'Milestone complete', expected: 'completed' },
@@ -1140,7 +1146,9 @@ current_phase: 3
 `
     );
 
-    runGsdTools('state update Status "Executing Plan 5"', tmpDir);
+    // #4186: use the handler vocabulary's real form (`Executing Phase N`,
+    // state-transition.cts:1216) — narrative variants are no longer guessed.
+    runGsdTools('state update Status "Executing Phase 5"', tmpDir);
 
     const result = runGsdTools('state json', tmpDir);
     assert.ok(result.success, `state json failed: ${result.error}`);
@@ -10240,17 +10248,19 @@ describe('T6 section-splice characterization — record-session', () => {
     '',
   ].join('\n');
 
-  test('record-session no-op: no session fields → recorded:false, STATE.md byte-unchanged', () => {
+  test('record-session no-op: bare call rejected, STATE.md byte-unchanged (#4186)', () => {
+    // #4186: the bare call that used to reach the recorded:false decline is
+    // now a usage error (stopped-at or resume-file required). The byte-
+    // unchanged assertion below keeps guarding the #952 no-op posture — a
+    // rejected call must not trample anything, milestone_name included.
     const d = createTempProject();
     try {
       fs.writeFileSync(path.join(d, '.planning', 'STATE.md'), STATE_NO_SESSION_LABELS);
       const result = runGsdTools(['state', 'record-session'], d);
-      assert.ok(result.success, `Command failed: ${result.error}`);
-      const output = JSON.parse(result.output);
-      assert.strictEqual(output.recorded, false, 'recorded must be false when no session fields exist');
-      // milestone_name must NOT be trampled (#952 no-op guard)
+      assert.ok(!result.success, 'bare record-session must exit non-zero');
+      assert.match(result.error, /stopped-at or resume-file required for state record-session/);
       const after = fs.readFileSync(path.join(d, '.planning', 'STATE.md'), 'utf-8');
-      assert.strictEqual(after, STATE_NO_SESSION_LABELS, 'STATE.md must be byte-unchanged on no-op');
+      assert.strictEqual(after, STATE_NO_SESSION_LABELS, 'STATE.md must be byte-unchanged by the rejected call');
     } finally {
       cleanup(d);
     }
@@ -20393,21 +20403,26 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
       if (tmpDir) cleanup(tmpDir);
     });
 
-    // Row 8
-    test('record-session: nothing to update reports no-fields-found', () => {
+    // Row 8 — #4186 repurposed: the empty-options call that used to reach
+    // the no-fields-found decline is now a usage error (handler-side guard,
+    // same contract as cmdStateUpdate). The decline itself remains covered
+    // for value-supplied calls by the matched-but-unchanged row below; what
+    // this row now pins is that the SDK-level contract matches the CLI's and
+    // that a rejected call never touches the file.
+    test('record-session: no values supplied is a usage error, STATE.md unchanged (#4186)', () => {
       tmpDir = createFixture();
       const statePath = writeState(tmpDir, '# Project State\n\n## Decisions\n\n- none yet\n');
       const before = fs.readFileSync(statePath, 'utf-8');
 
-      const { stdout, stderr } = captureCliIO(() => {
-        stateLib.cmdStateRecordSession(tmpDir, {}, false);
-      });
-
-      const out = JSON.parse(stdout);
-      assert.strictEqual(out.recorded, false);
-      assert.strictEqual(out.reason, 'no session fields found in STATE.md to update');
+      // error() writes the user-facing message to stderr and throws a bare
+      // ExitError (v1: message 'process exit <code>' — the message itself is
+      // NOT on the exception; asserted via the CLI-level tests above).
+      assert.throws(
+        () => stateLib.cmdStateRecordSession(tmpDir, {}, false),
+        (err) => err && err.name === 'ExitError' && err.code === 1,
+        'empty options must be rejected before any read or write',
+      );
       assert.strictEqual(fs.readFileSync(statePath, 'utf-8'), before, 'STATE.md must be unchanged');
-      assert.match(stderr, /^\[gsd-tools\] WARNING: state record-session skipped — no session fields found in STATE\.md to update\./);
     });
 
     // Row 9 (hardest — signature B, collapsed reconciliation). A frozen clock

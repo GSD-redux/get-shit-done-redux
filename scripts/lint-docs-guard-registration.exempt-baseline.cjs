@@ -191,7 +191,9 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'runtime-name-policy.test.cjs': ['docs/customize/skills'],
   'security-prompt-injection.security.test.cjs': ['docs/notes.md'],
   'shipped-reference-cites.test.cjs': [],
-  'state.test.cjs': ['docs/CONFIGURATION.md', 'docs/reference/state-md.md'],
+  // #4186: the record-session usage-contract test cites the documented
+  // signature in docs/CLI-TOOLS.md in its explanatory comment.
+  'state.test.cjs': ['docs/CLI-TOOLS.md', 'docs/CONFIGURATION.md', 'docs/reference/state-md.md'],
   'worktree-safety.test.cjs': ['docs/SUMMARY.md'],
 };
 
