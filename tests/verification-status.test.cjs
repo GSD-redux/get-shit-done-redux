@@ -1209,11 +1209,15 @@ describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple c
 // commands.cts (determinePhaseStatus) and two verification_path projectors in
 // init.cts each hand-rolled a fourth variant of this same selection: they
 // additionally accept a BARE `VERIFICATION.md`, which this module's own two
-// callers (findStaleVerificationSummary, readVerificationStatus) never have.
-// `allowBare` threads that one behavioral difference through the single
-// resolver instead of leaving a fourth hand-rolled implementation behind
-// (#3473 F2). A bare match is ranked BELOW any dashed candidate — canonical
-// or not — because a dashed file names its phase and a bare one does not.
+// callers (findStaleVerificationSummary, readVerificationStatus) originally
+// did not. `allowBare` threads that one behavioral difference through the
+// single resolver instead of leaving a fourth hand-rolled implementation
+// behind (#3473 F2). A bare match is ranked BELOW any dashed candidate —
+// canonical or not — because a dashed file names its phase and a bare one
+// does not. Since #4187 the two module-internal call sites pass `allowBare:
+// true` as well (see the #4187 describe below), so every reader of the report
+// set now agrees; the option's default remains `false` for callers that have
+// not opted in.
 describe('#3473 F2: resolveVerificationFile allowBare option', () => {
 
   test('allowBare defaults to false — a bare-only list returns null without the option', () => {
@@ -1263,6 +1267,210 @@ describe('#3473 F2: resolveVerificationFile allowBare option', () => {
     );
   });
 
+});
+
+// ─── #4187: a bare VERIFICATION.md is a first-class report on the status surface ──
+//
+// `query verification.resolve-file` (cmdVerificationResolveFile), the phase-status
+// surface (commands.cts determinePhaseStatus) and both init verification_path
+// projectors all resolve a BARE `VERIFICATION.md` — but readVerificationStatus
+// (the reader behind `query verification.status`, isPhaseComplete, and the state/
+// roadmap completion projections) called the same shared resolver WITHOUT
+// `allowBare`, so a phase whose only report was bare read as `missing` and was
+// told to re-run execute-phase even when the report said `status: passed`.
+// Two read-only verbs disagreed about the same directory at the same instant
+// (#4187). The fix opts the status reader — and findStaleVerificationSummary,
+// its internal legacy staleness check, whose only production caller is
+// readVerificationStatus — into the same `allowBare: true` the other four call
+// sites already pass. Tier order is unchanged: a dashed candidate (canonical or
+// not) still outranks the bare name, so only bare-ONLY directories change
+// behavior, from `missing` to the report's actual frontmatter status.
+describe('#4187: status surface recognizes a bare VERIFICATION.md', () => {
+
+  test('#4187 regression: bare VERIFICATION.md with status: passed reads as passed, not missing', (t) => {
+    const dir = mkPhaseDir('bare-passed', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed', 'a bare report is a report — the phase is verified');
+    assert.equal(result.next_command, '', 'passed must route to no next command');
+    assert.equal(result.staleCheckIndeterminate, undefined, 'the staleness check must run to completion');
+  });
+
+  test('#4187: bare report with status: human_needed routes to verify-work', (t) => {
+    const dir = mkPhaseDir('bare-human', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'human_needed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'human_needed');
+    assert.equal(result.next_command, '/gsd-verify-work 99');
+  });
+
+  test('#4187: bare report with status: gaps_found routes to plan-phase --gaps', (t) => {
+    const dir = mkPhaseDir('bare-gaps', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'gaps_found');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'gaps_found');
+    assert.equal(result.next_command, '/gsd-plan-phase 99 --gaps');
+  });
+
+  test('#4187 negative space: no verification file at all still reads missing with the execute-phase recommendation', (t) => {
+    const dir = mkPhaseDir('bare-none', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    const result = readVerificationStatus(dir);
+    assert.equal(result.status, 'missing', 'a genuinely absent report must stay missing');
+    assert.equal(result.next_command, '/gsd-execute-phase 99', 'the missing recommendation is correct here and must not change');
+  });
+
+  test('#4187 parity: bare + canonical dashed report — the dashed file wins on the status surface too', (t) => {
+    const dir = mkPhaseDir('bare-vs-dashed', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'gaps_found');
+    writeVerificationMd(dir, '99-VERIFICATION.md', 'passed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed', 'a dashed file names its phase and must outrank the bare match');
+  });
+
+  test('#4187 parity: bare + cross-phase dashed stray — #3511 scoping falls through to the bare report', (t) => {
+    const dir = mkPhaseDir('bare-vs-stray', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    writeVerificationMd(dir, '04-VERIFICATION.md', 'gaps_found');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed', 'the stray belongs to phase 04; the bare file is this phase\'s only own report');
+  });
+
+  test('#4187 parity: same-dir non-canonical dashed report only — unchanged behavior', (t) => {
+    const dir = mkPhaseDir('dashed-noncanon', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, '99-CORRECTION-VERIFICATION.md', 'passed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed');
+  });
+
+  test('#4187: directory scoping — a bare report in a DIFFERENT directory does not leak into the queried one', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4187-otherdir-'));
+    t.after(() => cleanup(baseDir));
+    const queried = path.join(baseDir, '99-probe');
+    const neighbor = path.join(baseDir, '98-other');
+    fs.mkdirSync(queried);
+    fs.mkdirSync(neighbor);
+    writeVerificationMd(neighbor, 'VERIFICATION.md', 'passed');
+
+    const result = readVerificationStatus(queried);
+    assert.equal(result.status, 'missing', 'the neighbor directory\'s report must not answer for the queried one');
+  });
+
+  test('#4187: bare report with no frontmatter block resolves but reads missing', (t) => {
+    const dir = mkPhaseDir('bare-no-fm', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    fs.writeFileSync(path.join(dir, 'VERIFICATION.md'), '# Verification\n');
+    const result = readVerificationStatus(dir);
+    assert.equal(result.status, 'missing', 'a resolved file with no frontmatter status is the pre-existing missing path');
+  });
+
+  test('#4187 staleness: a bare report older than its summary reads stale (legacy mtime path)', (t) => {
+    const dir = mkPhaseDir('bare-stale', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    setMtime(path.join(dir, 'VERIFICATION.md'), '2020-01-01T00:00:00Z');
+    // Root-style summary placement — mirrors the #3492 fixture above.
+    const summaryPath = path.join(dir, '99-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# summary\n');
+    setMtime(summaryPath, '2021-01-01T00:00:00Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale', 'a bare report must be staleness-checked like a dashed one');
+    assert.equal(result.next_command, '/gsd-verify-work 99');
+  });
+
+  test('#4187 unit (findStaleVerificationSummary): staleness is computed against the bare report', (t) => {
+    const dir = mkPhaseDir('bare-stale-unit', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    setMtime(path.join(dir, 'VERIFICATION.md'), '2020-01-01T00:00:00Z');
+    const summaryPath = path.join(dir, '99-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# summary\n');
+    setMtime(summaryPath, '2021-01-01T00:00:00Z');
+
+    const result = findStaleVerificationSummary(dir, fs, () => new Map());
+    assert.equal(result.determined, true);
+    assert.equal(result.stale, true);
+    assert.equal(result.verificationFile, 'VERIFICATION.md', 'the staleness seam must see the bare report');
+  });
+});
+
+// ─── #4187 CLI parity: the two query verbs must agree on the same directory ───
+//
+// The issue's repro shape: run `query verification.resolve-file` and
+// `query verification.status` back to back against ONE fixture directory and
+// assert they never disagree about whether a report exists (and, when one does,
+// about WHICH file is the report — enforced by giving the candidates distinct
+// frontmatter statuses and asserting the routed status matches the expected
+// winner).
+describe('#4187 CLI parity: verification.resolve-file and verification.status agree', () => {
+  const { runGsdTools } = require('./helpers.cjs');
+
+  function runBothVerbs(dir) {
+    const resolveRes = runGsdTools(['query', 'verification.resolve-file', dir, '--raw'], dir);
+    const statusRes = runGsdTools(['query', 'verification.status', dir, '--raw'], dir);
+    assert.equal(resolveRes.success, true, `resolve-file failed: ${resolveRes.error}`);
+    assert.equal(statusRes.success, true, `status failed: ${statusRes.error}`);
+    return { resolvedPath: resolveRes.output.trimEnd(), status: JSON.parse(statusRes.output).status, nextCommand: JSON.parse(statusRes.output).next_command };
+  }
+
+  test('bare report: resolve-file finds it and status reads passed (the #4187 repro)', (t) => {
+    const dir = mkPhaseDir('cli-bare', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    const { resolvedPath, status, nextCommand } = runBothVerbs(dir);
+    assert.equal(resolvedPath, path.join(dir, 'VERIFICATION.md'));
+    assert.equal(status, 'passed', 'status must not report missing for a file resolve-file resolves');
+    assert.equal(nextCommand, '');
+  });
+
+  test('no report: resolve-file is empty and status is missing (agreement in the other direction)', (t) => {
+    const dir = mkPhaseDir('cli-none', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    const { resolvedPath, status } = runBothVerbs(dir);
+    assert.equal(resolvedPath, '', 'resolve-file must report no file');
+    assert.equal(status, 'missing');
+  });
+
+  test('bare + canonical dashed: both verbs pick the dashed file', (t) => {
+    const dir = mkPhaseDir('cli-both', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'gaps_found');
+    writeVerificationMd(dir, '99-VERIFICATION.md', 'passed');
+    const { resolvedPath, status } = runBothVerbs(dir);
+    assert.equal(resolvedPath, path.join(dir, '99-VERIFICATION.md'));
+    assert.equal(status, 'passed', 'status must read the same winner resolve-file picked');
+  });
+
+  test('bare + cross-phase stray: both verbs pick the bare file', (t) => {
+    const dir = mkPhaseDir('cli-stray', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    writeVerificationMd(dir, '04-VERIFICATION.md', 'gaps_found');
+    const { resolvedPath, status } = runBothVerbs(dir);
+    assert.equal(resolvedPath, path.join(dir, 'VERIFICATION.md'));
+    assert.equal(status, 'passed', 'status must read the same winner resolve-file picked');
+  });
 });
 
 // ─── #3518: resolveUatFile — phase-pinned, deterministic *-UAT.md pick ───────
