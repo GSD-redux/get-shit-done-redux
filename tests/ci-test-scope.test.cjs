@@ -152,6 +152,8 @@ describe('ci-test-scope.cjs', () => {
     const result = scopeFor(['tests/run-tests-harness.test.cjs']);
     assert.strictEqual(result.code_changed, true);
     assert.ok(result.targeted_tests.includes('tests/run-tests-harness.test.cjs'));
+    assert.strictEqual(result.full_matrix, true,
+      'expected full_matrix=true for a changed test file (rescinded #494 carve-out, see #4421)');
   });
 
   test('installer-sensitive changes request full matrix and install tests', () => {
@@ -277,33 +279,37 @@ describe('ci-test-scope.cjs', () => {
   });
 });
 
-describe('ci-test-scope superset invariant (#494, narrowed)', () => {
-  // Facet A (narrowed): a changed test file no longer triggers the full
-  // parity matrix — instead it must ALWAYS run on the scoped windows lane,
-  // so OS-specific breakage in the changed test (the #482 class) is still
-  // exercised pre-merge. Ubuntu 22/24 coverage comes via targeted_tests.
-  test('A1: a changed test file joins the windows scoped lane without full_matrix', () => {
+describe('ci-test-scope superset invariant (#494, rescinded by #4421)', () => {
+  // Facet A: #494 originally narrowed this so a changed test file joined only
+  // the scoped windows lane instead of triggering the full parity matrix.
+  // Rescinded per #4421 (2026-09-06 RCA: PR #4384 shipped a macOS-only
+  // regression invisible pre-merge because of exactly this carve-out) — a
+  // changed test file now ALWAYS sets full_matrix=true, in addition to still
+  // joining the scoped windows lane.
+  test('A1: a changed test file joins the windows scoped lane AND triggers full_matrix', () => {
     const result = scopeFor(['tests/perf-317-context-monitor-fs.test.cjs']);
-    assert.strictEqual(result.full_matrix, false,
-      `expected full_matrix=false for a tests/**-only change, got: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.full_matrix, true,
+      `expected full_matrix=true for a tests/**-only change (rescinded #494 carve-out, see #4421), got: ${JSON.stringify(result)}`);
     assert.ok(result.targeted_tests.includes('tests/perf-317-context-monitor-fs.test.cjs'),
       `expected the changed test in targeted_tests, got: ${JSON.stringify(result.targeted_tests)}`);
     assert.ok(result.windows_tests.includes('tests/perf-317-context-monitor-fs.test.cjs'),
       `expected the changed test in windows_tests, got: ${JSON.stringify(result.windows_tests)}`);
   });
 
-  test('A2: a changed test file with no windows hint still joins the windows lane', () => {
+  test('A2: a changed test file with no windows hint still joins the windows lane and triggers full_matrix', () => {
     // commands.test.cjs matches none of the WINDOWS_HINTS substrings — the
     // unconditional changed-test → windows lane rule must include it anyway.
     const result = scopeFor(['tests/commands.test.cjs']);
-    assert.strictEqual(result.full_matrix, false);
+    assert.strictEqual(result.full_matrix, true,
+      `expected full_matrix=true (rescinded #494 carve-out, see #4421), got: ${JSON.stringify(result)}`);
     assert.ok(result.windows_tests.includes('tests/commands.test.cjs'),
       `expected hint-less changed test in windows_tests, got: ${JSON.stringify(result.windows_tests)}`);
   });
 
-  test('A3: a deleted/nonexistent test path falls back to the unit token, no full_matrix', () => {
+  test('A3: a deleted/nonexistent test path falls back to the unit token, still triggers full_matrix', () => {
     const result = scopeFor(['tests/some-new.test.cjs']);
-    assert.strictEqual(result.full_matrix, false);
+    assert.strictEqual(result.full_matrix, true,
+      `expected full_matrix=true even for a nonexistent tests/*.test.cjs path — the matrix decision is made on the changed-file name, not on-disk existence (rescinded #494 carve-out, see #4421), got: ${JSON.stringify(result)}`);
     // The nonexistent file is filtered by existingTests(); with nothing left,
     // the #408 fallback applies so the targeted lane still runs something.
     assert.deepStrictEqual(result.targeted_tests, ['unit']);
