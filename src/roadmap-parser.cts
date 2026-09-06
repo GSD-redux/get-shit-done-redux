@@ -1589,6 +1589,13 @@ function stripLeadingDelimiter(s: string): string {
  * one implementation. Returns `null` when `headingText` carries no version
  * token at all (e.g. a non-milestone heading reached this by mistake).
  *
+ * #4134 (§7.2 rule 6 floor): the rule's direction assumes version-then-name.
+ * A name-then-version heading (`# Roadmap: Project — Name (v1.13)`) leaves a
+ * punctuation fragment (`)`) after the token; a remainder with no letter or
+ * digit anywhere is heading structure, not a curated name, and is refused as
+ * `name: null` so callers report the honest rule-6 answer instead of
+ * fabricating garbage. Names that merely CONTAIN punctuation are unaffected.
+ *
  * @param expectedVersion - When the caller already knows the exact version it
  *   is looking for (the STATE-anchored `getMilestoneInfo` path, which located
  *   this heading via `selectMilestoneHeading(roadmap, stateVersion)`), pass it
@@ -1627,7 +1634,18 @@ function extractMilestoneHeadingName(
   // whitespace — the marker is already carried structurally by `closed`, so
   // duplicating it inside `name` (e.g. "Old ✅") is redundant and wrong. Only
   // these three markers, only at the end; a marker inside a name is untouched.
-  const name = stripLeadingDelimiter(afterVersion).replace(/\s*(?:[✅📋🚧]\s*)+$/, '') || null;
+  const candidate = stripLeadingDelimiter(afterVersion).replace(/\s*(?:[✅📋🚧]\s*)+$/, '') || null;
+  // #4134 (§7.2 rule 6 floor): a "name" with no letter or digit anywhere is
+  // heading structure, not a curated name. The pinned rule takes everything
+  // AFTER the version token, so a name-then-version heading (`# Roadmap:
+  // Project — Name (v1.13)` — the shape a first-ever ROADMAP.md drifts into)
+  // leaves exactly `)` there, which used to be returned as a COMPLETE-scope
+  // name and propagated into init.* output and STATE.md. Refuse it: callers
+  // already report the honest rule-6 answer (version kept, `name: null`,
+  // scope TRUNCATED) for an unresolvable name. A name that merely CONTAINS
+  // punctuation is untouched — `(` is an ordinary name character (#3171) —
+  // and digits alone qualify (`## v4.0 — 42` is the name `42`).
+  const name = candidate !== null && /[\p{L}\p{N}]/u.test(candidate) ? candidate : null;
   return { version, name };
 }
 
