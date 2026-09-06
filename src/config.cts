@@ -104,9 +104,11 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // #1689: per-plan agent_hint executor routing — default-on. A no-op for plans
   // without an agent_hint field, so existing dispatch is byte-identical.
   'workflow.agent_hint_routing': true,
-  // #4401: Compact Content mode gate — an absent key must resolve to the
-  // manifest default (false) rather than "Key not found".
-  'workflow.compact_content': false,
+  // #4401: Compact Content mode gate — derived from the defaults manifest via
+  // CONFIG_DEFAULTS (added in config-loader.cts) so the manifest stays the
+  // single source of truth, matching workflow.smart_zone_tokens /
+  // planning.pr_strict / workflow.inline_plan_threshold below.
+  'workflow.compact_content': CONFIG_DEFAULTS.compact_content,
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,
