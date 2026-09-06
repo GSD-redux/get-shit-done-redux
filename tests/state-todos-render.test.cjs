@@ -167,6 +167,96 @@ test('property: rendered body always has one line per todo, each line <= 240 cha
   );
 });
 
+// ─── #4384 regression: the 240-char cap must be deterministic w.r.t. where the
+// repo is checked out (macOS /private/var/folders/… bases blew the budget and
+// dropped the "Needs" clause; Linux /tmp passed — next's own macos shard 3/3
+// went red on exactly this, CI run 34038716700) ──────────────────────────────
+
+// Long enough that the pre-fix absolute-link bullet exceeds 240 chars on EVERY
+// OS (Linux /tmp included): base > ~90 chars is over the threshold since the
+// fixed skeleton + relative tail + needs clause land near 150.
+const LONG_BASE_SEGMENT = 'd'.repeat(110);
+const TODO_RELATIVE_TAIL = path
+  .join('.planning', 'todos', 'pending', '2026-09-01-fix-retry-logic.md')
+  .split(path.sep)
+  .join('/');
+
+test('renderPendingTodosMarkdown: cap is deterministic w.r.t. base-path length (needs clause survives long absolute bases)', () => {
+  const shortBase = path.resolve('/', 'gsd-2618-short-base');
+  const longBase = path.join(shortBase, LONG_BASE_SEGMENT);
+  const todoAt = (base) =>
+    makeTodo({ path: path.join(base, TODO_RELATIVE_TAIL), needs: 'Add a max-attempts cap.' });
+
+  const fromShort = renderPendingTodosMarkdown([todoAt(shortBase)], shortBase);
+  const fromLong = renderPendingTodosMarkdown([todoAt(longBase)], longBase);
+
+  assert.equal(fromLong, fromShort, 'bullet must not depend on where the repo is checked out');
+  assert.match(fromShort, /Needs Add a max-attempts cap\.$/);
+  assert.match(fromLong, /Needs Add a max-attempts cap\.$/);
+  assert.ok(
+    fromLong.includes(`[todo file](${TODO_RELATIVE_TAIL})`),
+    'link must be the repo-relative tail, not the absolute path',
+  );
+});
+
+test('renderPendingTodosMarkdown: already-relative path is byte-stable with and without projectRoot', () => {
+  const todo = makeTodo({ needs: 'define retry behavior' });
+  const withRoot = renderPendingTodosMarkdown([todo], path.resolve('/', 'gsd-2618-rel-root'));
+  assert.equal(withRoot, renderPendingTodosMarkdown([todo]));
+});
+
+test('renderPendingTodosMarkdown: absolute path without projectRoot keeps the legacy absolute link and drop order', () => {
+  const base = path.join(path.resolve('/', 'gsd-2618-legacy-base'), LONG_BASE_SEGMENT);
+  const todo = makeTodo({ path: path.join(base, TODO_RELATIVE_TAIL), needs: 'a real needs clause' });
+  const line = renderPendingTodosMarkdown([todo]);
+  // Opt-out callers keep today's behavior: over-cap drops needs first, link
+  // verbatim (raw separators — the legacy renderer never posix-normalizes).
+  assert.doesNotMatch(line, /Needs/);
+  assert.ok(line.includes(`[todo file](${todo.path})`));
+});
+
+test('renderPendingTodosMarkdown: long base + long title still bounds the bullet and keeps the drop order', () => {
+  const base = path.join(path.resolve('/', 'gsd-2618-order-base'), LONG_BASE_SEGMENT);
+  const todo = makeTodo({
+    path: path.join(base, TODO_RELATIVE_TAIL),
+    title: 'A'.repeat(300),
+    needs: 'something',
+  });
+  const line = renderPendingTodosMarkdown([todo], base);
+  assert.ok(line.length <= MAX, `expected <= ${MAX}, got ${line.length}`);
+  assert.doesNotMatch(line, /Needs/, 'needs clause must be dropped before title is touched');
+  assert.match(line, /…/);
+  assert.ok(line.includes(`[todo file](${TODO_RELATIVE_TAIL})`), 'relative link verbatim');
+});
+
+test('renderPendingTodosMarkdown: absolute path outside projectRoot renders a ../ relative link', () => {
+  const root = path.resolve('/', 'gsd-2618-outside-root');
+  const outsideTodo = path.join(
+    path.resolve('/', 'gsd-2618-outside-sibling'),
+    TODO_RELATIVE_TAIL,
+  );
+  const line = renderPendingTodosMarkdown([makeTodo({ path: outsideTodo })], root);
+  assert.ok(!line.includes(outsideTodo), 'machine-variable absolute path must not leak into the bullet');
+  assert.ok(
+    line.includes('[todo file](../'),
+    'link must be relative to the project root, not absolute',
+  );
+});
+
+test('renderPendingTodosMarkdown: path equal to projectRoot falls back to the raw link target', () => {
+  const root = path.resolve('/', 'gsd-2618-eq-root');
+  const line = renderPendingTodosMarkdown([makeTodo({ path: root })], root);
+  assert.ok(line.includes(`[todo file](${root})`));
+});
+
+test('renderPendingTodosMarkdown: non-string path keeps the empty-link fallback', () => {
+  const line = renderPendingTodosMarkdown(
+    [makeTodo({ path: 42 })],
+    path.resolve('/', 'gsd-2618-num-root'),
+  );
+  assert.match(line, /\[todo file\]\(\)$/);
+});
+
 // ─── pending_read_ok / pending_todos_markdown via the real CLI surface ─────
 
 const { spawnSync } = require('node:child_process');
@@ -226,6 +316,46 @@ test('cmdInitTodos: real todo file produces a rendered bullet via the CLI', (t) 
   assert.equal(json.todo_count, 1);
   assert.match(json.pending_todos_markdown, /Fix retry logic/);
   assert.match(json.pending_todos_markdown, /Needs Add a max-attempts cap\.$/m);
+});
+
+test('cmdInitTodos: needs clause survives a deterministically long base path (#4384 macOS shape)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2618-long-'));
+  t.after(() => cleanup(root));
+  // One long path segment: deterministic on every OS (no real macOS dependency).
+  // Pre-fix, the absolute-link bullet exceeds 240 chars even on Linux /tmp,
+  // reproducing next's macos shard failure (CI run 34038716700).
+  const dir = path.join(root, LONG_BASE_SEGMENT);
+  const pendingDir = path.join(dir, '.planning', 'todos', 'pending');
+  fs.mkdirSync(pendingDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pendingDir, '2026-09-01-fix-retry-logic.md'),
+    [
+      '---',
+      'created: 2026-09-01T00:00:00.000Z',
+      'title: Fix retry logic',
+      'area: api',
+      '---',
+      '',
+      '## Solution',
+      '',
+      'Add a max-attempts cap.',
+      '',
+    ].join('\n'),
+  );
+
+  const json = runQueryInitTodos(dir);
+  assert.equal(json.pending_read_ok, true);
+  assert.equal(json.todo_count, 1);
+  assert.match(json.pending_todos_markdown, /Fix retry logic/);
+  assert.match(json.pending_todos_markdown, /Needs Add a max-attempts cap\.$/m);
+  assert.ok(
+    json.pending_todos_markdown.includes(`[todo file](${TODO_RELATIVE_TAIL})`),
+    'bullet link must be repo-relative',
+  );
+  assert.ok(
+    !json.pending_todos_markdown.includes(dir.split(path.sep).join('/')),
+    'absolute cwd must not leak into the rendered bullet',
+  );
 });
 
 test('cmdInitTodos: bullet order is filename-sorted regardless of write/insertion order', (t) => {
