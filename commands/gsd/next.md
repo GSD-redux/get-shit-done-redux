@@ -6,6 +6,7 @@ allowed-tools:
   - Read
   - Bash
   - Glob
+  - Grep
   - SlashCommand
   - AskUserQuestion
 ---
