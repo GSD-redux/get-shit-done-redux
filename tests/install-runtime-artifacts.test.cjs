@@ -5206,6 +5206,110 @@ describe('rewriteStagedCommandBodies', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #4377: project-relative includes for local installs
+// ---------------------------------------------------------------------------
+
+describe('#4377 _computePathPrefix — project-relative local includes', () => {
+  // This block sits inside the enh-1511 fold, whose scope has its own
+  // `conversion` binding and does NOT see the outer file's
+  // `runtimeNamePolicy` (that one belongs to the fold that closed above).
+  // require() is cached, so this is a lookup, not a second load.
+  const namePolicy = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+  // A local install baked the install-time absolute path into every generated
+  // @ include. Worked from several git worktrees, that means each worktree
+  // runs its own engine but reads its workflow prose out of ONE checkout —
+  // and updating that checkout breaks every other worktree at once, with no
+  // way to stage it. The relative form lets each worktree read its own copy.
+  //
+  // Every arm below passes `projectRelative` explicitly rather than leaning on
+  // the environment default, so these assertions cannot flip on an ambient
+  // GSD_RELATIVE_INCLUDES leaking in from the runner.
+  const prefix = (over) => conversion._computePathPrefix({
+    isGlobal: false,
+    isOpencode: false,
+    isWindowsHost: false,
+    resolvedTarget: '/project/.cursor',
+    homeDir: '/home/u',
+    ...over,
+  });
+
+  test('opted in, a local install emits the descriptor dir, not the checkout path', () => {
+    assert.equal(prefix({ projectRelative: true, localDirName: '.cursor' }), '.cursor/');
+  });
+
+  test('opted OUT, a local install is byte-identical to the pre-#4377 behavior', () => {
+    // The default must not change for the single-checkout majority.
+    assert.equal(prefix({ projectRelative: false, localDirName: '.cursor' }), '/project/.cursor/');
+  });
+
+  test('a GLOBAL install ignores the opt-in entirely', () => {
+    // The $HOME-shorthand branch is the global contract and #4377 does not
+    // touch it — a relative include in a global install would resolve against
+    // whatever project the user happens to be sitting in.
+    assert.equal(
+      conversion._computePathPrefix({
+        isGlobal: true, isOpencode: false, isWindowsHost: false,
+        resolvedTarget: '/home/u/.cursor', homeDir: '/home/u',
+        projectRelative: true, localDirName: '.cursor',
+      }),
+      '$HOME/.cursor/',
+    );
+  });
+
+  test('a nested descriptor dir survives as a nested relative prefix', () => {
+    assert.equal(
+      prefix({ projectRelative: true, localDirName: '.config/opencode', resolvedTarget: '/project/.config/opencode' }),
+      '.config/opencode/',
+    );
+  });
+
+  test('a Windows-style descriptor value is normalized to POSIX', () => {
+    // The prefix is substituted into markdown @-references, which are POSIX
+    // universally — a backslash here leaks into shipped content (#1615).
+    assert.equal(prefix({ projectRelative: true, localDirName: '.claude\\nested' }), '.claude/nested/');
+  });
+
+  test('a trailing slash in the descriptor does not double up', () => {
+    assert.equal(prefix({ projectRelative: true, localDirName: '.cursor/' }), '.cursor/');
+  });
+
+  // ── fail-safe arms: anything unexpressible falls back to absolute ──────────
+  // A wrong-but-absolute include still points at a real file. A wrong RELATIVE
+  // one silently resolves against whatever the reader's cwd happens to be,
+  // which is a worse failure than the one being fixed.
+  for (const [label, localDirName] of [
+    ['the no-local-config-dir sentinel (vscode)', namePolicy.NO_LOCAL_CONFIG_DIR_SENTINEL],
+    ['an absolute descriptor value', '/etc/gsd'],
+    ['a Windows-absolute descriptor value', 'C:/gsd'],
+    ['a value climbing out of the project', '../outside'],
+    ['a bare ..', '..'],
+    ['an empty value', ''],
+    ['a missing value', undefined],
+  ]) {
+    test(`falls back to the absolute prefix for ${label}`, () => {
+      assert.equal(prefix({ projectRelative: true, localDirName }), '/project/.cursor/');
+    });
+  }
+});
+
+describe('#4377 _relativeIncludesEnabled — the opt-in is off unless asked for', () => {
+  test('reads GSD_RELATIVE_INCLUDES=1 from the injected environment', () => {
+    assert.equal(conversion._relativeIncludesEnabled({ GSD_RELATIVE_INCLUDES: '1' }), true);
+  });
+
+  test('anything other than the exact string 1 is off', () => {
+    // No truthiness coercion: 'true'/'0'/'' must not silently opt a user in.
+    for (const value of ['true', 'yes', '0', '', 'TRUE', ' 1']) {
+      assert.equal(conversion._relativeIncludesEnabled({ GSD_RELATIVE_INCLUDES: value }), false, `value=${JSON.stringify(value)}`);
+    }
+  });
+
+  test('an absent variable is off', () => {
+    assert.equal(conversion._relativeIncludesEnabled({}), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error-path: applyRuntimeContentRewritesForCommandsInPlace must rm the tempDir
 // on any exception and NOT leave an orphaned gsd-cmd-rewrites-* directory.
 // ---------------------------------------------------------------------------

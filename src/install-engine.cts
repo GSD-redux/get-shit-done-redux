@@ -2033,6 +2033,9 @@ function installOpencodeFamilyArtifacts(
     isWindowsHost: process.platform === 'win32',
     resolvedTarget: posixNormalize(path.resolve(configDir)),
     homeDir: posixNormalize(os.homedir()),
+    // #4377: the runtime's own localConfigDir, so an opted-in local install
+    // emits `<dir>/...` instead of this checkout's absolute path.
+    localDirName: runtimeNamePolicy.getDirName(runtime),
   });
 
   // #2329: destDir is derived from the SAME hostBehaviors.flatCommandDir

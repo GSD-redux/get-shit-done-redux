@@ -551,6 +551,48 @@ diagnostic and exits non-zero when nothing resolves.
 
 ---
 
+## Local installs across several git worktrees
+
+A local (`--local`) install writes the includes that point at GSD's own installed
+files as absolute paths — the path the installer resolved at install time. For a
+single checkout that is invisible and works fine.
+
+It stops working once the same repository is checked out more than once. Each git
+worktree gets its own `.claude/` copy, but every one of those copies points back at
+the checkout that ran the installer. So a worktree runs its own `gsd-tools.cjs`
+(correctly resolved through `git rev-parse --show-toplevel`) while reading its
+workflow prose out of a different checkout — and the moment you update that one
+checkout, every other worktree is executing new instructions against an old engine,
+with no way to stage the update.
+
+Install with `--relative-includes` (or `GSD_RELATIVE_INCLUDES=1`) to write the
+includes relative to the project instead:
+
+```bash
+npx @opengsd/gsd-core@latest --claude --local --relative-includes
+```
+
+Every emitted `@` include then reads `@.claude/gsd-core/...` rather than
+`@/absolute/path/to/checkout/.claude/gsd-core/...`, so each worktree resolves its
+own copy and the worktrees become independent.
+
+Notes:
+
+- **It is opt-in and stays opt-in.** Absolute includes work for a single checkout,
+  which is most people; the flag exists for those who need it.
+- **Global installs are unaffected.** They keep their `$HOME`-relative form, which
+  is already checkout-independent.
+- **The runtime launcher keeps its absolute fallbacks.** The shell snippet that
+  locates `gsd-tools.cjs` probes `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` and one such
+  default per runtime; those are shell word expansions, not includes, and a relative
+  value there would resolve against the current shell's directory rather than the
+  project. The launcher already probes `$(git rev-parse --show-toplevel)/.claude`
+  first, so it finds the current worktree before it ever reaches those defaults.
+- **`--relative-includes` with `--global` does nothing.** The flag is only consulted
+  for local installs.
+
+---
+
 ## Installing without Node.js
 
 If you cannot run `npx` (for example, on a Windows machine without Node.js), you have two options.

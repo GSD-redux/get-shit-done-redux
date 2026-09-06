@@ -66,6 +66,9 @@ import runtimeArtifactLayout = require('./runtime-artifact-layout.cjs');
 const { findInstallSourceRoot } = runtimeArtifactLayout;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import runtimeArtifactConversion = require('./runtime-artifact-conversion.cjs');
+// #4377: descriptor-derived local dir name for the project-relative include style.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import runtimeNamePolicy = require('./runtime-name-policy.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import runtimeArtifactInstallPlan = require('./runtime-artifact-install-plan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -409,7 +412,10 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
   const _isGlobal = isGlobalScope(layout.scope ?? 'global');
   const _isOpencode = layout.runtime === 'opencode';
   const _isWindowsHost = (opts?.platform ?? process.platform) === 'win32';
-  const _pathPrefix = runtimeArtifactConversion._computePathPrefix({ isGlobal: _isGlobal, isOpencode: _isOpencode, isWindowsHost: _isWindowsHost, resolvedTarget: _resolvedTarget, homeDir: _homeDir });
+  // #4377: same descriptor-derived local dir name the install path uses, so a
+  // surface re-apply cannot rewrite includes into a different style than the
+  // install that produced them.
+  const _pathPrefix = runtimeArtifactConversion._computePathPrefix({ isGlobal: _isGlobal, isOpencode: _isOpencode, isWindowsHost: _isWindowsHost, resolvedTarget: _resolvedTarget, homeDir: _homeDir, localDirName: runtimeNamePolicy.getDirName(layout.runtime) });
   const _attribution = opts?.resolveAttribution ? opts.resolveAttribution(layout.runtime) : undefined;
   // #2875 Part 2 (row I1): layout.configDir is this call's install root.
   const agentCtx: AgentCtx = { runtime: layout.runtime, pathPrefix: _pathPrefix, attribution: _attribution, targetDir: layout.configDir };
