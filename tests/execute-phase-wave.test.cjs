@@ -1185,8 +1185,8 @@ describe('execute-phase workflow: #3684 review findings — join normalization',
 
 // ── #4217: an abnormally-ended child must be reconciled, not failed ──────────
 //
-// allow-test-rule: source-text-is-the-product — the workflow .md IS the
-// instruction the orchestrator executes; its text is the artifact under test.
+// allow-test-rule: source-text-is-the-product (#4217) — the workflow .md IS
+// the instruction the orchestrator executes; its text is the artifact under test.
 //
 // On Codex the parent waited for a normal terminal child response, then
 // interrupted and closed a child that had already implemented the plan, passed
