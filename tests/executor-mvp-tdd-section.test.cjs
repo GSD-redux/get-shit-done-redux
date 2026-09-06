@@ -256,7 +256,7 @@ describe('bug #3099: absolute-path safety in the canonical reference', () => {
   function extractRootGuard(source, surface) {
     const marker = '# gsd:guard=executor-project-root-pin';
     const fences = source.split('```');
-    const guard = fences.find((body) => body.includes(marker));
+    const guard = fences.find((body) => body.startsWith('bash\n' + marker));
     assert.ok(guard, `${surface} must ship the mode-agnostic project-root guard (#4254)`);
     return guard.replace(/^bash\r?\n/, '').trim();
   }
@@ -285,7 +285,7 @@ describe('bug #3099: absolute-path safety in the canonical reference', () => {
     assert.match(sequential, /ORCHESTRATOR_WT/);
     assert.match(sequential, /build-time/);
     assert.match(sequential, /PROJECT_ROOT=/);
-    assert.match(sequential, /do not pass this instruction through/i);
+    assert.match(sequential, /do not pass this\s+instruction through/i);
     assert.match(sequential, /guard/);
   });
 
@@ -317,6 +317,9 @@ describe('bug #3099: absolute-path safety in the canonical reference', () => {
       const result = runRootGuard(repo, worktree, markerPath);
       assert.equal(result.exitCode, 1, `mismatch must halt: ${result.stderr}`);
       assert.equal(fs.existsSync(markerPath), false, 'no write may run after a root mismatch');
+      const matching = runRootGuard(worktree, worktree, markerPath);
+      assert.equal(matching.exitCode, 0, matching.stderr);
+      assert.equal(fs.existsSync(markerPath), true, 'the matching linked checkout must permit writes');
     } finally {
       cleanup(repo);
     }
@@ -354,7 +357,7 @@ describe('bug #3099: absolute-path safety in the canonical reference', () => {
   test('#4254: composer quotes shell metacharacters and keeps required_reading bound', () => {
     const repo = createTempGitProject('gsd-4254-quoting-');
     try {
-      const tricky = path.join(repo, "quote' space $HOME $(touch INJECTED) `touch INJECTED2`");
+      const tricky = path.join(repo, "quote' space $& $HOME $(touch INJECTED) `touch INJECTED2`");
       fs.symlinkSync(repo, tricky, 'junction');
       const { assignment } = composeRootPin(tricky);
       const binding = runHook('-c', [assignment + '\nprintf %s "$PROJECT_ROOT"'], { interpreter: 'bash', cwd: repo });
@@ -388,7 +391,7 @@ describe('bug #3099: absolute-path safety in the canonical reference', () => {
   test('#3097/#3099: shipped worktree guards reject drift and sibling paths', () => {
     const repo = createTempGitProject('gsd-4254-existing-guards-');
     try {
-      const worktree = path.join(repo, 'linked');
+      const worktree = path.join(fs.realpathSync(repo), 'linked');
       gitOrThrow(['worktree', 'add', '-q', '-b', 'agent-4254-fixture', worktree], { cwd: repo });
       const scriptAt = (heading) => safetyReference.split(heading)[1].split('```bash\n')[1].split('```')[0];
       const drift = scriptAt('## cwd-drift sentinel');

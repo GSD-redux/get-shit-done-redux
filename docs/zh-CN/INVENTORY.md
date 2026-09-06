@@ -302,7 +302,7 @@
 | `scout-codebase.md` | discuss-phase 侦察步骤的阶段类型→代码库映射选择表（通过 discuss-phase/modes 渐进式披露分割提取，#717）。 |
 | `revision-loop.md` | 计划修订迭代模式。 |
 | `universal-anti-patterns.md` | 需要检测和避免的通用反模式。 |
-| `worktree-path-safety.md` | Worktree 守卫套件：HEAD 断言、cwd 漂移哨兵（步骤 0a，#3097）和绝对路径守卫（步骤 0b，#3099）— 通过 `<execution_context>` 加载到执行器生成提示中。 |
+| `worktree-path-safety.md` | 执行器路径守卫：派发时嵌入的根目录 pin（步骤 0p，#4254）、受保护/默认分支 HEAD（步骤 0，#3819）、cwd 漂移哨兵（步骤 0a，#3097）及绝对路径边界检查（步骤 0b，#3099）；包含路径规范化与固定父仓库的子模块约束。 |
 | `artifact-types.md` | 规划产物类型定义。 |
 | `phase-argument-parsing.md` | 阶段参数解析约定。 |
 | `decimal-phase-calculation.md` | 十进制子阶段编号规则。 |

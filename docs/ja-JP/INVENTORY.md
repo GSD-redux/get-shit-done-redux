@@ -302,7 +302,7 @@
 | `scout-codebase.md` | discuss-phase スカウトステップ向けのフェーズタイプ→コードベースマップ選択テーブル（discuss-phase/modes プログレッシブディスクロージャー分割により抽出、#717）。 |
 | `revision-loop.md` | プラン修正の反復パターン。 |
 | `universal-anti-patterns.md` | 検出して避けるべきユニバーサルアンチパターン。 |
-| `worktree-path-safety.md` | ワークツリーガードスイート: HEAD アサーション、cwd ドリフトセンチネル（ステップ 0a、#3097）、絶対パスガード（ステップ 0b、#3099）— `<execution_context>` 経由でエグゼキュータースポーンプロンプトに読み込まれる。 |
+| `worktree-path-safety.md` | エグゼキューターのパスガード：ディスパッチ時に埋め込むルート pin（ステップ 0p、#4254）、保護/デフォルトブランチの HEAD（ステップ 0、#3819）、cwd ドリフト（ステップ 0a、#3097）、絶対パス境界（ステップ 0b、#3099）。ルートの正規化と固定された親リポジトリのサブモジュール規約を含む。 |
 | `artifact-types.md` | 計画アーティファクトタイプの定義。 |
 | `phase-argument-parsing.md` | フェーズ引数の解析規約。 |
 | `decimal-phase-calculation.md` | 小数サブフェーズの番号付けルール。 |

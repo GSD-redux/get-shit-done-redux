@@ -733,7 +733,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
        <worktree_branch_check>
        ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read `gsd-core/references/worktree-branch-check.md`, substitute `{EXPECTED_BASE}` with the base SHA captured above ({EXPECTED_BASE}), and replace this note with that fragment's `<worktree_branch_check>` block so the dispatched prompt carries the runnable guard verbatim — do not pass this instruction through in its place.
-       Per-commit HEAD/cwd-drift/path-guard: `agents/gsd-executor.md` steps 0/0a/0b + `gsd-core/references/worktree-path-safety.md` (in <execution_context>).
+       Per-commit HEAD/cwd-drift/path-guard: `gsd-core/references/worktree-path-safety.md` steps 0p/0a/0b/0 (in <execution_context>).
        </worktree_branch_check>
 
        <parallel_execution>
@@ -810,11 +810,15 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **Orchestrator-managed worktree dispatch** (`ISOLATION=orchestrator-worktree`): read and execute `execute-phase/steps/executor-isolation-dispatch.md`. GSD creates each worktree (`worktree create`) and spawns the executor into it; the orchestrator performs every git operation. Merge-back and cleanup are the existing manifest-scoped gauntlet, unchanged.
 
-   **Sequential mode** (`USE_WORKTREES_FOR_PLAN=false` project-wide or from step 2.5's submodule check):
+   **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is false project-wide or from step 2.5's submodule check):
 
-   Omit `isolation="worktree"`. In this prompt, replace
-   `PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)` in `<required_reading>` with
-   `$ORCHESTRATOR_WT`'s literal value; then replace `<parallel_execution>` with:
+   Omit `isolation="worktree"` and `<worktree_branch_check>`. ORCHESTRATOR build-time
+   embed: run the composer in `worktree-path-safety.md` with the validated
+   `$ORCHESTRATOR_WT` and that reference's absolute path. Replace the entire
+   `PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)` assignment in
+   `<required_reading>` with its returned `assignment` (including `PROJECT_ROOT=`).
+   Put its returned runnable `guard` inside `<project_root_pin>`; do not pass this
+   instruction through in its place. Replace `<parallel_execution>` with:
 
    ```
        <sequential_execution>
@@ -823,8 +827,10 @@ increases monotonically across waves. `{status}` is `complete` (success),
        REQUIRED ORDER: Write SUMMARY.md → commit → only then any narration. No text between Write and commit (truncation risk; #2070 rescue is not primary defense).
        </sequential_execution>
 
-       <project_root_pin>{literal ORCHESTRATOR_WT value}</project_root_pin>
+       <project_root_pin>{composer guard, with the root already shell-quoted and bound}</project_root_pin>
    ```
+
+   Submodule plans must follow step 0p's cwd contract and re-run the guard after entering the submodule.
 
    Also replace `success_criteria` with:
 
@@ -838,7 +844,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        </success_criteria>
    ```
 
-   Serialize non-worktree plans on the main tree; isolated plans may still run in parallel.
+   When worktrees are disabled for a plan, serialize it on the pinned tree; isolated plans may run in parallel.
    Project-level `USE_WORKTREES=false` serializes the whole wave regardless of `PARALLELIZATION`.
 
 4. **Wait for all agents in wave to complete.**

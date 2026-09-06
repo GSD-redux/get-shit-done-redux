@@ -1,40 +1,83 @@
 # Executor Path Safety
 
-Guards for executor agents. The supplied-root check runs in every mode; the three
-remaining checks apply inside Claude Code worktrees. Run the applicable checks
-before any staging, Edit, or Write operation.
+Guards for executor agents. Supplied-root and protected-branch checks are independent
+of worktree shape; cwd-drift and absolute-path checks protect isolated worktrees.
+Run applicable checks before staging, Edit, or Write and before every commit.
 
 ---
 
 ## Supplied-root guard — step 0p (#4254, all modes)
 
-Sequential dispatches include a `<project_root_pin>` containing the orchestrator's
-already-validated absolute root. Copy its exact literal content into
-`SUPPLIED_PROJECT_ROOT` below before running the block. Do not derive the supplied
-value from the executor's cwd. If the tag is absent, leave the assignment empty:
-older orchestrators and isolated dispatches warn and proceed for compatibility.
+The orchestrator embeds the **runnable block**, with its literal root already bound,
+inside `<project_root_pin>`. Run that block unchanged before the first write and
+again before each commit, in the same cwd as the write/commit. Never fill in a pin
+from the executor's cwd. A sequential dispatch with a missing/unexpanded block must
+HALT and request redispatch. For older dispatches with neither a sequential tag nor
+a pin, and for isolated dispatches without a pin, warn and continue with the other
+applicable guards; do not execute an empty-pin version of this template.
 
-This check must not use `[ -f .git ]` or any other worktree-shape gate. A sequential
-executor that starts in the wrong primary checkout sees a `.git` directory and must
-still halt before its first Edit, Write, staging operation, or commit.
+Keep the cwd in the pinned checkout. A plan explicitly touching a registered
+submodule may enter that submodule to stage/commit: the guard verifies its immediate
+superproject is the pinned checkout and its physical root is inside that checkout.
+An unrelated nested repository, another checkout's submodule, or a symlink escaping
+the pin must halt. For nested submodules, dispatch separately with their immediate
+superproject as the validated pin. Re-run the guard after every cwd change; do not
+use `git -C` to switch commit targets behind a guard run in a different cwd.
+
+### Orchestrator build-time composition
+
+Run this JavaScript with Node (`node -e <this block> "$ORCHESTRATOR_WT"
+"$PATH_SAFETY_REFERENCE"`), where `PATH_SAFETY_REFERENCE` is the absolute path of
+this loaded reference. It returns JSON: `assignment` replaces the entire
+`PROJECT_ROOT=$(...)` assignment in `<required_reading>`; `guard` replaces the
+contents of `<project_root_pin>`. Insert the returned strings as prompt text, not
+as shell commands to evaluate during composition. Never hand-quote the path or
+pass the composition instruction through to the executor.
+
+```javascript
+// gsd:compose=executor-project-root-pin
+const fs = require('node:fs');
+const path = require('node:path');
+const [root, reference] = process.argv.slice(1);
+if (!root || !path.isAbsolute(root)) throw new Error('Missing absolute ORCHESTRATOR_WT (#4254)');
+const source = fs.readFileSync(reference, 'utf8');
+const marker = '# gsd:guard=executor-project-root-pin';
+const fence = String.fromCharCode(96).repeat(3);
+const template = source.split(fence + 'bash\n').find(block => block.startsWith(marker))?.split(fence)[0];
+if (!template || !template.includes('SUPPLIED_PROJECT_ROOT={PROJECT_ROOT_LITERAL}')) {
+  throw new Error('Missing supplied-root guard template (#4254)');
+}
+const quoted = "'" + root.replace(/'/g, "'\"'\"'") + "'";
+const guard = template.replace('SUPPLIED_PROJECT_ROOT={PROJECT_ROOT_LITERAL}', () => 'SUPPLIED_PROJECT_ROOT=' + quoted);
+process.stdout.write(JSON.stringify({ assignment: 'PROJECT_ROOT=' + quoted, guard }));
+```
 
 ```bash
 # gsd:guard=executor-project-root-pin
-SUPPLIED_PROJECT_ROOT='' # Replace RHS with the shell-quoted <project_root_pin> literal when supplied.
-ACTUAL_PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$SUPPLIED_PROJECT_ROOT" ]; then
-  echo "WARNING: no orchestrator project-root pin was supplied; proceeding with the executor-resolved root for compatibility (#4254)." >&2
-elif [ -z "$ACTUAL_PROJECT_ROOT" ] || [ "$ACTUAL_PROJECT_ROOT" != "$SUPPLIED_PROJECT_ROOT" ]; then
-  echo "FATAL: executor root does not match the orchestrator-supplied project root (#4254)." >&2
-  echo "  Supplied: $SUPPLIED_PROJECT_ROOT" >&2
-  echo "  Current:  ${ACTUAL_PROJECT_ROOT:-<unresolved>}" >&2
-  echo "Halting before Edit, Write, staging, or commit; re-dispatch from the orchestrator's checkout." >&2
+SUPPLIED_PROJECT_ROOT={PROJECT_ROOT_LITERAL}
+gsd_root_pin_fail() {
+  echo "FATAL: executor root does not match a valid orchestrator pin (#4254); halt before writes/commits and request redispatch." >&2
   exit 1
+}
+case "$SUPPLIED_PROJECT_ROOT" in
+  /*|[A-Za-z]:/*) ;;
+  *) gsd_root_pin_fail ;;
+esac
+PINNED_ROOT=$(CDPATH= cd -- "$SUPPLIED_PROJECT_ROOT" 2>/dev/null && pwd -P) || gsd_root_pin_fail
+ACTUAL_PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || gsd_root_pin_fail
+[ -n "$ACTUAL_PROJECT_ROOT" ] || gsd_root_pin_fail
+ACTUAL_PROJECT_ROOT=$(CDPATH= cd -- "$ACTUAL_PROJECT_ROOT" 2>/dev/null && pwd -P) || gsd_root_pin_fail
+if [ "$ACTUAL_PROJECT_ROOT" != "$PINNED_ROOT" ]; then
+  SUPERPROJECT_ROOT=$(git rev-parse --show-superproject-working-tree 2>/dev/null) || gsd_root_pin_fail
+  [ -n "$SUPERPROJECT_ROOT" ] || gsd_root_pin_fail
+  SUPERPROJECT_ROOT=$(CDPATH= cd -- "$SUPERPROJECT_ROOT" 2>/dev/null && pwd -P) || gsd_root_pin_fail
+  [ "$SUPERPROJECT_ROOT" = "$PINNED_ROOT" ] || gsd_root_pin_fail
+  case "$ACTUAL_PROJECT_ROOT" in
+    "$PINNED_ROOT"/*) ;;
+    *) gsd_root_pin_fail ;;
+  esac
 fi
 ```
-
-Run this guard before the first write and again immediately before the task commit
-protocol. Continue with the worktree-only checks below when they apply.
 
 ---
 

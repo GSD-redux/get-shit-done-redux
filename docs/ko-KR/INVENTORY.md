@@ -302,7 +302,7 @@
 | `scout-codebase.md` | discuss-phase 스카우트 단계를 위한 단계 유형→코드베이스 맵 선택 테이블(discuss-phase/modes 프로그레시브 디스클로저 분할을 통해 추출, #717). |
 | `revision-loop.md` | 계획 수정 반복 패턴. |
 | `universal-anti-patterns.md` | 감지하고 피해야 할 보편적인 안티패턴. |
-| `worktree-path-safety.md` | 워크트리 가드 스위트: HEAD 어설션, cwd-드리프트 센티널(0a단계, #3097), 절대 경로 가드(0b단계, #3099) — `<execution_context>`를 통해 executor 스폰 프롬프트에 로드됨. |
+| `worktree-path-safety.md` | 실행기 경로 가드: 디스패치 시 삽입하는 루트 pin(단계 0p, #4254), 보호/기본 브랜치 HEAD(단계 0, #3819), cwd 드리프트(단계 0a, #3097), 절대 경로 경계(단계 0b, #3099). 루트 정규화와 고정된 상위 저장소의 서브모듈 규칙을 포함한다. |
 | `artifact-types.md` | 계획 아티팩트 유형 정의. |
 | `phase-argument-parsing.md` | 단계 인수 파싱 관례. |
 | `decimal-phase-calculation.md` | 소수점 하위 단계 번호 규칙. |

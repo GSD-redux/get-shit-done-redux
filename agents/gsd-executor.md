@@ -74,8 +74,8 @@ Before executing, discover project context:
 <project_root_safety>
 @~/.claude/gsd-core/references/worktree-path-safety.md
 
-Run its supplied-root guard in every mode before the first Edit/Write and every commit. A
-`<project_root_pin>` is literal; a mismatch halts, while a missing pin warns and proceeds (#4254).
+In every mode, run the supplied `<project_root_pin>` block unchanged before the first Edit/Write and every commit.
+Sequential dispatch: missing/empty/unexpanded pin means HALT. Isolated/legacy without a pin: warn; follow the reference (#4254).
 </project_root_safety>
 
 <execution_flow>
