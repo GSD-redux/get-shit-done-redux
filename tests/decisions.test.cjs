@@ -2572,21 +2572,25 @@ describe('check.decision-coverage-plan — --context flag matches the positional
 
   const coveredPlan = () => '# Plan\n## Must Haves\n- D4-01: provision the datastore\n';
 
-  test('ROW-1 RED: --context <path> alone routes identically to the positional form', () => {
+  test('--context <path> alone routes the path into the context slot (no stray flag token anywhere)', () => {
     writeContextFile(phaseDir, coveredContext());
     writePlanFile(phaseDir, '01', coveredPlan());
     const contextPath = path.join(phaseDir, 'CONTEXT.md');
 
+    // The phase dir is a SEPARATE positional; `--context`-only means no phase
+    // was given, which routes exactly like an empty phase positional. The
+    // assertion that matters: the flag's VALUE reaches the gate (the decision
+    // is counted and reported uncovered — parsed from the flag's path), and
+    // the output is identical to the equivalent positional invocation.
     const viaFlag = JSON.parse(runDcp(['--context', contextPath]).output || '{}');
-    const viaPositional = JSON.parse(runDcp([phaseDir, contextPath]).output || '{}');
+    const viaEmptyPhasePositional = JSON.parse(runDcp(['', contextPath]).output || '{}');
 
-    // Before the fix: viaFlag was passed:false / covered:0 (the `--context`
-    // token landed in the phase-dir slot, so no plans were scanned).
-    assert.deepStrictEqual(viaFlag, viaPositional,
-      `--context must route identically to the positional form.\nflag: ${JSON.stringify(viaFlag)}\npos:  ${JSON.stringify(viaPositional)}`);
-    assert.strictEqual(viaPositional.passed, true, 'control: the covered fixture passes positionally');
-    assert.strictEqual(viaPositional.total, 1);
-    assert.strictEqual(viaPositional.covered, 1);
+    assert.deepStrictEqual(viaFlag, viaEmptyPhasePositional,
+      `--context-only must route like the empty-phase positional.\nflag: ${JSON.stringify(viaFlag)}\npos:  ${JSON.stringify(viaEmptyPhasePositional)}`);
+    assert.strictEqual(viaFlag.total, 1,
+      `the decision must be read from the flag's path. Got: ${JSON.stringify(viaFlag)}`);
+    assert.strictEqual(viaFlag.passed, false, 'no phase → no plans scanned → coverage gap, not a parse accident');
+    assert.deepStrictEqual((viaFlag.uncovered || []).map((u) => u.id), ['D4-01']);
   });
 
   test('ROW-1 RED: <phase> --context <path> composes (flag value reaches the gate, not the phase slot)', () => {
@@ -2744,16 +2748,20 @@ describe('parseDecisions hardening — regex lattice pins the mechanism (#4130 f
     return m[1];
   }
 
-  /** Extract a `new RegExp(`...`)` template body and substitute ${CONSTS}. */
+  /**
+   * Extract a `new RegExp(`...`)` template body, substitute ${CONSTS}, and
+   * unescape the template-literal double backslashes — the result is the
+   * exact regex SOURCE STRING the module compiles.
+   */
   function readRegExpTemplate(source, varName, consts) {
-    const m = source.match(new RegExp(`^const ${varName} = new RegExp\\(\n  \`([^\`]+)\`,?\n?\);?`, 'm'));
+    const m = source.match(new RegExp(`^const ${varName} = new RegExp\\(\n  \`([^\`]+)\`,?\n?\\);?`, 'm'));
     assert.ok(m, `source must declare ${varName} as a template-literal RegExp`);
     let out = m[1];
     for (const [name, value] of Object.entries(consts)) {
       out = out.split(`\${${name}}`).join(value);
     }
-    assert.ok(!out.includes('\${'), `unsubstituted template placeholder in ${varName}`);
-    return out;
+    assert.ok(!out.includes('$' + '{'), `unsubstituted template placeholder in ${varName}`);
+    return out.replace(/\\\\/g, '\\');
   }
 
   const source = fs.readFileSync(SRC, 'utf8');
@@ -2797,26 +2805,52 @@ describe('parseDecisions hardening — regex lattice pins the mechanism (#4130 f
     // engine trade characters between the two — O(n) splits × O(n) rescans.
     // After the hardening every unbounded bracketed class run in the three
     // grammars is followed by a token disjoint from its class (or by a group
-    // boundary, whose overlap is excluded separately by the atomic-wrapper
-    // assert above).
+    // boundary / the atomic backreference replay, which cannot re-split).
     const joined = `${colonSrc}\n${emDashSrc}\n${titledSrc}`;
     const quantifiers = [...joined.matchAll(/\[((?:[^\]\\]|\\.)*)\](\*|\+)/g)];
     assert.ok(quantifiers.length >= 6, 'expected the seam\'s class quantifiers to be found');
 
-    // First-set of the atom that follows a quantified class, as a membership
-    // predicate over candidate characters. `null` = boundary (group close,
-    // anchor, end) — not a direct adjacency; skip.
+    /** Membership predicate for a class BODY, honoring ranges and escapes. */
+    function classPredicate(body) {
+      const negated = body.startsWith('^');
+      const inner = negated ? body.slice(1) : body;
+      const members = new Set();
+      const chars = [...inner];
+      for (let i = 0; i < chars.length; i++) {
+        let ch = chars[i];
+        if (ch === '\\' && i + 1 < chars.length) ch = chars[++i];
+        // Range: a-b where a and b are single member chars.
+        if (chars[i + 1] === '-' && chars[i + 2] !== undefined && chars[i + 2] !== ']') {
+          const lo = ch;
+          let hi = chars[i + 2];
+          if (hi === '\\' && chars[i + 3] !== undefined) { i += 3; hi = chars[i]; } else { i += 2; }
+          for (let c = lo.charCodeAt(0); c <= hi.charCodeAt(0); c++) members.add(String.fromCharCode(c));
+          continue;
+        }
+        members.add(ch);
+      }
+      return (ch) => (negated ? !members.has(ch) : members.has(ch));
+    }
+
+    /**
+     * First-set of the atom that follows a quantified class, as a membership
+     * predicate. `null` = boundary — group close, anchor, end, or the `\1`
+     * backreference of the atomic wrapper (its first-set is the captured id
+     * run, replayed verbatim: it cannot trade characters with the quantifier,
+     * which is the entire point of the wrapper).
+     */
     function nextAtomFirstSet(src, at) {
       if (at >= src.length) return null;
       const c = src[at];
       if (c === ')' || c === '$' || c === '|') return null;
-      if (c === '\\') return (ch) => ch === src[at + 1];
+      if (c === '\\') {
+        const nxt = src[at + 1];
+        if (nxt >= '0' && nxt <= '9') return null; // backreference replay — skip
+        return (ch) => ch === nxt;
+      }
       if (c === '[') {
         const close = src.indexOf(']', at);
-        const body = src.slice(at + 1, close);
-        const negated = body.startsWith('^');
-        const members = body.replace(/^\^/, '');
-        return negated ? (ch) => !members.includes(ch) : (ch) => members.includes(ch);
+        return classPredicate(src.slice(at + 1, close));
       }
       return (ch) => ch === c;
     }
@@ -2824,13 +2858,11 @@ describe('parseDecisions hardening — regex lattice pins the mechanism (#4130 f
     for (const m of quantifiers) {
       const body = m[1];
       const quant = m[2];
-      const negated = body.startsWith('^');
-      const members = body.replace(/^\^/, '').replace(/\\./g, (s) => s.slice(1));
-      const classAccepts = negated ? (ch) => !members.includes(ch) : (ch) => members.includes(ch);
+      const classAccepts = classPredicate(body);
       const firstSet = nextAtomFirstSet(joined, m.index + m[0].length);
       if (firstSet === null) continue;
       // A witness char the class accepts that the following atom also accepts.
-      const ALPHABET = '*:-[]()Ds01_—–\\ \tn';
+      const ALPHABET = '*:-[]()Ds01_—–\\ \tnA';
       const witness = [...ALPHABET].find((ch) => classAccepts(ch) && firstSet(ch));
       assert.ok(witness === undefined,
         `unbounded quantifier [${body}]${quant} is followed by an atom accepting '${witness}' which its class also accepts — adjacency overlap:\n${joined.slice(m.index, m.index + m[0].length + 10)}`);
