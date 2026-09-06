@@ -8086,6 +8086,15 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   const { installSpawnEnv } = require('./helpers.cjs');
   const installPath = path.join(__dirname, '..', 'bin', 'install.js');
 
+  // The emitted prefix is POSIX-normalized by design: it is substituted into
+  // markdown @-references, which use forward slashes universally, so a
+  // backslash there would leak into shipped content (#1615). On Windows the
+  // temp roots below arrive as `D:\a\...`, which appears in no emitted file.
+  // Comparing the raw root would make the negative arms pass vacuously —
+  // "nothing references the checkout" is trivially true when the string being
+  // searched for cannot occur — so every comparison goes through this.
+  const toPosix = (p2) => p2.replace(/\\/g, '/');
+
   // Self-contained runner: the file's other runInstall helpers live inside
   // folded blocks and are not in scope here. #3156's sandboxed HOME still
   // applies — the installer writes <home>/.gsd/defaults.json via os.homedir()
@@ -8140,7 +8149,7 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   test('the default install still bakes the absolute checkout path (unchanged behavior)', () => {
     // The control. Without it, a change that broke the absolute form entirely
     // would satisfy every assertion below and look like a fix.
-    const carriers = allBodies(absDir).filter((f) => f.content.includes(absDir));
+    const carriers = allBodies(absDir).filter((f) => f.content.includes(toPosix(absDir)));
     assert.ok(
       carriers.length > 0,
       '#4377 is opt-in: the default local install must keep emitting absolute includes',
@@ -8148,7 +8157,7 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   });
 
   test('with the flag, NOTHING in the installed tree references the checkout it came from', () => {
-    const offenders = allBodies(relDir).filter((f) => f.content.includes(relDir)).map((f) => f.rel);
+    const offenders = allBodies(relDir).filter((f) => f.content.includes(toPosix(relDir))).map((f) => f.rel);
     assert.deepEqual(offenders, [], 'no installed file may reference the checkout it was installed from');
   });
 
@@ -8199,14 +8208,15 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
       // Both manifests record per-file absolute paths, which legitimately
       // differ between two different install roots.
       if (name === 'gsd-file-manifest.json' || name === 'gsd-install-state.json') continue;
+      const absRoot = toPosix(absDir);
       const normalized = content
         // (1) shell defaults: absolute install rewrote them to its own root;
         //     the relative install left them at $HOME.
-        .split(`:-${absDir}/.claude}`).join(':-$HOME/.claude}')
+        .split(`:-${absRoot}/.claude}`).join(':-$HOME/.claude}')
         // (2) the include prefix itself, both the slash form and the bare
         //     trailing form the word-boundary passes emit.
-        .split(`${absDir}/.claude/`).join('.claude/')
-        .split(`${absDir}/.claude`).join('.claude');
+        .split(`${absRoot}/.claude/`).join('.claude/')
+        .split(`${absRoot}/.claude`).join('.claude');
       if (normalized !== rel.get(name)) mismatched.push(name);
     }
     assert.deepEqual(mismatched, [], 'the flag must change the include prefix, and nothing beyond it');
