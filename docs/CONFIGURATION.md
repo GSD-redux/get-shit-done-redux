@@ -1564,7 +1564,9 @@ Override specific agents without changing the entire profile:
 }
 ```
 
-Valid override values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model ID (e.g., `"openai/o3"`, `"google/gemini-2.5-pro"`).
+Valid override values: `opus`, `sonnet`, `haiku`, `fable`, `inherit`, or any fully-qualified model ID (e.g., `"openai/o3"`, `"google/gemini-2.5-pro"`).
+
+On the Claude runtime, fully-qualified Claude model IDs are honored as explicit generation pins (#4192): an ID that names the current tier default (e.g. `"claude-sonnet-5"`) collapses to its tier alias — the same model in the form Claude Code's Agent tool always accepts — while any other ID (e.g. `"claude-opus-4-7"`) is resolved verbatim, so the pinned generation is what `resolve-model` reports. GSD emits a warn-once stderr breadcrumb for verbatim pins, because Claude Code setups whose Agent tool accepts only tier aliases will not honor a full ID. `fable` is a Claude Code Agent-tool alias, not a GSD profile tier: it is valid in `model_overrides` but has no column in the profile table.
 
 `model_overrides` can be set in either `.planning/config.json` (per-project)
 or `~/.gsd/defaults.json` (global). Per-project entries win on conflict and
@@ -2095,14 +2097,19 @@ When `runtime` is set, profile tiers (`opus`/`sonnet`/`haiku`) resolve to runtim
 
 This resolves `gsd-planner` → `gpt-5.6-sol` (xhigh), `gsd-executor` → `gpt-5.6-terra` (medium), `gsd-codebase-mapper` → `gpt-5.6-luna` (medium). Codex skills pass each resolved `model` and `reasoning_effort` to `spawn_agent` when its visible schema advertises the corresponding field; otherwise they omit the field and inherit the session/static agent configuration.
 
-**Claude example** — explicit opt-in resolves to full Claude IDs (no `resolve_model_ids: true` needed):
+**Claude example** — pin a tier's generation without giving up tier-based profiles (#4192):
 
 ```json
 {
   "runtime": "claude",
-  "model_profile": "quality"
+  "model_profile": "quality",
+  "model_profile_overrides": {
+    "claude": { "opus": "claude-opus-4-7" }
+  }
 }
 ```
+
+On the Claude runtime, tier resolution stays on Claude Code's adaptive tier aliases (`opus` / `sonnet` / `haiku`) unless you override a tier. An override value that names the current tier default collapses back to its alias (the same model in the always-accepted form); any other value — a pinned older generation such as `claude-opus-4-7`, a bare alias repointing the tier, or a non-Anthropic model id — is resolved verbatim, so `resolve-model` reports exactly what the profile pins. Setting `runtime: "claude"` alone (no overrides) changes nothing: aliases resolve exactly as they do with the key absent. `resolve_model_ids: true` remains the global switch for materializing full IDs on every agent.
 
 **Per-runtime overrides** — replace one or more tier defaults:
 
@@ -2122,8 +2129,8 @@ This resolves `gsd-planner` → `gpt-5.6-sol` (xhigh), `gsd-executor` → `gpt-5
 **Precedence (highest to lowest):**
 
 1. `model_overrides[<agent>]` — explicit per-agent ID always wins.
-2. **Runtime-aware tier resolution** (this section) — when `runtime` is set and profile is not `inherit`.
-3. `resolve_model_ids: "omit"` — returns empty string when no `runtime` is set.
+2. **Runtime-aware tier resolution** (this section) — when `runtime` is set and profile is not `inherit`. On non-Claude runtimes this is the built-in tier map merged with your `model_profile_overrides`; on the Claude runtime it applies only the `model_profile_overrides.claude.<tier>` entry you set (#4192) — never the built-in defaults, so unpinned installs keep resolving aliases.
+3. `resolve_model_ids: "omit"` — returns empty string when no `runtime` is set (an explicit project-level `"omit"` wins over a `claude` tier override too).
 4. Claude-native default — `model_profile` tier as alias (current default).
 5. `inherit` — propagates literal `inherit` for `Task(model="inherit")` semantics.
 
