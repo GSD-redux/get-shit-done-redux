@@ -227,6 +227,30 @@ test('cmdInitTodos: real todo file produces a rendered bullet via the CLI', (t) 
   assert.match(json.pending_todos_markdown, /Needs Add a max-attempts cap\.$/m);
 });
 
+test('cmdInitTodos: bullet order is filename-sorted regardless of write/insertion order', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2618-'));
+  t.after(() => cleanup(dir));
+  const pendingDir = path.join(dir, '.planning', 'todos', 'pending');
+  fs.mkdirSync(pendingDir, { recursive: true });
+  // Written in reverse-alphabetical insertion order on purpose — readdirSync
+  // order is filesystem-dependent, not contractually stable, so the ONLY way
+  // to assert a deterministic bullet order is to sort explicitly. See #2618
+  // spec review finding on git-diff stability (must-have #3).
+  const todoBody = (title) =>
+    ['---', 'created: 2026-09-01', `title: ${title}`, 'area: api', '---', ''].join('\n');
+  fs.writeFileSync(path.join(pendingDir, '2026-09-03-third.md'), todoBody('Third todo'));
+  fs.writeFileSync(path.join(pendingDir, '2026-09-01-first.md'), todoBody('First todo'));
+  fs.writeFileSync(path.join(pendingDir, '2026-09-02-second.md'), todoBody('Second todo'));
+
+  const json = runQueryInitTodos(dir);
+  const titles = json.todos.map((t2) => t2.title);
+  assert.deepEqual(titles, ['First todo', 'Second todo', 'Third todo']);
+  const lines = json.pending_todos_markdown.split('\n');
+  assert.ok(lines[0].includes('First todo'));
+  assert.ok(lines[1].includes('Second todo'));
+  assert.ok(lines[2].includes('Third todo'));
+});
+
 // ─── workflow parity guard (DEFECT.GENERATIVE-FIX) ─────────────────────────
 
 function extractUpdateStateStep(workflowPath) {

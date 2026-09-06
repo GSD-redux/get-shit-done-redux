@@ -2339,7 +2339,13 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
   let pendingReadOk = true;
 
   try {
-    const files = fs.readdirSync(pendingDir).filter((f) => f.endsWith('.md'));
+    // #2618: sorted so pending_todos_markdown's bullet order is stable across
+    // runs — readdirSync's order is filesystem-dependent, not contractually
+    // stable, and an unstable order would reorder every bullet on an
+    // unrelated re-render, turning a one-line git diff into a full-section
+    // rewrite (must-have #3). Filenames are `YYYY-MM-DD-slug.md`, so this
+    // also yields a sensible chronological order as a side effect.
+    const files = fs.readdirSync(pendingDir).filter((f) => f.endsWith('.md')).sort();
     for (const file of files) {
       const content = platformReadSync(path.join(pendingDir, file));
       if (content === null) continue;
