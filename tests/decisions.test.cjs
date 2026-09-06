@@ -2629,12 +2629,14 @@ describe('check.decision-coverage-plan — --context flag matches the positional
     const decoyContext = path.join(phaseDir, 'DECOY-CONTEXT.md');
     fs.writeFileSync(decoyContext, '# Nothing decision-shaped here.\n');
 
+    // Hold the PHASE constant so the comparison isolates WHICH context file
+    // was read: decoy-positional + flag must equal flag-alone-with-phase.
     const viaBoth = JSON.parse(runDcp([phaseDir, decoyContext, '--context', flagContext]).output || '{}');
-    const viaFlagOnly = JSON.parse(runDcp(['--context', flagContext]).output || '{}');
+    const viaFlag = JSON.parse(runDcp([phaseDir, '--context', flagContext]).output || '{}');
 
-    assert.deepStrictEqual(viaBoth, viaFlagOnly,
-      `--context must win over the positional context.\nboth: ${JSON.stringify(viaBoth)}\nflag: ${JSON.stringify(viaFlagOnly)}`);
-    assert.strictEqual(viaBoth.passed, true);
+    assert.deepStrictEqual(viaBoth, viaFlag,
+      `--context must win over the positional context.\nboth: ${JSON.stringify(viaBoth)}\nflag: ${JSON.stringify(viaFlag)}`);
+    assert.strictEqual(viaBoth.passed, true, 'the flag file (covered decision) must be the one read');
     assert.strictEqual(viaBoth.total, 1);
   });
 

@@ -310,7 +310,13 @@ function cmdDecisionCoveragePlan(projectDir: string, args: string[], raw: boolea
   // and their values never land in a positional slot.
   const { flags, positionals } = partitionPredicateArgs(args.slice(2));
   const phaseDir = positionals[0] ? resolvePath(positionals[0], projectDir) : '';
-  const contextArg = flags['context'] ?? positionals[1] ?? '';
+  // A VALUELESS `--context` stays a bare token in the positionals (sibling
+  // parser semantics); it must not then be read as the context PATH — a
+  // `--`-prefixed "path" is a caller mistake, and #2770's law says a missing
+  // context argument fails CLOSED, never a silent "CONTEXT.md missing" green
+  // skip. So only a non-flag positional may serve as the context.
+  const positionalContext = positionals[1] && !positionals[1].startsWith('--') ? positionals[1] : '';
+  const contextArg = flags['context'] ?? positionalContext ?? '';
   const contextPath = contextArg ? resolvePath(contextArg, projectDir) : '';
 
   if (!gateEnabled(projectDir)) {
