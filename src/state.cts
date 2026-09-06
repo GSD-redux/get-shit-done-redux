@@ -3448,10 +3448,13 @@ function isPartialProgressIntent(value: unknown): value is Record<string, unknow
  * source (ADR-3408 §8.5) decides which leaves exist; an intent may not invent
  * one. Returns whether anything changed.
  *
- * `completedOnlyRaise` (the post-preservation re-assert posture): completed
- * counters apply only when strictly greater than what is already in the block,
- * so the #2969 monotonic property preservation just enforced survives the
- * intent. `percent` follows its sibling: it is applied when a completed
+ * `completedOnlyRaise` (both application sites use it): completed counters
+ * apply only when strictly greater than what is already in the block, so no
+ * intent can LOWER a count another trustworthy signal already established —
+ * at the pre-preservation site the disk derivation's own count (a
+ * verification-passed phase whose ROADMAP row drifted behind), at the
+ * post-preservation re-assert the #2969 monotonic property preservation just
+ * enforced. `percent` follows its sibling: it is applied when a completed
  * counter moved this call (the intent percent was computed from the intent
  * counters and is coherent with them) or when the block has no percent to
  * lose (a repair, never a regression of an upstream withhold — the withhold
@@ -3725,13 +3728,17 @@ function syncStateFrontmatter(
   // #4129: the `progress` key carries a PARTIAL block (the object direction of
   // this seam — see applyAuthoritativeProgressSubkeys) for the same reason:
   // completePhase holds the POST-completion ROADMAP, and the disk scan this
-  // function drives reads the PRE-completion one.
+  // function drives reads the PRE-completion one. The intent is applied as a
+  // FLOOR here too (completedOnlyRaise): a derivation that already counted
+  // MORE completed phases than the ROADMAP table asserts (verification-passed
+  // phases whose table rows drifted behind) must not be lowered by the intent
+  // — the two signals agree on direction (up), never on subtraction.
   if (authoritativeFm) {
     for (const [key, value] of Object.entries(authoritativeFm)) {
       if (typeof value === 'string' && value.trim().length > 0) {
         derivedFm[key] = value;
       } else if (key === 'progress' && isPartialProgressIntent(value)) {
-        applyAuthoritativeProgressSubkeys(derivedFm, value, { completedOnlyRaise: false });
+        applyAuthoritativeProgressSubkeys(derivedFm, value, { completedOnlyRaise: true });
       }
     }
   }
