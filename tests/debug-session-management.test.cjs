@@ -567,3 +567,48 @@ describe('#3448 debug auto-resume must thread the recorded next_action', () => {
     });
   });
 });
+
+// Tests for #4395: the orchestrator's own spawn of gsd-debug-session-manager
+// carries `run_in_background: false` (#2196), but the manager's OWN Step 2
+// spawn of its internal gsd-debugger sub-agent did not — Claude Code
+// backgrounds subagents by default, so that nested spawn could return before
+// gsd-debugger genuinely finished. The manager then reached Step 3/Step 4 with
+// no real completion behind it, returned a non-terminal summary, the
+// orchestrator's (correctly-behaving) #2257 auto-resume re-spawned a fresh
+// session manager, and THAT spawned a second gsd-debugger — colliding with
+// the still-live first one on the same `.planning/debug/{slug}.md` file.
+// Reported 3x in one /gsd:debug invocation, surfaced only because a peer
+// agent self-reported the write collision.
+//
+// The fix adds the same `run_in_background: false` requirement to the
+// manager's Step 2 spawn that #2196 already established for the
+// orchestrator's spawn of the manager one level up, so gsd-debugger can never
+// be left running detached across a Step 3/Step 4 return.
+describe('#4395 gsd-debug-session-manager gsd-debugger spawn must be blocking', () => {
+  const SESSION_MANAGER_MD_4395 = path.join(__dirname, '..', 'agents', 'gsd-debug-session-manager.md');
+  // allow-test-rule: source-text-is-the-product (#4395)
+  // agent prose IS the runtime contract under test
+  const managerContent4395 = fs.readFileSync(SESSION_MANAGER_MD_4395, 'utf-8');
+
+  const step2Start4395 = managerContent4395.indexOf('## Step 2: Spawn gsd-debugger Agent');
+  const step3Start4395 = managerContent4395.indexOf('## Step 3: Handle Agent Return');
+  const step2Section4395 = step2Start4395 !== -1 && step3Start4395 !== -1
+    ? managerContent4395.slice(step2Start4395, step3Start4395)
+    : '';
+
+  test('Step 2 exists', () => {
+    assert.notEqual(step2Start4395, -1, 'gsd-debug-session-manager.md must contain Step 2');
+  });
+
+  test('the gsd-debugger Agent() spawn carries run_in_background: false', () => {
+    assert.ok(/run_in_background\s*[:=]\s*false/.test(step2Section4395),
+      'Step 2 gsd-debugger spawn must declare run_in_background: false so it is never left running detached');
+  });
+
+  test('Step 2 documents WHY the spawn must be blocking (references the #2196 precedent and the collision failure mode)', () => {
+    assert.ok(/#2196/.test(step2Section4395),
+      'Step 2 must reference #2196 as the precedent for this same blocking requirement one level up');
+    assert.ok(/detached|collid/i.test(step2Section4395),
+      'Step 2 must explain the failure mode this guards against (a detached/colliding second gsd-debugger)');
+  });
+});
