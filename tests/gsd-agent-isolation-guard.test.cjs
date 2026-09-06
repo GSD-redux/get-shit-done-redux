@@ -1368,6 +1368,72 @@ describe('#4222 — the #683 base-check degrade is re-derived by the resolver, s
     const r = runHook(agentPayload(), dir, { HOME: dir, CLAUDE_CONFIG_DIR: path.join(dir, '.claude') });
     assert.equal(r.status, 0, `guard denied a sequential dispatch after a plain re-query on a diverged repo: stdout=${r.stdout} stderr=${r.stderr}`);
   });
+
+  // #4232 review, Nit 1 — `baseCheckDegrades`'s catch/unbuilt-lib fallback.
+  //
+  // The nit was that the seven tests above exercise the integration path only,
+  // leaving the helper's own catch argued from code reading. Conceded: that
+  // catch is NOT unreachable-from-production. It is the documented fallback for
+  // an unbuilt runtime lib or a thrown evaluation, and on it the resolver
+  // records the naturally-resolved capability instead of the degrade — i.e. it
+  // silently reverts to pre-#4222 behaviour for that call.
+  //
+  // What makes this a REGRESSION test and not a restatement is the pair. Each
+  // case asserts the control (evaluation available -> `none`) and the fault arm
+  // (evaluation unavailable -> the natural capability) against the SAME diverged
+  // repo. Pre-fix both arms recorded `harness-worktree`, so the pair fails on a
+  // pre-fix tree; a fault-arm-only assertion would pass there and prove nothing.
+  //
+  // Both fault arms land in the same `catch`; they are driven separately because
+  // they reach it by different seams (module resolution vs. a throwing export),
+  // and only the first models the unbuilt-lib case the nit named.
+  const BASEREF_FAULT_PRELOAD = path.join(__dirname, 'helpers', 'worktree-base-ref-fault-preload.cjs');
+
+  for (const fault of ['unresolvable', 'throws']) {
+    test(`#4232: base-check evaluation ${fault} — the resolver falls back to the natural capability and never throws`, (t) => {
+      const { dir } = projectWithOrigin(t, 'gsd-4232-basecheck-fault-');
+      diverge(dir);
+
+      // Control, same repo state: with the evaluation available the degrade is
+      // re-derived and the sentinel records `none` — #4222's whole point.
+      const control = runGsdTools(['query', 'dispatch-isolation', '--raw', '--phase', '1'], dir, env(dir));
+      assert.equal(control.success, true, control.error);
+      assert.equal(
+        readSentinelRaw(dir).isolation,
+        'none',
+        'control: with the evaluation available a diverged repo must record none',
+      );
+
+      // Fault arm: the identical call with the evaluation unavailable.
+      const faulted = runGsdTools(['query', 'dispatch-isolation', '--raw', '--phase', '1'], dir, {
+        ...env(dir),
+        NODE_OPTIONS: `--require ${BASEREF_FAULT_PRELOAD}`,
+        GSD_TEST_BASEREF_FAULT: fault,
+      });
+
+      // "Never throws" is half the helper's contract: the query still succeeds
+      // and stdout still carries the host capability that the workflow's own
+      // fail-closed guard branches on.
+      assert.equal(
+        faulted.success,
+        true,
+        `the resolver must not fail when the base-check evaluation is unavailable: ${faulted.error}`,
+      );
+      assert.equal(faulted.output.trim(), 'harness-worktree');
+
+      // The other half: no degrade is re-derived, so the natural capability is
+      // what gets recorded. This pins a LIMITATION, not an endorsement — the
+      // workflow's own shell base-check plus `--force-isolation none` remains
+      // the backstop, and it is why this fallback is safe rather than silent.
+      const sentinel = readSentinelRaw(dir);
+      assert.equal(
+        sentinel.isolation,
+        'harness-worktree',
+        'fault arm: with no evaluation available the resolver records the natural capability',
+      );
+      assert.equal(sentinel.harness_flag, 'isolation="worktree"');
+    });
+  }
 });
 
 describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (Cursor real registry value + generalized parsing)', () => {
