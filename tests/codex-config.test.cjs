@@ -73,6 +73,8 @@ const {
   CODEX_SANDBOX_HOLDS,
   parseTomlToObject,
   validateCodexConfigSchema,
+  uninstall,
+  CODEX_EXTENDED_HOOK_EVENTS,
 } = require('../bin/install.js');
 
 const { resolveNodeRunner } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
@@ -10939,3 +10941,271 @@ describe('bug-2866: stripStaleGsdHookBlocks handles end-of-file without trailing
 });
   });
 }
+
+// ─── #2586: stop installing Codex context-monitor hooks without metrics ────
+// gsd-context-monitor.js reads a statusline bridge file Codex never writes,
+// so every registered event was a guaranteed silent no-op. These tests drive
+// the REAL install()/uninstall() entry points against a real temp CODEX_HOME
+// — never a hand-fabricated manifest (see PR #2709's Blocker 1: its cleanup
+// path was unreachable in production because its tests only exercised a
+// fixture, not real installer state).
+describe('#2586 Codex context-monitor: stop installing, clean up on reinstall', () => {
+  const {
+    cleanupOrphanedCodexContextMonitorScript,
+    isGsdOwnedCodexContextMonitorScript,
+    hooksJsonReferencesCodexContextMonitor,
+  } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+
+  let codexHome;
+
+  beforeEach(() => {
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-2586-'));
+  });
+
+  afterEach(() => {
+    cleanup(codexHome);
+    delete process.env.GSD_ALLOW_SYMLINKED_DEST;
+  });
+
+  function hooksJsonPath(home) {
+    return path.join(home, 'hooks.json');
+  }
+
+  function readHooksJson(home) {
+    const raw = fs.readFileSync(hooksJsonPath(home), 'utf8');
+    return JSON.parse(raw);
+  }
+
+  function monitorScriptPath(home) {
+    return path.join(home, 'hooks', 'gsd-context-monitor.js');
+  }
+
+  function monitorCmdShimPath(home) {
+    return path.join(home, 'hooks', 'gsd-context-monitor.cmd');
+  }
+
+  // The exact shape a real pre-#2586 install would have written: the shipped
+  // gsd-context-monitor.js content (with its ownership markers intact) plus
+  // hooks.json registrations for every CODEX_EXTENDED_HOOK_EVENTS member,
+  // using the same command-projection shape ensureCodexHooksJsonEvent used
+  // to write. Built from the real resolveNodeRunner() output, not a literal
+  // guess at the command string, so a drift in projectManagedHookCommand's
+  // output shape cannot make this fixture silently stop matching reality.
+  function seedPreExisting2586Install(home) {
+    fs.mkdirSync(path.join(home, 'hooks'), { recursive: true });
+    // A literal fixture carrying the same ownership markers
+    // isGsdOwnedCodexContextMonitorScript looks for, built as a string
+    // (never read+string-matched from the real shipped source file — see
+    // this repo's "no source grep" test rule).
+    const fixtureContent = [
+      '#!/usr/bin/env node',
+      '// gsd-hook-version: 1.12.0',
+      '// Context Monitor - PostToolUse/AfterTool hook',
+      'process.exit(0);',
+      '',
+    ].join('\n');
+    fs.writeFileSync(monitorScriptPath(home), fixtureContent, 'utf8');
+    const runner = resolveNodeRunner();
+    const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+    for (const eventName of CODEX_EXTENDED_HOOK_EVENTS) {
+      hooksSurface.ensureCodexHooksJsonEvent(home, eventName, {
+        absoluteRunner: runner,
+        platform: process.platform,
+      });
+    }
+  }
+
+  test('fresh install does not copy gsd-context-monitor.js or register any extended event', () => {
+    runCodexInstall(codexHome);
+    assert.strictEqual(fs.existsSync(monitorScriptPath(codexHome)), false,
+      'gsd-context-monitor.js must not be copied on a fresh Codex install');
+    assert.strictEqual(fs.existsSync(monitorCmdShimPath(codexHome)), false);
+    assert.strictEqual(fs.existsSync(path.join(codexHome, 'hooks', 'lib', 'hook-exit.js')), false,
+      'hook-exit.js is only required by gsd-context-monitor.js — nothing else staged should pull it in');
+    assert.ok(fs.existsSync(path.join(codexHome, 'hooks', 'gsd-check-update.js')),
+      'gsd-check-update.js must still be staged');
+    assert.ok(fs.existsSync(path.join(codexHome, 'hooks', 'gsd-check-update-worker.js')));
+    assert.ok(fs.existsSync(path.join(codexHome, 'hooks', 'managed-hooks-registry.cjs')));
+    if (fs.existsSync(hooksJsonPath(codexHome))) {
+      assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), false);
+    }
+  });
+
+  test('reinstall removes exact pre-#2586 registrations for every extended event and deletes the orphaned script', () => {
+    runCodexInstall(codexHome);
+    seedPreExisting2586Install(codexHome);
+    assert.ok(fs.existsSync(monitorScriptPath(codexHome)), 'fixture sanity: script seeded');
+    assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), true, 'fixture sanity: registered');
+
+    runCodexInstall(codexHome);
+
+    assert.strictEqual(fs.existsSync(monitorScriptPath(codexHome)), false,
+      'orphaned gsd-context-monitor.js must be removed once unreferenced and GSD-owned');
+    assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), false,
+      'no hooks.json entry may still reference gsd-context-monitor after reinstall');
+    // gsd-check-update's own SessionStart registration must survive untouched.
+    const hooks = readHooksJson(codexHome);
+    const sessionStart = (hooks.hooks && hooks.hooks.SessionStart) || [];
+    const hasCheckUpdate = sessionStart.some((entry) =>
+      (entry.hooks || []).some((h) => typeof h.command === 'string' && /gsd-check-update/.test(h.command)));
+    assert.ok(hasCheckUpdate, 'gsd-check-update SessionStart registration must remain after cleanup');
+  });
+
+  test('reinstall preserves a hand-customized registration and does not delete a still-referenced script', () => {
+    runCodexInstall(codexHome);
+    seedPreExisting2586Install(codexHome);
+    // Hand-edit ONE event's entry to a shape isManagedHookCommand will not
+    // recognize (wraps the invocation in a shell script it does not know).
+    const before = readHooksJson(codexHome);
+    before.hooks.Stop = [{ hooks: [{ type: 'command', command: 'bash -c "/opt/custom/my-wrapper.sh"' }] }];
+    fs.writeFileSync(hooksJsonPath(codexHome), JSON.stringify(before, null, 2) + '\n', 'utf8');
+
+    runCodexInstall(codexHome);
+
+    const after = readHooksJson(codexHome);
+    assert.deepStrictEqual(after.hooks.Stop, before.hooks.Stop,
+      'a hand-customized registration must survive verbatim');
+  });
+
+  test('reinstall leaves unrelated hooks.json events and config.toml keys untouched', () => {
+    runCodexInstall(codexHome);
+    let hooks = fs.existsSync(hooksJsonPath(codexHome)) ? readHooksJson(codexHome) : { hooks: {} };
+    if (!hooks.hooks) hooks.hooks = {};
+    hooks.hooks.UnrelatedEvent = [{ hooks: [{ type: 'command', command: 'echo unrelated' }] }];
+    fs.writeFileSync(hooksJsonPath(codexHome), JSON.stringify(hooks, null, 2) + '\n', 'utf8');
+    const configPath = path.join(codexHome, 'config.toml');
+    const configBefore = fs.readFileSync(configPath, 'utf8') + '\n[my_unrelated_section]\nfoo = "bar"\n';
+    fs.writeFileSync(configPath, configBefore, 'utf8');
+
+    runCodexInstall(codexHome);
+
+    const after = readHooksJson(codexHome);
+    assert.deepStrictEqual(after.hooks.UnrelatedEvent, hooks.hooks.UnrelatedEvent,
+      'an unrelated event array must be untouched');
+    const configAfter = fs.readFileSync(configPath, 'utf8');
+    assert.ok(configAfter.includes('[my_unrelated_section]\nfoo = "bar"'),
+      'unrelated config.toml section must survive a Codex reinstall');
+  });
+
+  test('a user-owned pre-existing EMPTY event array is preserved, not deleted', () => {
+    runCodexInstall(codexHome);
+    fs.writeFileSync(hooksJsonPath(codexHome), JSON.stringify({ hooks: { Stop: [] } }, null, 2) + '\n', 'utf8');
+
+    runCodexInstall(codexHome);
+
+    const after = readHooksJson(codexHome);
+    assert.ok(Array.isArray(after.hooks.Stop) && after.hooks.Stop.length === 0,
+      'an empty array the user already had must not be dropped by cleanup that found nothing GSD-owned to remove');
+  });
+
+  test('symlinked hooks.json aborts before any Codex change, without GSD_ALLOW_SYMLINKED_DEST', () => {
+    runCodexInstall(codexHome);
+    const configPath = path.join(codexHome, 'config.toml');
+    const configBefore = fs.readFileSync(configPath, 'utf8');
+    const realHooksJson = path.join(codexHome, 'real-hooks.json');
+    fs.writeFileSync(realHooksJson, JSON.stringify({ hooks: {} }, null, 2) + '\n', 'utf8');
+    fs.unlinkSync(hooksJsonPath(codexHome));
+    fs.symlinkSync(realHooksJson, hooksJsonPath(codexHome));
+
+    assert.throws(() => runCodexInstall(codexHome), /symlink/i);
+
+    assert.ok(fs.lstatSync(hooksJsonPath(codexHome)).isSymbolicLink(),
+      'the symlink itself must survive an aborted install — never replaced by a plain file');
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), configBefore,
+      'config.toml must be restored to its pre-attempt snapshot on abort');
+  });
+
+  test('symlinked hooks.json is followed when GSD_ALLOW_SYMLINKED_DEST=1', () => {
+    runCodexInstall(codexHome);
+    const realHooksJson = path.join(codexHome, 'real-hooks.json');
+    fs.writeFileSync(realHooksJson, JSON.stringify({ hooks: {} }, null, 2) + '\n', 'utf8');
+    fs.unlinkSync(hooksJsonPath(codexHome));
+    fs.symlinkSync(realHooksJson, hooksJsonPath(codexHome));
+    process.env.GSD_ALLOW_SYMLINKED_DEST = '1';
+
+    assert.doesNotThrow(() => runCodexInstall(codexHome));
+
+    assert.ok(fs.lstatSync(hooksJsonPath(codexHome)).isSymbolicLink(), 'still a symlink afterward');
+    assert.ok(fs.existsSync(realHooksJson), 'the symlink target must have been written through');
+  });
+
+  test('cleanupOrphanedCodexContextMonitorScript keeps the hooks.json deregistration when script deletion fails', () => {
+    runCodexInstall(codexHome);
+    seedPreExisting2586Install(codexHome);
+    for (const eventName of CODEX_EXTENDED_HOOK_EVENTS) {
+      require('../gsd-core/bin/lib/runtime-hooks-surface.cjs').removeCodexHooksJsonEvent(codexHome, eventName);
+    }
+    assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), false, 'deregistration committed first');
+
+    const originalUnlinkSync = fs.unlinkSync;
+    fs.unlinkSync = (target, ...rest) => {
+      if (typeof target === 'string' && target.includes('gsd-context-monitor')) {
+        throw Object.assign(new Error('EPERM: simulated'), { code: 'EPERM' });
+      }
+      return originalUnlinkSync.call(fs, target, ...rest);
+    };
+    let result;
+    try {
+      result = cleanupOrphanedCodexContextMonitorScript(codexHome);
+    } finally {
+      fs.unlinkSync = originalUnlinkSync;
+    }
+
+    assert.strictEqual(result.warnings.length, 1);
+    assert.match(result.warnings[0].path, /gsd-context-monitor\.js$/);
+    assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), false,
+      'the already-safe hooks.json deregistration must not be reverted by a script-deletion failure');
+    assert.ok(fs.existsSync(monitorScriptPath(codexHome)), 'the file remains on disk since deletion failed');
+  });
+
+  test('isGsdOwnedCodexContextMonitorScript rejects a user file at the same path', () => {
+    runCodexInstall(codexHome);
+    fs.mkdirSync(path.join(codexHome, 'hooks'), { recursive: true });
+    fs.writeFileSync(monitorScriptPath(codexHome), '#!/usr/bin/env node\nconsole.log("my own script");\n', 'utf8');
+    assert.strictEqual(isGsdOwnedCodexContextMonitorScript(monitorScriptPath(codexHome)), false);
+  });
+
+  test('uninstall removes recognized registrations and the orphaned script symmetrically with install', () => {
+    runCodexInstall(codexHome);
+    seedPreExisting2586Install(codexHome);
+
+    uninstall(true, 'codex');
+
+    assert.strictEqual(fs.existsSync(monitorScriptPath(codexHome)), false);
+    if (fs.existsSync(hooksJsonPath(codexHome))) {
+      assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), false);
+    }
+  });
+
+  test('uninstall does not throw on an unmodeled hooks.json event-value shape', () => {
+    runCodexInstall(codexHome);
+    fs.writeFileSync(hooksJsonPath(codexHome), JSON.stringify({ hooks: { Stop: 'not-an-array' } }, null, 2) + '\n', 'utf8');
+    assert.doesNotThrow(() => uninstall(true, 'codex'));
+  });
+
+  test('property: reconcileCodexHooksJsonEvent never removes a non-managed-shape command', () => {
+    const { reconcileCodexHooksJsonEvent } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+    fc.assert(
+      fc.property(
+        fc.array(fc.string({ minLength: 1, maxLength: 40 }).filter((s) => !/gsd-context-monitor|gsd-check-update/.test(s)), { minLength: 1, maxLength: 5 }),
+        (customCommands) => {
+          const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-2586-prop-'));
+          try {
+            const seeded = { hooks: { Stop: [{ hooks: customCommands.map((c) => ({ type: 'command', command: c })) }] } };
+            fs.writeFileSync(path.join(home, 'hooks.json'), JSON.stringify(seeded, null, 2) + '\n', 'utf8');
+            reconcileCodexHooksJsonEvent(home, 'Stop', { managedCommand: null });
+            const after = JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8'));
+            const survivingCommands = ((after.hooks && after.hooks.Stop) || [])
+              .flatMap((entry) => (entry.hooks || []).map((h) => h.command));
+            for (const c of customCommands) {
+              assert.ok(survivingCommands.includes(c), `non-managed command "${c}" must survive removal`);
+            }
+          } finally {
+            cleanup(home);
+          }
+        },
+      ),
+      { numRuns: 25 },
+    );
+  });
+});

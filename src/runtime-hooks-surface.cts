@@ -923,12 +923,49 @@ interface ReconcileResult {
   path: string;
 }
 
+/**
+ * Lazily require install-engine.cjs's `hasExistingSymlinkBetween` /
+ * `isSymlinkedDestOptIn` — mirrors user-artifact-staging.cts's
+ * `_installEngineSymlinkGuard` (same call-time-require rationale: avoid a
+ * static circular require between install-engine.cts and this module).
+ */
+interface InstallEngineSymlinkGuard {
+  hasExistingSymlinkBetween: (root: string, fullPath: string, options?: { allowOptInFollow?: boolean }) => boolean;
+  isSymlinkedDestOptIn: () => boolean;
+}
+
+function _installEngineSymlinkGuard(): InstallEngineSymlinkGuard {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
+  const mod: InstallEngineSymlinkGuard = require('./install-engine.cjs');
+  return mod;
+}
+
 function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts: ReconcileCodexOpts = {}): ReconcileResult {
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
   const managedCommand = typeof opts.managedCommand === 'string' ? opts.managedCommand : null;
   const commandWindows = typeof opts.commandWindows === 'string' ? opts.commandWindows : null;
   const matcher = typeof opts.matcher === 'string' ? opts.matcher : undefined;
   const timeout = typeof opts.timeout === 'number' ? opts.timeout : undefined;
+  // #2586 Major 2: every Codex hooks.json writer funnels through this one
+  // function, and atomicWriteFileSync's final step is a rename(2) onto
+  // `hooksJsonPath` — which, when that path is a symlink, REPLACES the
+  // symlink with a plain file rather than writing through it. Refuse (with
+  // the same GSD_ALLOW_SYMLINKED_DEST opt-in every other install call site
+  // honors) before reading or writing, so a symlinked hooks.json is neither
+  // silently destroyed nor left the caller no escape hatch.
+  const symlinkGuard = _installEngineSymlinkGuard();
+  if (
+    fs.existsSync(hooksJsonPath) &&
+    symlinkGuard.hasExistingSymlinkBetween(targetDir, hooksJsonPath, {
+      allowOptInFollow: symlinkGuard.isSymlinkedDestOptIn(),
+    })
+  ) {
+    throw new Error(
+      `hooks.json at "${hooksJsonPath}" contains a symlink the install root "${targetDir}" does not trust — ` +
+        'refusing to read or write it. If this is an intentional user-owned symlink layout, re-run with ' +
+        'GSD_ALLOW_SYMLINKED_DEST=1.',
+    );
+  }
   let parsed: Record<string, unknown> = {};
   let currentContent: string | null = null;
   if (fs.existsSync(hooksJsonPath)) {
@@ -1179,6 +1216,142 @@ function removeCodexHooksJsonEvent(targetDir: string, eventName: string): Reconc
 
 function removeCodexHooksJsonSessionStart(targetDir: string): ReconcileResult {
   return reconcileCodexHooksJsonSessionStart(targetDir, { managedCommand: null });
+}
+
+// ---------------------------------------------------------------------------
+// #2586: cleanupOrphanedCodexContextMonitorScript
+// ---------------------------------------------------------------------------
+
+interface CleanupCodexContextMonitorResult {
+  /** Absolute paths of files actually deleted this call. */
+  deleted: string[];
+  /** {path, reason} for a file that could NOT be deleted (still present). */
+  warnings: { path: string; reason: string }[];
+  /** True if a surviving hooks.json registration still references the
+   *  script (or its .cmd shim) — in which case nothing was deleted. */
+  stillReferenced: boolean;
+}
+
+// Literal, version-stable markers every shipped gsd-context-monitor.js
+// carries. Stable across the {{GSD_VERSION}} and runtime-path substitutions
+// the Codex copy step applies (#2586 design doc "Ownership check" — a raw
+// content hash would differ per runtime/version by construction, so a marker
+// check is used instead of manifest-membership, which has a bootstrap gap on
+// the exact case that matters most: a pre-#2586 install's manifest never
+// recorded this file at all).
+const CODEX_CONTEXT_MONITOR_OWNERSHIP_MARKERS = [
+  '#!/usr/bin/env node',
+  '// gsd-hook-version:',
+  '// Context Monitor - PostToolUse/AfterTool hook',
+];
+
+function isGsdOwnedCodexContextMonitorScript(filePath: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return false;
+  }
+  // The .cmd shim (buildCodexHookWindowsShimIR) is a tiny generated batch
+  // wrapper, not the JS file itself — it never carries the JS markers above,
+  // so it gets its own narrower, still-specific signature: the exact
+  // "@ECHO OFF" / "@SETLOCAL" preamble the shim generator emits, invoking a
+  // script path that ends in gsd-context-monitor.js.
+  if (filePath.endsWith('.cmd')) {
+    return content.startsWith('@ECHO OFF') && content.includes('@SETLOCAL')
+      && /gsd-context-monitor\.js/.test(content);
+  }
+  return CODEX_CONTEXT_MONITOR_OWNERSHIP_MARKERS.every((marker) => content.includes(marker));
+}
+
+/**
+ * Scan every event in hooks.json for a surviving reference to the
+ * context-monitor script or its Windows .cmd shim, by basename — not scoped
+ * to CODEX_EXTENDED_HOOK_EVENTS, so a user who hand-registered it under an
+ * unrelated event key is still detected as "referenced" and the script is
+ * preserved.
+ */
+function hooksJsonReferencesCodexContextMonitor(targetDir: string): boolean {
+  const hooksJsonPath = path.join(targetDir, 'hooks.json');
+  if (!fs.existsSync(hooksJsonPath)) return false;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(hooksJsonPath, 'utf8');
+  } catch {
+    return true; // unreadable — conservatively assume referenced, never delete
+  }
+  if (!raw.trim()) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return true; // unparseable — conservatively assume referenced
+  }
+  if (!parsed || typeof parsed !== 'object') return false;
+  const hooks = (parsed as Record<string, unknown>)['hooks'];
+  const table = hooks && typeof hooks === 'object' && !Array.isArray(hooks)
+    ? (hooks as Record<string, unknown>)
+    : (parsed as Record<string, unknown>);
+  for (const key of Object.keys(table)) {
+    const entries = table[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const entryHooks = (entry as Record<string, unknown>)['hooks'];
+      const hookList = Array.isArray(entryHooks) ? entryHooks : [entry];
+      for (const hook of hookList) {
+        if (!hook || typeof hook !== 'object') continue;
+        const values = [
+          (hook as Record<string, unknown>)['command'],
+          (hook as Record<string, unknown>)['commandWindows'],
+        ];
+        for (const value of values) {
+          if (typeof value === 'string' && /gsd-context-monitor(\.js|\.cmd)?/.test(value)) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * #2586 must-have #4/#8: after hooks.json registrations for
+ * CODEX_EXTENDED_HOOK_EVENTS have been reconciled away (by the caller, via
+ * removeCodexHooksJsonEvent), delete `hooks/gsd-context-monitor.js` and its
+ * `.cmd` shim ONLY when (a) no surviving hooks.json registration under ANY
+ * event still references either basename, and (b) the on-disk file carries
+ * GSD's own ownership markers (a user's hand-edited or unrelated file at that
+ * path is left alone). Each file is deleted independently — a failure
+ * deleting one is reported as a warning and never rolls back the (already
+ * safe, already-written) hooks.json deregistration the caller performed
+ * first.
+ */
+function cleanupOrphanedCodexContextMonitorScript(targetDir: string): CleanupCodexContextMonitorResult {
+  const result: CleanupCodexContextMonitorResult = { deleted: [], warnings: [], stillReferenced: false };
+  if (hooksJsonReferencesCodexContextMonitor(targetDir)) {
+    result.stillReferenced = true;
+    return result;
+  }
+  const candidates = [
+    path.join(targetDir, 'hooks', 'gsd-context-monitor.js'),
+    path.join(targetDir, 'hooks', 'gsd-context-monitor.cmd'),
+  ];
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    if (!isGsdOwnedCodexContextMonitorScript(candidate)) continue;
+    try {
+      fs.unlinkSync(candidate);
+      result.deleted.push(candidate);
+    } catch (err) {
+      result.warnings.push({
+        path: candidate,
+        reason: err && (err as Error).message ? (err as Error).message : String(err),
+      });
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -3070,6 +3243,9 @@ export = {
   removeCodexHooksJsonEvent,
   removeCodexHooksJsonSessionStart,
   buildCodexHookWindowsShimIR,
+  cleanupOrphanedCodexContextMonitorScript,
+  isGsdOwnedCodexContextMonitorScript,
+  hooksJsonReferencesCodexContextMonitor,
 
   // Codex TOML
   buildCodexHookBlock,
