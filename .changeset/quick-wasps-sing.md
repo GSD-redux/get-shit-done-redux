@@ -1,5 +1,5 @@
 ---
 type: Changed
-pr: 29
+pr: 4249
 ---
 Validate GSD-managed runtime configuration entrypoints before reporting installation or update success.
