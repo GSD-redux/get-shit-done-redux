@@ -8102,10 +8102,18 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   //
   // Every comparison therefore goes through both spellings.
   const toPosix = (p2) => p2.replace(/\\/g, '/');
+  //
+  // LONGEST FIRST, and that ordering is load-bearing. `/var/folders/…/X` is a
+  // SUBSTRING of `/private/var/folders/…/X`, so stripping the short spelling
+  // first matches inside the long one and leaves the `/private` prefix glued
+  // to what followed it: `@/private/var/…/X/.claude/gsd-core/…` normalizes to
+  // `@/private.claude/gsd-core/…`, a string that appears in neither install.
+  // Removing the long form first consumes the whole occurrence, and the short
+  // form then has nothing left to match.
   const rootSpellings = (root) => {
     const forms = new Set([toPosix(root)]);
     try { forms.add(toPosix(fs.realpathSync(root))); } catch { /* root already gone */ }
-    return [...forms];
+    return [...forms].sort((a, b) => b.length - a.length);
   };
   const mentionsRoot = (content, root) => rootSpellings(root).some((r) => content.includes(r));
 
