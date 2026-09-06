@@ -4166,6 +4166,53 @@ describe('Bug #4145: saveLocalPatches rescues hash-matching orphaned pristine sn
       'pruning files the recorded hashes do not vouch for is not this fix\'s job');
   });
 
+  /**
+   * Review finding (fix follow-up): two modified files sharing byte-identical
+   * outgoing content. The orphan scan must never consume a path that is
+   * another manifest file's canonical pristine path — otherwise the rescue
+   * would relocate a correct canonical away from its owner and the two files
+   * would ping-pong it between updates. Only genuine non-canonical orphans
+   * are eligible.
+   */
+  test('#4145: does not steal a byte-identical canonical belonging to another modified file', () => {
+    const FILE_B = 'gsd-core/bin/lib/other-file.cjs';
+    const SHARED_OLD = '# Shared Old Content\nByte-identical across two manifest files.\n';
+    // A and B are both user-modified on top of byte-identical outgoing stock,
+    // so both manifest records carry the SAME pristine hash.
+    fs.mkdirSync(path.dirname(path.join(configDir, FILE_B)), { recursive: true });
+    fs.writeFileSync(path.join(configDir, FILE), SHARED_OLD + '## User addition A\nCustom A.\n');
+    fs.writeFileSync(path.join(configDir, FILE_B), SHARED_OLD + '## User addition B\nCustom B.\n');
+    fs.writeFileSync(
+      path.join(configDir, MANIFEST_NAME),
+      JSON.stringify({
+        version: '1.0.0',
+        files: { [FILE]: sha256(SHARED_OLD), [FILE_B]: sha256(SHARED_OLD) },
+      }, null, 2),
+    );
+    // A (processed first) has the ALREADY-correct canonical holding the shared
+    // old bytes. B has no canonical and no orphan — B's only possible hash
+    // match is A's canonical. Without the canonical skip set, B's rescue would
+    // copy A's canonical to B's path and then DELETE A's canonical.
+    fs.mkdirSync(path.dirname(path.join(pristineDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(pristineDir, FILE), SHARED_OLD);
+    fs.mkdirSync(path.dirname(path.join(newSrcDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(newSrcDir, FILE), NEW_RELEASE);
+    fs.mkdirSync(path.dirname(path.join(newSrcDir, FILE_B)), { recursive: true });
+    fs.writeFileSync(path.join(newSrcDir, FILE_B), NEW_RELEASE);
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    // A's canonical must survive untouched — never stolen to become B's.
+    assert.ok(fs.existsSync(path.join(pristineDir, FILE)),
+      'the byte-identical canonical of the earlier-processed file must survive');
+    assert.equal(sha256(fs.readFileSync(path.join(pristineDir, FILE), 'utf8')), sha256(SHARED_OLD));
+    // B gains no baseline from A's canonical (falls to regeneration instead).
+    assert.equal(fs.existsSync(path.join(pristineDir, FILE_B)), false,
+      'a canonical path of another file must never be relocated as the rescue source');
+  });
+
   /** Preserve-path lock: an already-correct canonical stays put; the preserve loop ignores the orphan. */
   test('#4145: preserves an already-correct canonical and leaves a coexisting identical orphan in place', () => {
     const orphanRel = 'bin/lib/frontmatter.cjs';

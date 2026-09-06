@@ -1414,6 +1414,8 @@ describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', (
         'sorted-first match wins deterministically');
       assert.equal(findPristineByHash(root, hashA, 'aa.txt'), 'zz-dir/late-match.md',
         'skipRel is never returned');
+      assert.equal(findPristineByHash(root, hashA, new Set(['aa.txt', 'zz-dir/late-match.md'])), null,
+        'every member of a skip Set is excluded (canonical-path protection)');
       assert.equal(findPristineByHash(root, sha256('no such content anywhere here\n')), null,
         'no match resolves to null');
       assert.equal(findPristineByHash(path.join(root, 'absent'), hashA), null,

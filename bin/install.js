@@ -10178,16 +10178,21 @@ function populatePristineDir({ packageSrc, pristineDir, modified, runtime, pathP
  * (hash-verified after the copy) and remove the orphan only once the
  * canonical copy is verified in place. Returns true when the canonical path
  * ended up holding recorded-hash bytes. Never deletes anything it cannot
- * vouch for by hash; never touches the canonical path of OTHER files.
+ * vouch for by hash, and never consumes a path that is the canonical path of
+ * ANY manifest file (see canonicalSkip below) — only genuine orphans, which
+ * no strict-join reader ever consults, are eligible for removal.
  */
-function recoverOrphanedPristine(pristineDir, relPath, recordedHash) {
+function recoverOrphanedPristine(pristineDir, relPath, recordedHash, canonicalSkip) {
   if (!recordedHash) return false;
   let orphanRel;
   try {
-    // skipRel = the canonical relPath: a file already sitting at the joined
-    // path can never be (re-)adopted through the scan — that is drift
-    // (#3657) / stale (#3407) territory, handled by the caller.
-    orphanRel = gsdFindPristineByHash(pristineDir, recordedHash, relPath.replace(/\\/g, '/'));
+    // canonicalSkip = the normalized manifest keys: a file already sitting at
+    // any canonical path can never be (re-)adopted through the scan. Without
+    // this, two modified files sharing byte-identical outgoing content would
+    // repeatedly "rescue" each other's canonical away (relocate + delete at
+    // its home path) in alternating updates — bytes identical, state unstable.
+    // It also keeps drift (#3657) / stale (#3407) territory with the caller.
+    orphanRel = gsdFindPristineByHash(pristineDir, recordedHash, canonicalSkip);
   } catch {
     return false;
   }
@@ -10361,6 +10366,12 @@ function saveLocalPatches(configDir, pristineCtx) {
       // #4145: track which relPaths were recovered by relocating a hash-matching
       // orphan (stored at an unexpected path, e.g. without the gsd-core/ prefix).
       const rescuedPaths = new Set();
+      // #4145: the set of paths that are SOME file's canonical pristine path
+      // (every normalized manifest key). The orphan scan must never consume
+      // these — see recoverOrphanedPristine.
+      const canonicalSkip = new Set(
+        Object.keys(manifest.files || {}).map((k) => normalizeInstallRelativePath(k)).filter(Boolean),
+      );
       const missingPaths = [];
       for (const relPath of modified) {
         const outRef = resolveInstallRelativePath(pristineDir, relPath);
@@ -10389,7 +10400,7 @@ function saveLocalPatches(configDir, pristineCtx) {
         // without the gsd-core/ prefix: without it the state repeats forever
         // (regeneration candidates from the incoming release can never satisfy
         // the recorded outgoing hash when upstream changed the file).
-        if (recoverOrphanedPristine(pristineDir, relPath, pristineHashes[relPath])) {
+        if (recoverOrphanedPristine(pristineDir, relPath, pristineHashes[relPath], canonicalSkip)) {
           rescuedPaths.add(relPath);
           continue;
         }

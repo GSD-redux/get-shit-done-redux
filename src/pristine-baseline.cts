@@ -59,9 +59,12 @@ function walkSorted(dir: string, relPrefix: string, results: string[]): void {
  * Find the first file under `pristineDir` (deterministic sorted walk) whose
  * SHA-256 equals `recordedHash`, as a pristineDir-relative POSIX path.
  *
- * - `skipRel` (POSIX, forward slashes) is never returned — callers pass the
- *   canonical `relPath` they already consulted, so a mismatching canonical
- *   file can never be re-adopted through the scan.
+ * - `skip` is never returned — a single POSIX relPath string or a Set of them.
+ *   Callers pass the canonical path(s) they (or other files in the same run)
+ *   already own, so a file sitting at a canonical path is never adopted
+ *   through the scan. For the installer's relocation this is what prevents a
+ *   byte-identical canonical belonging to ANOTHER modified file from being
+ *   "rescued" away (relocated and deleted at its home path).
  * - Multiple matches are byte-identical by sha-256 authority; sorted order
  *   makes the choice deterministic.
  * - Returns null when pristineDir is absent/unreadable or nothing matches.
@@ -69,15 +72,16 @@ function walkSorted(dir: string, relPrefix: string, results: string[]): void {
 export function findPristineByHash(
   pristineDir: string,
   recordedHash: string,
-  skipRel?: string,
+  skip?: string | ReadonlySet<string>,
 ): string | null {
   if (!pristineDir || typeof recordedHash !== 'string' || recordedHash.length === 0) {
     return null;
   }
+  const skipSet = skip instanceof Set ? skip : new Set(skip !== undefined ? [skip] : []);
   const rels: string[] = [];
   walkSorted(pristineDir, '', rels);
   for (const rel of rels) {
-    if (skipRel !== undefined && rel === skipRel) continue;
+    if (skipSet.has(rel)) continue;
     try {
       if (sha256File(path.join(pristineDir, rel)) === recordedHash) {
         return rel;
