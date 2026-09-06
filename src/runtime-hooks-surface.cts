@@ -516,7 +516,17 @@ function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
     /^(.+)\/Cellar\/node(@\d+)?\/[^/]+\/bin\/node(\.exe)?$/i,
   );
   if (homebrewMatch) {
-    return `${homebrewMatch[1]}/bin/node${homebrewMatch[3] || ''}`;
+    // #4137: probe the symlink before adopting it, exactly like the fnm, mise
+    // and volta branches. `<prefix>/bin/node` only exists while the formula is
+    // LINKED: a keg-only or versioned formula (`brew install node@22`) fills
+    // the Cellar without ever creating it, and an unlinked plain `node` is the
+    // same shape. Returning it unconditionally turned a stale-but-working pin
+    // into an immediately broken one — every managed hook then died with
+    // `<prefix>/bin/node: No such file or directory` at fire time, surfacing as
+    // a hook error rather than an installer one. On a miss fall through to the
+    // raw execPath: an upgrade-fragile path still beats a nonexistent one.
+    const symlink = `${homebrewMatch[1]}/bin/node${homebrewMatch[3] || ''}`;
+    if (existsSync(symlink)) return symlink;
   }
 
   // mise pins a concrete node version at <data>/installs/node/<ver>/bin/node
