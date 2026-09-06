@@ -1209,11 +1209,15 @@ describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple c
 // commands.cts (determinePhaseStatus) and two verification_path projectors in
 // init.cts each hand-rolled a fourth variant of this same selection: they
 // additionally accept a BARE `VERIFICATION.md`, which this module's own two
-// callers (findStaleVerificationSummary, readVerificationStatus) never have.
-// `allowBare` threads that one behavioral difference through the single
-// resolver instead of leaving a fourth hand-rolled implementation behind
-// (#3473 F2). A bare match is ranked BELOW any dashed candidate — canonical
-// or not — because a dashed file names its phase and a bare one does not.
+// callers (findStaleVerificationSummary, readVerificationStatus) originally
+// did not. `allowBare` threads that one behavioral difference through the
+// single resolver instead of leaving a fourth hand-rolled implementation
+// behind (#3473 F2). A bare match is ranked BELOW any dashed candidate —
+// canonical or not — because a dashed file names its phase and a bare one
+// does not. Since #4187 the two module-internal call sites pass `allowBare:
+// true` as well (see the #4187 describe below), so every reader of the report
+// set now agrees; the option's default remains `false` for callers that have
+// not opted in.
 describe('#3473 F2: resolveVerificationFile allowBare option', () => {
 
   test('allowBare defaults to false — a bare-only list returns null without the option', () => {
