@@ -93,6 +93,10 @@ node gsd-tools.cjs state patch --field1 val1 --field2 val2
 
 # Increment plan counter
 node gsd-tools.cjs state advance-plan
+# When no labeled plan position can be parsed (e.g. ## Current Position drifted
+# to pure narrative prose), declines with reason "plan_position_unreadable" plus
+# the disk-derived counts and the exact labeled lines to re-insert; STATE.md is
+# left byte-identical.
 
 # Record execution metrics
 node gsd-tools.cjs state record-metric --phase N --plan M --duration Xmin [--tasks N] [--files N]
@@ -109,7 +113,7 @@ node gsd-tools.cjs state add-decision --summary-file path [--rationale-file path
 node gsd-tools.cjs state add-blocker --text "..."
 node gsd-tools.cjs state resolve-blocker --text "..."
 
-# Record session continuity
+# Record session continuity (at least one of --stopped-at / --resume-file is required)
 node gsd-tools.cjs state record-session --stopped-at "..." [--resume-file path]
 
 # Phase start — update STATE.md Status/Last activity for a new phase
@@ -1157,8 +1161,17 @@ active window are still outstanding.
 
 ```bash
 # Complete a todo
-node gsd-tools.cjs todo complete <filename>
+node gsd-tools.cjs todo complete <filename> [--dry-run]
+```
 
+`--dry-run` previews the completion (a `dry_run`/`would_*` JSON payload naming
+the source, the destination, and the frontmatter keys it would set) without
+moving the file or touching anything on disk. A real completion moves the todo
+from `todos/pending/` to `todos/completed/` and upserts `completed:` and
+`status: completed` inside the file's frontmatter block. Unknown flags are
+rejected loudly.
+
+```bash
 # UAT audit — scan all phases for unresolved items
 node gsd-tools.cjs audit-uat
 

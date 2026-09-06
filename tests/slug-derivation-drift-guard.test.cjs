@@ -129,7 +129,7 @@ describe('findSlugDerivationDrift — MAJOR-1: allowlist exemption is scoped to 
   const sanctionedRealEndLines = [
     { file: path.join('src', 'core-utils.cts'), fn: 'generateSlugInternal', realEndLine: 199 },
     { file: path.join('src', 'gsd2-import.cts'), fn: 'slugify', realEndLine: 103 },
-    { file: path.join('src', 'runtime-artifact-conversion.cts'), fn: 'normalizeKimiSkillName', realEndLine: 616 },
+    { file: path.join('src', 'runtime-artifact-conversion.cts'), fn: 'normalizeKimiSkillName', realEndLine: 635 },
     { file: path.join('scripts', 'generate-package-identity.cjs'), fn: 'slugifyPackageName', realEndLine: 42 },
   ];
 

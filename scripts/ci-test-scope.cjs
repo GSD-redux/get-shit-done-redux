@@ -526,15 +526,14 @@ function classify(files) {
 
     if (file.startsWith('tests/') && file.endsWith('.test.cjs')) {
       targeted.add(file);
-      // #494 invariant, narrowed: a changed test must still be exercised on
-      // the divergent OS before merge, but at per-file cost — it ALWAYS joins
-      // the scoped windows lane instead of triggering the three full parity
-      // lanes. (full_matrix fired on 15/15 sampled PRs because test-driven
-      // PRs always touch tests/, costing ~25 runner-minutes each.) Changed
-      // tests already run on the two ubuntu-24 lanes via targeted_tests; the
-      // residual macOS / windows cross-product is covered by the full
-      // matrix on every push to next.
       windows.add(file);
+      // #494 originally narrowed this to skip full_matrix for changed test
+      // files, on the theory that ubuntu targeted_tests + the scoped windows
+      // lane already covered them. Rescinded per #4421: PR #4384 landed a
+      // macOS-only regression on 2026-09-06 that stayed invisible pre-merge
+      // precisely because this carve-out suppressed the only macOS signal.
+      // The ~25-runner-minute cost on test-touching PRs is accepted.
+      fullMatrix = true;
     }
 
     for (const rule of RULES) {

@@ -3811,3 +3811,570 @@ describe('#3712 in-process home confinement', () => {
       `codex skills must NOT resolve inside the ambient home ${ambientHome}, got ${dest}`);
   });
 });
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4086 (Codex skills manifest keys never resolve)
+// Codex installs skills to the skills-kind `home` override (~/.agents/skills),
+// outside configDir (~/.codex). writeManifest() hashes skills from the real
+// location, but saveLocalPatches() resolved every manifest key against
+// configDir only — every skills/ key missed, so user modifications to Codex
+// skills were never hash-compared, never backed up, silently overwritten.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4086-codex-skills-manifest-paths', () => {
+'use strict';
+
+const { test, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const ROOT = path.join(__dirname, '..');
+const INSTALL = require(path.join(ROOT, 'bin', 'install.js'));
+const { cleanup, sandboxHome, scrubConfigLocationEnv } = require('./helpers.cjs');
+
+const MANIFEST_NAME = 'gsd-file-manifest.json';
+const PATCHES_DIR_NAME = 'gsd-local-patches';
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function writeManifestFile(configDir, files, extra = {}) {
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, MANIFEST_NAME),
+    JSON.stringify({ version: '1.12.0', timestamp: new Date().toISOString(), files, ...extra }, null, 2),
+  );
+}
+
+describe('Bug #4086: saveLocalPatches resolves skills/ manifest keys at the runtime skills root', () => {
+  let tmpDir;
+  let homeDir;
+  let configDir;
+  let skillsRoot;
+  let restoreConfigEnv;
+  let fakeSrcDir;
+
+  beforeEach((t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4086-'));
+    homeDir = path.join(tmpDir, 'home');
+    fs.mkdirSync(homeDir, { recursive: true });
+    sandboxHome(t, homeDir);
+    restoreConfigEnv = scrubConfigLocationEnv();
+    configDir = path.join(homeDir, '.codex');
+    // Same join the layout uses for codex's skills-kind home override
+    // (#3712 block above pins that this is $HOME/.agents/skills).
+    skillsRoot = path.join(homeDir, '.agents', 'skills');
+    fakeSrcDir = path.join(tmpDir, 'pkg-src');
+    fs.mkdirSync(fakeSrcDir, { recursive: true });
+    t.after(() => {
+      restoreConfigEnv();
+      cleanup(tmpDir);
+    });
+  });
+
+  test('saveLocalPatches backs up a modified Codex skill installed under ~/.agents/skills (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const modified = pristine + '<!-- user edit 4086: a substantial marker line -->\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), modified);
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) }, { runtime: 'codex', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(configDir, {
+      packageSrc: fakeSrcDir,
+      runtime: 'codex',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [relKey], 'the modified skill must be detected via the skills root');
+    const backup = path.join(configDir, PATCHES_DIR_NAME, relKey);
+    assert.ok(fs.existsSync(backup), `backup must exist at ${PATCHES_DIR_NAME}/${relKey}`);
+    assert.equal(fs.readFileSync(backup, 'utf8'), modified, 'backup must hold the user-modified bytes');
+    const meta = JSON.parse(fs.readFileSync(path.join(configDir, PATCHES_DIR_NAME, 'backup-meta.json'), 'utf8'));
+    assert.deepEqual(meta.files, [relKey]);
+  });
+
+  test('unmodified Codex skill under ~/.agents/skills produces no patch (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), pristine);
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) }, { runtime: 'codex', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(configDir, {
+      packageSrc: fakeSrcDir,
+      runtime: 'codex',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [], 'no false positive for an unmodified skill at the skills root');
+  });
+
+  test('config-dir-relative skills keep resolving against configDir first (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock claude skill body line\n---\nstock\n';
+    const modified = pristine + '<!-- user edit 4086: claude skill marker line -->\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    // claude has NO skills home override — skills live under configDir itself.
+    const claudeConfig = path.join(homeDir, '.claude');
+    fs.mkdirSync(path.join(claudeConfig, 'skills', 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(claudeConfig, 'skills', 'gsd-x', 'SKILL.md'), modified);
+    writeManifestFile(claudeConfig, { [relKey]: sha256(pristine) }, { runtime: 'claude', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(claudeConfig, {
+      packageSrc: fakeSrcDir,
+      runtime: 'claude',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [relKey], 'config-dir-relative skills are detected exactly as before');
+  });
+
+  test('configDir copy wins when both locations exist (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const configCopy = pristine + '<!-- user edit at configDir copy 4086 -->\n';
+    const rootCopy = pristine + '<!-- DIFFERENT user edit at skills root 4086 -->\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(configDir, 'skills', 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'skills', 'gsd-x', 'SKILL.md'), configCopy);
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), rootCopy);
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) }, { runtime: 'codex', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(configDir, {
+      packageSrc: fakeSrcDir,
+      runtime: 'codex',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [relKey]);
+    const backup = path.join(configDir, PATCHES_DIR_NAME, relKey);
+    assert.equal(fs.readFileSync(backup, 'utf8'), configCopy, 'configDir copy must be hashed/backed up, not the skills-root copy');
+  });
+
+  test('legacy runtime-less manifest is tolerated (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), pristine + 'user line\n');
+    // No runtime field, and the caller passes no pristineCtx.runtime either
+    // (legacy callers) — the redirect is impossible; behave as before (skip).
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) });
+
+    let modifiedList;
+    assert.doesNotThrow(() => {
+      modifiedList = INSTALL.saveLocalPatches(configDir, {});
+    }, 'a runtime-less manifest must not crash saveLocalPatches');
+    assert.deepEqual(modifiedList, [], 'without a runtime the old skip behavior applies');
+  });
+
+  test('end-to-end codex reinstall backs up the modified skill (#4086)', { timeout: 120_000 }, () => {
+    const origLog = console.log;
+    const origWarn = console.warn;
+    console.log = () => {};
+    console.warn = () => {};
+    try {
+      INSTALL.install(true, 'codex');
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+    }
+    const manifest = JSON.parse(fs.readFileSync(path.join(configDir, MANIFEST_NAME), 'utf8'));
+    const skillKeys = Object.keys(manifest.files).filter((k) => k.startsWith('skills/'));
+    assert.ok(skillKeys.length > 0, 'codex global install must record skills/ manifest keys');
+    const skillAbs = skillKeys.map((k) => path.join(homeDir, '.agents', k));
+    assert.ok(
+      skillKeys.every((k, i) => !fs.existsSync(path.join(configDir, k)) && fs.existsSync(skillAbs[i])),
+      'installed skills must live under ~/.agents, not under configDir (the #4086 premise)',
+    );
+    // User modifies one installed skill, then reinstalls.
+    fs.appendFileSync(skillAbs[0], '\n<!-- user edit 4086 e2e marker line -->\n');
+    try {
+      console.log = () => {};
+      console.warn = () => {};
+      INSTALL.install(true, 'codex');
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+    }
+    const backup = path.join(configDir, PATCHES_DIR_NAME, skillKeys[0]);
+    assert.ok(fs.existsSync(backup), `reinstall must back the modified skill up at ${PATCHES_DIR_NAME}/${skillKeys[0]}`);
+    assert.match(fs.readFileSync(backup, 'utf8'), /user edit 4086 e2e marker line/);
+  });
+});
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4145 (self-heal side). saveLocalPatches'
+// preserve-check resolved gsd-pristine/ entries strictly by the manifest-keyed
+// path, so a hash-matching snapshot stored without the gsd-core/ prefix was
+// pushed into regeneration from the incoming release; when upstream changed
+// the file, the candidate hash-mismatched and was discarded. The correct
+// baseline was never consumed and never pruned — the state repeated on every
+// future update. The fix rescues exact-recorded-hash orphans by relocating
+// them to the canonical path.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4145-saveLocalPatches-orphan-rescue', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+
+const ROOT = path.join(__dirname, '..');
+const INSTALL = require(path.join(ROOT, 'bin', 'install.js'));
+const { cleanup } = require('./helpers.cjs');
+
+const MANIFEST_NAME = 'gsd-file-manifest.json';
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+describe('Bug #4145: saveLocalPatches rescues hash-matching orphaned pristine snapshots', () => {
+  let tmpDir;
+  let configDir;
+  let newSrcDir;
+  let pristineDir;
+
+  const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+  const OLD_PRISTINE = '# Old Release Content\nThis is the outgoing pristine.\n';
+  const NEW_RELEASE = '# New Release Content\nUpstream rewrote this file wholesale in v2.\n';
+  const USER_MODIFIED = OLD_PRISTINE + '## User addition\nUser customization here.\n';
+
+  beforeEach((t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-slp-'));
+    configDir = path.join(tmpDir, 'config');
+    newSrcDir = path.join(tmpDir, 'new-release-src');
+    pristineDir = path.join(configDir, 'gsd-pristine');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(newSrcDir, { recursive: true });
+    t.after(() => {
+      cleanup(tmpDir);
+    });
+  });
+
+  function seedFixture({ orphanRel, orphanContent, canonicalContent, newReleaseContent }) {
+    fs.mkdirSync(path.dirname(path.join(configDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(configDir, FILE), USER_MODIFIED);
+    fs.writeFileSync(
+      path.join(configDir, MANIFEST_NAME),
+      JSON.stringify({ version: '1.0.0', files: { [FILE]: sha256(OLD_PRISTINE) } }, null, 2),
+    );
+    if (canonicalContent !== undefined) {
+      fs.mkdirSync(path.dirname(path.join(pristineDir, FILE)), { recursive: true });
+      fs.writeFileSync(path.join(pristineDir, FILE), canonicalContent);
+    }
+    if (orphanRel !== undefined) {
+      fs.mkdirSync(path.dirname(path.join(pristineDir, orphanRel)), { recursive: true });
+      fs.writeFileSync(path.join(pristineDir, orphanRel), orphanContent);
+    }
+    fs.mkdirSync(path.dirname(path.join(newSrcDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(newSrcDir, FILE), newReleaseContent);
+  }
+
+  /**
+   * Core regression (self-heal): the hash-matching snapshot sits at
+   * bin/lib/frontmatter.cjs — without the gsd-core/ segment. The new release
+   * changed the file upstream, so regeneration candidates are discarded.
+   * After the fix the orphan is relocated to the canonical manifest-keyed
+   * path and the unprefixed copy no longer lingers.
+   */
+  test('#4145: saveLocalPatches relocates a hash-matching unprefixed orphan to the canonical pristine path', () => {
+    const orphanRel = 'bin/lib/frontmatter.cjs';
+    seedFixture({ orphanRel, orphanContent: OLD_PRISTINE, newReleaseContent: NEW_RELEASE });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const canonical = path.join(pristineDir, FILE);
+    assert.ok(fs.existsSync(canonical), 'canonical prefixed pristine must exist after the update');
+    assert.equal(sha256(fs.readFileSync(canonical, 'utf8')), sha256(OLD_PRISTINE),
+      'relocated baseline must carry the outgoing (recorded-hash) bytes, not new-release bytes');
+    assert.equal(fs.existsSync(path.join(pristineDir, orphanRel)), false,
+      'the unprefixed orphan must not linger once relocated');
+  });
+
+  /**
+   * Stale canonical (new-release bytes) + hash-matching orphan elsewhere:
+   * the stale entry is removed by the #3407 path and then rescued from the
+   * orphan — the file must not end in no-baseline limbo.
+   */
+  test('#4145: rescues after stale-canonical removal when a hash-matching orphan exists', () => {
+    seedFixture({
+      orphanRel: 'legacy/frontmatter.cjs',
+      orphanContent: OLD_PRISTINE,
+      canonicalContent: NEW_RELEASE, // stale — hash mismatch
+      newReleaseContent: NEW_RELEASE,
+    });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const canonical = path.join(pristineDir, FILE);
+    assert.ok(fs.existsSync(canonical), 'canonical pristine must exist after stale removal + rescue');
+    assert.equal(sha256(fs.readFileSync(canonical, 'utf8')), sha256(OLD_PRISTINE),
+      'rescued baseline must carry the recorded-hash bytes');
+    assert.equal(fs.existsSync(path.join(pristineDir, 'legacy', 'frontmatter.cjs')), false,
+      'the orphan must be consumed by the relocation');
+  });
+
+  /** Negative space: no orphan, upstream changed — regeneration discard (#3407) is unchanged. */
+  test('#4145: leaves the baseline absent when no orphan exists and upstream changed', () => {
+    seedFixture({ newReleaseContent: NEW_RELEASE });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    assert.equal(fs.existsSync(path.join(pristineDir, FILE)), false,
+      'no hash-matching source exists — the baseline must stay absent (over-broad/no-baseline fallback)');
+  });
+
+  /** Negative space: a mismatching orphan is neither adopted nor deleted. */
+  test('#4145: never adopts nor deletes a hash-mismatching orphan', () => {
+    const orphanRel = 'bin/lib/frontmatter.cjs';
+    seedFixture({ orphanRel, orphanContent: NEW_RELEASE, newReleaseContent: NEW_RELEASE });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    assert.equal(fs.existsSync(path.join(pristineDir, FILE)), false,
+      'mismatching bytes must not be written to the canonical pristine path');
+    assert.equal(fs.existsSync(path.join(pristineDir, orphanRel)), true,
+      'pruning files the recorded hashes do not vouch for is not this fix\'s job');
+  });
+
+  /**
+   * Review finding (fix follow-up): two modified files sharing byte-identical
+   * outgoing content. The orphan scan must never consume a path that is
+   * another manifest file's canonical pristine path — otherwise the rescue
+   * would relocate a correct canonical away from its owner and the two files
+   * would ping-pong it between updates. Only genuine non-canonical orphans
+   * are eligible.
+   */
+  test('#4145: does not steal a byte-identical canonical belonging to another modified file', () => {
+    const FILE_B = 'gsd-core/bin/lib/other-file.cjs';
+    const SHARED_OLD = '# Shared Old Content\nByte-identical across two manifest files.\n';
+    // A and B are both user-modified on top of byte-identical outgoing stock,
+    // so both manifest records carry the SAME pristine hash.
+    fs.mkdirSync(path.dirname(path.join(configDir, FILE_B)), { recursive: true });
+    fs.writeFileSync(path.join(configDir, FILE), SHARED_OLD + '## User addition A\nCustom A.\n');
+    fs.writeFileSync(path.join(configDir, FILE_B), SHARED_OLD + '## User addition B\nCustom B.\n');
+    fs.writeFileSync(
+      path.join(configDir, MANIFEST_NAME),
+      JSON.stringify({
+        version: '1.0.0',
+        files: { [FILE]: sha256(SHARED_OLD), [FILE_B]: sha256(SHARED_OLD) },
+      }, null, 2),
+    );
+    // A (processed first) has the ALREADY-correct canonical holding the shared
+    // old bytes. B has no canonical and no orphan — B's only possible hash
+    // match is A's canonical. Without the canonical skip set, B's rescue would
+    // copy A's canonical to B's path and then DELETE A's canonical.
+    fs.mkdirSync(path.dirname(path.join(pristineDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(pristineDir, FILE), SHARED_OLD);
+    fs.mkdirSync(path.dirname(path.join(newSrcDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(newSrcDir, FILE), NEW_RELEASE);
+    fs.mkdirSync(path.dirname(path.join(newSrcDir, FILE_B)), { recursive: true });
+    fs.writeFileSync(path.join(newSrcDir, FILE_B), NEW_RELEASE);
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    // A's canonical must survive untouched — never stolen to become B's.
+    assert.ok(fs.existsSync(path.join(pristineDir, FILE)),
+      'the byte-identical canonical of the earlier-processed file must survive');
+    assert.equal(sha256(fs.readFileSync(path.join(pristineDir, FILE), 'utf8')), sha256(SHARED_OLD));
+    // B gains no baseline from A's canonical (falls to regeneration instead).
+    assert.equal(fs.existsSync(path.join(pristineDir, FILE_B)), false,
+      'a canonical path of another file must never be relocated as the rescue source');
+  });
+
+  /** Preserve-path lock: an already-correct canonical stays put; the preserve loop ignores the orphan. */
+  test('#4145: preserves an already-correct canonical and leaves a coexisting identical orphan in place', () => {
+    const orphanRel = 'bin/lib/frontmatter.cjs';
+    seedFixture({
+      orphanRel,
+      orphanContent: OLD_PRISTINE,
+      canonicalContent: OLD_PRISTINE, // already correct
+      newReleaseContent: NEW_RELEASE,
+    });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const canonical = path.join(pristineDir, FILE);
+    assert.ok(fs.existsSync(canonical));
+    assert.equal(sha256(fs.readFileSync(canonical, 'utf8')), sha256(OLD_PRISTINE),
+      'preserved canonical must be byte-identical to before the run');
+    assert.equal(fs.existsSync(path.join(pristineDir, orphanRel)), true,
+      'the preserve path must not disturb unrelated files');
+  });
+});
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4135 (installer side). saveLocalPatches'
+// hash-validated regeneration (the #3407 promotion rule) keeps only
+// candidates byte-identical across the whole version span, so a
+// multi-version update leaves gsd-pristine/ holding near-zero baselines —
+// and the update output never says so in N-of-M terms. The fix keeps the
+// hash validation untouched (disk behavior is pinned here) and adds an
+// honest coverage summary via an exported typed helper.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4135-saveLocalPatches-coverage-line', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+
+const ROOT = path.join(__dirname, '..');
+const INSTALL = require(path.join(ROOT, 'bin', 'install.js'));
+const { cleanup } = require('./helpers.cjs');
+
+const MANIFEST_NAME = 'gsd-file-manifest.json';
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function countFiles(dir) {
+  let n = 0;
+  if (!fs.existsSync(dir)) return 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) n += countFiles(path.join(dir, entry.name));
+    else if (entry.isFile()) n += 1;
+  }
+  return n;
+}
+
+describe('Bug #4135: saveLocalPatches reports honest gsd-pristine coverage on multi-version updates', () => {
+  let tmpDir;
+  let configDir;
+  let newSrcDir;
+  let pristineDir;
+
+  beforeEach((t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4135-cov-'));
+    configDir = path.join(tmpDir, 'config');
+    newSrcDir = path.join(tmpDir, 'new-release-src');
+    pristineDir = path.join(configDir, 'gsd-pristine');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(newSrcDir, { recursive: true });
+    t.after(() => {
+      cleanup(tmpDir);
+    });
+  });
+
+  /**
+   * Seeds a multi-version-update fixture: `total` modified files, of which
+   * `identical` are byte-identical across the span (the only regenerable
+   * baselines) and the rest changed upstream in the incoming source.
+   */
+  function seedMultiVersionFixture(total, identical) {
+    const manifestFiles = {};
+    for (let i = 1; i <= total; i++) {
+      const rel = `gsd-core/workflows/flow-${String(i).padStart(2, '0')}.md`;
+      const pristine =
+        `# Flow ${i}\nStock content of the outgoing release for file ${i}.\n` +
+        `Second outgoing stock line ${i} with plenty of substance.\n`;
+      const user = pristine + `## User customisation ${i}\nCustom section on top of the outgoing release.\n`;
+      const incoming = (i <= identical)
+        ? pristine
+        : `# Flow ${i} (rewritten)\nIncoming release rewrote file ${i} across the span.\n`;
+      manifestFiles[rel] = sha256(pristine);
+      fs.mkdirSync(path.dirname(path.join(configDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(configDir, rel), user);
+      fs.mkdirSync(path.dirname(path.join(newSrcDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(newSrcDir, rel), incoming);
+    }
+    fs.writeFileSync(
+      path.join(configDir, MANIFEST_NAME),
+      JSON.stringify({ version: '1.10.0', timestamp: '2026-08-01T00:00:00Z', runtime: 'claude', scope: 'global', files: manifestFiles }, null, 2),
+    );
+    return total;
+  }
+
+  /**
+   * Core installer regression: the multi-version collapse itself is pinned
+   * (hash validation untouched — only the byte-identical file survives),
+   * and the honest N-of-M summary is available via the typed helper.
+   */
+  test('#4135: saveLocalPatches multi-version regen keeps hash validation and reports 1-of-13 coverage', () => {
+    const total = seedMultiVersionFixture(13, 1);
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const covered = countFiles(pristineDir);
+    assert.equal(covered, 1,
+      'the collapse is pinned: only the byte-identical file survives hash-validated regeneration');
+    assert.equal(typeof INSTALL.describeBaselineCoverage, 'function',
+      'the coverage summary must be rendered by an exported typed helper');
+    const summary = INSTALL.describeBaselineCoverage(total, covered);
+    assert.equal(summary.complete, false);
+    assert.equal(summary.uncovered, 12);
+    assert.equal(
+      summary.text,
+      'gsd-pristine/ baselines cover 1 of 13 modified file(s) — 12 will be reported no_baseline by the reapply verifier',
+      'partial coverage states the N-of-M collapse and its downstream effect',
+    );
+  });
+
+  /** Positive boundary: every modified file covered renders a complete summary. */
+  test('#4135: describeBaselineCoverage reports complete when every modified file is covered', () => {
+    const total = seedMultiVersionFixture(3, 3);
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const covered = countFiles(pristineDir);
+    assert.equal(covered, 3, 'a fully byte-identical span regenerates every baseline');
+    const summary = INSTALL.describeBaselineCoverage(total, covered);
+    assert.equal(summary.complete, true);
+    assert.equal(summary.uncovered, 0);
+    assert.equal(
+      summary.text,
+      'gsd-pristine/ baselines cover 3 of 3 modified file(s)',
+      'complete coverage renders without a collapse tail',
+    );
+  });
+});
+  });
+}

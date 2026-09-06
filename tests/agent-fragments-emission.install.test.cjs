@@ -136,14 +136,16 @@ function spawnInstall(repoRoot, runtime, scope) {
 }
 
 /** Emitted files under `root` that are derived from the probe agent AND contain
- *  `token`. The `derivedOnly` filter is what keeps shipped library sources —
- *  which legitimately carry the marker grammar — out of the leak set. */
+ *  `token`. The `derivedOnly` filter keeps shipped library sources and the
+ *  installation-owned raw re-staging corpus — both of which legitimately
+ *  preserve canonical marker grammar — out of the emitted-artifact leak set. */
 function filesContaining(root, token, derivedOnly = true) {
   if (!fs.existsSync(root)) return [];
   const hits = [];
   for (const abs of walk(root)) {
     const rel = path.relative(root, abs).replace(/\\/g, '/');
     if (derivedOnly && !rel.includes(PROBE_STEM)) continue;
+    if (derivedOnly && (rel.startsWith('gsd-core/agents/') || rel.includes('/gsd-core/agents/'))) continue;
     let buf;
     try {
       buf = fs.readFileSync(abs);

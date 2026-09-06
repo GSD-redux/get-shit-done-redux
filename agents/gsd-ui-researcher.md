@@ -367,6 +367,35 @@ gsd_run query commit "docs($PHASE): UI design contract" --files "$PHASE_DIR/$PAD
 UI-SPEC complete. Checker can now validate.
 ```
 
+## Revision Conflict
+
+Revision mode only. Emit this INSTEAD OF `## UI-SPEC COMPLETE` when a checker `fix_hint`
+contradicts a locked user answer, active capability guidance, or a constraint this UI-SPEC already
+encodes — or when the `required_property` is unreachable without breaking one. Resolve every
+non-conflicting issue first. This is not a failure: `/gsd:ui-phase` routes it to the user and does
+not spend a revision iteration on it.
+
+```markdown
+## REVISION_CONFLICT
+
+**Conflicts:** {N}  |  **Issues resolved anyway:** {M}
+
+| Issue | required_property | Conflicts with | Why the hint cannot be applied |
+|-------|-------------------|----------------|-------------------------------|
+| Dimension {N} | {property} | {locked answer / CLAUDE.md rule / spec constraint} | {one line} |
+
+### Alternatives Considered
+
+| Issue | Alternative | Satisfies required_property? | Cost of adopting |
+|-------|-------------|------------------------------|------------------|
+| Dimension {N} | {smaller or different mechanism} | {yes / partially — how} | {what it changes} |
+```
+
+**Every field is one line of plain text.** No newlines inside a cell, and never begin a field with
+`#`, `-`, `|` or a code fence. This table is presented directly to the user in ui-phase's revision
+step, not persisted to a shared file; a field that opens a heading, list item, table cell, or
+fence would corrupt that presentation.
+
 ## UI-SPEC Blocked
 
 ```markdown

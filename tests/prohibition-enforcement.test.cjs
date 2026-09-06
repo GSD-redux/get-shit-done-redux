@@ -499,6 +499,17 @@ describe('prohibition-enforcement real-runner helpers (#1259)', () => {
 // SF-01 slip past the injected-double tests. Typed-field assertions only.
 describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
   const fs = require('node:fs');
+  const { spawn } = require('node:child_process');
+
+  // The hang fixture served to the bounded-timeout test below, hoisted so the #4104 self-exit
+  // regression cannot drift from the body it guards. Parks on a SETTLING 10s timer: still "hung"
+  // for any enforcement bound (the test below uses 1500ms), ~0% CPU while parked, and guaranteed
+  // to self-terminate (#4104) — unlike the retired `while (true) {}` busy loop, which orphaned at
+  // 100% CPU forever when the runner was killed, and unlike a never-settling `new Promise(() => {})`
+  // (#4105), whose non-exit relies on unstated runtime behavior.
+  const HANGS_BODY =
+    "const { test } = require('node:test');\n" +
+    "test('hangs forever', () => new Promise((resolve) => { setTimeout(resolve, 10_000); }));\n";
 
   test('a genuine non-vacuous passing node-test proven fail-first greens via the real runner + real prover', (t) => {
     const enforce = require(ENFORCEMENT_LIB);
@@ -687,9 +698,14 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     const dir = createTempDir('prohib-hang-');
     t.after(() => cleanup(dir));
     const tf = path.join(dir, 'hang.test.cjs');
-    // A test that never returns; the bounded timeout must kill it and dispose non-green.
-    fs.writeFileSync(tf,
-      "const { test } = require('node:test');\ntest('hangs forever', () => { while (true) {} });\n");
+    // A test that never returns within the enforcement bound; the bounded timeout must kill it and
+    // dispose non-green. The body PARKS on a settling setTimeout (#4104) rather than busy-looping
+    // `while (true) {}`: still "hung" for any enforcement timeout (10s >> the 1500ms bound below),
+    // but an orphaned worker costs ~0% CPU while parked and self-exits when the timer settles —
+    // never an immortal 100%-CPU process when the runner is killed. Deliberately NOT the
+    // never-settling `new Promise(() => {})` shape (the #4105 Node-24 concern): the settle is
+    // stated platform behavior, so the self-exit is guaranteed rather than incidental.
+    fs.writeFileSync(tf, HANGS_BODY);
     const result = enforce.runProhibitionEnforcement(
       TEST_TIER,
       { kind: 'node-test', target: tf, failFirst: true },
@@ -697,6 +713,52 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     );
     assert.notEqual(result.status, 'green', 'a hung check must be killed and fail closed — never hang verify or green');
     assert.equal(result.located, true);
+  });
+
+  test('the #4104 hang fixture parks (~0% CPU) and self-terminates — no immortal 100%-CPU orphan', (t, done) => {
+    // Regression (#4104): the enforcement hang test above relies on `t.after` cleanup and the
+    // bounded timeout, but if the RUNNER itself is killed (chunk timeout, CI cancel, Ctrl+C) nothing
+    // owns the fixture's worker. Old body: `while (true) {}` — orphaned at ~100% CPU forever
+    // (reproduced: worker reparented to PID 1 at 100.0% CPU surviving `kill -9` of the runner).
+    // Deterministic guard, no orphan hunt: spawn the EXACT served body directly, observe that it
+    // (a) is still running shortly into the enforcement-timeout window (it genuinely hangs), and
+    // (b) exits on its own — natural exit, no signal — inside a generous ceiling.
+    const dir = createTempDir('prohib-hang-selfexit-');
+    t.after(() => cleanup(dir));
+    const tf = path.join(dir, 'hang.test.cjs');
+    fs.writeFileSync(tf, HANGS_BODY);
+    const child = spawn(process.execPath, [tf], { stdio: 'ignore' });
+    t.after(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } });
+    // Fast-fail on a spawn error (execPath unspawnable): the poll below keys on exit/signal, which
+    // a failed spawn never sets, so without this the 20s ceiling would expire with a misleading
+    // "did not self-terminate" message instead of the real cause.
+    child.on('error', (err) => {
+      assert.fail(`could not spawn the fixture directly: ${err.message}`);
+    });
+    const CEILING_MS = 20_000;
+    const stillHangingAt = Date.now() + 750; // > half the 1500ms enforcement bound: it must not finish early
+    const deadline = Date.now() + CEILING_MS;
+    const poll = () => {
+      // `exitCode !== null` alone misses a SIGNALED exit (exitCode stays null when a signal ends
+      // the child); signalCode covers that, and the assertions below then name it as the failure.
+      if (child.exitCode !== null || child.signalCode !== null) {
+        // Exited. If it exited BEFORE the still-hanging checkpoint the fixture is no longer a hang
+        // fixture at all (breaks the enforcement test it serves — the negative space in 10-diagnosis).
+        assert.ok(Date.now() >= stillHangingAt,
+          `fixture must still be hanging at 750ms (exited after only ${Date.now() - (stillHangingAt - 750)}ms)`);
+        assert.equal(child.signalCode, null,
+          'fixture must SELF-terminate (natural exit) — a signal means we had to kill it (#4104 regression)');
+        assert.equal(child.exitCode, 0, 'the parked timer settles and the test passes cleanly');
+        done();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        child.kill('SIGKILL');
+        assert.fail(`fixture did not self-terminate within ${CEILING_MS}ms — immortal process (#4104 regression)`);
+      }
+      setTimeout(poll, 250);
+    };
+    setImmediate(poll);
   });
 
   test('an EMPTY node-test file (exit 0, zero tests) does NOT green via the real runner (BL-01)', (t) => {

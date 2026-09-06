@@ -50,7 +50,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 Extract from init JSON: `executor_model`, `commit_docs`, `sub_repos`, `phase_dir`, `phase_number`, `plans`, `summaries`, `incomplete_plans`, `state_path`, `config_path`, `response_language`.
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 If `.planning/` missing: error.
 </step>
@@ -292,12 +292,13 @@ End with: **Total deviations:** N auto-fixed (breakdown). **Impact:** assessment
 For `type: tdd` plans — RED-GREEN-REFACTOR:
 
 1. **Infrastructure** (first TDD plan only): detect project, install framework, config, verify empty suite
-2. **Cycle (#3990: stated ONCE):** execute RED → GREEN → REFACTOR exactly as specified in the
-canonical `~/.claude/gsd-core/references/tdd.md` "Red-Green-Refactor Cycle" section — its
-commit-scope contract (`test({phase}-{plan})` → `feat({phase}-{plan})` →
-`refactor({phase}-{plan})`, RED must fail, GREEN must pass, REFACTOR commits only on change),
-its fail-fast rule, and its error handling. The reference is the single source; do not
-improvise a variant.
+2. **Cycle (#3990: stated ONCE; #4267: cited correctly):** execute RED → GREEN → REFACTOR
+exactly as specified in the canonical `~/.claude/gsd-core/references/tdd.md` reference — the
+"Red-Green-Refactor Cycle" section's commit-scope contract (`test({phase}-{plan})` →
+`feat({phase}-{plan})` → `refactor({phase}-{plan})`, RED must fail, GREEN must pass, REFACTOR
+commits only on change), the "Gate Enforcement Rules" section's "Fail-Fast Rules" subsection,
+and the "Error Handling" section. The reference is the single source; do not improvise a
+variant.
 </tdd_plan_execution>
 
 <precommit_failure_handling>

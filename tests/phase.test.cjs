@@ -7381,6 +7381,167 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // #4129 row 1: `phase complete N` failed to increment completed_phases when
+  // a SIBLING completed phase's verification routes `stale` (its SUMMARY was
+  // touched after the verification — the issue's real-world drift). The
+  // transaction flips this phase's ROADMAP row and derives the BODY counters
+  // from the post-completion ROADMAP, but the frontmatter disk scan reads the
+  // PRE-completion ROADMAP and the stale-dated sibling, so the persisted
+  // counter stays pinned at the under-count. See .gsd/bug/
+  // fix-4129-completed-phases-recompute/{10-diagnosis,50-test-matrix}.md.
+  // ─────────────────────────────────────────────────────────────────────────
+  describe('#4129: phase complete increments completed_phases to the ROADMAP truth', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4129-phase-'));
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    // Body Progress percent through the repo's own field extractor (never raw
+    // substring matching on rendered STATE.md — CONTRIBUTING.md prohibits it).
+    function bodyProgressPercentFromState(stateContent) {
+      const raw = stateExtractField(stateContent, 'Progress');
+      if (raw === null) return null;
+      const match = raw.match(/(\d{1,3})%/);
+      return match ? Number(match[1]) : null;
+    }
+
+    function setupStaleSiblingProject(tmpDir) {
+      const planningDir = path.join(tmpDir, '.planning');
+      const phasesDir = path.join(planningDir, 'phases');
+      fs.mkdirSync(phasesDir, { recursive: true });
+      fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ project_code: 'REPRO' }));
+
+      const roadmapLines = [
+        '# Roadmap',
+        '',
+        '## Current Milestone: v1.0',
+        '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 1.    | 2/2            | Complete | 2026-01-01 |',
+        '| 2.    | 2/2            | Complete | 2026-01-02 |',
+        '| 3.    | 2/2            | In Progress |  |',
+      ];
+      for (let i = 4; i <= 18; i += 1) roadmapLines.push(`| ${i}.    | 0/2            | Not Started |  |`);
+      roadmapLines.push('', '- [x] Phase 1: Alpha (completed 2026-01-01)', '- [x] Phase 2: Beta (completed 2026-01-02)', '- [ ] Phase 3: Gamma');
+      for (let i = 4; i <= 18; i += 1) roadmapLines.push(`- [ ] Phase ${i}: P${i}`);
+      for (let i = 1; i <= 18; i += 1) {
+        roadmapLines.push('', `### Phase ${i}: P${i}`, '', '**Goal:** goal', '**Plans:** 2 plans', '');
+      }
+      fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmapLines.join('\n'));
+
+      fs.writeFileSync(
+        path.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'milestone: v1.0',
+          'milestone_name: Programme',
+          'status: executing',
+          'current_phase: 3',
+          'last_updated: 2026-01-02T10:00:00.000Z',
+          'progress:',
+          '  total_phases: 18',
+          '  completed_phases: 2',
+          '  total_plans: 4',
+          '  completed_plans: 4',
+          '  percent: 11',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Current Position',
+          '',
+          'Phase: 3 of 18 (Gamma) — EXECUTING',
+          'Plan: 2 of 2',
+          'Status: Executing Phase 3',
+          'Last activity: 2026-01-02',
+          '',
+          '## Progress',
+          '',
+          'Progress: [█░░░░░░░░░] 11% (2/18 phases complete)',
+          '',
+          '## Session Continuity',
+          '',
+          'Last session: 2026-01-02T10:00:00.000Z',
+          '',
+        ].join('\n'),
+      );
+
+      for (const p of [1, 2, 3]) {
+        const pp = String(p).padStart(2, '0');
+        const dir = path.join(phasesDir, `${pp}-p${p}`);
+        fs.mkdirSync(dir, { recursive: true });
+        for (const i of [1, 2]) {
+          fs.writeFileSync(path.join(dir, `${pp}-0${i}-PLAN.md`), '# Plan\n');
+          fs.writeFileSync(path.join(dir, `${pp}-0${i}-SUMMARY.md`), '# Summary\n');
+        }
+        fs.writeFileSync(
+          path.join(dir, `${pp}-VERIFICATION.md`),
+          ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+        );
+      }
+
+      // The drift: phase 1's summary touched after its verification. No git
+      // repo → the #2348 clock compares mtimes; the newer summary mtime
+      // routes phase 1's verification `stale` (verified via
+      // `verification status` in the diagnosis repro).
+      const older = new Date('2026-01-01T00:00:00Z');
+      const newer = new Date('2026-03-01T00:00:00Z');
+      fs.utimesSync(path.join(phasesDir, '01-p1', '01-VERIFICATION.md'), older, older);
+      fs.utimesSync(path.join(phasesDir, '01-p1', '01-01-SUMMARY.md'), newer, newer);
+
+      return { planningDir };
+    }
+
+    test('phaseCompleteIncrementsCompletedPhasesPastStaleSibling', () => {
+      setupStaleSiblingProject(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const r = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r.success, `phase complete 3 failed: ${r.error}`);
+
+      const state = fs.readFileSync(statePath, 'utf8');
+      const fm = extractFrontmatter(state);
+      assert.ok(fm.progress, 'progress block must exist after phase complete');
+      assert.equal(
+        Number(fm.progress.completed_phases),
+        3,
+        `#4129: completing phase 3 must increment completed_phases to the ROADMAP truth 3 (phases 1-3 Complete), got ${fm.progress.completed_phases}`,
+      );
+      assert.equal(
+        Number(fm.progress.percent),
+        17,
+        `#4129: percent must follow the incremented counter (3/18), got ${fm.progress.percent}`,
+      );
+      // The body bar must stay coherent with the persisted percent (#4129 AC7).
+      assert.equal(bodyProgressPercentFromState(state), 17, 'the body Progress bar must carry the same 17% as the frontmatter percent');
+      // The ROADMAP row this very transaction flipped is the authority.
+      const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8');
+      assert.ok(/^- \[x\] Phase 3: Gamma/m.test(roadmap), 'precondition: the transaction flipped the phase 3 ROADMAP checkbox');
+      assert.ok(/^\| 3\.\s*\|\s*2\/2\s*\|\s*Complete\s*\|/m.test(roadmap), 'precondition: the transaction flipped the phase 3 table row');
+    });
+
+    test('phaseCompleteIsIdempotentOnTheRoadmapTruth', () => {
+      setupStaleSiblingProject(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const r1 = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r1.success, `first call failed: ${r1.error}`);
+      const r2 = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r2.success, `second call failed: ${r2.error}`);
+
+      const fm = extractFrontmatter(fs.readFileSync(statePath, 'utf8'));
+      assert.equal(Number(fm.progress.completed_phases), 3, '#4129: double-complete stays at the ROADMAP truth 3 (idempotent)');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // ADR-3408 §8.3 Matrix A (#3469): cmdPhaseComplete now calls the ONE
   // write-seam composition (syncAndPreserveStateMd) directly instead of
   // hand-assembling syncStateFrontmatter + applyPostSyncPreservation itself
@@ -14409,6 +14570,233 @@ still to be determined by the roadmap.
       parseInt(String(output.next_phase), 10),
       3,
       `lowest outstanding phase 3 beats the on-disk higher phase 6 (got ${output.next_phase})`,
+    );
+  });
+});
+
+describe('phase complete lowest-outstanding vs positional-last (#4078)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4078-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const statePath = () => path.join(tmpDir, '.planning', 'STATE.md');
+  const roadmapPath = () => path.join(tmpDir, '.planning', 'ROADMAP.md');
+
+  /** Scaffold a phase dir with one executed plan (PLAN + SUMMARY). */
+  function scaffoldPhase(slug, planNum) {
+    const dir = path.join(tmpDir, '.planning', 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const padded = String(planNum).padStart(2, '0');
+    fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '# Plan');
+    fs.writeFileSync(path.join(dir, `${padded}-01-SUMMARY.md`), '# Summary');
+  }
+
+  /**
+   * #4078 fixture shape: the original roadmap's phase rows (2–17) use the
+   * bullet-house em-dash grammar the canonical lookup has accepted since #2199
+   * (`- [ ] **Phase N — Name**`), while the later phase.add-ingested Phase 18
+   * uses the colon grammar both the template and the scaffold emit. Only the
+   * colon rows parse under the pre-fix next-phase scan, so the positionally
+   * LAST parseable phase (18) won over the lowest outstanding phase (2).
+   */
+  function writeMixedGrammarRoadmap() {
+    const summaryRows = [
+      '- [ ] **Phase 1: Bootstrap**',
+      '- [ ] **Phase 2 — Python 3.14 Source and CI Compatibility**',
+      '- [ ] **Phase 3 — Packaging Refresh**',
+      '- [ ] **Phase 17 — Docs Sweep**',
+      '- [ ] **Phase 18: Codex Automation Disposition**',
+    ];
+    fs.writeFileSync(
+      roadmapPath(),
+      [
+        '# Roadmap',
+        '',
+        '## Phases',
+        ...summaryRows,
+        '',
+        '### Phase 18: Codex Automation Disposition',
+        '**Requirements**: TBD',
+        '',
+        '1. TBD — run /gsd:plan-phase 18 to break down.',
+        '',
+      ].join('\n'),
+    );
+    scaffoldPhase('01-bootstrap', 1);
+  }
+
+  /** Uniform em-dash grammar (no colon rows at all) — phases 1..5, complete N. */
+  function writeDashRoadmap({ completeBox = null } = {}) {
+    const names = ['Bootstrap', 'Source Compat', 'Packaging', 'Release', 'Docs Sweep'];
+    let rows = names.map((n, i) => `- [ ] **Phase ${i + 1} — ${n}**`);
+    if (completeBox !== null) rows[completeBox - 1] = rows[completeBox - 1].replace('- [ ]', '- [x]');
+    fs.writeFileSync(
+      roadmapPath(),
+      ['# Roadmap', '', '## Phases', ...rows, ''].join('\n'),
+    );
+  }
+
+  function writeExplicitState(phaseNum, phaseName) {
+    fs.writeFileSync(
+      statePath(),
+      [
+        '# State',
+        '',
+        `**Current Phase:** ${phaseNum}`,
+        `**Current Phase Name:** ${phaseName}`,
+        '**Status:** In progress',
+        '**Current Plan:** 01-01',
+        '**Last Activity:** 2025-01-01',
+        '**Last Activity Description:** Working',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  function parseFrontmatterField(content, key) {
+    const m = content.match(new RegExp(`^${key}:\\s*(.*)$`, 'm'));
+    return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+  }
+
+  test('mixedGrammarLowestOutstandingNotPositionalLast', () => {
+    // Row 1 (failing-first regression from the issue): completing Phase 1 of an
+    // 18-phase roadmap whose original rows use the em-dash bullet grammar must
+    // advance to the lowest outstanding phase (2), NOT the positionally-last
+    // colon-form row (18) merely because it is the only row the pre-fix scan
+    // could parse.
+    writeMixedGrammarRoadmap();
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.completed_phase, '1');
+    assert.strictEqual(output.is_last_phase, false, 'phases 2–18 remain — not last');
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      2,
+      `lowest outstanding phase 2 must be next_phase, not the positionally-last phase 18 (got ${output.next_phase})`,
+    );
+    assert.match(String(output.next_phase_name), /python[- ]3\.14-source-and-ci-compatibility/i);
+  });
+
+  test('mixedGrammarStateMovesToPhaseTwo', () => {
+    // Row 2: the resolved next phase must actually be PERSISTED — body Current
+    // Phase and frontmatter current_phase/current_phase_name all describe 2.
+    writeMixedGrammarRoadmap();
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(parseInt(String(output.next_phase), 10), 2);
+
+    const state = fs.readFileSync(statePath(), 'utf-8');
+    assert.ok(/\*\*Current Phase:\*\*\s*2\b/.test(state), `body Current Phase must be 2, got: ${state.match(/\*\*Current Phase:\*\*.*/)?.[0]}`);
+    const fmPhase = parseFrontmatterField(state, 'current_phase');
+    const fmName = parseFrontmatterField(state, 'current_phase_name');
+    assert.strictEqual(parseInt(fmPhase, 10), 2, `frontmatter current_phase must be 2 (got ${fmPhase})`);
+    assert.match(fmName, /python 3\.14/i, `frontmatter current_phase_name must name phase 2 (got ${fmName})`);
+  });
+
+  test('uniformDashGrammarStillResolvesNext', () => {
+    // Row 3: uniform em-dash grammar — no colon rows exist, so the pre-fix scan
+    // found NO next phase at all; completing 1 must still resolve phase 2.
+    writeDashRoadmap();
+    scaffoldPhase('01-bootstrap', 1);
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      2,
+      `next phase 2 must resolve from em-dash rows (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('dashGrammarAllCompleteStillEndsMilestone', () => {
+    // Row 4 (negative space): completing the highest phase with every lower box
+    // checked is still a legitimate milestone end — the widened grammar must not
+    // manufacture an outstanding phase.
+    writeDashRoadmap({ completeBox: 1 });
+    scaffoldPhase('01-bootstrap', 1);
+    scaffoldPhase('02-source-compat', 2);
+    scaffoldPhase('03-packaging', 3);
+    scaffoldPhase('04-release', 4);
+    scaffoldPhase('05-docs-sweep', 5);
+    const rp = roadmapPath();
+    let roadmap = fs.readFileSync(rp, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 2 — Source Compat**', '- [x] **Phase 2 — Source Compat**')
+      .replace('- [ ] **Phase 3 — Packaging**', '- [x] **Phase 3 — Packaging**')
+      .replace('- [ ] **Phase 4 — Release**', '- [x] **Phase 4 — Release**');
+    fs.writeFileSync(rp, roadmap);
+    writeExplicitState(5, 'Docs Sweep');
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'everything checked — milestone completes');
+    assert.strictEqual(output.next_phase, null);
+  });
+
+  test('dashGrammarLowerOutstandingWins', () => {
+    // Row 5 (#2028 through the widened grammar): completing 5 with 3 still
+    // unchecked must fall BACK to the lowest outstanding phase 3. Phases 1, 2
+    // and 4 are checked so 3 is genuinely the lowest outstanding box.
+    writeDashRoadmap();
+    const rp = roadmapPath();
+    let roadmap = fs.readFileSync(rp, 'utf-8');
+    roadmap = roadmap
+      .replace('- [ ] **Phase 1 — Bootstrap**', '- [x] **Phase 1 — Bootstrap**')
+      .replace('- [ ] **Phase 2 — Source Compat**', '- [x] **Phase 2 — Source Compat**')
+      .replace('- [ ] **Phase 4 — Release**', '- [x] **Phase 4 — Release**');
+    fs.writeFileSync(rp, roadmap);
+    scaffoldPhase('03-packaging', 3);
+    scaffoldPhase('05-docs-sweep', 5);
+    writeExplicitState(5, 'Docs Sweep');
+
+    const result = runVerifiedPhaseComplete('phase complete 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      3,
+      `out-of-order completion must point at the lowest outstanding phase 3 (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.is_last_phase, false);
+  });
+
+  test('dashGrammarSentinelStillExcluded', () => {
+    // Row 6 (#2949 through the widened grammar): an unchecked 0.x backlog row in
+    // the dash grammar never becomes next_phase.
+    writeDashRoadmap();
+    scaffoldPhase('01-bootstrap', 1);
+    scaffoldPhase('02-source-compat', 2);
+    const rp = roadmapPath();
+    fs.writeFileSync(
+      rp,
+      '- [ ] **Phase 0.1 — Backlog sentinel item**\n' + fs.readFileSync(rp, 'utf-8'),
+    );
+    writeExplicitState(1, 'Bootstrap');
+
+    const result = runVerifiedPhaseComplete('phase complete 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      parseInt(String(output.next_phase), 10),
+      2,
+      `real phase 2 (not the 0.1 sentinel) is next_phase (got ${output.next_phase})`,
     );
   });
 });

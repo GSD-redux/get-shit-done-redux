@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 # Reapply Local Patches Workflow
 
 Invoked by `/gsd:update --reapply` (`commands/gsd/update.md`).
@@ -167,7 +169,7 @@ Check if a `gsd-pristine/` directory exists alongside `gsd-local-patches/`:
 ```bash
 PRISTINE_DIR="$CONFIG_DIR/gsd-pristine"
 ```
-If it exists, the installer saved pristine copies at install time. Use these as the baseline.
+If it exists, the installer saved pristine copies at install time. Use these as the baseline. Both the deterministic verifier and the installer's preserve-check resolve each file's snapshot at its canonical path first and, when that misses, by the SHA-256 recorded in `pristine_hashes` — so a snapshot stored at a legacy path (for example, without the `gsd-core/` prefix an earlier release dropped) is still found and, on the next update, relocated to its canonical path (#4145). When no snapshot resolves under `gsd-pristine/`, the deterministic verifier additionally falls back to Option A's git-history walk itself (read-only, same recorded-hash match), which is what keeps Step 5a coverage non-zero on multi-version updates where the hash-validated regeneration had nothing it could promote (#4135).
 
 ### Option C: No baseline available (two-way fallback)
 If neither git history nor pristine snapshots are available, fall back to two-way comparison — but with **strengthened heuristics** (see Step 3).
@@ -190,6 +192,58 @@ If neither git history nor pristine snapshots are available, fall back to two-wa
 
 ## Step 4: Merge each file
 
+### Step 4 pre-flight: classify superseded customizations (#4136)
+
+Before merging anything, run the deterministic classifier. It computes, per backed-up file,
+whether the user's added lines (diff of the backup against the hash-validated pristine
+baseline) are ALREADY present verbatim in the newly installed version — i.e. upstream
+adopted the customization. That is the only ground on which the `Incorporated` status
+below is valid. Never conclude `Incorporated` from a signature line, a heading, or general
+resemblance: the classifier excludes structural/trivial lines and requires every
+significant user-added line to be present, because a false `Incorporated` silently retires
+a live customization.
+
+```bash
+PRISTINE_DIR="${CONFIG_DIR}/gsd-pristine"
+
+# Build args as a bash array so paths with spaces survive expansion intact.
+CLASSIFY_ARGS=(
+  --patches-dir "$PATCHES_DIR"
+  --config-dir  "$CONFIG_DIR"
+)
+if [ -d "$PRISTINE_DIR" ]; then
+  CLASSIFY_ARGS+=(--pristine-dir "$PRISTINE_DIR")
+fi
+CLASSIFY_ARGS+=(--classify --json)
+
+# Informational: exits 0. The binding gate is Step 5a's post-merge verification run.
+CLASSIFY_OUTPUT="$(node "${GSD_HOME}/gsd-core/bin/verify-reapply-patches.cjs" "${CLASSIFY_ARGS[@]}")"
+INCORPORATED_FILES="$(echo "$CLASSIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.incorporated_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
+```
+
+**For every file in `INCORPORATED_FILES`:**
+
+- **Do NOT merge it. Do NOT re-apply its diff.** Leave the newly installed file exactly as
+  shipped — the user's customization is already in it. Re-grafting the diff onto a version
+  that already contains it duplicates the content (both copies run; a stale graft can
+  contradict a richer native upstream step that replaced it).
+- Report the per-file status `Incorporated` — "Already in upstream v{version}" — in the
+  Step 3 summary and the Step 7 report.
+- No Hunk Verification Table rows are required for these files (nothing was merged); the
+  classifier's structured output is the evidence. If EVERY backed-up file is Incorporated,
+  still emit the table with a header row and a single note line naming the incorporated
+  files, so the Step 5b absent-table halt is not tripped. Step 5a passes these files
+  without special-casing — every user-added line is present in the untouched install.
+- This is what ends the re-graft cycle: because the installed file stays identical to what
+  the release ships, the next update's hash comparison no longer flags it as modified, and
+  the file drops out of `gsd-local-patches/` on the next cycle.
+
+Files NOT in `INCORPORATED_FILES` — reported `needs_merge` (with the lines still missing
+from the new version) or `unknown` (no confirmable pristine baseline) — take the normal
+merge paths below, unchanged. If the classifier cannot run at all (e.g. `GSD_HOME`
+unset), fall back to merging every file as before; never report `Incorporated` without the
+classifier's structured confirmation.
+
 For each file in `backup-meta.json`:
 
 1. **Read the backed-up version** (user's modified copy from `gsd-local-patches/`)
@@ -207,6 +261,9 @@ Compare the three versions to isolate changes:
 - Sections changed only by upstream → accept upstream version
 - Sections changed by both → flag as CONFLICT, show both, ask user
 - Sections unchanged by either → use new version (identical to all three)
+- User-added content already present verbatim in the new version → already incorporated
+  upstream — do NOT re-apply it (the file-level outcome is `Incorporated` when ALL
+  user-added content is thus present, as determined by the Step 4 pre-flight classifier)
 
 ### Two-way merge (fallback when no baseline)
 
@@ -263,7 +320,7 @@ After writing each merged file, verify that user modifications survived the merg
 6. **Report status per file:**
    - `Merged` — user modifications applied cleanly (show summary of what was preserved)
    - `Conflict` — user reviewed and chose resolution
-   - `Incorporated` — user's modification was already adopted upstream (only valid when pristine baseline confirms this)
+   - `Incorporated` — user's modification was already adopted upstream (only valid when pristine baseline confirms this — determined exclusively by the Step 4 pre-flight classifier's `incorporated_files`, never by inspection)
 
 **Never report `Skipped — no custom content`.** If a file is in the backup, it has custom content.
 
@@ -305,8 +362,26 @@ VERIFY_STATUS=$?
 DRIFTED_COUNT="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.drifted||0))")"
 DRIFTED_FILES="$(echo "$VERIFY_OUTPUT"  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.drifted_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
 NO_BASELINE_COUNT="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.no_baseline||0))")"
-NO_BASELINE_FILES="$(echo "$VERIFY_OUTPUT"  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.no_baseline_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
+NO_BASELINE_FILES="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.no_baseline_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
+BASELINE_COVERED="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.baseline_covered||0))")"
+CHECKED_COUNT="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.checked||0))")"
 ```
+
+**Baseline coverage headline (#4135)** — BEFORE any pass/fail statement, print the coverage
+N-of-M line. A run where 12 of 13 files were not diff-verified must never present the same way
+as a fully-verified one:
+
+```text
+Baseline coverage: {BASELINE_COVERED} of {CHECKED_COUNT} file(s) verified against a pristine
+baseline ({CHECKED_COUNT - BASELINE_COVERED} unverified)
+```
+
+The verifier also reports this on every run (JSON field `baseline_covered`; the human summary
+leads with the same line). Operators who want the gate itself to fail on low coverage (cautious
+environments) pass the opt-in strict flag when invoking the verifier:
+`--min-baseline-coverage <fraction between 0 and 1>` — below the threshold the verifier exits
+with code 3 (a real content failure still exits 1 and outranks it). Without the flag the
+default advisory posture is unchanged.
 
 **If `NO_BASELINE_COUNT` is greater than 0**, emit an advisory warning (non-blocking — the gate still exits 0 for these files). Do NOT halt:
 
@@ -437,6 +512,7 @@ Ask user:
 - [ ] No file classified as "no custom content" or "SKIP" — every backed-up file is definitionally modified
 - [ ] Three-way merge used when pristine baseline available (git history or gsd-pristine/)
 - [ ] User modifications identified and merged into new version
+- [ ] Superseded customizations classified `Incorporated` by the deterministic pre-flight classifier (pristine-confirmed) and not re-grafted
 - [ ] Conflicts surfaced to user with both versions shown
 - [ ] Status reported for each file with summary of what was preserved
 - [ ] Post-merge verification checks each file for dropped hunks and warns if content appears missing

@@ -2332,6 +2332,38 @@ test('listMilestoneHeadingsHeadingFieldIsCrlfFreeAndTrimmed', () => {
   assert.strictEqual(result[1].name, 'Old');
 });
 
+// (RED) #4134: the §7.2 pinned rule takes everything after the heading's OWN
+// version token as the name, so a name-then-version heading (`… (v1.13)`) --
+// the shape a first-ever ROADMAP.md drifts into when nothing templates its H1
+// -- leaves exactly `)` after the token, which used to be enumerated as the
+// milestone's "name". ADR-3180 §7.2 rule 6: a remainder with no letter or
+// digit anywhere is heading structure, not a curated name -- enumerate it as
+// `name: null` and let consumers report the honest TRUNCATED identity. The
+// enumeration itself (which headings, which version, closed status) is
+// unchanged; only the garbage "name" is refused.
+test('listMilestoneHeadingsRefusesPunctuationOnlyNames', () => {
+  const content = [
+    '# Roadmap: GSD Core — Native OMP Runtime Support (v1.13)',
+    '',
+    '### Phase 1: Runtime Adapter Interface',
+  ].join('\n');
+  const result = listMilestoneHeadings(content);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].version, 'v1.13');
+  assert.strictEqual(result[0].closed, false);
+  assert.strictEqual(result[0].name, null, `name must be null, not ${JSON.stringify(result[0].name)}`);
+});
+
+// (RED) #4134 negative space: a name that merely CONTAINS punctuation is a
+// name -- `(` is an ordinary name character and never a terminator (#3171).
+// Only a remainder with zero word characters is refused.
+test('listMilestoneHeadingsKeepsNamesThatContainPunctuation', () => {
+  const content = ['# Roadmap', '', '## v3.3 — Name (Part 2: Revenge)'].join('\n');
+  const result = listMilestoneHeadings(content);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].name, 'Name (Part 2: Revenge)');
+});
+
 test('listMilestoneHeadingsRespectsTheOneToThreeLevelBound', () => {
   const content = [
     '# v1.0 — Level One',

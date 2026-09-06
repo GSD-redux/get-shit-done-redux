@@ -62,6 +62,7 @@ const EXPECTED_SURFACE_HOOKS = [
   'gsd-prompt-guard.js',
   'gsd-read-guard.js',
   'gsd-read-injection-scanner.js',
+  'gsd-secret-read-guard.js',
   'gsd-session-state.sh',
   'gsd-validate-commit.sh',
   'gsd-workflow-guard.js',

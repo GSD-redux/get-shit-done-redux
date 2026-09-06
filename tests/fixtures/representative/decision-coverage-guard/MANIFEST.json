@@ -4,9 +4,10 @@
   "fixtures": [
     {
       "file": "d5-prefix-context.md",
-      "expectedReason": "could-not-parse",
       "expectedPassed": false,
-      "note": "A <decisions> block using the D5-01 ID-prefix shape from #2347's own reproduction ('- **D5-01:** some decision'), repeated twice so 'populated but 0 extracted' is unambiguous. The original report used 23 real decisions under a project-specific D5- prefix convention; this fixture preserves the exact grammar mismatch, not the count. FIXED by #2347: the guard's evidence test no longer reuses the parser's D- grammar — a bold ID-shaped lead-in bullet (any prefix) is now evidence, so this populated block correctly fails loud (could-not-parse). currentBuggyOutput removed and the assertion graduated to expected* per this corpus's contract."
+      "expectedTotal": 2,
+      "expectedCovered": 0,
+      "note": "A <decisions> block using the D5-01 ID-prefix shape from #2347's own reproduction ('- **D5-01:** some decision'), repeated twice so 'populated' is unambiguous. The original report used 23 real decisions under a project-specific D5- prefix convention; this fixture preserves the exact grammar, not the count. History: #2347 made the guard's evidence test format-agnostic so this populated block failed loud (could-not-parse) instead of silently passing. #4130 then made the digit-run phase prefix LEGAL — the parser now reads D5-01/D5-02 — so the gate reports a real coverage verdict for this shape: both decisions parsed (total 2) and uncovered (covered 0, passed false, no reason field) in this bare project. The corpus's graduation contract: the assertion was updated as part of the #4130 fix that changed the observable verdict."
     }
   ]
 }

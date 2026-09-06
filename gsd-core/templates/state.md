@@ -172,9 +172,12 @@ Updated after each plan completion.
 **Decisions:** Reference to PROJECT.md Key Decisions table, plus recent decisions summary for quick access. Full decision log lives in PROJECT.md.
 
 **Pending Todos:** Ideas captured via /gsd-add-todo
-- Count of pending todos
-- Reference to .planning/todos/pending/
-- Brief list if few, count if many (e.g., "5 pending todos — see /gsd:capture --list")
+- One bullet per pending todo, rendered by `init.todos`'s `pending_todos_markdown`
+  (each bullet capped at 240 characters: `- [date] [area] title — [todo file](path) — Needs ...`;
+  the todo-file link is repo-relative, so the cap does not depend on checkout path length)
+- `None yet.` when there are no pending todos
+- No collapse-by-count fallback — every pending todo gets its own line, always
+  (see #2618 design doc for why a "count if many" fallback was rejected)
 
 **Blockers/Concerns:** From "Next Phase Readiness" sections
 - Issues that affect future work

@@ -4,6 +4,7 @@ description: "Create a clean PR branch by filtering out .planning/ commits — r
 argument-hint: "[target branch, default: main]"
 allowed-tools:
   - Bash
+  - Grep
   - Read
   - AskUserQuestion
 ---

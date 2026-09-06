@@ -126,6 +126,54 @@ function readGsdEffectiveModelOverrides(targetDir: string | null = null, options
   return { ...(global || {}), ...(projectOverrides || {}) };
 }
 
+type AgentTools = Record<string, string[]>;
+
+function readGsdAgentTools(config: Record<string, unknown> | null): AgentTools | null {
+  const raw = config?.agent_tools;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+  const result: AgentTools = {};
+  for (const [selector, value] of Object.entries(raw as Record<string, unknown>)) {
+    // An explicitly present selector always has a verdict. Invalid values are
+    // empty so a project config cannot accidentally restore a global grant.
+    result[selector] = Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0
+          && !entry.endsWith(':')
+          && !/[\s\u0000-\u001F\u007F-\u009F,#"'\u2028\u2029]/.test(entry))
+      : [];
+  }
+  return result;
+}
+
+/**
+ * Resolve valid install-time `agent_tools` grants from global defaults and
+ * the nearest project config. Project selectors replace only matching global
+ * selectors; malformed whole files remain harmless absence like the existing
+ * model override resolver.
+ */
+function readGsdEffectiveAgentTools(targetDir: string | null = null, options: ReadOptions = {}): AgentTools | null {
+  const home = options.homedir ? options.homedir() : os.homedir();
+  const globalConfig = _readGsdConfigFile(path.join(home, '.gsd', 'defaults.json'), 'global defaults');
+
+  let projectConfig: Record<string, unknown> | null = null;
+  if (targetDir) {
+    const candidate = _findAncestorGsdConfigPath(targetDir);
+    if (candidate) {
+      projectConfig = _readGsdConfigFile(candidate, 'project config');
+    }
+  }
+
+  const global = readGsdAgentTools(globalConfig);
+  const project = readGsdAgentTools(projectConfig);
+  if (projectConfig
+    && Object.prototype.hasOwnProperty.call(projectConfig, 'agent_tools')
+    && project === null) return {};
+  if (!global && !project) return null;
+  return { ...(global || {}), ...(project || {}) };
+}
+
 interface RuntimeProfileMergedConfig {
   runtime: string | null;
   model_profile: string;
@@ -267,6 +315,7 @@ function resolveAgentModelOverride(
 export = {
   readGsdGlobalModelOverrides,
   readGsdEffectiveModelOverrides,
+  readGsdEffectiveAgentTools,
   readGsdRuntimeProfileResolver,
   resolveAgentModelOverride,
 };

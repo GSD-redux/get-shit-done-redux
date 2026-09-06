@@ -1,7 +1,7 @@
 {
   "id": "kimi",
   "role": "runtime",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "Kimi CLI",
   "description": "Kimi CLI (Moonshot AI) — generic agents root at ~/.config/agents; skills + kimi-agents artifact layout; native config.toml [[hooks]] bus at ~/.kimi/config.toml; background dispatch; tier-2 support.",
   "tier": "core",
@@ -97,7 +97,8 @@
       "verificationStyle": "kimi",
       "agentManifestStyle": "kimi-nested",
       "doneBannerStyle": "kimi-agent-file",
-      "skipSharedHooksInstall": true
+      "skipSharedHooksInstall": true,
+      "noPathRewrite": true
     }
   }
 }

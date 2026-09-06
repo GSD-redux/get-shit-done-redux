@@ -1273,7 +1273,21 @@ function main() {
   // node process (also relieving per-process memory pressure from 170+ files at once).
   // Lowered from 90 to 60 after #1575 — macOS Node 22 shard 2/3 chunk 2 (~80 files
   // including state.test.cjs, perf-*, worktree-cleanup) exceeded 600s with 90.
-  const MAX_FILES_PER_CHUNK = positiveNumberEnv(process.env.RUN_TESTS_MAX_FILES_PER_CHUNK, 60);
+  //
+  // 2026-09-06 (PR #4428 CI): a Windows full-matrix chunk (chunk 3/6, ~32/60
+  // weight-budget units, dominated by codex-config.test.cjs at a genuinely
+  // MEASURED weight of 17.87 — not a stale-table miss) still exceeded the
+  // 600s per-chunk backstop. The weight table's calibration does not
+  // transfer 1:1 to the Windows runner for install/subprocess-heavy work —
+  // it needs a smaller budget than Linux/macOS to stay inside the same
+  // wall-clock ceiling. Windows gets its own, lower cap (~33% reduction,
+  // proportionate to the >30% single-file share codex-config.test.cjs alone
+  // consumed of that chunk's budget); other platforms are unaffected.
+  const DEFAULT_MAX_FILES_PER_CHUNK = process.platform === 'win32' ? 40 : 60;
+  const MAX_FILES_PER_CHUNK = positiveNumberEnv(
+    process.env.RUN_TESTS_MAX_FILES_PER_CHUNK,
+    DEFAULT_MAX_FILES_PER_CHUNK,
+  );
   // #2088 established that file COUNT is a poor proxy for a chunk's wall-clock:
   // install-heavy files (real installs) cost ~10x a unit file, and when several
   // land in the SAME chunk it blows the 600s backstop while unit-only chunks

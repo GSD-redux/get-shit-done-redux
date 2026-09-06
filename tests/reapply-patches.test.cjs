@@ -726,13 +726,17 @@ describe('Bug #2994: reapply-patches workflow references the runtime-installed p
   });
 
   test('reapply-patches.md references the verifier at gsd-core/bin/verify-reapply-patches.cjs', () => {
-    const md = fs.readFileSync(REAPPLY_WORKFLOW, 'utf-8');
+    const md = fs.readFileSync(REAPPLY_WORKFLOW, 'utf8');
     const invocations = extractScriptInvocations(md);
     const verifierInvocations = invocations.filter(inv => inv.relPath.endsWith('verify-reapply-patches.cjs'));
+    // #4136: the workflow now invokes the verifier exactly twice — the Step 4
+    // pre-flight --classify run (Incorporated detection) and the Step 5a
+    // post-merge gate run. Both must resolve to the runtime-installed path
+    // (the sibling test above enforces the path for every invocation).
     assert.deepEqual(
       verifierInvocations.map(i => i.relPath),
-      ['gsd-core/bin/verify-reapply-patches.cjs'],
-      'workflow must call the runtime-installed verifier path exactly once',
+      ['gsd-core/bin/verify-reapply-patches.cjs', 'gsd-core/bin/verify-reapply-patches.cjs'],
+      'workflow must call the runtime-installed verifier exactly twice (classify + gate, #4136)',
     );
   });
 });

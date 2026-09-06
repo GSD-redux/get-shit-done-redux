@@ -4359,7 +4359,11 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const ROOT = path.join(__dirname, '..');
-const { isGitSubcommand, tokenize, extractBranchArgument } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
+// Seeded fast-check convention: the shared setup helper, NOT 'fast-check'
+// directly, so numRuns/seed are configured globally before any fc.assert().
+// Required by RULESET.TESTS.property-based-testing for the parser added below.
+const fc = require('./helpers/fast-check-setup.cjs');
+const { isGitSubcommand, tokenize, extractBranchArgument, resolveCommitSubject } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
 
 // ── tokenize ─────────────────────────────────────────────────────────────────
 
@@ -4454,6 +4458,372 @@ describe('gsd-validate-commit.sh delegates to git-cmd.js', () => {
       fs.existsSync(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js')),
       'hooks/lib/git-cmd.js does not exist — library file missing',
     );
+  });
+});
+
+// ── resolveCommitSubject (#3802) ─────────────────────────────────────────────
+// A PURE STRING helper: it maps an already-selected `-m` argument to the subject
+// to validate. It deliberately does not tokenize — an earlier revision walked
+// tokens and regressed four cases that upstream allowed (`git commit -- -m WIP`,
+// `git commit --amend && echo -m WIP`, `-m "" --allow-empty-message`, and
+// unquoted `git commit -m WIP`). Reported in review of #3802.
+describe('git-cmd.js resolveCommitSubject', () => {
+  const sub = (open, body, close) => `$(cat ${open}\n${body}\n${close}\n)`;
+
+  test('resolves the heredoc body rather than the opener', () => {
+    assert.strictEqual(resolveCommitSubject(sub("<<'EOF'", 'feat(auth): add login flow', 'EOF')),
+      'feat(auth): add login flow');
+  });
+
+  test('accepts the QUOTED opener spellings, which bash does not expand', () => {
+    // Only the spellings that SUPPRESS expansion may be resolved. The two bare
+    // rows that used to live here — `<<EOF` and `<< EOF`, both asserted to
+    // resolve — are the round-4 BLOCKER and now assert the opposite, in the
+    // dedicated row below (review of #3816, round 4).
+    // no space before << is legal bash too (review of #3816, round 3)
+    assert.strictEqual(resolveCommitSubject("$(cat<<'EOF'\nfix: nospace\nEOF\n)"), 'fix: nospace');
+    // NOTE: resolvable HERE, but unreachable through gsd-validate-commit.sh —
+    // its DOUBLE-quoted `-m` capture stops at this spelling's own delimiter
+    // quote. Round 4 disproved the stronger form of this claim: the
+    // SINGLE-quoted capture delivers the spelling intact, so "unreachable"
+    // held only for one arm. It holds for both now because the hook gates the
+    // resolver on the double-quoted arm — a consequence of that gate, not a
+    // property of the capture alone. The hook-level rows in
+    // tests/hooks-opt-in.test.cjs pin both halves; all are correct together.
+    assert.strictEqual(resolveCommitSubject(sub('<<"EOF"', 'fix: dquoted', 'EOF')), 'fix: dquoted');
+    // A delimiter that is not identifier-shaped is still a valid bash word.
+    assert.strictEqual(resolveCommitSubject(sub("<<'END-MSG'", 'fix: hyphen tag', 'END-MSG')),
+      'fix: hyphen tag');
+  });
+
+  test('round 4: a RELATIVE path ending in cat is not recognised', () => {
+    // Codex review of #3816, round 4. The path class accepted `./cat` and
+    // `../evil/cat`, so any relative executable merely ENDING in `cat` was
+    // trusted to echo its stdin. With a planted one printing `WIP injected`,
+    // the resolver validated the heredoc body while git's real subject was
+    // `WIP injected` (measured base=2 -> head=0 against a real commit).
+    // Non-vacuous: each body below is conforming, so a resolver that still
+    // recognised these returns the body.
+    for (const prog of ['./cat', '../evil/cat', 'x/cat']) {
+      assert.strictEqual(resolveCommitSubject(`$(${prog} <<'EOF'\nfix: body\nEOF\n)`),
+        `$(${prog} <<'EOF'`, `${prog}: a relative path is not a known cat`);
+    }
+  });
+
+  test('a path-qualified cat is still the same form', () => {
+    assert.strictEqual(resolveCommitSubject("$(/bin/cat <<'EOF'\nfix: pathed cat\nEOF\n)"),
+      'fix: pathed cat');
+  });
+
+  test('<<- strips the leading tabs bash strips', () => {
+    // With `<<-`, bash removes leading TABS from body lines, so the subject the
+    // user sees has none. Returning the raw line blocked a conforming message.
+    // The delimiter is QUOTED here because `<<-` and quoting are independent:
+    // `<<-` controls tab stripping, the quote controls expansion. This row is
+    // about tab stripping, so it uses a spelling that is resolvable at all —
+    // a bare `<<-EOF` is refused by the round-4 expansion guard, which is that
+    // guard's row to assert, not this one's.
+    assert.strictEqual(resolveCommitSubject("$(cat <<-'EOF'\n\tfix(parser): strip heredoc tabs\n\tEOF\n)"),
+      'fix(parser): strip heredoc tabs');
+  });
+
+  test('an immediately-following terminator is an EMPTY message, not a subject', () => {
+    // `$(cat <<'EOF'` then straight to `EOF` — the message is empty, and the
+    // delimiter must not be mistaken for the subject.
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nEOF\n)"), '');
+    assert.strictEqual(resolveCommitSubject("$(cat <<-'EOF'\n\tEOF\n)"), '',
+      'the <<- form strips the tab first, so the terminator still matches');
+  });
+
+  // The security half. Recognition is anchored at BOTH ends and requires a
+  // command substitution, so a message that merely contains — or ENDS IN —
+  // `<<WORD` is not an opener.
+  test('a message ENDING in <<WORD is not a heredoc — this was an enforcement bypass', () => {
+    // Without the `^$(` anchor this resolved to line 2 and ALLOWED a
+    // non-conforming commit (review of #3802).
+    assert.strictEqual(resolveCommitSubject('WIP notes <<EOF\nfix: smuggled subject'),
+      'WIP notes <<EOF', 'the real subject is the non-conforming first line, and must be judged');
+  });
+
+  test('a message merely containing << is untouched', () => {
+    assert.strictEqual(resolveCommitSubject('fix(parser): preserve literal <<EOF'),
+      'fix(parser): preserve literal <<EOF');
+    assert.strictEqual(resolveCommitSubject('fix(parser): handle a << b shifts'),
+      'fix(parser): handle a << b shifts');
+  });
+
+  test('a COMMAND smuggled before the cat is not a path — recognition must fail closed', () => {
+    // Codex review of #3816: `\S*` as the path prefix accepted `id;/bin/cat`,
+    // so the resolver validated the heredoc BODY while bash runs `id` first and
+    // git's real subject is id's OUTPUT — an enforcement bypass. A prefix
+    // carrying any shell metacharacter now fails recognition and falls back to
+    // the opener line, which the format gate rejects.
+    assert.strictEqual(resolveCommitSubject("$(id;/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(id;/bin/cat <<'EOF'");
+    assert.strictEqual(resolveCommitSubject("$(x&&/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(x&&/bin/cat <<'EOF'");
+    assert.strictEqual(resolveCommitSubject("$(a|b/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(a|b/cat <<'EOF'");
+    // Round 2: Unicode whitespace after `$(` is NOT bash whitespace — bash
+    // reads `<NBSP>/bin/cat` as the executable NAME, so recognizing it here
+    // claimed a substitution that does not run cat. Recognition whitespace is
+    // ASCII space/tab only.
+    assert.strictEqual(resolveCommitSubject("$(\u00a0/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(\u00a0/bin/cat <<'EOF'");
+    // the legitimate path-qualified form is unchanged
+    assert.strictEqual(resolveCommitSubject("$(/usr/bin/cat <<'EOF'\nfix: pathed\nEOF\n)"),
+      'fix: pathed');
+  });
+
+  test('a Unicode-blank first line is the SUBJECT — git keeps what trim() skips', () => {
+    // Codex review of #3816, verified against `git stripspace`: git's blank is
+    // ASCII space/tab, so a NBSP line is PRESERVED and is the real subject.
+    // JavaScript's trim() treated it as blank and resolved to the second line —
+    // validating a line git never uses, an enforcement bypass.
+    const nbsp = '\u00a0';
+    assert.strictEqual(resolveCommitSubject(`$(cat <<'EOF'\n${nbsp}\nfix: smuggled\nEOF\n)`), nbsp,
+      'the NBSP line must be returned (and fail the format gate), never skipped past');
+  });
+
+  test('MAJOR 3: a TRUNCATED capture is not resolved at all', () => {
+    // The `-m` capture stops at the first `"`, so a message containing one
+    // arrives here without its tail — and without its terminator. Resolving
+    // anyway hands the length gate a PREFIX of the real subject and lets an
+    // over-long message through: an enforcement hole that did not exist before
+    // this fix. Falling back to the opener fails the format gate, which is what
+    // this whole form did before the fix (review of #3802).
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: aaaa"), "$(cat <<'EOF'",
+      'the subject line runs to the end of a truncated capture, so it cannot be measured');
+    // Truncation is only fatal to the line it lands IN: a captured line is
+    // complete exactly when another line follows it. A quote further down the
+    // BODY leaves the subject intact and measurable, so blocking it would be a
+    // false positive the blunt version of this guard would have introduced.
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: short\nbody with a "), 'feat: short',
+      'a complete subject line stays measurable even when the capture truncates later');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'"), "$(cat <<'EOF'",
+      'an opener with no body at all is likewise unresolvable');
+  });
+
+  test('BLOCKER (round 3): text after the terminator is part of the real message', () => {
+    // `-m "$(cat <<'EOF'\nfeat: ok\nEOF\n) <200 a's>"` expands to ONE long
+    // subject; discarding the tail measured a PREFIX (8 chars vs 200+) and
+    // dodged COMMIT_SUBJECT_TOO_LONG — the truncation-guard class from the
+    // other side of the terminator (review of #3816, round 3). Only the
+    // canonical single closing-paren line may follow the terminator; anything
+    // else falls back to the opener and the format gate.
+    assert.strictEqual(resolveCommitSubject(`$(cat <<'EOF'\nfeat: ok\nEOF\n) ${'a'.repeat(200)}`),
+      "$(cat <<'EOF'", 'a substitution composed with more text cannot have its body trusted');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF\n)$(printf x)"),
+      "$(cat <<'EOF'", 'a second substitution after the close is the same composition');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nEOF\n)feat: sneaky"),
+      "$(cat <<'EOF'", 'text glued straight onto the closing paren too');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF"),
+      "$(cat <<'EOF'", 'a terminator with NO closing line at all is not the canonical shape either');
+    // the canonical tail still resolves — including an indented or space-padded close
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF\n)"), 'feat: ok');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF\n\t) "), 'feat: ok');
+  });
+
+  test('MINOR 1: leading blank body lines are skipped, as git does', () => {
+    // git's default cleanup=whitespace strips leading blank lines, so the real
+    // subject is the first NON-empty line. Taking lines[1] blindly returned ''
+    // and falsely blocked a conforming commit — the defect class #3802 reports.
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\n\nfeat: after blank\nEOF\n)"),
+      'feat: after blank');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\n\n\n  \nfeat: after several\nEOF\n)"),
+      'feat: after several');
+  });
+
+  test('a backslash-escaped delimiter is the same delimiter', () => {
+    // `<<\\D` suppresses expansion exactly as `<<'D'` does, so it stays
+    // resolvable. This is the row that makes the bare-delimiter guard below a
+    // real distinction rather than a blanket refusal: the two spellings differ
+    // by one character and by whether bash expands the body.
+    assert.strictEqual(resolveCommitSubject('$(cat <<\\EOF\nfix: backslash tag\nEOF\n)'),
+      'fix: backslash tag');
+  });
+
+  test('BLOCKER (round 4): a BARE delimiter is not resolved — bash expands that body', () => {
+    // Review of #3816, round 4. Only `<<'D'`, `<<"D"` and `<<\\D` suppress
+    // expansion. With a bare `<<D` bash substitutes `$var`, `$(...)` and
+    // arithmetic into the body BEFORE git sees it, so the literal text here is
+    // not the subject git receives — resolving it dodged the format gate
+    // (`feat: $UNSET_VAR` -> git gets `feat:`) and the length gate
+    // (`feat: ${LONG}` -> git gets any length). Falling back to the opener line
+    // is the same fail-closed rule the metacharacter, truncation and
+    // post-terminator guards follow.
+    //
+    // Non-vacuous: every body below is conforming, so a resolver that still
+    // read the body returns the body and these fail.
+    assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'fix: bare', 'EOF')),
+      '$(cat <<EOF', 'a bare delimiter must fall back to the opener line');
+    assert.strictEqual(resolveCommitSubject(sub('<< EOF', 'fix: spaced', 'EOF')),
+      '$(cat << EOF', 'a spaced bare delimiter is still bare');
+    assert.strictEqual(resolveCommitSubject(sub('<<-EOF', '\tfix: dashed bare', 'EOF')),
+      '$(cat <<-EOF', '<<- does not quote the delimiter; it only strips tabs');
+    // The expansion that makes this a bypass rather than a nicety.
+    assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'feat: $UNSET_VAR', 'EOF')),
+      '$(cat <<EOF', "git's real subject here is `feat:` — never the unexpanded literal");
+  });
+
+  // RULESET.TESTS.property-based-testing — this is a parser/transformation on a
+  // hook path, so the invariants are asserted over generated input rather than
+  // examples alone. Seeded setup helper, not `fast-check` directly, so numRuns
+  // and seed are configured before any fc.assert (repo convention).
+  //
+  // Review of #3816, Major 1: the previous generator was a bare
+  // fc.string({maxLength: 400}), whose pinned-seed corpus contained NO newline
+  // and NO opener — 0 of 200 inputs reached the parser, so all three properties
+  // reduced to `f(s) === s`. The generator now CONSTRUCTS heredoc-shaped input
+  // (every opener spelling, <<- tabs, optional terminator, CRLF) alongside plain
+  // and multi-line strings, and each property PROVES its corpus took the heredoc
+  // arm: `resolved` counts inputs whose output is not the first line, which only
+  // the resolver's body-scanning branch can produce.
+  const delimiterArb = fc.stringMatching(/^[A-Za-z][A-Za-z0-9_-]{0,8}$/);
+  const bodyLineArb = fc.stringMatching(/^[^\n\r]{0,60}$/);
+  const heredocArb = fc.record({
+    delim: delimiterArb,
+    quote: fc.constantFrom("'", '"', '', '\\'),
+    dash: fc.boolean(),
+    spaced: fc.boolean(),
+    catPath: fc.constantFrom('cat', '/bin/cat'),
+    body: fc.array(bodyLineArb, { minLength: 0, maxLength: 5 }),
+    terminated: fc.boolean(),
+    eol: fc.constantFrom('\n', '\r\n'),
+  }).map(({ delim, quote, dash, spaced, catPath, body, terminated, eol }) => {
+    const word = quote === '\\' ? `\\${delim}` : quote ? `${quote}${delim}${quote}` : delim;
+    const opener = `$(${catPath} <<${dash ? '-' : ''}${spaced ? ' ' : ''}${word}`;
+    const emitted = [...body.map((l) => (dash ? `\t${l}` : l))];
+    if (terminated) emitted.push(dash ? `\t${delim}` : delim, ')');
+    // GENERATION-TIME oracle for the one result the derivation check cannot
+    // classify by membership: ''. Computed from what the generator KNOWS it
+    // built — never by re-running resolver logic — so a resolver degrading to
+    // '' anywhere it should not fails the property (Codex review of #3816,
+    // rounds 1+2). '' is legitimate exactly when the FIRST reachable
+    // terminator is followed by the one canonical closing-paren line (the
+    // round-3 post-terminator guard: any other tail must fall back to the
+    // opener, never to '') and every scanned line before that terminator is
+    // ASCII-blank. A body line that reads as the delimiter after <<- tab
+    // stripping terminates early, and whatever follows it is its tail.
+    const seen = emitted.map((l) => (dash ? l.replace(/^\t+/, '') : l));
+    const stop = seen.indexOf(delim);
+    const tail = stop === -1 ? null : seen.slice(stop + 1);
+    const canonicalTail = tail !== null && tail.length === 1 && /^[ \t]*\)[ \t]*$/.test(tail[0]);
+    const expectEmpty = canonicalTail
+      && seen.slice(0, stop).every((l) => /^[ \t]*$/.test(l));
+    return { text: [opener, ...emitted].join(eol), expectEmpty };
+  });
+  const messageArb = fc.oneof(
+    { weight: 3, arbitrary: heredocArb },
+    // plain single- and multi-line messages: the subject is the first line
+    // verbatim, so '' is legitimate only when the first line IS ''.
+    fc.string({ maxLength: 400 }).map((s) => ({ text: s, expectEmpty: s.split(/\r?\n/)[0] === '' })),
+    // multi-line plain messages — the old generator never produced a newline
+    fc.array(bodyLineArb, { minLength: 1, maxLength: 4 })
+      .map((ls) => ({ text: ls.join('\n'), expectEmpty: ls[0] === '' })),
+  );
+  const firstLineOf = (input) => String(input).split(/\r?\n/)[0];
+  // Floor for the resolved-input count across the seeded corpus. Deliberately
+  // far below the ~60% heredoc weighting so generator drift cannot flake it,
+  // while still failing loudly if the corpus stops reaching the parser — the
+  // exact vacuity Major 1 caught.
+  const MIN_RESOLVED = 20;
+
+  test('property: total — never throws, always returns a string', () => {
+    // Totality is a SECURITY property here, not tidiness: this runs inside a
+    // PreToolUse hook whose caller treats a failed extraction as "nothing to
+    // validate", so an exception fails OPEN. Backed by a corpus that reaches
+    // the parser, which is what makes the claim about the PARSER and not about
+    // fc.string pass-through.
+    let resolved = 0;
+    fc.assert(fc.property(messageArb, (m) => {
+      const out = resolveCommitSubject(m.text);
+      assert.strictEqual(typeof out, 'string');
+      if (out !== firstLineOf(m.text)) resolved += 1;
+    }));
+    assert.ok(resolved >= MIN_RESOLVED,
+      `only ${resolved} corpus inputs were actually resolved past the first line — the property is `
+      + 'running on inputs that never reach the parser again (review of #3816, Major 1)');
+    for (const odd of [null, undefined, '', '\n', '\n\n\n', '\r\n', '$(cat <<', '$(cat <<-']) {
+      assert.strictEqual(typeof resolveCommitSubject(odd), 'string', JSON.stringify(odd));
+    }
+  });
+
+  test('property: idempotent — resolving a resolved subject changes nothing', () => {
+    let resolved = 0;
+    fc.assert(fc.property(messageArb, (m) => {
+      const once = resolveCommitSubject(m.text);
+      assert.strictEqual(resolveCommitSubject(once), once);
+      if (once !== firstLineOf(m.text)) resolved += 1;
+    }));
+    assert.ok(resolved >= MIN_RESOLVED,
+      `only ${resolved} corpus inputs were actually resolved — vacuous corpus (review of #3816)`);
+  });
+
+  test('property: the result is a single line derived from an input line by git\'s own strips', () => {
+    // The subject is a LINE, never a synthesised string: whatever comes back
+    // must be one of the input's own lines, modulo exactly the transformations
+    // git itself performs — `<<-` leading-tab stripping and cleanup=whitespace
+    // trailing-whitespace stripping. A resolver that concatenated lines or
+    // trimmed anything MORE than that would fail this. The one result
+    // membership cannot classify — '' — is judged by the GENERATOR's own
+    // metadata (`expectEmpty`, computed from what it built, not from resolver
+    // logic), so a resolver conditionally degrading to '' fails loudly (Codex
+    // review of #3816, rounds 1+2).
+    let resolved = 0;
+    fc.assert(fc.property(messageArb, (m) => {
+      const out = resolveCommitSubject(m.text);
+      assert.ok(!/[\n\r]/.test(out), 'a subject is one line');
+      const lines = String(m.text).split(/\r?\n/);
+      const derivations = (l) => {
+        const untabbed = l.replace(/^\t+/, '');
+        return [l, untabbed, untabbed.replace(/[ \t]+$/, '')];
+      };
+      if (out === '') {
+        assert.ok(m.expectEmpty,
+          `resolved to '' for an input the generator did NOT build as an empty message: `
+          + JSON.stringify(m.text));
+      } else {
+        assert.ok(lines.some((l) => derivations(l).includes(out)),
+          `result ${JSON.stringify(out)} is not derived from any line of the input`);
+      }
+      if (out !== firstLineOf(m.text)) resolved += 1;
+    }));
+    assert.ok(resolved >= MIN_RESOLVED,
+      `only ${resolved} corpus inputs were actually resolved — vacuous corpus (review of #3816)`);
+  });
+
+  test('MAJOR 2: trailing whitespace is stripped, as git cleanup=whitespace does', () => {
+    // git strips whitespace at BOTH ends of the line, not just leading blank
+    // lines. Measuring the raw line rejected a body of `feat: ` + 66 x's + three
+    // spaces as 75 chars when git's actual subject is a conforming 72 — a
+    // still-blocked conforming commit, the defect #3802 reports (review of #3816).
+    const subject72 = `feat: ${'x'.repeat(66)}`;
+    assert.strictEqual(subject72.length, 72, 'fixture built wrong');
+    assert.strictEqual(resolveCommitSubject(sub("<<'EOF'", `${subject72}   `, 'EOF')), subject72);
+    assert.strictEqual(resolveCommitSubject(sub("<<'EOF'", 'feat: tab tail\t \t', 'EOF')),
+      'feat: tab tail', 'tabs are trailing whitespace too');
+  });
+
+  test('MINOR 3: CRLF bodies resolve identically to LF bodies', () => {
+    // split('\n') left \r on every body line, so the delimiter never matched on
+    // CRLF input: the truncation guard was inert, an empty CRLF message resolved
+    // to "EOF\r" instead of '', and a real 72-char subject measured 73
+    // (review of #3816).
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\r\nfeat: crlf subject\r\nEOF\r\n)"),
+      'feat: crlf subject');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\r\nEOF\r\n)"), '',
+      'an empty CRLF message is EMPTY — it used to resolve to the terminator plus \\r');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\r\nfeat: aaaa"), "$(cat <<'EOF'",
+      'the truncation guard must be live on CRLF input, not defeated by an unmatchable delimiter');
+  });
+
+  test('ordinary messages pass through as their first line', () => {
+    assert.strictEqual(resolveCommitSubject('feat(auth): add login flow'), 'feat(auth): add login flow');
+    assert.strictEqual(resolveCommitSubject('feat: subject\n\nBody paragraph.'), 'feat: subject');
+    assert.strictEqual(resolveCommitSubject(''), '');
+    assert.strictEqual(resolveCommitSubject(null), '');
+    assert.strictEqual(resolveCommitSubject(undefined), '');
   });
 });
 

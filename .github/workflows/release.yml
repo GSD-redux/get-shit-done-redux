@@ -118,7 +118,6 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
 
       - name: Install dependencies and build
         run: npm ci --silent && npm run build:lib
@@ -350,8 +349,122 @@ jobs:
     with:
       ref: ${{ needs.validate-version.outputs.branch }}
 
-  rc:
+  rc-test:
+    name: rc test (shard ${{ matrix.shard }})
     needs: [validate-version, install-smoke-rc]
+    if: inputs.action == 'rc'
+    runs-on: ubuntu-latest
+    # #4335 (recurrence of #2280/#2281): npm ci + the unit-coverage script ran
+    # unsharded on one runner and outgrew even the 30m cap raised for this
+    # exact failure once already (run 33988966357 — all tests passed, 0
+    # failures, cancelled ~80s into the post-test coverage merge). Per #869's
+    # stated lesson ("a timeout bump only moves that cliff; sharding removes
+    # it"), this mirrors test.yml's `scope: full` lane fix (#2952): each shard
+    # runs its slice under c8 with NO report/gate (raw V8 dumps only);
+    # rc-coverage-gate merges all three before enforcing the threshold. 20m
+    # gives each shard generous headroom over its ~1/3 share of the unsharded
+    # run's measured cost.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        shard: ['1/3', '2/3', '3/3']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.validate-version.outputs.branch }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies and build
+        run: npm ci --silent && npm run build:lib
+
+      # Same pre-release version derivation as the `rc` job's "Determine
+      # pre-release version" step, applied to the WORKING TREE ONLY (no
+      # commit, no push) — this job never publishes anything, it only needs
+      # package.json to read the same version the real rc job will test
+      # under. Every shard (and the real rc job) computes this independently
+      # and deterministically from the same tags, the same way each of
+      # test.yml's shard jobs redoes its own setup rather than sharing git
+      # state across jobs.
+      - name: Bump to pre-release version (working tree only)
+        env:
+          VERSION: ${{ inputs.version }}
+          IS_MAJOR: ${{ needs.validate-version.outputs.is_major }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_MAJOR" = "true" ]; then
+            PREFIX="beta"
+          else
+            PREFIX="rc"
+          fi
+          N=1
+          while git tag -l "v${VERSION}-${PREFIX}.${N}" | grep -q .; do
+            N=$((N + 1))
+          done
+          npm version "${VERSION}-${PREFIX}.${N}" --no-git-tag-version
+
+      # #2952-style split: raw V8 coverage only, no report/gate — a per-shard
+      # percentage is meaningless (shard 2 never runs shard 1's files). The
+      # rc-coverage-gate job below merges all three shards' dumps and
+      # enforces the same floor package.json already defines once.
+      - name: Run unit tests (shard ${{ matrix.shard }}, raw coverage only)
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          npm ci
+          node scripts/check-npm-integrity.cjs
+          npm run test:coverage:unit:raw -- --shard ${{ matrix.shard }}
+
+      - name: Upload raw coverage for merge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-tmp-rc-shard-${{ strategy.job-index }}
+          path: coverage/tmp
+          if-no-files-found: error
+          retention-days: 1
+
+  rc-coverage-gate:
+    name: rc coverage gate (merged shards)
+    needs: [validate-version, rc-test]
+    if: inputs.action == 'rc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.validate-version.outputs.branch }}
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # merge-multiple flattens every shard's dumps into ONE coverage/tmp,
+      # exactly the layout c8 expects from a single run (test.yml's
+      # coverage-gate job does the identical merge for the same reason).
+      - name: Download every shard's raw coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: coverage-tmp-rc-shard-*
+          path: coverage/tmp
+          merge-multiple: true
+
+      - name: Report merged coverage + gate gsd-core/bin/lib (≥70% lines, ≥60% branches)
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: npm run test:coverage:report
+
+  rc:
+    needs: [validate-version, install-smoke-rc, rc-coverage-gate]
     if: inputs.action == 'rc'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -369,7 +482,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
 
       - name: Determine pre-release version
         id: prerelease
@@ -406,11 +518,10 @@ jobs:
         run: |
           npm version "$PRE_VERSION" --no-git-tag-version
 
-      - name: Install and test
+      - name: Dependency integrity gate
         run: |
           npm ci
           node scripts/check-npm-integrity.cjs
-          npm run test:coverage:unit
 
       - name: Preview CHANGELOG (non-destructive)
         env:
@@ -541,13 +652,101 @@ jobs:
     with:
       ref: ${{ needs.validate-version.outputs.branch }}
 
-  finalize:
+  finalize-test:
+    name: finalize test (shard ${{ matrix.shard }})
     needs: [validate-version, install-smoke-finalize]
     if: inputs.action == 'finalize'
     runs-on: ubuntu-latest
-    # Matches the rc job's budget: `npm ci` + `npm run test:coverage:unit` now
-    # exceeds 10m as the unit suite grows, so a 10m cap cancels the job mid-test
-    # before tag/publish. 30m gives the same headroom rc already relies on.
+    # See rc-test's comment (#4335, recurrence of #2280/#2281) — identical
+    # fix, identical rationale, applied to finalize's own unsharded
+    # unit-coverage step, which is the one that actually hit the 30m cap
+    # (run 33988966357: all tests passed, 0 failures, cancelled ~80s into the
+    # post-test coverage merge).
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        shard: ['1/3', '2/3', '3/3']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.validate-version.outputs.branch }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies and build
+        run: npm ci --silent && npm run build:lib
+
+      # Same version bump as the `finalize` job's "Set final version" step,
+      # applied to the WORKING TREE ONLY (no commit) — this job never
+      # publishes, it only needs package.json at the version finalize will
+      # test under.
+      - name: Set final version (working tree only)
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Run unit tests (shard ${{ matrix.shard }}, raw coverage only)
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          npm ci
+          node scripts/check-npm-integrity.cjs
+          npm run test:coverage:unit:raw -- --shard ${{ matrix.shard }}
+
+      - name: Upload raw coverage for merge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-tmp-finalize-shard-${{ strategy.job-index }}
+          path: coverage/tmp
+          if-no-files-found: error
+          retention-days: 1
+
+  finalize-coverage-gate:
+    name: finalize coverage gate (merged shards)
+    needs: [validate-version, finalize-test]
+    if: inputs.action == 'finalize'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.validate-version.outputs.branch }}
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download every shard's raw coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: coverage-tmp-finalize-shard-*
+          path: coverage/tmp
+          merge-multiple: true
+
+      - name: Report merged coverage + gate gsd-core/bin/lib (≥70% lines, ≥60% branches)
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: npm run test:coverage:report
+
+  finalize:
+    needs: [validate-version, install-smoke-finalize, finalize-coverage-gate]
+    if: inputs.action == 'finalize'
+    runs-on: ubuntu-latest
+    # >= 30 required by tests/release-backmerge-invariants.test.cjs (#2281) —
+    # kept even though this job no longer runs the unit suite itself (moved
+    # to finalize-test/finalize-coverage-gate, #4335): the changelog/tag/
+    # publish/verify/backmerge tail below still deserves real headroom
+    # against transient npm-registry/GitHub-API slowness.
     timeout-minutes: 30
     permissions:
       contents: write
@@ -564,7 +763,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
 
       - name: Configure git identity
         run: |
@@ -582,13 +780,10 @@ jobs:
           git add package.json package-lock.json
           git diff --cached --quiet || git commit -m "chore: finalize v${VERSION}"
 
-      - name: Install and test
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
+      - name: Dependency integrity gate
         run: |
           npm ci
           node scripts/check-npm-integrity.cjs
-          npm run test:coverage:unit
 
       - name: Promote CHANGELOG (render fragments)
         env:

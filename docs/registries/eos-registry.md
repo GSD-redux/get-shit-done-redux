@@ -10,6 +10,7 @@ _To add your integration, see the [registry README](./README.md)._
 |---|---|---|---|---|
 | [GSD Cursor Model Profiles](https://github.com/clezcoding/gsd-cursor) | Adds six researched Cursor runtime profiles \(max / hybrid / value / budget / frontier / openweight\) to GSD, writes current and legacy tier-map surfaces, routes all six GSD phases, validates local model availability, and restores prior managed settings on uninstall without modifying gsd-core. | ![release](https://img.shields.io/github/v/release/clezcoding/gsd-cursor?sort=semver&include_prereleases) | `>=1.0.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2578) |
 | [GSD for Oh My Pi](https://github.com/tchivs/gsd-omp) | Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection. | ![release](https://img.shields.io/github/v/release/tchivs/gsd-omp?sort=semver&include_prereleases) | `>=1.7.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2342) |
+| [GSD for Qoder](https://github.com/cainiao1992/gsd-qoder) | Embeds GSD in Qoder — Alibaba's AI coding product family \(Qoder CLI and Qoder Desktop\) — by projecting GSD's agents, skills, and hook scripts into the Qoder config directory \(\~/.qoder, or \~/.qoder-cn for the China edition, or QODER\_CONFIG\_DIR\), applying Qoder-specific path and subagent-frontmatter conversions, merging GSD's lifecycle hooks into settings.json without disturbing existing user settings, and recording an install manifest so uninstall removes exactly what was projected. | ![release](https://img.shields.io/github/v/release/cainiao1992/gsd-qoder?sort=semver&include_prereleases) | `1.12.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/4122) |
 | [GSD for Reasonix](https://github.com/onionviolet/gsd-reasonix) | Renders the GSD workflow set as native Reasonix slash-command launchers, mapping GSD's host-neutral instructions onto Reasonix's own tools \(task/fleet for subagents, ask for questions, todo\_write for plans, complete\_step for evidence-backed sign-off\), and excludes the shared \~/.agents/skills convention root so the Codex launcher tree stops shadowing them. | ![release](https://img.shields.io/github/v/release/onionviolet/gsd-reasonix?sort=semver&include_prereleases) | `>=1.10.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/3379) |
 
 ## GSD Cursor Model Profiles
@@ -45,6 +46,23 @@ gsd-omp uninstall && npm uninstall --global gsd-omp
 - **GSD compatibility:** `>=1.7.0`, protocol v1
 - **License:** MIT
 - **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/2342
+
+## GSD for Qoder
+- **Repository:** https://github.com/cainiao1992/gsd-qoder — [latest release](https://github.com/cainiao1992/gsd-qoder/releases/latest)
+- **What it is:** Embeds GSD in Qoder — Alibaba's AI coding product family \(Qoder CLI and Qoder Desktop\) — by projecting GSD's agents, skills, and hook scripts into the Qoder config directory \(\~/.qoder, or \~/.qoder-cn for the China edition, or QODER\_CONFIG\_DIR\), applying Qoder-specific path and subagent-frontmatter conversions, merging GSD's lifecycle hooks into settings.json without disturbing existing user settings, and recording an install manifest so uninstall removes exactly what was projected.
+- **Author:** cainiao1992
+- **Every interaction with GSD:** Interface points: command, dispatch, model, hooks, state, artifact; profile: declarative-cli; protocol v1; axes: embeddingMode=declarative, commandSurface=slash-file, dispatch=Named and nested Qoder subagent dispatch with background execution and a full subagent toolkit; no numeric nesting depth is documented, and isolation is none because Qoder's worktree is a frontmatter-declared, per-agent-definition property rather than a dispatch-time parameter, modelMode=passive, hookBus=host, stateIO=filesystem, transport=mcp, runtime=node, effortSurface=argv
+- **Install:**
+```sh
+npm install --global github:cainiao1992/gsd-qoder#v0.3.4 && gsd-qoder install
+```
+- **Uninstall:**
+```sh
+gsd-qoder uninstall && npm uninstall --global gsd-qoder
+```
+- **GSD compatibility:** `1.12.0`, protocol v1
+- **License:** Apache-2.0
+- **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/4122
 
 ## GSD for Reasonix
 - **Repository:** https://github.com/onionviolet/gsd-reasonix — [latest release](https://github.com/onionviolet/gsd-reasonix/releases/latest)

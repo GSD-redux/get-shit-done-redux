@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, captureFdSync } = require('./helpers.cjs');
 
 // In-process invocation, not execFileSync: cmdConfigGet is a pure CJS
 // function reachable without spawning `node` as a child. The prior
@@ -65,23 +65,7 @@ const { ExitError } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib
  * would have hit the fd.
  */
 function captureFdWrite(fd, fn) {
-  const orig = fs.writeSync;
-  let captured = Buffer.alloc(0);
-  fs.writeSync = (writeFd, ...rest) => {
-    if (writeFd !== fd) return orig.call(fs, writeFd, ...rest);
-    const [data, offset = 0, length] = rest;
-    const chunk = Buffer.isBuffer(data)
-      ? data.subarray(offset, offset + (length ?? data.length - offset))
-      : Buffer.from(String(data), 'utf8');
-    captured = Buffer.concat([captured, chunk]);
-    return chunk.length;
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = orig;
-  }
-  return captured.toString('utf-8');
+  return captureFdSync(fd, fn);
 }
 
 /**
@@ -276,39 +260,28 @@ describe('config-get --default flag (#1893)', () => {
 
     function runExpectError(...args) {
       const { keyPath, raw, defaultValue } = parseConfigGetArgs(args);
-      const origWriteSync = fs.writeSync;
       io.setJsonErrorMode(true);
-      let writeCount = 0;
-      let stderr = '';
-      fs.writeSync = (fd, ...rest) => {
-        if (fd !== 2) return origWriteSync.call(fs, fd, ...rest);
-        writeCount++;
-        const [data, offset = 0, length] = rest;
-        const chunk = Buffer.isBuffer(data)
-          ? data.subarray(offset, offset + (length ?? data.length - offset)).toString('utf8')
-          : String(data);
-        stderr += chunk;
-        return Buffer.byteLength(chunk);
-      };
-      const lastError = () => {
-        const parts = stderr.split('\n').filter(Boolean);
-        try { return JSON.parse(parts[parts.length - 1]); } catch { return {}; }
-      };
-      // ADR-3889: error() throws ExitError directly; catch it here rather
-      // than mocking process.exit.
       let exitCode;
+      let stderr;
       try {
-        config.cmdConfigGet(tmpDir, keyPath, raw, defaultValue);
-        assert.fail('expected cmdConfigGet to throw ExitError');
-      } catch (e) {
-        if (!(e instanceof ExitError)) throw e;
-        exitCode = e.code;
+        stderr = captureFdSync(2, () => {
+          try {
+            config.cmdConfigGet(tmpDir, keyPath, raw, defaultValue);
+            assert.fail('expected cmdConfigGet to throw ExitError');
+          } catch (e) {
+            if (!(e instanceof ExitError)) throw e;
+            exitCode = e.code;
+          }
+        });
       } finally {
-        fs.writeSync = origWriteSync;
         io.setJsonErrorMode(false);
       }
+      const lines = stderr.split('\n').filter(Boolean);
+      const lastError = () => {
+        try { return JSON.parse(lines[lines.length - 1]); } catch { return {}; }
+      };
       assert.ok(exitCode !== 0 && exitCode !== undefined, 'Expected non-zero exit code');
-      assert.equal(writeCount, 1, 'error() must fire exactly once');
+      assert.equal(lines.length, 1, 'error() must emit exactly one stderr line');
       const payload = lastError();
       return { status: exitCode, reason: payload.reason, message: payload.message, stderr };
     }

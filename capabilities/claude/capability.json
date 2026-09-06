@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "role": "runtime",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "Claude Code",
   "description": "Anthropic Claude Code — primary development runtime; tier-1 support with full hook surface and skills-based global install.",
   "tier": "core",
@@ -152,6 +152,8 @@
     "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
     "modelConfigKey": "review.models.claude",
+    "effortConfigKey": "review.effort.claude",
+    "defaultEffort": "high",
     "handler": null
   },
   "config": {
@@ -169,6 +171,11 @@
       "type": "number",
       "default": -1,
       "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+    },
+    "review.effort.claude": {
+      "type": "string",
+      "default": "",
+      "description": "Reasoning effort for the Claude reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
     }
   }
 }

@@ -4123,16 +4123,19 @@ describe('#2041 model_overrides: Claude full ID → alias on claude runtime', ()
     assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-executor'), 'claude-sonnet-5');
   });
 
-  // AC5: unmappable Claude full ID warns once + falls through to tier alias
-  test('model_overrides unmappable claude ID (claude-opus-4-5) falls through to tier alias on claude', () => {
+  // AC5 (#4192 revision): an unmappable Claude full ID — an explicit
+  // generation pin — is passed through VERBATIM with a warn-once breadcrumb,
+  // instead of being dropped to tier resolution (which silently unpinned the
+  // operator's explicit choice; see #4192 Finding 2).
+  test('model_overrides unmappable claude ID (claude-opus-4-5) passes through verbatim on claude', () => {
     resetRuntimeWarningCaches();
     writeConfig(tmpDir, {
       runtime: 'claude',
       model_profile: 'balanced',
       model_overrides: { 'gsd-planner': 'claude-opus-4-5' },
     });
-    // gsd-planner balanced → opus tier; claude-opus-4-5 has no alias → warn + fall through → 'opus'
-    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+    // gsd-planner balanced → opus tier; claude-opus-4-5 has no alias → warn + verbatim pin
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-5');
   });
 
   test('model_overrides unmappable claude ID emits a stderr warning exactly once (dedupe)', () => {
@@ -4173,19 +4176,19 @@ describe('#2041 model_overrides: Claude full ID → alias on claude runtime', ()
     assert.strictEqual(resolveModelForTier(tmpDir, 'gsd-executor', 0), 'claude-sonnet-5');
   });
 
-  // MEDIUM-1 (review): exercise the unmappable-override fall-through branch in
-  // resolveModelForTier (closes the mutation-score gap — a future refactor that
-  // accidentally returned the verbatim override instead of falling through
-  // would otherwise survive the suite).
-  test('resolveModelForTier unmappable claude ID falls through to tier alias on claude', () => {
+  // MEDIUM-1 (review, #4192 revision): exercise the unmappable-override
+  // branch in resolveModelForTier (keeps the mutation-score gap closed — the
+  // verbatim-pin return must survive a future refactor on the escalation path
+  // too, not just resolveModelInternal).
+  test('resolveModelForTier unmappable claude ID passes through verbatim on claude', () => {
     resetRuntimeWarningCaches();
     writeConfig(tmpDir, {
       runtime: 'claude',
       model_profile: 'balanced',
       model_overrides: { 'gsd-planner': 'claude-opus-4-5' },
     });
-    // unmappable override → fall through → no dynamic_routing → resolveModelInternal → 'opus'
-    assert.strictEqual(resolveModelForTier(tmpDir, 'gsd-planner', 0), 'opus');
+    // unmappable override → no dynamic_routing → resolveModelInternal → verbatim pin
+    assert.strictEqual(resolveModelForTier(tmpDir, 'gsd-planner', 0), 'claude-opus-4-5');
   });
 
   // LOW-2 (review): pin the case-sensitive contract — a case-variant like
@@ -6319,5 +6322,348 @@ describe('#3007 PROPERTY: renderEffortForRuntime never renders a level the model
       }),
       { seed: 3007, numRuns: 200 },
     );
+  });
+});
+
+// ─── #4192: claude-runtime generation pinning via explicit overrides ──────────
+//
+// Confirmed-bug scope (maintainer triage): Findings 1 and 2 — documented
+// behavior the resolver does not implement on the claude runtime.
+//
+//   F1 — model_profile_overrides.claude.<tier> was inert: step 3 of
+//        resolveModelInternal gated runtime-aware tier resolution on
+//        `configRuntime !== 'claude'`, so the only reader of the key was never
+//        consulted on claude, while settings-advanced.md writes it for
+//        claude-runtime users.
+//   F2 — fully-qualified claude-* IDs in model_overrides were warn-dropped to
+//        tier resolution (mapClaudeOverrideForRuntime unmappable branch,
+//        #2041), while the configuration reference and the shipped
+//        model-profiles reference both document "any fully-qualified model
+//        ID" as valid.
+//
+// Agreed contract (AC2, pinned here): an explicit pin is RESOLVED AS
+// CONFIGURED. A claude-* value that maps to a current tier alias still
+// collapses to that alias (the #2041 protection — byte-equivalent resolution);
+// an unmappable one (a pinned older generation) is returned verbatim with a
+// warn-once breadcrumb, because dropping it would silently unpin the operator's
+// explicit choice — the exact "profile misrepresents what runs" defect of
+// #4192. Unpinned resolution is byte-stable (control rows below).
+describe('#4192 model_profile_overrides.claude.*: tier overrides honor pins on the claude runtime', () => {
+  const { createTempDir, resetRuntimeWarningCaches } = require('./helpers.cjs');
+  let tmpDir;
+  const make = () => createTempDir('gsd-4192-tier-override-');
+  const write = (cfg) => fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'), JSON.stringify(cfg, null, 2), 'utf-8');
+
+  beforeEach(() => {
+    tmpDir = make();
+    fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+    resetRuntimeWarningCaches();
+  });
+  afterEach(() => {
+    cleanup(tmpDir);
+    resetRuntimeWarningCaches();
+  });
+
+  // Row 1 — REGRESSION (failing-first): pinned generation honored, implicit claude runtime.
+  test('claude.opus = "claude-opus-4-7" pins the opus tier (implicit claude runtime)', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-7');
+  });
+
+  // Row 2 — same with an explicit runtime key.
+  test('claude.opus pin honored with explicit runtime: "claude"', () => {
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-7');
+  });
+
+  // Row 3 — mappable override collapses to the alias (form parity with #2041 step 1).
+  test('claude.sonnet = "claude-sonnet-5" resolves to the "sonnet" alias', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { sonnet: 'claude-sonnet-5' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-executor'), 'sonnet');
+  });
+
+  // Row 4 — fable-valued override maps through the fable alias.
+  test('claude.opus = "claude-fable-5" resolves to "fable"', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 'claude-fable-5' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'fable');
+  });
+
+  // Row 5 — bare-alias / tier-repoint override passes through verbatim.
+  test('claude.opus = "sonnet" repoints the tier at the sonnet alias', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 'sonnet' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'sonnet');
+  });
+
+  // Row 6 — non-Claude ID override passes through verbatim (docs: any fully-qualified ID).
+  test('claude.haiku = "openai/gpt-4o-mini" passes through verbatim on claude', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { haiku: 'openai/gpt-4o-mini' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-codebase-mapper'), 'openai/gpt-4o-mini');
+  });
+
+  // Row 7 — object-form override (settings workflow accepts {model, reasoning_effort}).
+  test('claude.opus = { model: "claude-opus-4-7" } object form pins the tier', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: { model: 'claude-opus-4-7' } } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-7');
+  });
+
+  // Row 8 — CONTROL (AC1): no override → byte-identical alias resolution.
+  test('no model_profile_overrides → alias resolution unchanged', () => {
+    write({ model_profile: 'balanced' });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 9 — CONTROL: overrides for another runtime never apply to claude.
+  test('codex-only overrides are inert on the claude runtime', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { codex: { opus: 'gpt-5-pro' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 10 — CONTROL: override for a different tier than the agent's is inert for that agent.
+  test('claude.sonnet override does not touch an opus-tier agent', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { sonnet: 'claude-sonnet-4-6' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 11 — CONTROL: inherit profile is immune to tier overrides.
+  test('model_profile: "inherit" + claude.opus pin → "inherit"', () => {
+    write({
+      model_profile: 'inherit',
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'inherit');
+  });
+
+  // Row 12 — CONTROL: explicit project resolve_model_ids:"omit" beats the override (#2297).
+  test('project resolve_model_ids: "omit" + claude.opus pin → empty string', () => {
+    write({
+      model_profile: 'balanced',
+      resolve_model_ids: 'omit',
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), '');
+  });
+
+  // Row 13 — CONTROL: model_overrides still wins over the tier override.
+  test('model_overrides beats model_profile_overrides.claude', () => {
+    write({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-planner': 'haiku' },
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'haiku');
+  });
+
+  // Row 15 — CONTROL: object override without a model key degrades to the alias.
+  test('claude.opus = { reasoning_effort } (no model) falls through to the alias', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: { reasoning_effort: 'high' } } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 16 — CONTROL: non-string/non-object value degrades to the alias.
+  test('claude.opus = 42 (malformed value) falls through to the alias', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 42 } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 17 — CONTROL: empty-string value degrades to the alias.
+  test('claude.opus = "" falls through to the alias', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: '' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 26 — ADVERSARIAL: prototype-chain keys in the override map must not leak.
+  test('"constructor" as a claude override key does not resolve an inherited member', () => {
+    write({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { constructor: 'claude-opus-4-7' } },
+    });
+    // 'constructor' is not a tier; resolution must ignore it entirely and land
+    // on the profile alias, never on Function.prototype's members.
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'opus');
+  });
+
+  // Row 30 — the pin wins over resolve_model_ids:true alias materialization.
+  test('claude.opus pin beats resolve_model_ids: true materialization', () => {
+    write({
+      model_profile: 'balanced',
+      resolve_model_ids: true,
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-planner'), 'claude-opus-4-7');
+  });
+});
+
+describe('#4192 model_overrides: fully-qualified claude IDs resolve as configured', () => {
+  const { createTempDir, resetRuntimeWarningCaches } = require('./helpers.cjs');
+  let tmpDir;
+  const make = () => createTempDir('gsd-4192-agent-override-');
+  const write = (cfg) => fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'config.json'), JSON.stringify(cfg, null, 2), 'utf-8');
+
+  beforeEach(() => {
+    tmpDir = make();
+    fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+    resetRuntimeWarningCaches();
+  });
+  afterEach(() => {
+    cleanup(tmpDir);
+    resetRuntimeWarningCaches();
+  });
+
+  // Row 18 — REGRESSION (failing-first): pinned generation honored, implicit claude runtime.
+  test('model_overrides "claude-opus-4-7" resolves verbatim (implicit claude runtime)', () => {
+    write({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-debugger'), 'claude-opus-4-7');
+  });
+
+  // Row 18b — explicit runtime key.
+  test('model_overrides "claude-opus-4-7" resolves verbatim with runtime: "claude"', () => {
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    });
+    assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-debugger'), 'claude-opus-4-7');
+  });
+
+  // Row 21 — warn-once breadcrumb on an unmappable pin (visibility, not a drop).
+  test('unmappable pin emits exactly one pass-through stderr warning (dedupe)', () => {
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    });
+    const writes = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      resolveModelInternal(tmpDir, 'gsd-debugger');
+      resolveModelInternal(tmpDir, 'gsd-debugger'); // dedupe must suppress
+    } finally {
+      process.stderr.write = original;
+    }
+    const warnings = writes.filter((w) => w.includes('model_overrides') && w.includes('claude-opus-4-7'));
+    assert.strictEqual(warnings.length, 1,
+      `expected exactly one override warning, got ${warnings.length}: ${JSON.stringify(writes)}`);
+    // The warning must describe pass-through, not a fall-through that no longer happens.
+    assert.ok(!warnings[0].includes('falling through'),
+      `warning must not claim a fall-through: ${warnings[0]}`);
+  });
+
+  // Row 21b — no warning for a value that needs no breadcrumb (mappable / non-claude).
+  test('mappable ID resolution emits no model_overrides warning', () => {
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-sonnet-5' },
+    });
+    const writes = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-debugger'), 'sonnet');
+    } finally {
+      process.stderr.write = original;
+    }
+    assert.strictEqual(writes.filter((w) => w.includes('model_overrides')).length, 0);
+  });
+
+  // Row 22 — escalation path parity.
+  test('resolveModelForTier returns the pinned generation verbatim', () => {
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    });
+    assert.strictEqual(resolveModelForTier(tmpDir, 'gsd-debugger', 0), 'claude-opus-4-7');
+  });
+
+  // Row 24 — tier honesty signal unchanged (AC3): a raw pin carries no tier.
+  test('resolveTierFromConfig reports "unknown" for a raw pinned generation', () => {
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    });
+    assert.strictEqual(resolveTierFromConfig(
+      JSON.parse(fs.readFileSync(path.join(tmpDir, '.planning', 'config.json'), 'utf-8')),
+      'gsd-debugger'), 'unknown');
+  });
+
+  // Row 25 — ADVERSARIAL: prototype-chain agentType must not leak through overrides.
+  test('agentType "toString" against model_overrides: {} stays on the unknown-agent path', () => {
+    write({
+      model_profile: 'balanced',
+      model_overrides: {},
+    });
+    // Unknown agent + balanced profile → the hardcoded fallback alias, never
+    // an inherited Function.prototype member.
+    assert.strictEqual(resolveModelInternal(tmpDir, 'toString'), 'sonnet');
+  });
+
+  // Row 28 — an oversized pin value survives resolution; any warning stays capped.
+  test('oversized unmappable pin resolves verbatim and warning text is capped at 64 chars', () => {
+    const longPin = 'claude-opus-' + '9'.repeat(80);
+    write({
+      runtime: 'claude',
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': longPin },
+    });
+    const writes = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      assert.strictEqual(resolveModelInternal(tmpDir, 'gsd-debugger'), longPin);
+    } finally {
+      process.stderr.write = original;
+    }
+    const warnings = writes.filter((w) => w.includes('model_overrides'));
+    assert.strictEqual(warnings.length, 1);
+    // The rendered value inside the warning is the 64-char cap + ellipsis, not the full pin.
+    assert.ok(!warnings[0].includes(longPin),
+      `warning must not contain the uncapped pin: ${warnings[0]}`);
+    assert.ok(warnings[0].includes('claude-opus-' + '9'.repeat(52) + '…'),
+      `warning must contain the capped pin render: ${warnings[0]}`);
   });
 });

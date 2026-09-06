@@ -39,7 +39,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempGitProject } = require('./helpers.cjs');
 const { runGit: seamRunGit, OUTCOME } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
@@ -52,6 +52,7 @@ const {
   resolveUatFile,
   readVerificationStatus,
   findStaleVerificationSummary,
+  computeCoveredDigest,
 } = require('../gsd-core/bin/lib/verification.cjs');
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
@@ -1208,11 +1209,15 @@ describe('#3357/#3492: phase-pinned *-VERIFICATION.md resolution when multiple c
 // commands.cts (determinePhaseStatus) and two verification_path projectors in
 // init.cts each hand-rolled a fourth variant of this same selection: they
 // additionally accept a BARE `VERIFICATION.md`, which this module's own two
-// callers (findStaleVerificationSummary, readVerificationStatus) never have.
-// `allowBare` threads that one behavioral difference through the single
-// resolver instead of leaving a fourth hand-rolled implementation behind
-// (#3473 F2). A bare match is ranked BELOW any dashed candidate — canonical
-// or not — because a dashed file names its phase and a bare one does not.
+// callers (findStaleVerificationSummary, readVerificationStatus) originally
+// did not. `allowBare` threads that one behavioral difference through the
+// single resolver instead of leaving a fourth hand-rolled implementation
+// behind (#3473 F2). A bare match is ranked BELOW any dashed candidate —
+// canonical or not — because a dashed file names its phase and a bare one
+// does not. Since #4187 the two module-internal call sites pass `allowBare:
+// true` as well (see the #4187 describe below), so every reader of the report
+// set now agrees; the option's default remains `false` for callers that have
+// not opted in.
 describe('#3473 F2: resolveVerificationFile allowBare option', () => {
 
   test('allowBare defaults to false — a bare-only list returns null without the option', () => {
@@ -1262,6 +1267,210 @@ describe('#3473 F2: resolveVerificationFile allowBare option', () => {
     );
   });
 
+});
+
+// ─── #4187: a bare VERIFICATION.md is a first-class report on the status surface ──
+//
+// `query verification.resolve-file` (cmdVerificationResolveFile), the phase-status
+// surface (commands.cts determinePhaseStatus) and both init verification_path
+// projectors all resolve a BARE `VERIFICATION.md` — but readVerificationStatus
+// (the reader behind `query verification.status`, isPhaseComplete, and the state/
+// roadmap completion projections) called the same shared resolver WITHOUT
+// `allowBare`, so a phase whose only report was bare read as `missing` and was
+// told to re-run execute-phase even when the report said `status: passed`.
+// Two read-only verbs disagreed about the same directory at the same instant
+// (#4187). The fix opts the status reader — and findStaleVerificationSummary,
+// its internal legacy staleness check, whose only production caller is
+// readVerificationStatus — into the same `allowBare: true` the other four call
+// sites already pass. Tier order is unchanged: a dashed candidate (canonical or
+// not) still outranks the bare name, so only bare-ONLY directories change
+// behavior, from `missing` to the report's actual frontmatter status.
+describe('#4187: status surface recognizes a bare VERIFICATION.md', () => {
+
+  test('#4187 regression: bare VERIFICATION.md with status: passed reads as passed, not missing', (t) => {
+    const dir = mkPhaseDir('bare-passed', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed', 'a bare report is a report — the phase is verified');
+    assert.equal(result.next_command, '', 'passed must route to no next command');
+    assert.equal(result.staleCheckIndeterminate, undefined, 'the staleness check must run to completion');
+  });
+
+  test('#4187: bare report with status: human_needed routes to verify-work', (t) => {
+    const dir = mkPhaseDir('bare-human', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'human_needed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'human_needed');
+    assert.equal(result.next_command, '/gsd-verify-work 99');
+  });
+
+  test('#4187: bare report with status: gaps_found routes to plan-phase --gaps', (t) => {
+    const dir = mkPhaseDir('bare-gaps', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'gaps_found');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'gaps_found');
+    assert.equal(result.next_command, '/gsd-plan-phase 99 --gaps');
+  });
+
+  test('#4187 negative space: no verification file at all still reads missing with the execute-phase recommendation', (t) => {
+    const dir = mkPhaseDir('bare-none', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    const result = readVerificationStatus(dir);
+    assert.equal(result.status, 'missing', 'a genuinely absent report must stay missing');
+    assert.equal(result.next_command, '/gsd-execute-phase 99', 'the missing recommendation is correct here and must not change');
+  });
+
+  test('#4187 parity: bare + canonical dashed report — the dashed file wins on the status surface too', (t) => {
+    const dir = mkPhaseDir('bare-vs-dashed', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'gaps_found');
+    writeVerificationMd(dir, '99-VERIFICATION.md', 'passed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed', 'a dashed file names its phase and must outrank the bare match');
+  });
+
+  test('#4187 parity: bare + cross-phase dashed stray — #3511 scoping falls through to the bare report', (t) => {
+    const dir = mkPhaseDir('bare-vs-stray', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    writeVerificationMd(dir, '04-VERIFICATION.md', 'gaps_found');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed', 'the stray belongs to phase 04; the bare file is this phase\'s only own report');
+  });
+
+  test('#4187 parity: same-dir non-canonical dashed report only — unchanged behavior', (t) => {
+    const dir = mkPhaseDir('dashed-noncanon', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, '99-CORRECTION-VERIFICATION.md', 'passed');
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed');
+  });
+
+  test('#4187: directory scoping — a bare report in a DIFFERENT directory does not leak into the queried one', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4187-otherdir-'));
+    t.after(() => cleanup(baseDir));
+    const queried = path.join(baseDir, '99-probe');
+    const neighbor = path.join(baseDir, '98-other');
+    fs.mkdirSync(queried);
+    fs.mkdirSync(neighbor);
+    writeVerificationMd(neighbor, 'VERIFICATION.md', 'passed');
+
+    const result = readVerificationStatus(queried);
+    assert.equal(result.status, 'missing', 'the neighbor directory\'s report must not answer for the queried one');
+  });
+
+  test('#4187: bare report with no frontmatter block resolves but reads missing', (t) => {
+    const dir = mkPhaseDir('bare-no-fm', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    fs.writeFileSync(path.join(dir, 'VERIFICATION.md'), '# Verification\n');
+    const result = readVerificationStatus(dir);
+    assert.equal(result.status, 'missing', 'a resolved file with no frontmatter status is the pre-existing missing path');
+  });
+
+  test('#4187 staleness: a bare report older than its summary reads stale (legacy mtime path)', (t) => {
+    const dir = mkPhaseDir('bare-stale', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    setMtime(path.join(dir, 'VERIFICATION.md'), '2020-01-01T00:00:00Z');
+    // Root-style summary placement — mirrors the #3492 fixture above.
+    const summaryPath = path.join(dir, '99-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# summary\n');
+    setMtime(summaryPath, '2021-01-01T00:00:00Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale', 'a bare report must be staleness-checked like a dashed one');
+    assert.equal(result.next_command, '/gsd-verify-work 99');
+  });
+
+  test('#4187 unit (findStaleVerificationSummary): staleness is computed against the bare report', (t) => {
+    const dir = mkPhaseDir('bare-stale-unit', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    setMtime(path.join(dir, 'VERIFICATION.md'), '2020-01-01T00:00:00Z');
+    const summaryPath = path.join(dir, '99-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# summary\n');
+    setMtime(summaryPath, '2021-01-01T00:00:00Z');
+
+    const result = findStaleVerificationSummary(dir, fs, () => new Map());
+    assert.equal(result.determined, true);
+    assert.equal(result.stale, true);
+    assert.equal(result.verificationFile, 'VERIFICATION.md', 'the staleness seam must see the bare report');
+  });
+});
+
+// ─── #4187 CLI parity: the two query verbs must agree on the same directory ───
+//
+// The issue's repro shape: run `query verification.resolve-file` and
+// `query verification.status` back to back against ONE fixture directory and
+// assert they never disagree about whether a report exists (and, when one does,
+// about WHICH file is the report — enforced by giving the candidates distinct
+// frontmatter statuses and asserting the routed status matches the expected
+// winner).
+describe('#4187 CLI parity: verification.resolve-file and verification.status agree', () => {
+  const { runGsdTools } = require('./helpers.cjs');
+
+  function runBothVerbs(dir) {
+    const resolveRes = runGsdTools(['query', 'verification.resolve-file', dir, '--raw'], dir);
+    const statusRes = runGsdTools(['query', 'verification.status', dir, '--raw'], dir);
+    assert.equal(resolveRes.success, true, `resolve-file failed: ${resolveRes.error}`);
+    assert.equal(statusRes.success, true, `status failed: ${statusRes.error}`);
+    return { resolvedPath: resolveRes.output.trimEnd(), status: JSON.parse(statusRes.output).status, nextCommand: JSON.parse(statusRes.output).next_command };
+  }
+
+  test('bare report: resolve-file finds it and status reads passed (the #4187 repro)', (t) => {
+    const dir = mkPhaseDir('cli-bare', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    const { resolvedPath, status, nextCommand } = runBothVerbs(dir);
+    assert.equal(resolvedPath, path.join(dir, 'VERIFICATION.md'));
+    assert.equal(status, 'passed', 'status must not report missing for a file resolve-file resolves');
+    assert.equal(nextCommand, '');
+  });
+
+  test('no report: resolve-file is empty and status is missing (agreement in the other direction)', (t) => {
+    const dir = mkPhaseDir('cli-none', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    const { resolvedPath, status } = runBothVerbs(dir);
+    assert.equal(resolvedPath, '', 'resolve-file must report no file');
+    assert.equal(status, 'missing');
+  });
+
+  test('bare + canonical dashed: both verbs pick the dashed file', (t) => {
+    const dir = mkPhaseDir('cli-both', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'gaps_found');
+    writeVerificationMd(dir, '99-VERIFICATION.md', 'passed');
+    const { resolvedPath, status } = runBothVerbs(dir);
+    assert.equal(resolvedPath, path.join(dir, '99-VERIFICATION.md'));
+    assert.equal(status, 'passed', 'status must read the same winner resolve-file picked');
+  });
+
+  test('bare + cross-phase stray: both verbs pick the bare file', (t) => {
+    const dir = mkPhaseDir('cli-stray', '99-probe');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, 'VERIFICATION.md', 'passed');
+    writeVerificationMd(dir, '04-VERIFICATION.md', 'gaps_found');
+    const { resolvedPath, status } = runBothVerbs(dir);
+    assert.equal(resolvedPath, path.join(dir, 'VERIFICATION.md'));
+    assert.equal(status, 'passed', 'status must read the same winner resolve-file picked');
+  });
 });
 
 // ─── #3518: resolveUatFile — phase-pinned, deterministic *-UAT.md pick ───────
@@ -1458,6 +1667,438 @@ describe('#3057 B3: staleness check — indeterminate is distinguishable from no
       undefined,
       'a completed check that found nothing stale must not be flagged indeterminate',
     );
+  });
+});
+
+// ─── #4155: covered-input fingerprint ─────────────────────────────────────────
+//
+// A VERIFICATION.md that declares `covered_files` + `covered_digest` in its
+// frontmatter is checked by RECOMPUTING that digest over current file content
+// — this REPLACES the legacy SUMMARY-mtime check for that report (not merely
+// supplements it). A report with no fingerprint metadata keeps the exact
+// legacy mtime behavior (already covered above).
+
+describe('#4155: computeCoveredDigest — direct unit coverage', () => {
+  test('same covered set, different array order → identical digest (order-independent)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-order-'));
+    t.after(() => cleanup(root));
+    fs.writeFileSync(path.join(root, 'a.txt'), 'A');
+    fs.writeFileSync(path.join(root, 'b.txt'), 'B');
+
+    const d1 = computeCoveredDigest(root, ['a.txt', 'b.txt']);
+    const d2 = computeCoveredDigest(root, ['b.txt', 'a.txt']);
+    assert.equal(d1, d2);
+    assert.match(d1, /^v1:sha256:[0-9a-f]{64}$/);
+  });
+
+  test('a "./"-prefixed path and its bare equivalent → identical digest (canonicalized, not double-counted)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-dotslash-'));
+    t.after(() => cleanup(root));
+    fs.writeFileSync(path.join(root, 'impl.txt'), 'content');
+
+    const bare = computeCoveredDigest(root, ['impl.txt']);
+    const dotSlash = computeCoveredDigest(root, ['./impl.txt']);
+    assert.equal(dotSlash, bare, '"./impl.txt" must canonicalize to the same key as "impl.txt"');
+
+    // Both spellings together must not double-hash the same file into the digest.
+    const combined = computeCoveredDigest(root, ['impl.txt', './impl.txt']);
+    assert.equal(combined, bare);
+  });
+
+  test('an internal ".." segment disguising an escape (not just a leading one) → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-internal-dotdot-'));
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'a'));
+    fs.writeFileSync(path.join(path.dirname(root), 'outside.txt'), 'secret');
+    // 'a/../../outside.txt' does not start with '../' as written, but
+    // normalizes to '../outside.txt' — an escape a purely-prefix check misses.
+    assert.equal(computeCoveredDigest(root, ['a/../../outside.txt']), null);
+  });
+
+  test('a covered file whose content changes → digest changes', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-changed-'));
+    t.after(() => cleanup(root));
+    const target = path.join(root, 'impl.txt');
+    fs.writeFileSync(target, 'before');
+    const before = computeCoveredDigest(root, ['impl.txt']);
+    fs.writeFileSync(target, 'after');
+    const after = computeCoveredDigest(root, ['impl.txt']);
+    assert.notEqual(before, after);
+  });
+
+  test('a covered file that is missing → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-missing-'));
+    t.after(() => cleanup(root));
+    assert.equal(computeCoveredDigest(root, ['does-not-exist.txt']), null);
+  });
+
+  test('a covered file that is unreadable (directory, not a regular file) → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-unreadable-'));
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'a-directory'));
+    assert.equal(computeCoveredDigest(root, ['a-directory']), null);
+  });
+
+  test('a covered path that escapes the project root via ".." → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-escape-'));
+    t.after(() => cleanup(root));
+    fs.writeFileSync(path.join(path.dirname(root), 'outside.txt'), 'secret');
+    assert.equal(computeCoveredDigest(root, ['../outside.txt']), null);
+  });
+
+  test('an absolute covered path → null (fail closed)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-absolute-'));
+    t.after(() => cleanup(root));
+    const absolute = path.join(root, 'impl.txt');
+    fs.writeFileSync(absolute, 'x');
+    assert.equal(computeCoveredDigest(root, [absolute]), null);
+  });
+
+  test('an empty covered-files array → null', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-empty-'));
+    t.after(() => cleanup(root));
+    assert.equal(computeCoveredDigest(root, []), null);
+  });
+
+  test('an in-root symlink whose TARGET escapes the project root → null (fail closed, not the target\'s content)', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-symlink-'));
+    t.after(() => cleanup(root));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-symlink-outside-'));
+    t.after(() => cleanup(outside));
+    const outsideFile = path.join(outside, 'secret.txt');
+    fs.writeFileSync(outsideFile, 'not covered by this project');
+    const linkPath = path.join(root, 'impl.txt');
+    fs.symlinkSync(outsideFile, linkPath);
+
+    assert.equal(computeCoveredDigest(root, ['impl.txt']), null);
+  });
+
+});
+
+describe('#4155: readVerificationStatus — fingerprint supersedes legacy mtime staleness', () => {
+  test('a covered implementation file OUTSIDE .planning/, read through a .planning/-confined opts.fs (src/planning-inspect.cts\'s exact seam) → status stays passed, not stale', () => {
+    // #4155 review finding (blocking): src/planning-inspect.cts:1253 injects
+    // containmentEnforcingVerificationFs(paths.planning) — confined to
+    // `.planning/` — as `opts.fs`. Before the fix, computeCoveredDigest routed
+    // every per-file read through that SAME injected fsImpl, so any covered
+    // implementation file (which the issue mandates live under `src/`, outside
+    // `.planning/`) made the confinement wrapper throw, which computeCoveredDigest
+    // caught and turned into `null`, which readVerificationStatus routed to
+    // `stale` — permanently, regardless of whether anything actually changed.
+    // This reproduces that exact call shape with a real nested .planning/
+    // project (findProjectRoot must resolve past the phase dir to the real
+    // root) and a confinement fs scoped ONLY to .planning/, mirroring
+    // planning-inspect.cts's containmentEnforcingVerificationFs byte-for-byte.
+    const projectDir = createTempGitProject();
+    try {
+      const planningRoot = path.join(projectDir, '.planning');
+      const phaseDir = path.join(planningRoot, 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const implPath = path.join(projectDir, 'src', 'impl.ts');
+      fs.mkdirSync(path.dirname(implPath), { recursive: true });
+      fs.writeFileSync(implPath, 'export const x = 1;\n');
+
+      const digest = computeCoveredDigest(projectDir, ['src/impl.ts']);
+      fs.writeFileSync(
+        path.join(phaseDir, '01-VERIFICATION.md'),
+        `---\nstatus: passed\ncovered_files:\n  - src/impl.ts\ncovered_digest: "${digest}"\n---\n`,
+      );
+
+      // A naive lexical-prefix check (no realpath resolution) is a stricter
+      // stand-in for src/planning-inspect.cts's real containmentEnforcingVerificationFs
+      // here: it throws on strictly MORE paths than the real one (it can't
+      // tell a legitimate in-root path from a symlink, so it rejects both),
+      // which makes this test fail harder, not weaker, if the fix regresses.
+      function assertContained(target) {
+        if (!path.resolve(target).startsWith(planningRoot + path.sep)) {
+          throw new Error(`planning-inspect: path escapes planning root: ${target}`);
+        }
+      }
+      const containmentEnforcingVerificationFs = {
+        readdirSync: (dir) => {
+          assertContained(dir);
+          return fs.readdirSync(dir);
+        },
+        readFileSync: (filePath, encoding) => {
+          assertContained(filePath);
+          return fs.readFileSync(filePath, encoding);
+        },
+        statSync: (filePath) => {
+          assertContained(filePath);
+          return fs.statSync(filePath);
+        },
+      };
+
+      const result = readVerificationStatus(phaseDir, {
+        fs: containmentEnforcingVerificationFs,
+        phaseCleanCommitTimesMs: () => new Map(),
+      });
+      assert.equal(result.status, 'passed');
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('unchanged covered inputs → status stays passed even though a SUMMARY is newer (legacy mtime check bypassed)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-unchanged-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'implementation content');
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# Summary');
+    // The SUMMARY is a covered artifact too — isolates this test to the mtime
+    // vs. content-digest distinction, not the #4155 completeness check below.
+    const digest = computeCoveredDigest(dir, ['impl.txt', '01-01-SUMMARY.md']);
+
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\n  - 01-01-SUMMARY.md\ncovered_digest: "${digest}"\n---\n`,
+    );
+    // SUMMARY newer than VERIFICATION — the LEGACY check would call this
+    // stale. The fingerprint check must be the one that actually runs.
+    setMtime(path.join(dir, '01-VERIFICATION.md'), '2026-01-01T00:00:00.000Z');
+    setMtime(summaryPath, '2026-01-01T00:01:00.000Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'passed');
+  });
+
+  test('a plan or summary added to the phase dir after verification, never declared in covered_files → stale (#4155 completeness check)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-uncovered-artifact-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    // A SUMMARY appears after verification — never declared, so the recomputed
+    // digest over the ORIGINAL covered set still matches. Only the live
+    // directory re-scan can catch this.
+    fs.writeFileSync(path.join(dir, '01-01-SUMMARY.md'), '# Summary\n');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+  });
+
+  test('an unreadable nested plans/ dir fails CLOSED to stale, not open to passed (#4155 review finding: allCurrentArtifactsCovered must branch on scanPhasePlans scope, not a try/catch it never throws into)', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-scan-unreadable-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    const nestedDir = path.join(dir, 'plans');
+    fs.mkdirSync(nestedDir);
+    fs.writeFileSync(path.join(nestedDir, '01-02-PLAN.md'), '# Nested plan, never declared\n');
+
+    // fs.chmodSync(nestedDir, 0o000) is NOT used: this suite may run as root
+    // (CI/Docker), where mode bits are bypassed entirely, making the test
+    // pass with zero real coverage. A monkeypatch is CONTRIBUTING.md's
+    // documented fault-injection convention for exactly this reason (mirrors
+    // tests/broken-windows.test.cjs's writeLedgerAtomic pre-image test). The
+    // compiled src/plan-scan.cjs calls `node_fs_1.readdirSync(nestedDir)` — a
+    // property read on the SAME node:fs module object `fs` here resolves to
+    // (module caching), so patching that property is visible to it.
+    const originalReaddirSync = fs.readdirSync;
+    fs.readdirSync = (target, ...rest) => {
+      if (path.resolve(target) === path.resolve(nestedDir)) {
+        throw Object.assign(new Error('EACCES: permission denied (simulated)'), { code: 'EACCES' });
+      }
+      return originalReaddirSync(target, ...rest);
+    };
+    try {
+      // Guard: the digest alone must NOT already be stale — isolates this
+      // test to the scan-failure branch, not a digest mismatch.
+      const unpatchedScan = originalReaddirSync(dir);
+      assert.ok(unpatchedScan.includes('plans'), 'guard: nested plans/ dir must exist on disk');
+
+      const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(
+        result.status,
+        'stale',
+        'an unreadable plans/ dir must fail CLOSED — its invisible contents (an undeclared plan) can never be proven covered',
+      );
+    } finally {
+      fs.readdirSync = originalReaddirSync;
+    }
+  });
+
+  test('a covered file that changed after verification → status is stale', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-stale-changed-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'original content');
+    const digest = computeCoveredDigest(dir, ['impl.txt']);
+    fs.writeFileSync(
+      path.join(dir, '01-VERIFICATION.md'),
+      `---\nstatus: passed\ncovered_files:\n  - impl.txt\ncovered_digest: "${digest}"\n---\n`,
+    );
+    // Evidence drifts after verification — no SUMMARY touched at all, so the
+    // legacy mtime check would see nothing stale.
+    fs.writeFileSync(path.join(dir, 'impl.txt'), 'drifted content');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale');
+    assert.equal(result.next_command, '/gsd-verify-work 01');
+  });
+
+  // Ponytail #4155 review finding: "disappeared" and "escapes confinement"
+  // integration tests previously here re-proved computeCoveredDigest → null
+  // through the identical `recomputed !== coveredDigestVal` stale branch the
+  // "changed" test above already wires — the null-producing mechanisms
+  // themselves are unit-tested directly in the computeCoveredDigest describe
+  // block ("a covered file that is missing", "a covered path that escapes
+  // the project root via ..").
+
+  // Ponytail #4155 review finding: these three were near-identical
+  // fixture-copies of the same `hasWellFormedFingerprint === false` branch —
+  // an incomplete/malformed `covered_files`+`covered_digest` pair fails
+  // closed to `stale` rather than silently downgrading to the legacy check.
+  for (const [name, frontmatter] of [
+    [
+      'covered_files present but covered_digest missing (incomplete pair)',
+      '---\nstatus: passed\ncovered_files:\n  - impl.txt\n---\n',
+    ],
+    [
+      'covered_digest present but covered_files missing (incomplete pair)',
+      '---\nstatus: passed\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
+    ],
+    [
+      'an empty covered_files array with covered_digest present',
+      '---\nstatus: passed\ncovered_files: []\ncovered_digest: "v1:sha256:deadbeef"\n---\n',
+    ],
+  ]) {
+    test(`${name} → stale (fail closed, not a silent legacy downgrade)`, (t) => {
+      const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-malformed-fingerprint-'));
+      t.after(() => cleanup(baseDir));
+      const dir = path.join(baseDir, '01-foo');
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), frontmatter);
+
+      const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(result.status, 'stale');
+    });
+  }
+
+  test('a legacy report with no fingerprint metadata still uses the mtime check', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4155-legacy-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-foo');
+    fs.mkdirSync(dir);
+    const verificationPath = path.join(dir, '01-VERIFICATION.md');
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    writeVerificationMd(dir, '01-VERIFICATION.md', 'passed');
+    fs.writeFileSync(summaryPath, '# Summary');
+    setMtime(verificationPath, '2026-01-01T00:00:00.000Z');
+    setMtime(summaryPath, '2026-01-01T00:01:00.000Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+    assert.equal(result.status, 'stale', 'unchanged: legacy mtime staleness must still fire with no covered_digest');
+  });
+});
+
+describe('#4155: verification.fingerprint CLI', () => {
+  const { runGsdTools, createTempGitProject } = require('./helpers.cjs');
+
+  test('emits a covered_digest matching the direct computeCoveredDigest call, sorted covered_files', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+
+      const res = runGsdTools(
+        [
+          'verification',
+          'fingerprint',
+          phaseDir,
+          '.planning/phases/01-example/01-01-SUMMARY.md',
+          '.planning/phases/01-example/01-01-PLAN.md',
+        ],
+        projectDir,
+      );
+      assert.equal(res.success, true, `expected success, got: ${res.output}${res.error}`);
+      const parsed = JSON.parse(res.output);
+      assert.deepEqual(parsed.covered_files, [
+        '.planning/phases/01-example/01-01-PLAN.md',
+        '.planning/phases/01-example/01-01-SUMMARY.md',
+      ]);
+      const expected = computeCoveredDigest(projectDir, [
+        '.planning/phases/01-example/01-01-PLAN.md',
+        '.planning/phases/01-example/01-01-SUMMARY.md',
+      ]);
+      assert.equal(parsed.covered_digest, expected);
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('a missing covered file fails the whole command (fail closed, no partial fingerprint)', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+
+      const res = runGsdTools(
+        ['verification', 'fingerprint', phaseDir, 'does-not-exist.md'],
+        projectDir,
+      );
+      assert.equal(res.success, false);
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('end-to-end through a real nested .planning/ project: a project-root-relative src/ file is covered, resolved, and hashed correctly', () => {
+    // #4155 review finding: unit fixtures elsewhere in this file put phaseDir
+    // directly under an ownerless tmpdir, so findProjectRoot(phaseDir) falls
+    // back to phaseDir itself and never exercises real multi-level
+    // resolution. This test uses a genuine `.planning/phases/NN-x/` tree
+    // under a real project root, and covers an implementation file OUTSIDE
+    // `.planning/` entirely — the exact shape a live verifier agent produces.
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+      fs.mkdirSync(path.join(projectDir, 'src'));
+      fs.writeFileSync(path.join(projectDir, 'src', 'thing.cts'), 'export const x = 1;\n');
+
+      const coveredFiles = [
+        '.planning/phases/01-example/01-01-PLAN.md',
+        '.planning/phases/01-example/01-01-SUMMARY.md',
+        'src/thing.cts',
+      ];
+      const fpRes = runGsdTools(['verification', 'fingerprint', phaseDir, ...coveredFiles], projectDir);
+      assert.equal(fpRes.success, true, `expected success, got: ${fpRes.output}${fpRes.error}`);
+      const { covered_files: sortedCovered, covered_digest: digest } = JSON.parse(fpRes.output);
+
+      fs.writeFileSync(
+        path.join(phaseDir, '01-VERIFICATION.md'),
+        `---\nstatus: passed\ncovered_files:\n${sortedCovered.map((f) => `  - ${f}`).join('\n')}\ncovered_digest: "${digest}"\n---\n`,
+      );
+
+      const passing = readVerificationStatus(phaseDir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(passing.status, 'passed');
+
+      // Now edit the implementation file OUTSIDE .planning/ — must go stale.
+      fs.writeFileSync(path.join(projectDir, 'src', 'thing.cts'), 'export const x = 2;\n');
+      const afterEdit = readVerificationStatus(phaseDir, { phaseCleanCommitTimesMs: () => new Map() });
+      assert.equal(afterEdit.status, 'stale');
+    } finally {
+      cleanup(projectDir);
+    }
   });
 });
 

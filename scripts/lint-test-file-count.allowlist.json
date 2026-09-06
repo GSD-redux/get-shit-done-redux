@@ -81,6 +81,7 @@
         "phase-dependency-levels.test.cjs",
         "phase-resolution-parity.test.cjs",
         "phase-structure.test.cjs",
+        "phase-tdd-applicable.test.cjs",
         "phase.test.cjs"
       ],
       "issue": "3186"
@@ -122,6 +123,7 @@
         "state-prune.test.cjs",
         "state-rebuild-cli.test.cjs",
         "state-rebuild.test.cjs",
+        "state-todos-render.test.cjs",
         "state-write-path-drift-guard.test.cjs",
         "state.test.cjs"
       ],
@@ -260,9 +262,10 @@
         "audit-milestone-filename-guard.test.cjs",
         "audit-open-remainder-count.test.cjs",
         "audit-uat-acknowledged.test.cjs",
+        "audit-uat-summary-segmentation.test.cjs",
         "audit-workstream-layouts.test.cjs"
       ],
-      "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures | #3817 \u2014 regression suite proving countReal counts the truncation remainder marker instead of treating it as one phantom item"
+      "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures | #3817 \u2014 regression suite proving countReal counts the truncation remainder marker instead of treating it as one phantom item | #3783 \u2014 dedicated suite for the summary.current_milestone/archived segmentation, matching this module's one-file-per-feature-slice precedent (e.g. audit-uat-acknowledged.test.cjs) rather than growing the unrelated 6900+ line tests/uat.test.cjs (a different module, keyed off uat.cjs)"
     },
     "shell-command-projection": {
       "files": [

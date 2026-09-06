@@ -51,7 +51,9 @@ If a single agent needs a different tier without changing the whole profile, use
 }
 ```
 
-Valid values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model ID (e.g. `"openai/o3"`, `"google/gemini-2.5-pro"`).
+Valid values: `opus`, `sonnet`, `haiku`, `fable`, `inherit`, or any fully-qualified model ID (e.g. `"openai/o3"`, `"google/gemini-2.5-pro"`).
+
+On the Claude runtime, fully-qualified Claude model IDs act as explicit generation pins (#4192): an ID naming the current tier default (e.g. `"claude-sonnet-5"`) resolves to its tier alias — the same model in the form Claude Code's Agent tool always accepts — while any other ID (e.g. `"claude-opus-4-7"`) resolves verbatim, with a warn-once stderr note that setups accepting only tier aliases will not honor a full ID. `fable` is a Claude Code Agent-tool alias, not a GSD profile tier: valid here, but it has no column in the profile table. To pin a generation for a whole tier instead of one agent, use `model_profile_overrides` (see below).
 
 `model_overrides` can be set per-project in `.planning/config.json` or globally in `~/.gsd/defaults.json`. Per-project entries win on conflict; non-conflicting global entries are preserved.
 
@@ -185,17 +187,21 @@ quota / rate-limit failures; other failures keep the tier ladder. Leaving
 
 ## Using GSD on non-Anthropic runtimes
 
-If you installed GSD for Codex, OpenCode, Antigravity CLI, or Kilo, the installer already set `resolve_model_ids: "omit"` in your config. This tells GSD to skip Anthropic model ID resolution and let the runtime choose its own default model. No manual setup is needed for the basic case.
+If you installed GSD for Codex, OpenCode, Antigravity CLI, or Kilo, the installer already set `resolve_model_ids: "omit"` in your config. This prevents unresolved Anthropic model IDs from leaking into those runtimes. When `runtime` is set, runtime-native profile resolution still supplies any model and effort that the runtime adapter can transport. No manual setup is needed for the basic case.
 
-### Codex does not do tier routing — pin explicitly instead
+### Codex routes tiers at spawn time when supported
 
-**Codex agents inherit whatever model your Codex session is using.** GSD writes no `model` line into
-`~/.codex/agents/<agent>.toml`, so setting `model_profile` has no effect on Codex.
+GSD deliberately writes no profile-resolved `model` line into
+`~/.codex/agents/<agent>.toml` ([ADR-2313](../adr/2313-codex-passive-model-posture.md)).
+Instead, each Codex skill inspects the visible `spawn_agent` schema. When that schema advertises
+`model` and `reasoning_effort`, the skill passes the model and effort resolved from
+`model_profile` — including `adaptive` — on that individual spawn. When either field is absent,
+the skill omits that field and the child inherits the session or static agent configuration.
 
-This is deliberate ([ADR-2313](../adr/2313-codex-passive-model-posture.md)). A ChatGPT-account Codex
-session exposes only its own model, so a pinned tier model fails the request outright —
-`400 invalid_request_error: "The 'sonnet' model is not supported when using Codex with a ChatGPT
-account"` — and the agent never spawns.
+This keeps compatibility with older Codex schemas while allowing newer installations to route
+`gsd-planner`, `gsd-executor`, and other roles to their configured tiers. The fields are detected
+independently; support for typed `agent_type` dispatch does not imply support for either routing
+field.
 
 **To pin a model on Codex, name a real Codex model id per agent:**
 
@@ -209,7 +215,8 @@ account"` — and the agent never spawns.
 }
 ```
 
-Then re-run the installer, as with any `model_overrides` edit on Codex (see above).
+Then re-run the installer to materialize the override in the agent TOML as a fallback for spawn
+schemas that do not advertise inline `model` (see above).
 
 Two rules apply to what you can put there:
 
@@ -298,8 +305,9 @@ When multiple layers apply, the resolver picks the highest-priority entry:
 1. model_overrides[<agent>]           — per-agent; full IDs; targeted exception
 2. dynamic_routing.tier_models[<tier>] — when enabled; escalates on soft failure
 3. models[<phase_type>]               — coarse phase-level tier
-4. model_profile (per-agent column)   — global tier strategy
-5. Runtime default                    — when nothing else applies
+4. model_profile_overrides.<runtime>.<tier> — per-tier model override (#4192: honored on the claude runtime too)
+5. model_profile (per-agent column)   — global tier strategy
+6. Runtime default                    — when nothing else applies
 ```
 
 ---
@@ -312,6 +320,7 @@ When multiple layers apply, the resolver picks the highest-priority entry:
 | Coarse phase-level tuning ("Opus for planning") | `models.<phase_type>` |
 | Per-agent precision ("force Haiku on the codebase mapper") | `model_overrides[<agent>]` |
 | A fully-qualified model ID for a specific agent | `model_overrides[<agent>]: "openai/gpt-5"` |
+| Pin a tier's generation on Claude Code (e.g. executor stays on Opus 4.7) | `model_profile_overrides.claude.<tier>: "claude-opus-4-7"` |
 | Start cheap, escalate only on failure | `dynamic_routing` |
 | All agents follow the session model (non-Anthropic provider) | `model_profile: "inherit"` |
 

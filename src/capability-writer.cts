@@ -274,6 +274,8 @@ function setCapabilityState(
 
   // ── Step 4: APPLY PASS ────────────────────────────────────────────────────
 
+  let pendingSurfaceForCommit: SurfaceState | undefined;
+
   // ── Surface writes ────────────────────────────────────────────────────────
   if (needsSurface && (idsToDisable.length > 0 || idsToEnable.length > 0)) {
     const existing = readSurface(resolvedConfigDir);
@@ -339,13 +341,20 @@ function setCapabilityState(
     }
 
     if (surfaceChanged) {
-      writeSurface(resolvedConfigDir, pendingSurface);
+      pendingSurfaceForCommit = pendingSurface;
     }
   }
 
   // ── Config writes (once, batched) ─────────────────────────────────────────
   if (pendingGateWrites.length > 0) {
     setConfigValues(cwd, pendingGateWrites);
+  }
+
+  // State-only callers preserve the existing direct-write behavior. A caller
+  // that requests materialization lets applySurface publish the candidate only
+  // after every artifact kind has staged and synchronized successfully.
+  if (pendingSurfaceForCommit && !opts?.materialize) {
+    writeSurface(resolvedConfigDir, pendingSurfaceForCommit);
   }
 
   // ── Materialize (optional) ────────────────────────────────────────────────
@@ -376,9 +385,12 @@ function setCapabilityState(
       // folded:issue-1575-agent-descriptor-parity describe block in
       // tests/golden-parity-single-source.test.cjs).
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      applySurface(resolvedConfigDir, layout, manifest, undefined, registry, opts?.materialize?.resolveAttribution
-        ? { resolveAttribution: opts.materialize.resolveAttribution }
-        : undefined);
+      applySurface(resolvedConfigDir, layout, manifest, undefined, registry, {
+        ...(pendingSurfaceForCommit ? { surfaceState: pendingSurfaceForCommit } : {}),
+        ...(opts.materialize.resolveAttribution
+          ? { resolveAttribution: opts.materialize.resolveAttribution }
+          : {}),
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       // Fix C: materialise was explicitly requested — a failure is an error (non-zero exit),

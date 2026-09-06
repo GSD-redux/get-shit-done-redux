@@ -119,7 +119,27 @@ Every ADR must open with:
 
 Body: one-paragraph decision summary, then `## Decision` (specifics), then `## Consequences` (behavioral changes downstream callers can rely on).
 
-Amendments are appended as `## Amendment (YYYY-MM-DD): <topic>` sections — the original body is never rewritten.
+### Amending an accepted ADR
+
+**An accepted ADR is never rewritten — it is amended.** Before concluding that a change needs a brand-new ADR, check whether a broader existing ADR already owns the area: `857-capability-system.md`'s Consequences and Ratification sections, for example, explicitly name the Loop Extension Points and their render-hook call sites — a change to that contract amends 857, it does not leave the area without a governing ADR. Two patterns are established, chosen by size:
+
+**1. In-place dated section (the default; use this first).** For an addition that stays within the ADR's existing decision, append a `## Amendment (YYYY-MM-DD): <topic>` section to the *end of the same file* — the original `## Decision` / `## Consequences` body is never rewritten, and the dated marker can be the heading itself or the section's opening line. This is the common case: see `1239-gsd-embeddable-orchestration-engine.md` (PR [#4146](https://github.com/open-gsd/gsd-core/pull/4146)) and `1411-resolution-provenance.md` (PR [#2678](https://github.com/open-gsd/gsd-core/pull/2678)).
+
+**2. A separate ADR that `Amends` the original.** When the addition is substantial enough to warrant its own issue and its own `## Decision` / `## Consequences` — not just a section — write it as its own file (`docs/adr/<issue#>-<slug>.md`, per "Naming conventions" above) and declare the relation in its header:
+
+```md
+- **Amends:** [ADR-<n>](<n>-slug.md) — <one-line reason>
+```
+
+The amended ADR **must record the reciprocal pointer in its own header, in the same PR**:
+
+```md
+- **Amended by:** [ADR-<new>](<new>-slug.md) — <one-line summary of what changed>
+```
+
+This mirrors the `Supersedes`/`Superseded by` and `Subsumes`/`Subsumed by` reciprocity rule in [`docs/adr/README.md`](adr/README.md#3-supersession-and-subsumption-are-symmetric) — a one-way `Amends` pointer is the same failure mode: a reader who lands on the original ADR has no way to know it was extended. See `2782-reviewer-lane-capability-surface.md`, whose single `Amends` field lists four targets (`857-capability-system.md`, `894-capability-declaration-format.md`, `1016-runtime-capability-descriptor.md`, `1244-capability-ecosystem.md`) — all four carry the reciprocal `**Amended by:** [ADR-2782]` back-link, added in the same PR.
+
+**Note:** unlike `Supersedes`/`Subsumes`, `Amends`/`Amended by` reciprocity is convention, not yet machine-checked by `scripts/gen-adr-index.cjs` — get the back-link right by hand and by review.
 
 ### Status block format
 

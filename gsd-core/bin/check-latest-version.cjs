@@ -42,6 +42,12 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 // `npm view` to an empty or foreign dist-tag.
 const ALLOWED_TAGS = Object.freeze(['latest', 'next']);
 
+// Bounded at 15s so a hung registry doesn't block /gsd-update (#2993 CR).
+// Exported so callers (e.g. the worker's own test harness, #4091) can derive
+// their own outer timeout with real margin above this inner bound instead of
+// re-hardcoding 15000 and silently drifting into a zero-margin race.
+const NPM_VIEW_TIMEOUT_MS = 15_000;
+
 /**
  * Build the `npm view` args for a dist-tag. `latest` keeps the bare package
  * spec so the default invocation is byte-for-byte identical to before tag
@@ -92,9 +98,8 @@ function checkLatestVersion(opts = {}) {
   // Windows shell-flag policy and timeout default). The injection point
   // remains spawnSync-shaped for test compatibility — the adapter below
   // translates { exitCode } → { status } so the consumer logic is unchanged.
-  // Bounded at 15s so a hung registry doesn't block /gsd-update (#2993 CR).
   const defaultSpawn = () => {
-    const r = execNpm(buildViewArgs(tag), { timeout: 15_000 });
+    const r = execNpm(buildViewArgs(tag), { timeout: NPM_VIEW_TIMEOUT_MS });
     return {
       status: r.exitCode,
       stdout: r.stdout,
@@ -158,4 +163,4 @@ function main() {
 
 if (require.main === module) runMain(main);
 
-module.exports = { checkLatestVersion, CHECK_REASON, PACKAGE_NAME, ALLOWED_TAGS, buildViewArgs, resolveTag };
+module.exports = { checkLatestVersion, CHECK_REASON, PACKAGE_NAME, ALLOWED_TAGS, NPM_VIEW_TIMEOUT_MS, buildViewArgs, resolveTag };

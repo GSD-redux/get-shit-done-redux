@@ -143,6 +143,10 @@ function buildSourceTree(agentFiles) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-parity-src-'));
   const commandsGsd = path.join(root, 'commands', 'gsd');
   fs.mkdirSync(commandsGsd, { recursive: true });
+  // Runtime Surface source providers are atomic across every source class a
+  // layout needs. Keep this marker fixture complete for commands + agents so
+  // the installer resolver does not correctly fall back to the package tree.
+  fs.writeFileSync(path.join(commandsGsd, 'fixture-command.md'), '# Fixture command\n');
   const agentsDir = path.join(root, 'agents');
   fs.mkdirSync(agentsDir, { recursive: true });
   for (const [name, content] of Object.entries(agentFiles)) {

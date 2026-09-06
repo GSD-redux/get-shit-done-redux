@@ -100,7 +100,7 @@ Parse JSON for: `researcher_model`, `planner_model`, `checker_model`, `research_
 
 **#2517:** omit the `model=` param from an `Agent()` call when its `researcher`/`planner`/`checker`_model is `"inherit"` or empty — passing `model=""` 404s on non-Claude runtimes; omitting inherits the orchestrator model (mirrors execute-phase).
 
-**If `response_language` is set:** All user-facing orchestrator output MUST be in `{response_language}`; technical terms, code, paths, and subagent prompts stay in English. Pass `response_language: {value}` into every spawned subagent prompt.
+**If `response_language` is set:** All user-facing orchestrator output — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be in `{response_language}`; technical terms, code, paths, and subagent prompts stay in English. Pass `response_language: {value}` into every spawned subagent prompt.
 
 **File paths (for <required_reading> blocks):** `state_path`, `roadmap_path`, `requirements_path`, `context_path`, `research_path`, `verification_path`, `uat_path`, `reviews_path`. These are null if files don't exist.
 
@@ -409,7 +409,7 @@ Agent(
 )
 ```
 
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available. Never call `ScheduleWakeup` or any host wake/sleep-scheduling tool to literalize this wait (#4079) — the Agent() call returns on its own; a partial-args wake call surfaces a red validation error.
 
 ### Handle Researcher Return
 
@@ -584,8 +584,6 @@ map is refreshed first. (`drift_action: auto-remap` stays at `execute:wave:post`
 ls "${PHASE_DIR}"/*-PLAN.md 2>/dev/null || true
 ```
 
-**If exists AND `--reviews` flag:** Skip prompt — go straight to replanning (the purpose of `--reviews` is to replan with review feedback).
-
 **If exists AND no `--reviews` flag:** Offer: 1) Add more plans, 2) View existing, 3) Replan from scratch.
 
 ## 7. Use Context Paths from INIT
@@ -620,6 +618,11 @@ SPEC_PATH="${SPEC_FILE}"
 UI_SPEC_FILE=$(ls "${PHASE_DIR_FOR_SPEC}"/*-UI-SPEC.md 2>/dev/null | head -1)
 UI_SPEC_PATH="${UI_SPEC_FILE}"
 ```
+
+**If plans exist AND the `--reviews` flag is set:** Before replanning from `--reviews`, scan
+`REVIEWS_PATH` for open plan-revision conflicts inside the writer-owned delimiter pair. Go
+straight to replanning with those records included, and flip the matching line to `- [x]` once
+the chosen resolution is applied, using the SAME close gate as step 12 below.
 
 ## 7.5. Verify Nyquist Artifacts
 
@@ -672,7 +675,7 @@ Agent(
 )
 ```
 
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available. Never call `ScheduleWakeup` or any host wake/sleep-scheduling tool to literalize this wait (#4079) — the Agent() call returns on its own; a partial-args wake call surfaces a red validation error.
 
 **Handle return:**
 - **`## PATTERN MAPPING COMPLETE`:** Update `PATTERNS_PATH` to the created file path, continue to step 8.
@@ -782,7 +785,7 @@ ${AGENT_SKILLS_PLANNER}
 
 For each current actionable finding in REVIEWS.md, the planner MUST either:
 - incorporate it into a PLAN.md task, `<action>`, `<acceptance_criteria>`, `<verify>`, `must_haves`, threat model, or artifact list; or
-- explicitly document a deferral/rejection rationale in the relevant PLAN.md so the executor and reviewer can see the decision.
+- explicitly document a deferral/rejection rationale in the relevant PLAN.md, using the Review Dispositions Ledger in `gsd-core/references/planner-reviews.md`.
 
 Historical findings already incorporated, explicitly deferred/rejected in PLAN.md, or marked fully resolved do not require new plan changes.
 </review_incorporation_contract>
@@ -1244,9 +1247,14 @@ ${AGENT_SKILLS_PLANNER}
 </revision_context>
 
 <instructions>
-Make targeted updates to address checker issues.
-Do NOT replan from scratch unless issues are fundamental.
-Return what changed.
+`required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
+smaller or different mechanism reaching the same property resolves it — say which. Re-check CONTEXT.md's locked decisions, capability guidance, and existing plan constraints
+BEFORE editing; if a hint would contradict one, or the
+property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict and
+the alternatives rather than applying or working around it. Full contract:
+`gsd-core/references/planner-revision.md`.
+
+Do NOT replan from scratch unless fundamental. Return what changed.
 </instructions>
 ```
 
@@ -1262,7 +1270,78 @@ Agent(
 
 **ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
 
-After planner returns -> spawn checker again (step 10), increment iteration_count.
+**If the planner returns `## REVISION_CONFLICT`:** follow the shared Conflict Return protocol in
+`gsd-core/references/revision-loop.md`, with this workflow's bindings:
+
+```bash
+if ! CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence --raw 2>/dev/null); then
+  echo "BLOCKED: cannot read workflow.plan_review_convergence." >&2
+  exit 1
+fi
+REVIEWS_FILE="${REVIEWS_PATH}"
+if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ] && [ ! -f "${REVIEWS_FILE}" ]; then
+  echo "BLOCKED: cannot persist plan-revision conflict -- REVIEWS_PATH not a regular file: ${REVIEWS_FILE}" >&2
+  exit 1
+fi
+```
+
+- Counter not spent: `iteration_count`.
+- Record channel: `$REVIEWS_FILE`'s `## Plan-Revision Conflicts` section. plan-phase wrote the
+  line, so plan-phase closes it.
+- After re-spawning, return to this step, not the checker.
+- Escalates via the iteration cap on repeated `required_property`, and on the THIRD conflict
+  return of this loop whatever property it names.
+- Sanitize-then-insert is real shell; fields reach `awk` via `ENVIRON`, never `-v` (decodes
+  literal `\n` as a real newline). Export the row's
+  `CONFLICT_DIMENSION/_PLAN/_PROPERTY/_CONSTRAINT/_ALTERNATIVES`, then run:
+
+```bash
+if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
+  san() { printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/^[[:space:]]*[#|`-]+[[:space:]]*//'; }
+  LINE="- [ ] REVISION_CONFLICT $(san "${CONFLICT_DIMENSION}")/$(san "${CONFLICT_PLAN}") — required_property: $(san "${CONFLICT_PROPERTY}") | conflicts with: $(san "${CONFLICT_CONSTRAINT}") | alternatives: $(san "${CONFLICT_ALTERNATIVES}")"
+  END='<!-- gsd:plan-revision-conflicts:end -->'
+  TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
+  if ! LINE="$LINE" END="$END" awk '
+    { cur = $0; sub(/\r$/, "", cur) }
+    cur == ENVIRON["LINE"] { seen = 1 }
+    cur == ENVIRON["END"] && !ins { if (!seen) print ENVIRON["LINE"]; ins = 1 }
+    { print }
+    END { if (!ins) exit 2 }
+  ' "${REVIEWS_FILE}" > "${TMP}"; then
+    rm -f "${TMP}"
+    echo "BLOCKED: no end delimiter in '${REVIEWS_FILE}'." >&2
+    exit 1
+  fi
+  mv "${TMP}" "${REVIEWS_FILE}"
+fi
+```
+
+**Otherwise (revised plans, not `## REVISION_CONFLICT`):** if this re-spawn followed a
+resolved conflict, close its record — nothing persists across fences, so export `REVIEWS_FILE`,
+the same `CONFLICT_DIMENSION`/`CONFLICT_PLAN` used to open it, and `CONFLICT_RESOLUTION` (a
+one-line summary). Then run:
+
+```bash
+if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ -n "${REVIEWS_FILE}" ]; then
+  san() { printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/^[[:space:]]*[#|`-]+[[:space:]]*//'; }
+  PREFIX="- [ ] REVISION_CONFLICT $(san "${CONFLICT_DIMENSION}")/$(san "${CONFLICT_PLAN}") — "
+  RES=$(printf '%s' "${CONFLICT_RESOLUTION}" | tr '\r\n\t' '   ')
+  TMP=$(mktemp "${REVIEWS_FILE}.XXXXXX")
+  if ! PREFIX="$PREFIX" RES="$RES" awk '
+    { cur = $0; sub(/\r$/, "", cur) }
+    !d && index(cur, ENVIRON["PREFIX"]) == 1 { print "- [x]" substr(cur, 6) " | resolved: " ENVIRON["RES"]; d = 1; next }
+    { print }
+    END { if (!d) exit 2 }
+  ' "${REVIEWS_FILE}" > "${TMP}"; then
+    rm -f "${TMP}"
+    echo "BLOCKED: no open conflict '${CONFLICT_DIMENSION}/${CONFLICT_PLAN}' in '${REVIEWS_FILE}'." >&2
+    exit 1
+  fi
+  mv "${TMP}" "${REVIEWS_FILE}"
+fi
+```
+
+Spawn checker again (step 10), then increment `iteration_count`.
 
 **If iteration_count >= 3:**
 

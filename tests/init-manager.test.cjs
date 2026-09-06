@@ -495,6 +495,55 @@ describe('init manager', () => {
     assert.strictEqual(output.phases[0].is_active, false);
   });
 
+  // #4134 — a first-ever ROADMAP.md whose H1 puts the version after the name
+  // (`# Roadmap: <Project> — <Milestone Name> (v1.13)` — the shape nothing
+  // templates for a project's first milestone) used to make the §7.2 pinned
+  // name rule return the literal `)` left after the version token as the
+  // milestone's "name", and init manager displayed it verbatim. The refusal
+  // reports the honest ADR-3180 §7.2 rule-6 answer instead: the version is
+  // real, the name is not resolvable from that heading, milestone_name is
+  // null — never a punctuation fragment.
+  test('#4134 — milestone_name is null, never ")", for a name-then-version H1', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap: GSD Core — Native OMP Runtime Support (v1.13)',
+        '',
+        '## Phases',
+        '',
+        '- [ ] **Phase 1: Runtime Adapter Interface**',
+        '',
+        '## Phase Details',
+        '',
+        '### Phase 1: Runtime Adapter Interface',
+        '',
+        '**Goal:** Define the adapter contract.',
+        '',
+      ].join('\n')
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'milestone: v1.13',
+        'milestone_name: Native OMP Runtime Support',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+      ].join('\n')
+    );
+
+    const result = runGsdTools('init manager', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.milestone_version, 'v1.13');
+    assert.strictEqual(output.milestone_name, null);
+    assert.ok(!result.output.includes('")"'), 'a lone ")" value must not appear anywhere in the JSON');
+  });
+
   // #3314 — ADR-456 subprocess clock pin: cmdInitManager's `is_active` gate
   // (nowMs - newestMtime < 300000) is CLI-subprocess tested, so only the
   // GSD_TEST_MODE+GSD_NOW_MS pin can control "now" here (t.mock.timers in the

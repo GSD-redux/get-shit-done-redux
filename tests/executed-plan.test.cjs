@@ -47,6 +47,7 @@ const commandRoster = require('../gsd-core/bin/lib/command-roster.cjs');
 const slashCommandTransformer = require('../scripts/fix-slash-commands.cjs');
 
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
+const REAL_PACKAGE_ROOT = path.resolve(__dirname, '..');
 const MANIFEST = loadSkillsManifest(REAL_COMMANDS_DIR);
 const RESOLVED_CORE = resolveProfile({ modes: ['core'], manifest: MANIFEST });
 const RESOLVED_FULL = resolveProfile({ modes: ['full'], manifest: MANIFEST });
@@ -149,13 +150,11 @@ const REAL_FS_WRITE_SURFACE = [
   'mkdtempSync', 'openSync', 'readSync', 'closeSync',
 ];
 
-// Package-source roots a correct install is expected to read for real, even
-// while a fake DESTINATION adapter is injected (40-design.md "Known limits":
-// this seam makes destination IO fake-able; package-source IO stays real by
-// design). Mirrors findInstallSourceRoot's/findAgentsSourceRoot's/
-// readGsdCommandNames's own targets (commands/gsd/, agents/), all resolved
-// the same way REAL_COMMANDS_DIR is above.
-const PACKAGE_SOURCE_ROOTS = [REAL_COMMANDS_DIR, path.join(__dirname, '..', 'agents')];
+// The provider resolver probes upward through the executing package before it
+// reaches commands/gsd and agents. All read-only package-tree probes are valid
+// real IO while a fake DESTINATION adapter is active; destination paths remain
+// poisoned below.
+const PACKAGE_SOURCE_ROOTS = [path.resolve(__dirname, '..')];
 
 function isPackageSourcePath(resolvedPath) {
   return PACKAGE_SOURCE_ROOTS.some(
@@ -390,6 +389,29 @@ function sha256Hex(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+function fakeInstalledCorpusSeed(configDir) {
+  const coreDir = path.join(configDir, 'gsd-core');
+  const commandsDir = path.join(coreDir, 'commands');
+  const commandsGsdDir = path.join(commandsDir, 'gsd');
+  const agentsDir = path.join(coreDir, 'agents');
+  return [
+    [configDir, { type: 'dir' }],
+    [coreDir, { type: 'dir' }],
+    [commandsDir, { type: 'dir' }],
+    [commandsGsdDir, { type: 'dir' }],
+    [path.join(commandsGsdDir, 'fixture.md'), { type: 'file', content: '# Fixture command\n' }],
+    [agentsDir, { type: 'dir' }],
+    [path.join(agentsDir, 'fixture-agent.md'), { type: 'file', content: '# Fixture agent\n' }],
+  ];
+}
+
+function fakeInstalledCorpusManifestFiles() {
+  return {
+    'gsd-core/commands/gsd/fixture.md': sha256Hex('# Fixture command\n'),
+    'gsd-core/agents/fixture-agent.md': sha256Hex('# Fixture agent\n'),
+  };
+}
+
 describe('installRuntimeArtifacts — F2: fake-adapter install touches no real filesystem', () => {
   test('fake-adapter install touches no real filesystem (claude, skills-only)', (t) => {
     // Every real fs method this call tree could reach is poisoned BY PATH
@@ -399,15 +421,16 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
     // try/finally inside test bodies").
     const packageSourceHits = poisonRealFsAgainstDestination(t, '');
 
-    const fakeFs = createFakeInstallFs();
-
-    // configDir deliberately never created for real — F2 asserts nothing
-    // real ever gets written under it.
     const configDir = path.join(os.tmpdir(), `gsd-f2-must-not-exist-${crypto.randomUUID()}`);
+    const fakeFs = createFakeInstallFs(fakeInstalledCorpusSeed(configDir));
+
+    // configDir exists only in the fake store — F2 asserts nothing real ever
+    // gets written under it. The installed corpus seed is the new provider
+    // contract, not destination setup on the host filesystem.
 
     const result = installRuntimeArtifacts(
       'claude', configDir, 'global', RESOLVED_CORE, undefined, undefined,
-      { fs: fakeFs },
+      { fs: fakeFs, packageRoot: REAL_PACKAGE_ROOT },
     );
 
     assert.notStrictEqual(
@@ -436,10 +459,13 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
     const legacyFile = path.join(legacyDir, 'gsd-old-cmd.md');
     const content = '# stale legacy command\n';
     const manifestPath = path.join(configDir, 'gsd-file-manifest.json');
-    const manifestJson = JSON.stringify({ files: { 'command/gsd-old-cmd.md': sha256Hex(content) } });
+    const manifestJson = JSON.stringify({ files: {
+      ...fakeInstalledCorpusManifestFiles(),
+      'command/gsd-old-cmd.md': sha256Hex(content),
+    } });
 
     const fakeFs = createFakeInstallFs([
-      [configDir, { type: 'dir' }],
+      ...fakeInstalledCorpusSeed(configDir),
       [legacyDir, { type: 'dir' }],
       [legacyFile, { type: 'file', content }],
       [manifestPath, { type: 'file', content: manifestJson }],
@@ -447,7 +473,7 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
 
     const result = installRuntimeArtifacts(
       'opencode', configDir, 'global', RESOLVED_CORE, undefined, undefined,
-      { fs: fakeFs },
+      { fs: fakeFs, packageRoot: REAL_PACKAGE_ROOT },
     );
 
     assert.notStrictEqual(result, undefined, 'F2 (opencode legacy migration): must still return a plan');
@@ -476,7 +502,7 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
     // the poisoned list (see install-fs-adapter.cts's module doc — it is
     // deliberately unrouted, real-fs-only, package-source introspection), so
     // resolving this here is safe even after poisoning existsSync et al.
-    const commandsGsdDir = runtimeArtifactLayout.findInstallSourceRoot();
+    const commandsGsdDir = REAL_COMMANDS_DIR;
     const repoRoot = path.dirname(path.dirname(commandsGsdDir));
     const nativePlugin = registry.runtimes.pi.runtime.hostBehaviors.nativePlugin;
     assert.ok(nativePlugin && nativePlugin.source, 'pi must declare hostBehaviors.nativePlugin.source (registry drifted)');
@@ -489,7 +515,7 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
 
     const result = installRuntimeArtifacts(
       'pi', configDir, 'global', RESOLVED_CORE, undefined, undefined,
-      { fs: fakeFs },
+      { fs: fakeFs, packageRoot: REAL_PACKAGE_ROOT },
     );
 
     assert.notStrictEqual(result, undefined, 'F2 (nativePlugin): must still return a plan');
@@ -522,10 +548,13 @@ describe('installRuntimeArtifacts — F2: fake-adapter install touches no real f
     const content = '# stale retired artifact\n';
     const relPath = `${destSubpath.replace(/\\/g, '/')}/${staleName}`;
     const manifestPath = path.join(configDir, 'gsd-file-manifest.json');
-    const manifestJson = JSON.stringify({ files: { [relPath]: sha256Hex(content) } });
+    const manifestJson = JSON.stringify({ files: {
+      ...fakeInstalledCorpusManifestFiles(),
+      [relPath]: sha256Hex(content),
+    } });
 
     const fakeFs = createFakeInstallFs([
-      [configDir, { type: 'dir' }],
+      ...fakeInstalledCorpusSeed(configDir),
       [destDir, { type: 'dir' }],
       [staleFile, { type: 'file', content }],
       [manifestPath, { type: 'file', content: manifestJson }],
@@ -1196,6 +1225,19 @@ describe('installRuntimeArtifacts — K3: real install before/after, full recurs
         `K3 (${runtime}): the file sets written by two independent installs must match`,
       );
       for (const [relPath, contentA] of filesA) {
+        if (relPath === '.gsd-source') {
+          assert.strictEqual(
+            contentA.toString('utf8'),
+            `${path.join(dirA, 'gsd-core', 'commands', 'gsd')}\n`,
+            `K3 (${runtime}): first marker must target its own installed corpus`,
+          );
+          assert.strictEqual(
+            filesB.get(relPath).toString('utf8'),
+            `${path.join(dirB, 'gsd-core', 'commands', 'gsd')}\n`,
+            `K3 (${runtime}): second marker must target its own installed corpus`,
+          );
+          continue;
+        }
         assert.ok(
           contentA.equals(filesB.get(relPath)),
           `K3 (${runtime}): ${relPath} content drifted between two independent installs`,
