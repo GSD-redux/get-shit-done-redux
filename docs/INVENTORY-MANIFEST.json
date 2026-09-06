@@ -638,6 +638,7 @@
       "plan-phase/steps/adr-ingest-express-path.md",
       "plan-phase/steps/chunked-planning-mode.md",
       "plan-phase/steps/closed-phase-gate.md",
+      "plan-phase/steps/plan-bounce.md",
       "plan-phase/steps/prd-express-gate.md",
       "plan-phase/steps/prd-express-path.md",
       "plan-phase/steps/research-only-early-exit.md",

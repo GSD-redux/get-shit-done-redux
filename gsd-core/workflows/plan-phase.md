@@ -294,7 +294,7 @@ Capability-driven dispatch, same lazy-init pattern already used elsewhere in thi
 
 ```bash
 if [ -z "${PLAN_PRE_HOOKS_JSON:-}" ]; then
-  PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
+  PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw --phase "$PHASE")
 fi
 ```
 
@@ -390,7 +390,7 @@ fi
 ```bash
 PHASE_DESC=$(gsd_run query roadmap.get-phase "${PHASE}" --pick section)
 if [ -z "${PLAN_PRE_HOOKS_JSON:-}" ]; then
-  PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
+  PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw --phase "$PHASE")
 fi
 ```
 
@@ -455,7 +455,7 @@ test -f "${PHASE_DIR}/${PADDED_PHASE}-VALIDATION.md" && echo "VALIDATION_CREATED
 > Capability-driven dispatch. Resolves active `plan:pre` hooks via the capability registry; the security hook's `when` condition is evaluated by the registry.
 
 ```bash
-PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw)
+PLAN_PRE_HOOKS_JSON=$(gsd_run loop render-hooks plan:pre --raw --phase "$PHASE")
 ```
 
 **Contribution dispatch (#3606):** inject every `kind == "contribution"` fragment from `PLAN_PRE_HOOKS_JSON` per @gsd-core/references/loop-hook-dispatch.md, in array order, into the role each entry's `into` names — planner-targeted ones land in the prompt block below, orchestrator-targeted ones in your working context. The security specialization below is one such contribution, not a replacement for the generic dispatch.
@@ -485,7 +485,7 @@ Continue to step 5.6. Security config is passed to the planner in step 8.
 > **Config semantics (cutover fix):** `workflow.ui_phase` gates UI-SPEC *generation* (step); `workflow.ui_safety_gate` gates the *planning block* (gate). Both-on = identical to OLD §5.6. Intended change: `{ui_phase:true, ui_safety_gate:false}` now auto-generates in pipelines but does NOT block manual planning (each key controls exactly what its description says).
 
 ```bash
-PLAN_PRE_HOOKS_JSON=${PLAN_PRE_HOOKS_JSON:-$(gsd_run loop render-hooks plan:pre --raw)}
+PLAN_PRE_HOOKS_JSON=${PLAN_PRE_HOOKS_JSON:-$(gsd_run loop render-hooks plan:pre --raw --phase "$PHASE")}
 HOOKS_JSON="$PLAN_PRE_HOOKS_JSON"
 ```
 
@@ -1357,68 +1357,7 @@ Offer: 1) Force proceed, 2) Provide guidance and retry, 3) Abandon
 
 **Activation:** Bounce runs when `--bounce` flag is present OR `workflow.plan_bounce` config is `true`. The `--skip-bounce` flag always wins (disables bounce even if config enables it). The `--gaps` flag also disables bounce (gap-closure mode should not modify plans externally).
 
-**Prerequisites:** `workflow.plan_bounce_script` must be set to a valid script path. If bounce is activated but no script is configured, display warning and skip:
-```
-⚠ Plan bounce activated but no script configured.
-Set workflow.plan_bounce_script to the path of your refinement script.
-Skipping bounce step.
-```
-
-**Read pass count:**
-```bash
-BOUNCE_PASSES=$(gsd_run query config-get workflow.plan_bounce_passes --raw 2>/dev/null || echo "2")
-BOUNCE_SCRIPT=$(gsd_run query config-get workflow.plan_bounce_script --raw 2>/dev/null || true)
-```
-
-Display banner:
-```
-### GSD ► BOUNCING PLANS (External Refinement)
-
-Script: ${BOUNCE_SCRIPT}
-Max passes: ${BOUNCE_PASSES}
-```
-
-**For each PLAN.md file in the phase directory:**
-
-1. **Backup:** Copy `*-PLAN.md` to `*-PLAN.pre-bounce.md`
-```bash
-cp "${PLAN_FILE}" "${PLAN_FILE%.md}.pre-bounce.md"
-```
-
-2. **Invoke bounce script:**
-```bash
-"${BOUNCE_SCRIPT}" "${PLAN_FILE}" "${BOUNCE_PASSES}"
-```
-
-3. **Validate bounced plan — YAML frontmatter integrity:**
-After the script returns, check that the bounced file still has valid YAML frontmatter (opening and closing `---` delimiters with parseable content between them). If the bounced plan breaks YAML frontmatter validation, restore the original from the pre-bounce.md backup and continue to the next plan:
-```
-⚠ Bounced plan ${PLAN_FILE} has broken YAML frontmatter — restoring original from pre-bounce backup.
-```
-
-4. **Handle script failure:** If the bounce script exits non-zero, restore the original plan from the pre-bounce.md backup and continue to the next plan:
-```
-⚠ Bounce script failed for ${PLAN_FILE} (exit code ${EXIT_CODE}) — restoring original from pre-bounce backup.
-```
-
-**After all plans are bounced:**
-
-5. **Re-run plan checker on bounced plans:** Spawn gsd-plan-checker (same as step 10) on all modified plans. If a bounced plan fails the checker, restore original from its pre-bounce.md backup:
-```
-⚠ Bounced plan ${PLAN_FILE} failed checker validation — restoring original from pre-bounce backup.
-```
-
-6. **Commit surviving bounced plans:** If at least one plan survived both the frontmatter validation and the checker re-run, commit the changes:
-```bash
-gsd_run query commit "refactor(${padded_phase}): bounce plans through external refinement" --files "${PHASE_DIR}/*-PLAN.md"
-```
-
-Display summary:
-```
-Plan bounce complete: {survived}/{total} plans refined
-```
-
-**Clean up:** Remove all `*-PLAN.pre-bounce.md` backup files after the bounce step completes (whether plans survived or were restored).
+This step owns the activation decision above. If — and only if — bounce is activated, read `gsd-core/workflows/plan-phase/steps/plan-bounce.md` and execute it verbatim: it is the authoritative body of this step and it runs an external script, restores plans from backups, and commits. Follow its steps as written — do not reconstruct them from this summary. Otherwise skip — do not read the file.
 
 ## 13. Requirements Coverage Gate
 
@@ -1575,7 +1514,7 @@ Proactive, non-blocking coverage report gated on `workflow.post_planning_gaps`
 `<decisions>` and cross-references each REQ-ID / D-ID against `${PHASE_DIR}/*-PLAN.md`.
 
 ```bash
-PLAN_POST_HOOKS_JSON=$(gsd_run loop render-hooks plan:post --raw)
+PLAN_POST_HOOKS_JSON=$(gsd_run loop render-hooks plan:post --raw --phase "$PHASE")
 PHASE_REQ_IDS=$(gsd_run query init.plan-phase "$PHASE" --pick phase_req_ids 2>/dev/null)
 PHASE_REQ_IDS="${PHASE_REQ_IDS:-TBD}"
 ```
