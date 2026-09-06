@@ -142,6 +142,10 @@ if [ -n "$DEV_URL" ]; then
   # land in the same directory, and from there no cleanup rule can be safe, because
   # both audits write exactly `desktop.png`, `mobile.png` and `tablet.png` — a
   # filename cannot establish whose it is. Ownership has to come from the directory.
+  # PID-plus-timestamp rather than `mktemp -d`, matching gsd-code-fixer.md, which
+  # replaced mktemp's XXXXXX with the same `$$` + epoch suffix for a repo-relative
+  # path under #2647: on Windows/Git Bash `mktemp` produced an un-removable short
+  # `C:/mvwtNN` path to dodge MAX_PATH.
   SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -p "$SCREENSHOT_DIR"
 
