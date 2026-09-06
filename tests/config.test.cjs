@@ -3090,9 +3090,12 @@ describe('config-set hooks.context_warning_threshold / hooks.context_critical_th
     }
   });
 
-  // Accept and honour must agree: the hook silently falls back to its default
-  // for any value it cannot use, so config-set reporting success on such a
-  // value would tell the operator a tuning took effect when it did not.
+  // Accept and honour must agree ON THE DOMAIN: the hook falls back to its
+  // default for a value outside 0-100, so config-set reporting success on such
+  // a value would tell the operator a tuning took effect when it did not. The
+  // agreement is per-key and no wider — an accepted value can still lose to the
+  // hook's pair check at read time, and a scoped write (GSD_PROJECT /
+  // GSD_WORKSTREAM) lands in a config the hook does not read at all.
   test('rejects values the hook would discard, and leaves the config untouched', () => {
     const before = JSON.stringify(readConfig(tmpDir));
 

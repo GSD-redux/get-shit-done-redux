@@ -72,18 +72,27 @@ checked against the other's default: `context_warning_threshold: 20` on its own
 is inconsistent with the default critical of 25 and resolves back to 35 / 25.
 Move both when either crosses the other. `gsd-tools config-set` validates the
 0-100 domain per key but deliberately does not enforce the pair, because it
-writes one key per call and a two-step retune is transiently inconsistent on
-disk.
+writes one key per call and a two-step retune *can* be transiently inconsistent
+on disk — 35 / 25 to 20 / 10 is valid throughout if critical goes first, and
+inconsistent in between if warning does. A pair check in the setter would reject
+that intermediate write and force one particular order.
 
 ### Scope: the root project config only
 
 The monitor reads `<cwd>/.planning/config.json` and nothing else. It does not
-consult a workstream or sub-project config, so under `GSD_WORKSTREAM` (or
-`GSD_PROJECT`) a `gsd-tools config-set` lands in
-`.planning/workstreams/<name>/config.json` and the monitor keeps using the root
-value — or the default when the root has none. That is the same root-only scope
-`hooks.context_warnings` has always had; tune these keys in the root
-`.planning/config.json`.
+consult a sub-project or workstream config, but `gsd-tools config-set` does
+write to one when the environment selects it — so a scoped write succeeds and
+the monitor keeps using the root value, or the default when the root has none:
+
+| environment | `config-set` writes to |
+|---|---|
+| neither variable | `.planning/config.json` — the file the monitor reads |
+| `GSD_PROJECT=p` | `.planning/p/config.json` |
+| `GSD_WORKSTREAM=w` | `.planning/workstreams/w/config.json` |
+| both | `.planning/p/workstreams/w/config.json` |
+
+That is the same root-only scope `hooks.context_warnings` has always had; tune
+these keys in the root `.planning/config.json`.
 
 ## Debounce
 

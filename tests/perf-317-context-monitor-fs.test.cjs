@@ -2694,8 +2694,29 @@ describe('#4285 regression: context-monitor thresholds resolve from .planning/co
 
     assert.match(stdout, /CONTEXT WARNING/,
       'an unusable critical must not drag the usable warning override down with it');
+    // What this row pins is the WARNING side surviving. It does NOT by itself
+    // prove critical became 25: coercing '30' to 30 would also yield WARNING at
+    // remaining 40 (Codex review, round 2). The next row settles that.
     assert.strictEqual(severityOf(stdout), 'warning',
-      'the critical side falls back to its own default 25, which remaining 40 is above');
+      'remaining 40 is above any resolved critical here, so the severity is the warning rung');
+  });
+
+  test('a numeric-looking STRING is rejected, not coerced', () => {
+    // Same config as the row above, read at 28 — the reading that separates the
+    // two candidate resolutions:
+    //   rejected -> (45, 25): 28 > 25, so WARNING.
+    //   coerced  -> (45, 30): 28 <= 30, so CRITICAL.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('string-critical'),
+      writeMetrics: true,
+      remaining: 28,
+      usedPct: 72,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: '30' } },
+    });
+
+    assert.strictEqual(severityOf(stdout), 'warning',
+      "'critical' at remaining 28 means the string '30' was coerced into a fire-point; " +
+      'Number.isFinite must reject it and leave critical at its default 25');
   });
 
   test('a below-domain critical is rejected rather than honoured', () => {
@@ -2726,10 +2747,14 @@ describe('#4285 regression: context-monitor thresholds resolve from .planning/co
     test('the warning half reverts: remaining 40 is silent', () => {
       // Reverted -> warning 35, and 40 > 35 -> silence.
       // Warning 45 preserved -> 40 <= 45 -> a warning would fire.
-      const { stdout } = runMonitorRaw({
+      const { exitCode, stdout } = runMonitorRaw({
         sessionId: sid('pair45-40'), writeMetrics: true, remaining: 40, usedPct: 60,
         planningConfig: { hooks: { ...pair } },
       });
+      // exitCode first: the helper turns a spawn failure, a non-zero exit or a
+      // timeout into empty stdout too, so asserting silence alone would pass on
+      // a crashed child (Codex review, round 2).
+      assert.strictEqual(exitCode, 0, 'the silence below must come from the threshold, not from a dead child');
       assert.strictEqual(stdout, '',
         'output at remaining 40 means the configured warning 45 survived an inconsistent pair');
     });

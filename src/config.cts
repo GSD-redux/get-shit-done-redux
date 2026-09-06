@@ -914,13 +914,15 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
 
   // Context-monitor fire-points (#4285) — a percentage of the context window
   // REMAINING, so the domain is 0-100 and the hook compares them against
-  // `remaining_percentage`. Rejecting an out-of-domain value here is what keeps
-  // accept and honour in agreement: the hook silently falls back to its default
-  // for anything it cannot use, so a `config-set` that reported success on a
-  // value the hook then discards would be a lie. The PAIR (critical < warning)
-  // is deliberately NOT enforced here — config-set writes one key per call, so
-  // tuning both is transiently inconsistent on disk; the hook resolves that at
-  // read time by falling back to both defaults.
+  // `remaining_percentage`. Rejecting an out-of-domain value here keeps accept
+  // and honour in agreement ON THE DOMAIN: the hook falls back to its default
+  // for a value outside it, so reporting success would be a lie. That agreement
+  // is per-key and no wider — a value accepted here can still be superseded at
+  // read time by the hook's pair check, and a scoped write (GSD_PROJECT /
+  // GSD_WORKSTREAM) lands in a config the hook does not read at all. The PAIR
+  // (critical < warning) is deliberately NOT enforced here: config-set writes
+  // one key per call, so a two-step retune can be transiently inconsistent on
+  // disk and a check here would reject that intermediate write.
   if (kp === 'hooks.context_warning_threshold' || kp === 'hooks.context_critical_threshold') {
     if (typeof parsedValue !== 'number' || !Number.isFinite(parsedValue) || parsedValue < 0 || parsedValue > 100) {
       error(`Invalid ${kp} '${val}'. Must be a number between 0 and 100 (percent of context window remaining).`);
