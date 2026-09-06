@@ -11178,6 +11178,15 @@ describe('#2586 Codex context-monitor: stop installing, clean up on reinstall', 
       }
       return originalUnlinkSync.call(fs, target, ...rest);
     };
+    // Determine which GSD-owned candidates actually exist BEFORE the mocked
+    // deletion attempt — on Windows, ensureCodexHooksJsonEvent also staged a
+    // .cmd shim alongside the .js file (see buildCodexHookWindowsShimIR), so
+    // both deletions fail under the mock above; on POSIX only the .js file
+    // exists. Asserting against this rather than a hardcoded 1 keeps the row
+    // meaningful on both platforms instead of just loosening it to "at least
+    // one" (see CI failure: Windows reported 2 warnings, not 1).
+    const cmdShimPath = monitorCmdShimPath(codexHome);
+    const cmdShimExisted = fs.existsSync(cmdShimPath);
     let result;
     try {
       result = cleanupOrphanedCodexContextMonitorScript(codexHome);
@@ -11185,8 +11194,15 @@ describe('#2586 Codex context-monitor: stop installing, clean up on reinstall', 
       fs.unlinkSync = originalUnlinkSync;
     }
 
-    assert.strictEqual(result.warnings.length, 1);
-    assert.match(result.warnings[0].path, /gsd-context-monitor\.js$/);
+    const expectedWarningCount = cmdShimExisted ? 2 : 1;
+    assert.strictEqual(result.warnings.length, expectedWarningCount);
+    assert.ok(result.warnings.some((w) => /gsd-context-monitor\.js$/.test(w.path)),
+      'a warning must name the .js script');
+    if (cmdShimExisted) {
+      assert.ok(result.warnings.some((w) => /gsd-context-monitor\.cmd$/.test(w.path)),
+        'a warning must name the .cmd shim when Windows staged one');
+      assert.ok(fs.existsSync(cmdShimPath), 'the .cmd shim remains on disk since its deletion failed too');
+    }
     assert.strictEqual(hooksJsonReferencesCodexContextMonitor(codexHome), false,
       'the already-safe hooks.json deregistration must not be reverted by a script-deletion failure');
     assert.ok(fs.existsSync(monitorScriptPath(codexHome)), 'the file remains on disk since deletion failed');
