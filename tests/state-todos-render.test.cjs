@@ -14,6 +14,7 @@ const fc = require('fast-check');
 const initLib = require('../gsd-core/bin/lib/init.cjs');
 const { renderPendingTodosMarkdown } = initLib;
 const { cleanup } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const MAX = 240;
 
@@ -122,7 +123,7 @@ test('renderPendingTodosMarkdown: title truncated with floor + ellipsis when nee
   assert.match(line, /…/);
   // date/area/link remain byte-identical to the untruncated assembly.
   assert.match(line, /^- \[2026-09-01\] \[api\] /);
-  assert.match(line, new RegExp(`\\[todo file\\]\\(${todo.path.replace(/[.()]/g, '\\$&')}\\)$`));
+  assert.match(line, new RegExp(`\\[todo file\\]\\(${escapeRegex(todo.path)}\\)$`));
 });
 
 test('renderPendingTodosMarkdown: pathological — title floor + link alone exceeds cap is allowed to overflow', () => {
