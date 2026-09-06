@@ -1275,7 +1275,7 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
   // call every allocator makes before reaching this horizon; the per-sibling
   // try/catch below still keeps any resolution failure fail-open.
   const ws = process.env['GSD_WORKSTREAM'] ?? null;
-  const siblingPlanning = (wt: string): string => planningDir(wt, ws);
+  const siblingPlanningDir = (wt: string): string => planningDir(wt, ws);
   const dirNumPattern = /^(?:[A-Z][A-Z0-9]*-)?(\d+)-/;
   // Same header shape the allocators scan locally (#1729 tag tolerance).
   const headerPattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*(?:\s*\([^)\n]{0,200}\))?:/gi;
@@ -1284,7 +1284,7 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
     const wt = line.slice('worktree '.length).trim();
     if (!wt || path.resolve(wt) === path.resolve(cwd)) continue;
     try {
-      for (const entry of fs.readdirSync(path.join(siblingPlanning(wt), 'phases'))) {
+      for (const entry of fs.readdirSync(path.join(siblingPlanningDir(wt), 'phases'))) {
         const match = entry.match(dirNumPattern);
         if (!match) continue;
         const num = parseInt(match[1], 10);
@@ -1294,7 +1294,7 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
       /* worktree has no .planning (or no copy of this scope) — normal, contributes nothing */
     }
     try {
-      const content = fs.readFileSync(path.join(siblingPlanning(wt), 'ROADMAP.md'), 'utf-8');
+      const content = fs.readFileSync(path.join(siblingPlanningDir(wt), 'ROADMAP.md'), 'utf-8');
       let m: RegExpExecArray | null;
       headerPattern.lastIndex = 0;
       while ((m = headerPattern.exec(content)) !== null) {
