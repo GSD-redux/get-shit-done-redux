@@ -163,6 +163,99 @@ describe('resolveUpdateContext: runtime probing + env overrides', () => {
     assert.equal(r.scope, 'GLOBAL');
     assert.equal(r.runtime, '', 'a dir matching no RUNTIME_DIRS suffix, marker, or env must fail closed, not default to claude');
   });
+
+  // #4197: the dedup at line 88 above ("cwd === home does NOT misdetect as
+  // LOCAL") only ever exercised the slow path, so the fast path added for #498
+  // could drop the guarantee without failing anything. These three rows put the
+  // same invariant on the fast path, and pin that fixing it did not simply make
+  // every fast-path answer GLOBAL.
+  test('cwd === home does NOT misdetect as LOCAL on the preferredConfigDir fast path (#4197)', () => {
+    const fs = fakeFs({ [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x' });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: HOME, env: {}, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    });
+    assert.equal(r.scope, 'GLOBAL',
+      'a global install is GLOBAL wherever the shell is sitting; LOCAL here makes /gsd-update ' +
+      'run the installer with --local against it');
+  });
+
+  test('scope is independent of cwd for a validated global install (#4197)', () => {
+    // The invariant the reproduction states: identical inputs differing ONLY in
+    // cwd must not disagree. Both calls go through the FAST path, so this
+    // compares two cwd values within it — it says nothing about the slow path's
+    // own dedup, which the line-88 row covers (Codex review of this PR).
+    const fs = fakeFs({ [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x' });
+    const at = (cwd) => resolveUpdateContext({
+      home: HOME, cwd, env: {}, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    }).scope;
+
+    assert.equal(at(HOME), at(CWD), 'cwd must not change the scope of the same install');
+    assert.equal(at(HOME), 'GLOBAL');
+  });
+
+  test('an env-directed global elsewhere leaves $HOME/.claude LOCAL, even at home (#4197)', () => {
+    // Codex review of this PR caught this as a regression in the first cut of
+    // the fix. Comparing the preferred dir against the home-relative PATHNAME
+    // called this GLOBAL; comparing it against the SELECTED global candidate
+    // keeps it LOCAL, which is what the slow path has always answered here.
+    //
+    // The shape is a supported install layout: CLAUDE_CONFIG_DIR points the
+    // global install at /opt/claude-global, and the user ALSO has a real
+    // project-local install in a project that happens to be $HOME. Reporting
+    // GLOBAL would send update.md's run_update at /opt/claude-global and leave
+    // the install the operator is actually sitting in untouched.
+    const globalDir = '/opt/claude-global';
+    const fs = fakeFs({
+      [ver(`${HOME}/.claude`)]: '1.39.0\n', [marker(`${HOME}/.claude`)]: 'x',
+      [ver(globalDir)]: '1.40.0\n', [marker(globalDir)]: 'x',
+    });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: HOME, env: { CLAUDE_CONFIG_DIR: globalDir }, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    });
+
+    assert.equal(r.scope, 'LOCAL',
+      'with the global install directed elsewhere by CLAUDE_CONFIG_DIR, a config dir under ' +
+      '$HOME is a genuine project-local install and must stay LOCAL');
+    assert.equal(r.installedVersion, '1.39.0', 'the preferred dir stays the selected install');
+  });
+
+  test('the fast path and the cascade agree when an env candidate IS the preferred dir (#4197)', () => {
+    // The other side of sharing one global resolver, and a behaviour change the
+    // PR discloses: previously the fast path ignored env candidates entirely,
+    // so a preferred dir that is ALSO the env-directed global answered LOCAL
+    // while the cascade answered GLOBAL for the same input. One resolver, one
+    // answer.
+    const dir = `${CWD}/.claude`;
+    const fs = fakeFs({ [ver(dir)]: '1.41.0\n', [marker(dir)]: 'x' });
+    const fast = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: { CLAUDE_CONFIG_DIR: dir }, fs,
+      preferredConfigDir: dir, preferredRuntime: 'claude',
+    });
+    const cascade = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: { CLAUDE_CONFIG_DIR: dir }, fs,
+    });
+
+    assert.equal(fast.scope, cascade.scope,
+      'the same install must not be LOCAL through the fast path and GLOBAL through the cascade');
+    assert.equal(fast.scope, 'GLOBAL',
+      'an env-directed install IS the global one, whatever its pathname');
+  });
+
+  test('a genuine project-local install still reports LOCAL on the fast path (#4197)', () => {
+    // Non-vacuity control for the two rows above: the home-relative guard must
+    // reject ONLY the cwd === home case, not the fast path's LOCAL arm as such.
+    const local = `${CWD}/.claude`;
+    const fs = fakeFs({ [ver(local)]: '1.39.0\n', [marker(local)]: 'x' });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: {}, fs,
+      preferredConfigDir: local, preferredRuntime: 'claude',
+    });
+    assert.equal(r.scope, 'LOCAL',
+      'a config dir under a cwd that is NOT home is a real project-local install');
+  });
 });
 
 describe('gsd-tools update-context (CLI): emits the JSON contract', () => {

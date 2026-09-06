@@ -130,6 +130,30 @@ function preferFirst(entries: RuntimeDirEntry[], preferred: string): RuntimeDirE
   return [...pref, ...rest];
 }
 
+// THE global candidate, resolved in one place so the preferredConfigDir fast
+// path and the full cascade cannot disagree about what "global" means (#4197).
+// Order matters and is the cascade's own: an env override (CLAUDE_CONFIG_DIR,
+// CODEX_HOME, ...) outranks the $HOME-relative table, because an install
+// directed there IS the global install — which is exactly why a config dir
+// under $HOME can be a genuine project-local install at the same time. A
+// home-relative PATHNAME is therefore not sufficient evidence of globalness;
+// only being the selected candidate is.
+function resolveGlobalCandidate(
+  fs: FsAdapter,
+  env: Record<string, string | undefined>,
+  home: string,
+  preferred: string,
+): { runtime: string; dir: string } {
+  for (const [rt, absdir] of preferFirst(envRuntimeDirs({ env, home }), preferred)) {
+    if (hasInstall(fs, absdir)) return { runtime: rt, dir: path.resolve(absdir) };
+  }
+  for (const [rt, reldir] of preferFirst(RUNTIME_DIRS, preferred)) {
+    const cand = path.resolve(home, reldir);
+    if (hasInstall(fs, cand)) return { runtime: rt, dir: cand };
+  }
+  return { runtime: '', dir: '' };
+}
+
 export interface ResolveUpdateContextOpts {
   home: string;
   cwd: string;
@@ -164,9 +188,23 @@ export function resolveUpdateContext({
   // Fast path: a validated preferredConfigDir (custom --config-dir install).
   if (preferredConfigDir && hasInstall(fs, preferredConfigDir)) {
     const resolvedPref = path.resolve(preferredConfigDir);
+    // The slow path's `localDir !== globalDir` dedup, over the same global
+    // candidate (#4197). A cwd-relative match alone cannot tell "a
+    // project-local install" from "a global install and a shell that happens to
+    // be sitting in $HOME" — when cwd === home the two are ONE directory — and
+    // `update.md`'s run_update branches on this value, so calling the latter
+    // LOCAL runs the installer with --local against a global install.
+    // Comparing against the SELECTED global candidate rather than the
+    // home-relative pathname is what keeps the converse case right too: with
+    // CLAUDE_CONFIG_DIR pointing elsewhere, `$HOME/.claude` is a real
+    // project-local install and must stay LOCAL (Codex review of this PR).
+    const globalCandidate = resolveGlobalCandidate(fs, env, home, preferred);
     let scope: 'LOCAL' | 'GLOBAL' = 'GLOBAL';
     for (const [, reldir] of RUNTIME_DIRS) {
-      if (path.resolve(cwd, reldir) === resolvedPref) { scope = 'LOCAL'; break; }
+      if (path.resolve(cwd, reldir) === resolvedPref) {
+        if (!globalCandidate.dir || resolvedPref !== globalCandidate.dir) scope = 'LOCAL';
+        break;
+      }
     }
     return {
       installedVersion: trustedVersionAt(fs, preferredConfigDir) ?? '0.0.0',
@@ -176,7 +214,8 @@ export function resolveUpdateContext({
     };
   }
 
-  const orderedEnv = preferFirst(envRuntimeDirs({ env, home }), preferred);
+  // orderedEnv is gone: the env-candidate ordering now lives inside
+  // resolveGlobalCandidate, its only consumer (#4197).
   const orderedRuntime = preferFirst(RUNTIME_DIRS, preferred);
 
   // LOCAL probe (relative to cwd).
@@ -186,17 +225,9 @@ export function resolveUpdateContext({
     if (hasInstall(fs, cand)) { localRuntime = rt; localDir = cand; break; }
   }
 
-  // GLOBAL probe: absolute env candidates first, then $HOME-relative.
-  let globalRuntime = '', globalDir = '';
-  for (const [rt, absdir] of orderedEnv) {
-    if (hasInstall(fs, absdir)) { globalRuntime = rt; globalDir = path.resolve(absdir); break; }
-  }
-  if (!globalRuntime) {
-    for (const [rt, reldir] of orderedRuntime) {
-      const cand = path.resolve(home, reldir);
-      if (hasInstall(fs, cand)) { globalRuntime = rt; globalDir = cand; break; }
-    }
-  }
+  // GLOBAL probe: absolute env candidates first, then $HOME-relative — through
+  // the one resolver the fast path also uses, so the two cannot drift (#4197).
+  const { runtime: globalRuntime, dir: globalDir } = resolveGlobalCandidate(fs, env, home, preferred);
 
   const localValid = trustedVersionAt(fs, localDir);
   const isLocal = !!localValid && (!globalDir || localDir !== globalDir);
