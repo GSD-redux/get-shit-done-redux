@@ -113,7 +113,7 @@ node gsd-tools.cjs state add-decision --summary-file path [--rationale-file path
 node gsd-tools.cjs state add-blocker --text "..."
 node gsd-tools.cjs state resolve-blocker --text "..."
 
-# Record session continuity
+# Record session continuity (at least one of --stopped-at / --resume-file is required)
 node gsd-tools.cjs state record-session --stopped-at "..." [--resume-file path]
 
 # Phase start — update STATE.md Status/Last activity for a new phase

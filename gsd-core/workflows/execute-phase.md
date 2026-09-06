@@ -878,7 +878,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    ask for one recovery path: `continue waiting`, `kill and retry`, or
    `kill and switch to inline execution`.
 
-   If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
+   **A working executor is never steered (#4218).** The threshold measures time WITHOUT
+   PROGRESS, not total runtime. Before treating an executor as stalled — and before sending it
+   any message — read and execute `execute-phase/steps/executor-progress-policy.md`.
 
    **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by
    default: the completion signal may never arrive. Verify, never wait.
