@@ -42,8 +42,19 @@ The last clause is where it fails. **The top-level workflow files themselves are
 ```
 
 **58 of 72** shipped `commands/gsd/*.md` carry an `@~/.claude/gsd-core/workflows/<name>.md` line in
-`<execution_context>`, and their generated `skills/*/SKILL.md` twins carry the same. Only three
-commands — `discuss-phase`, `manager`, `pause-work` — reach a workflow any other way.
+`<execution_context>`, and 58 of 72 `skills/*/SKILL.md` twins carry the same. Of the 14 that do
+not, exactly one — `discuss-phase` — reaches a workflow file another way: its `<execution_context>`
+says *"Workflow files are loaded on-demand in the `<process>` section below — not upfront"*, and its
+`<process>` block picks between three workflow files by a `config-get workflow.discuss_mode` call.
+The other 13 (`graphify`, `mempalace-capture`, `mempalace-recall`, the six `ns-*` commands,
+`plan-review-convergence`, `review-backlog`, `surface`, `workstreams`) carry no top-level workflow
+file at all.
+
+`manager` and `pause-work` are **inside** the 58, not outside it — both carry a plain eager
+`@`-include (`commands/gsd/manager.md:29`, `commands/gsd/pause-work.md:24`). Earlier research on
+this epic grouped them with `discuss-phase` as runtime-`Read` commands; that grouping is wrong, and
+it matters, because it would have made the deferred-load precedent look three times broader than it
+is. **`discuss-phase` is the only precedent, and it is a single file.**
 
 `@` is expanded by the host as static text substitution at load, before any project config exists
 in context. That is not this ADR's inference; it is stated by ADR-1610 Decision 4 (*"because
@@ -59,12 +70,16 @@ file contains.
 
 | Content | Bytes | Reachable by an in-content gate? |
 |---|--:|---|
-| Top-level `gsd-core/workflows/*.md` reached by an eager `@` | **1,517,683** | **no** |
+| The 75 distinct top-level `gsd-core/workflows/*.md` files named by an eager `@` | **1,517,683** | **no** |
 | `workflows/<name>/{modes,steps,templates}/*.md` (runtime `Read`) | 358,482 | yes |
-| `gsd-core/templates/**` (referenced by path) | ~372,000 | yes |
-| `agents/*.md` via the `gsd_run query agent-skills` CLI seam | ~748,000 | yes (code seam) |
+| `gsd-core/templates/**` (referenced by path) | 273,589 | yes |
+| `agents/*.md` via the `gsd_run query agent-skills` CLI seam | 704,846 | yes (code seam) |
 
-The unreachable slice is the largest one and the headline of the feature.
+Measured at `origin/next` (`708d9a0b82`). The 58 command files name 75 distinct workflow files
+between them, because several `@`-include more than one.
+
+The unreachable slice is the largest one — larger than the other three combined — and it is the
+headline of the feature.
 
 ### The obvious fix, and why it is not the one taken
 
@@ -164,7 +179,8 @@ For every covered top-level workflow:
 
 - **`gsd-core/workflows/<name>.md` becomes the spine.** Same path, same eager `@`-include, same
   host guarantee. It is complete enough to run the workflow correctly on its own.
-- **The elaborations move to `gsd-core/workflows/<name>/detail.md`**, read at runtime.
+- **The elaborations move to `gsd-core/workflows/<name>/detail/*.md`** — one or more parts, read at
+  runtime. Decision 6 explains why "one or more" rather than one.
 - **`gsd-core/references/compact-content-gate.md`** is the single shared gate. It states the config
   check and the resolution rule once; workflows reference it and never restate it.
 
@@ -172,7 +188,7 @@ Behavior:
 
 | `workflow.compact_content` | Eagerly loaded | Then reads | Instruction set held |
 |---|---|---|---|
-| `false` (default) | spine | `detail.md` | complete — same content as today |
+| `false` (default) | spine | its `detail/` parts | complete — same content as today |
 | `true` | spine | — | the spine |
 
 No command file changes. No skill file changes. No `@`-include is removed, converted, or made
@@ -180,7 +196,7 @@ conditional. #4139's claim that *"`@`-includes are untouched"* — untrue of the
 becomes literally true of this one.
 
 The savings are real because the eagerly-included file got smaller. For `plan-phase.md`, today's
-98,290 bytes become a spine plus a detail file whose sum is the same; an opted-in project loads
+98,290 bytes become a spine plus detail parts whose sum is the same; an opted-in project loads
 only the spine. The reduction available here is larger than #4139's projected aggregate, because it
 comes from removing content from the eager window rather than from rewording it.
 
@@ -221,8 +237,27 @@ accepted.
 
 **(b) The spine's correctness is now load-bearing for everyone, not just opt-ins.** A compact
 variant is no longer "a cheaper alternative a few users choose" — it is the floor every user lands
-on if a `Read` is missed. This raises the authoring bar, and Decision 5's protected-content list is
-what enforces it.
+on if a `Read` is missed. This raises the authoring bar, and Decision 5's protected-content list and
+boundary-move declaration are what enforce it.
+
+**(c) "The spine still runs the workflow" is not a machine-decidable property, and this ADR does not
+pretend otherwise.** Decision 5's checks verify completeness once at split time, then disjointness,
+registration and protected-content presence forever. None of them re-derives *sufficiency*. A later
+PR could move genuinely load-bearing procedural text — text that carries no protected-content
+sentinel because it is a step, not a guardrail — out of a spine and into a part, and every
+mechanical check would stay green while the floor quietly dropped. That is the honest residual, and
+it is the same class of problem the Feature Review priced in, relocated from "stale duplicate text"
+to "boundary placement" rather than eliminated.
+
+What Decision 5 does about it is make the move **declared instead of silent**: a PR in which a spine
+loses non-trivial lines that reappear in its detail parts fails the guard unless it carries a
+boundary-move declaration naming the spine — the same enforcement philosophy ADR-3942 applies to
+emitted-drift, where the mechanism cannot judge intent so it demands the intent be stated. A
+declaration is not proof of sufficiency; it is the point at which a reviewer is guaranteed to be
+looking. Combined with the end-to-end spot-check obligation that rides on any spine-shrinking PR
+(#4402 establishes it, #4405 and #4406 inherit it), that is the strongest available answer, and it
+is authoring discipline with a forced checkpoint rather than a structural invariant. Claiming
+otherwise would be the more comfortable sentence and the false one.
 
 **Alternatives considered for the fail-safe, and why they lost:**
 
@@ -239,7 +274,9 @@ what enforces it.
   the orchestrator holds no instructions. Halting loudly is better than proceeding wrongly; not
   needing to halt is better than both.
 - *Keeping the `@`-include and adding a separate additive compact overlay* (the `text_mode` overlay
-  shape at `gsd-core/workflows/discuss-phase.md:22-39`). Preserves every guarantee. Rejected: it
+  shape — the `<progressive_disclosure>` dispatch table at
+  `gsd-core/workflows/discuss-phase.md:20-40`, whose `workflow.text_mode` row at `:30` is the
+  config-gated case). Preserves every guarantee. Rejected: it
   saves nothing on stream 1 — it can only add to an eager window that is already fully paid — so it
   is Option A wearing Option B's clothes.
 - *Converting the 58 `<execution_context>` blocks* (the shape the epic brief anticipated). Rejected
@@ -255,7 +292,7 @@ is delivering the chosen coverage at the safer option's risk level.
 
 ### 5. Partition, not duplication
 
-**A split moves text. It does not restate it.** The spine and the detail file are two halves of one
+**A split moves text. It does not restate it.** The spine and its detail parts are pieces of one
 document, not two documents.
 
 This is the decision that answers the Feature Review's actual disqualifier. That review returned
@@ -276,15 +313,48 @@ What replaces the drift-parity check (Phase 3, #4403):
   makes a split reviewable; it runs on the PR that performs the split and never again.
 - **Disjointness, ongoing** — no non-trivial line appears in both halves. This is the invariant that
   keeps duplication from creeping back in later.
-- **Registration, ongoing** — a detail file with no spine, or a spine referencing a detail file that
+- **Registration, ongoing** — a detail part with no spine, or a spine referencing a detail part that
   does not exist, fails and names the pair.
 - **Protected content, ongoing** — a spine that has shed a protected-content marker fails and names
   the marker.
+- **Boundary moves are declared, ongoing** — a PR in which a spine loses non-trivial lines that
+  reappear in its detail parts fails unless it carries a boundary-move declaration naming the spine.
+  This is the check that answers Decision 4(c): sufficiency cannot be computed, so the guard makes
+  the moment it could be lost impossible to pass through unnoticed.
 
 The protected-content list is #4139's own denylist, promoted from "content the compact variant must
 not weaken" to "content that may not leave the spine": negative instructions and guardrails,
 output-format contracts, few-shot examples the workflow's own steps depend on, security and
 prompt-injection language, and machine-parsed structural headings.
+
+**The marker is a literal sentinel, not a category judgment.** A guard cannot decide whether a
+sentence is "security language" — prose category membership is exactly the kind of judgment that
+degrades silently under time pressure, and a check that depends on it is a check that does not
+exist. So protection is declared at authoring time by a greppable HTML comment in the repo's
+existing `gsd:` comment namespace (the same namespace as the `<!-- gsd:loop-host -->` header
+`plan-phase.md` already carries):
+
+```markdown
+<!-- gsd:protected -->
+… one protected block …
+
+<!-- gsd:protected:start -->
+… a protected region spanning several blocks …
+<!-- gsd:protected:end -->
+```
+
+The guard's rule is mechanical and has no discretion in it: **a sentinel present in the canonical
+file at the parent commit must be present in the spine afterwards, and every line it covers must be
+in the spine.** A split that moves a protected block into a detail part fails and names the
+sentinel and the line. The categories above are authoring guidance for *where to place sentinels*;
+they are never what the guard evaluates.
+
+Marking is a one-time cost paid during each split, on the file being split. Phase 3 (#4403) owns the
+sentinel syntax, the guard, and the failing-first fixture that proves the guard can actually fail —
+per this repo's rule that a guard nobody has seen go red is not yet a guard. This is the security
+review's finding on this ADR, resolved here rather than carried: the original text specified a
+"protected-content marker" without saying what a marker was, which left the strongest check in the
+set resting on reviewer judgment.
 
 Rewriting for terseness is permitted **within** a half and is never a way to move a sentence into
 both. Where a split cannot be made by moving text alone without breaking the spine's ability to run
@@ -292,13 +362,24 @@ the workflow, the correct answer is a different split point, not a duplicated pa
 
 ### 6. Where the content lives, and what it collides with
 
-`gsd-core/workflows/<name>/detail.md` — a sibling of the existing `modes/`, `steps/` and
+`gsd-core/workflows/<name>/detail/*.md` — a sibling of the existing `modes/`, `steps/` and
 `templates/` subdirectories, under the workflow it belongs to.
 
-Chosen over a parallel `gsd-core/workflows/compact/**` tree because the detail file has no meaning
+Chosen over a parallel `gsd-core/workflows/compact/**` tree because a detail part has no meaning
 apart from its spine, and a parallel tree is the shape that invites the duplication Decision 5
 exists to prevent. Chosen over a home outside `gsd-core/workflows/` because the guards that sweep
 that directory *should* see this content.
+
+**`<name>` is never user- or project-supplied.** It is the workflow stem the spine already occupies,
+which comes from the static set of shipped command files — the same set `listWorkflowStems` walks —
+and each spine names its own detail parts literally rather than composing a path from an argument.
+Nothing in `$ARGUMENTS`, `.planning/config.json`, or any tracker payload reaches this path. The
+config key selects *whether* the read happens; it never selects *what* is read. A project-local file
+does not shadow a shipped detail part either: the read resolves against the installed
+`~/.claude/gsd-core/` tree the same way the spine's own `@`-include does, so an untrusted repo
+cannot substitute instruction content by planting a path. This is stated rather than left to
+inference because the seam is new and a future phase reaching for a computed path would be a
+traversal vector where today there is none.
 
 Mapped against the guards that scan this tree, resolved in the phase that first creates a file
 there (#4403):
@@ -309,16 +390,39 @@ there (#4403):
 | `tests/workflow-size-budget.test.cjs` `listWorkflowFilesRecursive` (`:617`) | recursive (#3324 sub-guard) | Detail files are scanned for bare `@`-include-in-prompt patterns. An `@` line inside a runtime-read file is inert text, so it must not appear there — the guard already enforces this and is correct to. |
 | `tests/helpers/planning-add-guard.cjs` `SCAN_ROOTS` | fully recursive over `gsd-core/workflows` | Detail files are swept by `commit-docs-bypass`. Expected; no exemption sought. |
 | `tests/emitted-attribution.test.cjs` | diffs installer output across 19 real installer spawns | New installable content enters scope automatically. Byte deltas are deliberate and carry ADR-3942 acknowledgement trailers. |
+| `tests/commit-files-pathspec.test.cjs` | every `.md` under `gsd-core/workflows/` (and five other roots), for `commit`-seam invocations without a `--files` scope (`CONTRIBUTING.md:1164-1170`) | Detail parts are in scope. A `commit` invocation that moves out of a spine into a part must keep its `--files` scope. Earlier research on this epic recorded this guard as "not a content-tree scanner; irrelevant here" — that is wrong, and an unscoped `commit` reaching the runtime is #2269, a CRITICAL-blast-radius defect. |
 | `scripts/lint-response-language-coverage.cjs` | top-level, with `<workflow>/<modes\|steps\|templates>/<name>.md` inheriting parent coverage | `detail/` is a fourth subdirectory kind the recognizer does not know. #4403 extends the recognizer; it does not carve an exemption. |
-| `NEW_FILE_CAP` (`tests/workflow-size-budget.test.cjs:95-102`) | 32,768 B anchor for every new workflow file unless tiered in the same PR | A detail file for `plan-phase.md` will exceed it. Tiering is explicit, per file, in the PR that creates it — never a blanket exemption for the subtree. |
+| `NEW_FILE_CAP` (`tests/helpers/emitted-diff.cjs:96`, checked at `:403`) | 32,768 B, applied to every file absent from the baseline and present now | **Hard. Not ack-able, and not exemptible by XL/LARGE tiering.** Detail content is therefore split into parts, each under the cap. |
+| tier hard caps (`tests/workflow-size-budget.test.cjs:102-104`) | `XL_CAP` 98,304 · `LARGE_CAP` 61,440 · `DEFAULT_CAP` 40,960 | Apply to spines, which are existing files keeping their tier. Spines only get smaller. |
 
-That last row is a deliberate acceptance of friction: an oversized detail file should have to argue
-for itself, because a detail file that large is itself a signal the split was too coarse.
+**That `NEW_FILE_CAP` row forces a layout decision, and the correct reading of it is not the obvious
+one.** Prior research on this epic recorded the cap as living in `workflow-size-budget.test.cjs` and
+as waivable by "explicit tiering in the same PR". Both are stale: they describe the pre-#2724 test-
+file version. #2724 (ADR-2719 Phase 4) deleted the committed per-file baseline that version keyed
+off, and the cap was revived in `tests/helpers/emitted-diff.cjs`, where its own doc comment states
+the narrowing plainly — it is *"a HARD cap, not ack-able … Not exempted by explicit XL/LARGE
+tiering the way the original test-file version was — this module is intentionally pure and has no
+access to that classification … so a legitimately large NEW file must be split via the same
+lazy-extraction pattern the tier caps already require."*
+
+So a single `detail.md` holding the ~63 KB that comes out of `plan-phase.md` is not merely
+friction — it is **blocked outright, with no exemption path**. The layout is therefore:
+
+```text
+gsd-core/workflows/<name>.md            ← spine, existing path, existing tier, eagerly @-included
+gsd-core/workflows/<name>/detail/*.md   ← one or more parts, each < 32,768 B, read at runtime
+```
+
+The spine names the parts it defers to, in the same dispatch-table shape `discuss-phase.md`'s
+`<progressive_disclosure>` block already uses for its mode overlays. This is a better outcome than
+one large detail file, not a workaround for the cap: parts are individually skippable, so a
+workflow can defer only the sections a given invocation will not reach, and the cap is doing exactly
+the job ADR-1610 designed it to do.
 
 The `@`-include inertness in row 2 has a design consequence worth stating plainly: a canonical
 workflow's own `<required_reading>` `@` lines (e.g. `plan-phase.md`'s five reference imports) are
 expanded today because the file is `@`-included. They **stay in the spine** and keep working. Moving
-one into a detail file would silently turn a working import into dead text, which is exactly the
+one into a detail part would silently turn a working import into dead text, which is exactly the
 class of failure the #3324 sub-guard catches.
 
 ### 7. Acceptance criteria — satisfied, and reconciled
@@ -360,10 +464,13 @@ the key on and off (#4408); all shipped-content guards passing (every phase).
 
 - Every covered workflow becomes two files. The corpus grows in file count while shrinking in
   eagerly-loaded bytes, and `docs/INVENTORY.md` plus the manifest regenerate on every split phase.
-- The maintenance economics the Feature Review priced as disqualifying do not materialize: a
-  partition has no twin, so no future content PR owes a paired edit. This ADR should be re-read if
-  a future phase finds itself duplicating rather than moving text — that is the signal the
-  partition rule has been abandoned and the review's cost model has come back.
+- The maintenance economics the Feature Review priced as disqualifying do not materialize *in the
+  form the review priced them*: a partition has no twin, so no future content PR owes a paired edit.
+  What replaces that cost is smaller but real, and Decision 4(c) names it — the split point itself
+  can drift, and only a declaration plus a reviewer stands between a spine and a slow erosion of
+  what it can run on its own. This ADR should be re-read if a future phase finds itself duplicating
+  rather than moving text, or routinely waving through boundary-move declarations; either is the
+  signal that the review's cost model has come back in a new shape.
 - Spines get smaller, which moves several files down a size tier. Tier membership in
   `tests/workflow-size-budget.test.cjs` is adjusted downward as splits land, never held at the old
   tier for headroom.
@@ -375,7 +482,9 @@ the key on and off (#4408); all shipped-content guards passing (every phase).
   runtime `Read` load-bearing for a baseline instruction set will need it answered; this one does
   not, and that is the reason it was chosen.
 - `gpt-tokenizer` enters `devDependencies` at 27.2 MB unpacked. Nothing ships to users; every
-  `npm ci`, CI included, pays the install.
+  `npm ci`, CI included, pays the install. It is a single-maintainer package, so #4404 pins an exact
+  version rather than a range and relies on the lockfile's integrity hash — a benchmark is not worth
+  a floating dependency, and a reporting-only script has no upgrade urgency that would justify one.
 
 ## Rejected alternatives
 
@@ -403,7 +512,7 @@ the key on and off (#4408); all shipped-content guards passing (every phase).
 | 0 | [#4400](https://github.com/open-gsd/gsd-core/issues/4400) | this ADR | — |
 | 1 | [#4401](https://github.com/open-gsd/gsd-core/issues/4401) | `workflow.compact_content` end to end | 0 |
 | 2 | [#4402](https://github.com/open-gsd/gsd-core/issues/4402) | shared gate + pilot split + accuracy spot-check | 1 |
-| 3 | [#4403](https://github.com/open-gsd/gsd-core/issues/4403) | partition rules + the four checks | 2 |
+| 3 | [#4403](https://github.com/open-gsd/gsd-core/issues/4403) | partition rules + the five checks | 2 |
 | 4 | [#4404](https://github.com/open-gsd/gsd-core/issues/4404) | offline benchmark + committed baseline | 3 |
 | 5 | [#4405](https://github.com/open-gsd/gsd-core/issues/4405) | stream 1 corpus coverage (carries stream 3) | 3, 4 |
 | 6 | [#4406](https://github.com/open-gsd/gsd-core/issues/4406) | stream 1b subdirectories + stream 4 templates | 5 |
@@ -415,13 +524,14 @@ condition 2. The pilot's end-to-end accuracy spot-check is Phase 2's, satisfying
 
 ## Open questions for the implementation phases
 
-- Whether `discuss-phase`, `manager` and `pause-work` — the three commands that already reach a
-  workflow by runtime `Read` — should be brought onto the spine shape too. They are the existing
-  precedent for the substitutive load this ADR declines to generalize, which means they already
-  carry the failure mode this ADR avoids, mitigated only by prose (`commands/gsd/discuss-phase.md`
-  carries a `**MANDATORY:** … Do not improvise from the summary.` guard). Converting them to a
-  spine plus detail would remove that residual entirely. Scoped to Phase 5 (#4405) to decide with
-  the rest of stream 1 in view.
+- Whether `discuss-phase` — the one command that already reaches its workflow by runtime `Read` —
+  should be brought onto the spine shape too. It is the sole existing instance of the substitutive
+  load this ADR declines to generalize, which means it already carries the failure mode this ADR
+  avoids, mitigated only by prose: `commands/gsd/discuss-phase.md:64` reads *"**MANDATORY:** Read
+  the appropriate workflow file BEFORE taking any action … Do not improvise from the summary."*
+  Giving it a spine would remove that residual entirely, and it is the one place in the tree where
+  this ADR's mechanism would be a strict safety improvement rather than a token trade. Scoped to
+  Phase 5 (#4405) to decide with the rest of stream 1 in view.
 - Whether the disjointness check should compare normalized sentences rather than normalized lines.
   Lines are cheaper and catch copy-paste; sentences catch reflowing. Decided in #4403 against real
   splits rather than in the abstract here.
