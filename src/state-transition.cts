@@ -728,6 +728,15 @@ function mergeResyncProgressRatchet(
       const curatedNum = toFiniteNumber(value) ?? -Infinity;
       // Ratchet up only (strictly greater, #2969); else keep curated.
       if (derivedNum > curatedNum) continue;
+      // Numerically EQUAL keeps the derived value VERBATIM. The two sides
+      // arrive in different scalar shapes (the re-parsed derived block
+      // carries string totals "2" while the curated snapshot carries numbers
+      // 2), and substituting the curated spelling over an equal derived one
+      // is a no-op in substance but a shape churn the §8.7 reporting loop
+      // would surface as a phantom `preserved-over-disagreeing-derived`
+      // warning (it diffs structurally). Only a curated counter that is
+      // STRICTLY greater replaces the derived value.
+      if (derivedNum === curatedNum) continue;
       merged[key] = value;
     } else {
       merged[key] = value;
@@ -741,7 +750,13 @@ function mergeResyncProgressRatchet(
       toFiniteNumber(merged.total_phases),
       planningScopeMod.SCOPE.COMPLETE,
     );
-    if (recomputed !== null) merged.percent = recomputed;
+    // Same verbatim rule for percent: assign only when the recomputed value
+    // numerically differs, so a string-spelled derived percent ("67") is not
+    // churned into a number-spelled 67 (phantom-divergence noise, not a
+    // change).
+    if (recomputed !== null && recomputed !== toFiniteNumber(merged.percent)) {
+      merged.percent = recomputed;
+    }
   }
   return merged;
 }
