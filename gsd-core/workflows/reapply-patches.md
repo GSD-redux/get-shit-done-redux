@@ -169,7 +169,7 @@ Check if a `gsd-pristine/` directory exists alongside `gsd-local-patches/`:
 ```bash
 PRISTINE_DIR="$CONFIG_DIR/gsd-pristine"
 ```
-If it exists, the installer saved pristine copies at install time. Use these as the baseline.
+If it exists, the installer saved pristine copies at install time. Use these as the baseline. Both the deterministic verifier and the installer's preserve-check resolve each file's snapshot at its canonical path first and, when that misses, by the SHA-256 recorded in `pristine_hashes` — so a snapshot stored at a legacy path (for example, without the `gsd-core/` prefix an earlier release dropped) is still found and, on the next update, relocated to its canonical path (#4145).
 
 ### Option C: No baseline available (two-way fallback)
 If neither git history nor pristine snapshots are available, fall back to two-way comparison — but with **strengthened heuristics** (see Step 3).

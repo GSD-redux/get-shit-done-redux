@@ -138,6 +138,8 @@ build/
 /gsd-core/bin/lib/ui-consideration-probe.cjs
 /gsd-core/bin/lib/config-types.cjs
 /gsd-core/bin/lib/cli-exit.cjs
+# #4145: emitted artifact of src/pristine-baseline.cts — never edited.
+/gsd-core/bin/lib/pristine-baseline.cjs
 /gsd-core/bin/lib/code-review-flags.cjs
 /gsd-core/bin/lib/code-review-depth.cjs
 /gsd-core/bin/lib/context-utilization.cjs

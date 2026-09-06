@@ -1170,3 +1170,272 @@ describe('Bug #4086: verifyFile resolves skills entries at the runtime skills ro
 });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4145 (a hash-matching gsd-pristine/ baseline
+// stored without the gsd-core/ prefix is never resolved). verifyFile() joined
+// the manifest-keyed path strictly; when stat missed and a hash was recorded
+// it reported OK_NO_BASELINE even though byte-correct content sat elsewhere
+// under gsd-pristine/. The fix consults the recorded pristine_hashes — the
+// same authority the #3657 drift guard trusts — and adopts an exact-hash
+// match found anywhere in the tree.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4145-pristine-prefix-resolution', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON } = require(SCRIPT);
+const { findPristineByHash } = require(
+  path.join(ROOT, 'gsd-core', 'bin', 'lib', 'pristine-baseline.cjs'),
+);
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let pristineDir;
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function writeBackupMeta(pristine_hashes) {
+  writeFile(path.join(patchesDir, 'backup-meta.json'), JSON.stringify({ pristine_hashes }, null, 2));
+}
+
+function resetFixture() {
+  for (const dir of [patchesDir, configDir, pristineDir]) {
+    cleanup(dir);
+  }
+  fs.mkdirSync(patchesDir);
+  fs.mkdirSync(configDir);
+  fs.mkdirSync(pristineDir);
+}
+
+function runVerifier() {
+  const r = runNode([
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    '--pristine-dir', pristineDir,
+    '--json',
+  ], { timeoutMs: 30_000 });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+before(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'installed');
+  pristineDir = path.join(tmpRoot, 'pristine');
+  resetFixture();
+});
+
+after(() => {
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', () => {
+  /**
+   * Core regression. The manifest key is `gsd-core/bin/lib/frontmatter.cjs`
+   * but the snapshot sits at `bin/lib/frontmatter.cjs` — one segment away
+   * from the joined path. Its SHA-256 equals the recorded pristine_hashes
+   * entry. The upstream release replaced the file wholesale and only the
+   * user's line survived the merge, so a verifier that recovered the
+   * baseline computes exactly one user-added line (present → exit 0,
+   * no_baseline 0), while the pre-fix run reported ok_no_baseline.
+   */
+  test('#4145: resolves a hash-matching prefix-less pristine baseline instead of reporting ok_no_baseline', () => {
+    resetFixture();
+    const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+    const OLD_PRISTINE =
+      'outgoing pristine stock line one with substantial content\n' +
+      'outgoing pristine stock line two also substantial content\n';
+    const USER_LINE = 'user customization line that must survive the reapply merge';
+    const backupContent = OLD_PRISTINE + USER_LINE + '\n';
+    const installedContent =
+      'incoming upstream replacement line with substantial content\n' + USER_LINE + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(OLD_PRISTINE) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), installedContent);
+    // The orphan: same bytes, stored WITHOUT the gsd-core/ prefix.
+    writeFile(path.join(pristineDir, 'bin', 'lib', 'frontmatter.cjs'), OLD_PRISTINE);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0, `expected exit 0; report=${JSON.stringify(report)}`);
+    assert.equal(report.no_baseline, 0, 'a hash-matching baseline was on disk — it must be resolved');
+    assert.deepEqual(report.no_baseline_files, []);
+    assert.equal(report.failures, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'ok');
+    assert.notEqual(r0.reason, REASON.OK_NO_BASELINE);
+  });
+
+  /** Negative space: nothing anywhere under gsd-pristine/ matches the record. */
+  test('#4145: still reports ok_no_baseline when the recorded hash matches nothing under gsd-pristine', () => {
+    resetFixture();
+    const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+    const backupContent =
+      'upstream line present in the backup of the outgoing release\n' +
+      'model: sonnet — the user customisation line in the backup file\n';
+    const installedContent =
+      'replacement upstream line in the newer release version\n' +
+      'model: sonnet — the user customisation line in the backup file\n';
+
+    writeBackupMeta({ [FILE]: 'deadbeef00000000000000000000000000000000000000000000000000000001' });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), installedContent);
+    // No pristine file anywhere.
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0, 'no-baseline is advisory, never a failure');
+    assert.equal(report.no_baseline, 1);
+    assert.equal(report.results[0].reason, REASON.OK_NO_BASELINE);
+  });
+
+  /**
+   * Negative space: an orphan whose bytes do NOT hash to the record is never
+   * adopted — only exact recorded-hash matches are accepted.
+   */
+  test('#4145: never adopts a hash-mismatching orphan — only exact recorded-hash matches', () => {
+    resetFixture();
+    const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+    const OLD_PRISTINE = 'outgoing pristine bytes that the record hashes\n';
+    const OTHER_CONTENT = 'some other release snapshot with different bytes\n';
+
+    writeBackupMeta({ [FILE]: sha256(OLD_PRISTINE) });
+    writeFile(path.join(patchesDir, FILE), 'outgoing pristine bytes that the record hashes\nuser line\n');
+    writeFile(path.join(configDir, FILE), 'user line\n');
+    // Orphan exists but hashes to something else.
+    writeFile(path.join(pristineDir, 'bin', 'lib', 'frontmatter.cjs'), OTHER_CONTENT);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.no_baseline, 1, 'a mismatching orphan is not a baseline');
+    assert.equal(report.results[0].reason, REASON.OK_NO_BASELINE);
+  });
+
+  /**
+   * Precedence lock: the canonical prefixed path still resolves exactly as
+   * today even when an identical-content orphan also exists — the strict join
+   * stays first, and the verifier (read-only) leaves the orphan untouched.
+   */
+  test('#4145: prefixed canonical baseline resolves exactly as today when an identical orphan also exists', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/execute-phase.md';
+    const pristineContent = 'stock workflow line long enough to pass the significance threshold\n';
+    const droppedLine = 'user workflow customisation that was lost in the merge operation';
+    const backupContent = pristineContent + droppedLine + '\n';
+    const installedContent = pristineContent; // user line dropped — real failure
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), installedContent);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+    const orphanPath = path.join(pristineDir, 'workflows', 'execute-phase.md');
+    writeFile(orphanPath, pristineContent);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 1, 'the dropped user line must still be caught via the canonical baseline');
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'fail');
+    assert.equal(r0.reason, REASON.FAIL_USER_LINES_MISSING);
+    assert.ok(r0.missing.includes(droppedLine));
+    // Read-only verifier: the orphan is never relocated or pruned by a verify run.
+    assert.equal(fs.existsSync(orphanPath), true, 'verifier must not mutate gsd-pristine/');
+  });
+
+  /**
+   * Drift-path lock: a hash-MISMATCHING canonical snapshot still reports
+   * OK_PRISTINE_DRIFT_DETECTED (#3657) — the recovery scan must not reach the
+   * drift case.
+   */
+  test('#4145: canonical-path drift still reports ok_pristine_drift_detected even when a hash-matching orphan exists', () => {
+    resetFixture();
+    const FILE = 'gsd-core/agents/gsd-executor.md';
+    const oldPristine = 'old pristine line that was present when backup was captured\n';
+    const newPristine = 'refreshed upstream line in the newer pristine snapshot\n';
+    const userLine = 'user customisation line that should be preserved across updates';
+
+    writeBackupMeta({ [FILE]: sha256(oldPristine) });
+    writeFile(path.join(patchesDir, FILE), oldPristine + userLine + '\n');
+    writeFile(path.join(configDir, FILE), newPristine + userLine + '\n');
+    writeFile(path.join(pristineDir, FILE), newPristine); // canonical drifted
+    // A hash-matching orphan exists elsewhere — drift must still win.
+    writeFile(path.join(pristineDir, 'agents', 'gsd-executor.md'), oldPristine);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.reason, REASON.OK_PRISTINE_DRIFT_DETECTED,
+      `expected the untouched #3657 drift posture; got ${r0.reason}`);
+    assert.equal(report.drifted, 1);
+  });
+
+  /** Module unit: deterministic sorted-first match, symlink skip, absent dir. */
+  test('#4145: findPristineByHash returns the sorted-first match, skips symlinks, and null on an absent dir', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-unit-'));
+    const symRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-sym-'));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-out-'));
+    try {
+      const contentA = 'identical bytes that two snapshots happen to share\n';
+      const hashA = sha256(contentA);
+      writeFile(path.join(root, 'zz-dir', 'late-match.md'), contentA);
+      writeFile(path.join(root, 'aa.txt'), contentA);
+
+      assert.equal(findPristineByHash(root, hashA), 'aa.txt',
+        'sorted-first match wins deterministically');
+      assert.equal(findPristineByHash(root, hashA, 'aa.txt'), 'zz-dir/late-match.md',
+        'skipRel is never returned');
+      assert.equal(findPristineByHash(root, hashA, new Set(['aa.txt', 'zz-dir/late-match.md'])), null,
+        'every member of a skip Set is excluded (canonical-path protection)');
+      assert.equal(findPristineByHash(root, sha256('no such content anywhere here\n')), null,
+        'no match resolves to null');
+      assert.equal(findPristineByHash(path.join(root, 'absent'), hashA), null,
+        'absent dir resolves to null');
+
+      // A symlink is never followed, even when its target would hash-match.
+      // The target lives OUTSIDE symRoot so the only hashable entry inside the
+      // scanned tree is the symlink itself.
+      const outsideTarget = path.join(outsideRoot, 'outside-target.md');
+      fs.writeFileSync(outsideTarget, contentA);
+      fs.symlinkSync(outsideTarget, path.join(symRoot, 'sym.md'));
+      assert.equal(findPristineByHash(symRoot, hashA), null,
+        'symlinked candidates are skipped, not followed');
+    } finally {
+      cleanup(root);
+      cleanup(symRoot);
+      cleanup(outsideRoot);
+    }
+  });
+});
+  });
+}
