@@ -58,6 +58,10 @@ Model profiles control which Claude model each GSD agent uses. This allows balan
 3. **Profile table** — the per-agent column from the active `model_profile`
 4. **Runtime default** — when nothing else applies
 
+Steps 2–4 select the *tier*; a `model_profile_overrides.<runtime>.<tier>` entry then
+maps that tier to a concrete model (#4192 — honored on the claude runtime as well, so
+pinning composes with tiering instead of replacing it).
+
 ### Why two layers above the profile?
 
 - **Profile** is a global tier strategy (everyone runs balanced).
@@ -215,8 +219,11 @@ is (highest → lowest):
    (see §Dynamic Routing — escalation steps tier up per attempt counter)
 4. If no dynamic_routing match, check models[phase_type] for a phase-type tier
    (see §Per-Phase-Type Model Map for the agent → phase-type mapping)
-5. If no phase-type slot, look up agent in profile table
-6. Pass model parameter to Task call
+5. Check model_profile_overrides.<runtime>.<tier> for a per-tier model override
+   (honored on the claude runtime too — #4192; verbatim unless it maps to the
+   current tier alias)
+6. If no phase-type slot, look up agent in profile table
+7. Pass model parameter to Task call
 ```
 
 `model` and `effort` resolve through different mechanisms at different
@@ -246,7 +253,9 @@ Override specific agents without changing the entire profile:
 }
 ```
 
-Overrides take precedence over the profile. Valid values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model ID (e.g., `"o3"`, `"openai/o3"`, `"google/gemini-2.5-pro"`).
+Overrides take precedence over the profile. Valid values: `opus`, `sonnet`, `haiku`, `fable`, `inherit`, or any fully-qualified model ID (e.g., `"o3"`, `"openai/o3"`, `"google/gemini-2.5-pro"`). `fable` is a Claude Code Agent-tool alias, not a GSD profile tier — it has no column in the profile table above.
+
+On the Claude runtime, fully-qualified Claude model IDs are honored as explicit generation pins (#4192): an ID that names the current tier default (e.g. `"claude-sonnet-5"`) resolves to its tier alias — the same model in the form the Agent tool always accepts — while any other ID (e.g. `"claude-opus-4-7"`) resolves verbatim, with a warn-once stderr note that setups accepting only tier aliases will not honor a full ID. To pin a generation for a whole tier rather than one agent, set `model_profile_overrides.claude.<tier>` (see docs/CONFIGURATION.md — Runtime-Aware Profiles).
 
 ## Switching Profiles
 

@@ -1415,6 +1415,38 @@ describe('resolve-model command', () => {
     assert.ok(output.model, 'should resolve a model');
   });
 
+  // #4192 (AC1, behavioral): a claude-runtime tier override must change the
+  // resolved output relative to the no-override control — the CLI surface the
+  // orchestrator reads is where the documented contract is observable.
+  test('claude-runtime tier override changes resolved output vs control (#4192)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    }));
+    const pinned = runGsdTools('resolve-model gsd-planner', tmpDir);
+    assert.ok(pinned.success, `Command failed: ${pinned.error}`);
+    assert.strictEqual(JSON.parse(pinned.output).model, 'claude-opus-4-7');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+    }));
+    const control = runGsdTools('resolve-model gsd-planner', tmpDir);
+    assert.ok(control.success, `Command failed: ${control.error}`);
+    assert.strictEqual(JSON.parse(control.output).model, 'opus');
+  });
+
+  // #4192 (AC2, behavioral): a per-agent fully-qualified Claude model ID is
+  // resolved as configured through the CLI surface.
+  test('per-agent fully-qualified claude ID resolves as configured (#4192)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    }));
+    const result = runGsdTools('resolve-model gsd-debugger', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).model, 'claude-opus-4-7');
+  });
+
   // #443: resolve-model now emits unified `effort` instead of `reasoning_effort`.
   // reasoning_effort was flavor-text (resolved but consumed by nobody); effort is
   // the wired, config-driven universal effort string for all runtimes.
