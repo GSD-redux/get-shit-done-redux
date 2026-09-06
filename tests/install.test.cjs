@@ -2903,14 +2903,16 @@ describe('Bug #977: normalizeNodePath — non-fnm paths are unaffected (no regre
 
   test('Intel Homebrew Cellar path still maps to stable symlink', () => {
     assert.equal(
-      normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node'),
+      normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node',
+        { existsSync: p => p === '/usr/local/bin/node' }),
       '/usr/local/bin/node',
     );
   });
 
   test('Apple Silicon Homebrew Cellar path still maps to stable symlink', () => {
     assert.equal(
-      normalizeNodePath('/opt/homebrew/Cellar/node/25.8.1/bin/node'),
+      normalizeNodePath('/opt/homebrew/Cellar/node/25.8.1/bin/node',
+        { existsSync: p => p === '/opt/homebrew/bin/node' }),
       '/opt/homebrew/bin/node',
     );
   });
