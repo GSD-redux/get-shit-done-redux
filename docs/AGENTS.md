@@ -394,10 +394,13 @@ field is derived from the observed exit statuses and the files on disk, so it
 distinguishes three outcomes — captured (3/3), partially captured (N/3, naming
 the viewports that failed), and not captured with its reason (no dev server,
 auth-gated, or capture failure). A failed capture never reports as a successful
-one, and takes its own artifacts with it — when all three viewports fail, the
-partial or zero-byte files a crashed capture wrote are removed along with the
-review directory, so a failed audit leaves nothing behind to be mistaken for
-evidence.
+one, and takes its own artifacts with it: each viewport that fails has the
+partial or zero-byte file it may have written removed by name, so a partial
+capture leaves only the shots that actually succeeded and a total failure leaves
+the review directory empty, and therefore removed. Removal is by filename and
+never a wildcard — the directory is keyed to the phase and a whole second, so a
+concurrent audit sharing it keeps its own captures (and that directory then
+survives, which is the intended outcome rather than an exception to the claim).
 
 ---
 

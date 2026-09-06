@@ -136,13 +136,44 @@ function logicalLines(lines) {
 // entirely, and `CAPTURED=0` near the top of the block makes that question true forever:
 // moving the success echo back outside its `if [ "$CAPTURED" -eq 3 ]` branch — which is
 // precisely the #4176 bug — would not disturb it.
+//
+// IT FAILS CLOSED, and that is the whole difference between this and its first version.
+// A hand-written reader of a language it does not lex WILL meet a form it does not know;
+// what decides whether that is a defect is which way it errs. The first version erred
+// SILENTLY: an unrecognised line was pushed as an ordinary row, so a construct that
+// should have popped the scope stack left a stale condition on it, and the next line
+// inherited a guard that does not govern it — a FALSE PASS on exactly the regression
+// this test names. Three were driven against it:
+//   `fi # end capture-count branch`   -> `fi` not matched, stack never popped
+//   `if [ "$CAPTURED" -eq 3 ]` + a bare `then` on the NEXT line (legal bash)
+//   `if ...; then ...; fi; echo ...`  all on one logical line
+// So: comments are stripped before the walk (which is what the first form needed), the
+// two-line `then` form is recognised, and ANY residual line still carrying a bare
+// control keyword this walker did not consume THROWS. A test that cannot parse the
+// block fails loudly; it never reports on a stack it has lost track of.
 function guardedLines(lines) {
   const stack = [];
   const rows = [];
-  for (const line of logicalLines(lines)) {
-    const t = line.trim();
+  let pendingIf = null;   // an `if <cond>` whose `then` is on a later line
+  for (const raw of logicalLines(lines.map(stripComment))) {
+    const t = raw.trim();
+    if (t === '') continue;
+    if (pendingIf !== null) {
+      // Only `then` may follow; anything else means we mis-read the `if` header.
+      if (t === 'then' || t.startsWith('then ')) {
+        stack.push(pendingIf);
+        pendingIf = null;
+        const tail = t === 'then' ? '' : t.slice(5).trim();
+        if (tail === '') continue;
+        rows.push({ line: tail, guards: stack.slice() });
+        continue;
+      }
+      throw new Error(`bash reader: '${pendingIf}' opened an if with no 'then' — got ${JSON.stringify(t)}`);
+    }
     const ifMatch = /^if[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
     if (ifMatch) { stack.push(ifMatch[1]); continue; }
+    const ifPending = /^if[\t ]+(.{1,4000}?)[\t ]*$/.exec(t);
+    if (ifPending && !/;/.test(ifPending[1])) { pendingIf = ifPending[1]; continue; }
     const elifMatch = /^elif[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
     if (elifMatch) { if (stack.length) stack[stack.length - 1] = elifMatch[1]; continue; }
     if (t === 'else') { if (stack.length) stack[stack.length - 1] = `!(${stack[stack.length - 1]})`; continue; }
@@ -152,50 +183,89 @@ function guardedLines(lines) {
     if (t === 'done') { stack.pop(); continue; }
     if (/^case\b/.test(t) && /\bin$/.test(t)) { stack.push(''); continue; }
     if (t === 'esac') { stack.pop(); continue; }
+    // FAIL CLOSED. A control keyword this walker did not consume above means the block
+    // uses a form it cannot model, and continuing would report guards it no longer knows.
+    // Word-boundary matched so `elif`/`fi` inside a string or an identifier does not fire;
+    // an over-fire here costs a loud test failure, an under-fire costs a false clean.
+    if (/(^|[\t ;&|(])(if|then|elif|fi|do|done|case|esac)([\t ;&|)]|$)/.test(t)) {
+      throw new Error(`bash reader: unparsed control construct — ${JSON.stringify(t)}`);
+    }
     rows.push({ line: t, guards: stack.slice() });
   }
+  if (pendingIf !== null) throw new Error(`bash reader: dangling if — ${JSON.stringify(pendingIf)}`);
+  if (stack.length !== 0) throw new Error(`bash reader: ${stack.length} unclosed scope(s) at end of block`);
   return rows;
 }
 
-// Capture INVOCATIONS, not every line that mentions one. The block documents its own flags in
-// comments, and a comment naming `playwright screenshot` — the one explaining --timeout does
-// exactly this — is prose, not a call site. Reading it as one inflates the invocation count and,
-// worse, lets an assertion pass on the DOCUMENTATION of a property instead of the property: the
-// --timeout check below was satisfied in part by a comment containing the string `--timeout`.
-// That is the same class as the whole-block substring defect the port assertion names, which is
-// why the exclusion lives here once rather than in each caller.
-// logicalLines first: the invocation spans four physical lines, so its flags are only all on one
-// line after continuations are joined.
-// Comments are dropped from the PHYSICAL lines, BEFORE continuations are joined. Doing it after
-// is a false clean: a comment ending in a backslash splices the following real invocation onto
-// itself, the joined line then starts with `#`, and the invocation disappears from the set — so
-// the assertions over it pass on an empty selection. Filtering first makes that shape impossible
-// rather than merely unlikely. (A trailing comment on a real code line is still selected; that
-// direction over-fires, which is the safe one.)
-// Inline comments are stripped too, not just whole-line ones. `--timeout=30000` moved into a
-// trailing comment is an ordinary edit, not sabotage, and it would otherwise keep satisfying the
-// time-bound assertion while no longer being passed to the command. Strip from ` #` to end of
-// line BEFORE joining, which also closes the splice via a trailing comment.
+// Strip a trailing `#` comment, QUOTE-AWARE.
 //
-// KNOWN LIMIT, stated because the regex does not enforce what a looser comment here once claimed:
-// this is QUOTE-BLIND. It cannot tell a comment from a `#` inside a string, so a line such as
-// `--user-agent=" # " \` has its quoted `#` read as a comment start, taking the real continuation
-// backslash with it. The consequence is direction-dependent: an assertion REQUIRING a flag then
-// over-fires (safe), but a BAN — the `localhost:\d+` check below — would stop seeing a hard-coded
-// port that moved onto the hidden continuation line, which is a false clean. No line in the block
-// this reads contains a quoted ` #` today. Making it quote-aware means lexing bash, which is more
-// than a confirmed-bug fix should carry, so the limit is recorded rather than closed.
+// The first version was a single regex, `line.replace(/\s+#.*$/, '')`, and it carried a
+// comment admitting it was quote-blind. That admission was driven into a false PASS: a
+// line such as
+//     --user-agent="$DEV_URL # " \
+// has its quoted `#` read as a comment start, taking the real continuation backslash with
+// it, so the NEXT physical line — which in the constructed case carried a hard-coded
+// `http://localhost:3000` — vanished from the selection entirely and the ban that exists
+// to catch exactly that passed on an invocation that no longer included it. Documenting a
+// hole is not closing one.
+//
+// So this walks the line and tracks quoting. It is not a bash lexer and does not claim to
+// be: it knows single quotes (literal, no escapes inside), double quotes (backslash
+// escapes), and a backslash escape outside quotes. That is the quoting the block actually
+// uses, and it is what the false PASS above needed. A `#` starts a comment only when it is
+// outside quotes AND at the start of a word — `foo#bar` is one word to bash, not a comment.
 function stripComment(line) {
-  const stripped = line.replace(/\s+#.*$/, '');
-  if (stripped === line) return line; // nothing removed — leave real continuations alone
-  // A `\` that the removed text was hiding did NOT continue the line in bash, so this reader
-  // must not treat it as one. Driven: `echo one \ # x` followed by `--timeout=30000` runs the
-  // second line as its OWN command (`--timeout=30000: command not found`) — bash never joins
-  // them. Stripping the comment and keeping the backslash would make logicalLines() join what
-  // bash does not, so a flag on the following line would satisfy an assertion the real command
-  // never receives. That is a bypass this stripping would have CREATED, not one it inherited.
-  return stripped.replace(/\\+$/, '');
+  let out = '';
+  let quote = null;       // null | "'" | '"'
+  for (let i = 0; i < line.length; i += 1) {
+    const c = line[i];
+    if (quote === "'") { out += c; if (c === "'") quote = null; continue; }
+    if (quote === '"') {
+      if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
+      out += c; if (c === '"') quote = null; continue;
+    }
+    if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
+    if (c === "'" || c === '"') { out += c; quote = c; continue; }
+    if (c === '#' && (i === 0 || /[\t ]/.test(line[i - 1]))) {
+      // A `\` that the removed text was hiding did NOT continue the line in bash, so this
+      // reader must not treat it as one. Driven: `echo one \ # x` followed by
+      // `--timeout=30000` runs the second line as its OWN command — bash never joins them.
+      // Keeping the backslash would make logicalLines() join what bash does not, so a flag
+      // on the following line would satisfy an assertion the real command never receives.
+      return out.replace(/[\t ]+$/, '').replace(/\\+$/, '');
+    }
+    out += c;
+  }
+  return out;
 }
+
+
+// The patterns of a `case` arm, or null when the line is not one.
+//
+// `line.split(')')[0].split('|')` was the first version and it is wrong on legal bash in
+// two ways, both driven. A leading `(` — `(401|403|407|511)` is valid — yields
+// `["(401","403",...]`, so `401` reads as MISSING and the assertion false-FAILS. And a `)`
+// inside an earlier pattern truncates the label. Strip an optional leading `(`, then take
+// up to the FIRST unquoted `)`; a quoted one is part of a pattern, not the terminator.
+function caseLabelOf(line) {
+  const t = line.trim().replace(/^\(/, '');
+  let quote = null;
+  let end = -1;
+  for (let i = 0; i < t.length; i += 1) {
+    const c = t[i];
+    if (quote) { if (c === quote) quote = null; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === '\\') { i += 1; continue; }
+    if (c === ')') { end = i; break; }
+  }
+  if (end <= 0) return null;
+  const label = t.slice(0, end);
+  // A case label is patterns joined by `|`; anything with a space or `=` in it is a
+  // command line that merely happens to contain a `)`, not an arm.
+  if (/[\t =]/.test(label)) return null;
+  return label.split('|').map((x) => x.trim()).filter((x) => x !== '');
+}
+
 function captureInvocations(lines) {
   return logicalLines(lines.map(stripComment).filter((l) => !/^[\t ]*#/.test(l) && l.trim() !== ''))
     .map((l) => l.trim())
@@ -203,8 +273,22 @@ function captureInvocations(lines) {
 }
 
 describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
+  // CODE, not prose. Every assertion below reads the comment-stripped block: the block
+  // documents its own flags in comments, and a regression that deletes `redirect:"follow"`
+  // while leaving the phrase in the paragraph above it would otherwise still pass. That is
+  // the same substring defect the review's finding 1 names, and it was DRIVEN against the
+  // previous version of this test with `{/* redirect:"follow" */ signal: ...}`.
+  // stripComment knows BASH comments. The probe's argument is a JavaScript program
+  // embedded in that bash, and a `/* redirect:"follow" */` left behind after the real key
+  // was deleted satisfied every regex below — driven, 15/15 green on a probe that had
+  // reverted to fetch's inherited default. Strip JS comments too. This is a belt: the
+  // authoritative check on the probe's redirect behaviour is the executed one further
+  // down, which runs the extracted program against a real redirecting server.
+  const stripJsComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const codeBlock = () => stripJsComments(screenshotApproachLines().map(stripComment).join('\n'));
+
   test('dev-server probe follows redirects and is time-bounded', () => {
-    const block = screenshotApproachBlock();
+    const block = codeBlock();
     const usesCurlL = /curl[\t ]+(-[A-Za-z]{0,10}L|--location)\b/.test(block);
     const usesFetch = /\bfetch\(/.test(block);
     assert.ok(usesCurlL || usesFetch, 'probe must issue its request via curl or fetch()');
@@ -227,7 +311,7 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
   });
 
   test('probe accepts any 2xx rather than exact-matching 200', () => {
-    const block = screenshotApproachBlock();
+    const block = codeBlock();
     assert.ok(
       !/=[\s]*"200"/.test(block),
       'probe must not exact-match "200" — that misreads redirects and other 2xx as no-server'
@@ -236,14 +320,32 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // 200) ... ;; esac` carries no `=` at all, so it reintroduces the same
     // 2xx-but-not-200 misread while passing the ban above. Assert positively that a 2xx
     // RANGE is what the probe accepts.
-    const acceptsRange =
-      /2\?\?\)/.test(block) ||               // case glob:  2??)
-      /2\[0-9\]\[0-9\]\)/.test(block) ||     // case class: 2[0-9][0-9])
-      /-ge[\t ]+200\b/.test(block) ||        // arithmetic lower bound
-      /\br\.ok\b/.test(block);               // fetch's own 2xx predicate
+    // READ THE ARM THAT GOVERNS `DEV_URL=`, not the block. A block-wide search for a
+    // range idiom is satisfied by a range test that decides nothing — driven against the
+    // previous version of this test with
+    //     200) [ "$PROBE" -ge 200 ] && DEV_URL=...; break ;;
+    // which admits ONLY 200 at the case label, carries no `=` for the ban above to catch,
+    // and offers the `-ge 200` the range check was looking for. 15/15 passed on a block
+    // that had reinstated the exact-match bug.
+    const acceptArm = logicalLines(screenshotApproachLines().map(stripComment))
+      .map((l) => l.trim())
+      .find((l) => /DEV_URL=/.test(l) && !/^DEV_URL=""$/.test(l));
+    assert.ok(acceptArm, 'expected an arm that resolves DEV_URL from the probe status');
+    const armLabel = caseLabelOf(acceptArm);
+    // WHERE the range lives has to match where the DECISION is made. When a `case` label
+    // gates the arm, that label IS the acceptance test and a range check inside the arm
+    // body is vacuous — `200) [ "$PROBE" -ge 200 ] && DEV_URL=...` admits only 200 and the
+    // `-ge` never rejects anything. So the alternatives are mutually exclusive by
+    // construction: a case-gated arm is judged on its LABEL, and only an arm with no case
+    // label may earn acceptance from a comparison in its body.
+    const acceptsRange = armLabel !== null
+      ? armLabel.some((pat) => /^2(\?\?|\[0-9\]\[0-9\]|\*)$/.test(pat))
+      : (/-ge[\t ]+200\b/.test(acceptArm) || /\br\.ok\b/.test(block));
     assert.ok(
       acceptsRange,
-      'probe must accept a 2xx RANGE (a 2?? / 2[0-9][0-9] case glob, a >= 200 comparison, or r.ok) — not an enumerated status'
+      armLabel !== null
+        ? `the case label that admits a status must be a 2xx RANGE (2?? / 2[0-9][0-9] / 2*), not an enumerated status — a range test inside an exact-match arm decides nothing: label was ${JSON.stringify(armLabel)}`
+        : `the arm that sets DEV_URL must accept a 2xx RANGE, not an enumerated status: ${acceptArm}`
     );
   });
 
@@ -315,9 +417,15 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
     assert.ok(assignments.length > 0, 'expected the port loop to record an auth-gated server');
     for (const line of assignments) {
+      // THE OPERATOR IS THE PROPERTY, not the presence of a test. Driven against the
+      // previous version: swapping `||` for `&&` leaves DEV_GATED permanently EMPTY —
+      // strictly worse than the last-wins bug this guards — and all 15 tests passed,
+      // because a `-n` test was still textually present. Accept exactly the two forms
+      // that mean "keep the first": `[ -n "$DEV_GATED" ] ||` and `[ -z "$DEV_GATED" ] &&`.
       assert.ok(
-        /\[[\t ]+-[nz][\t ]+"?\$DEV_GATED"?[\t ]+\]/.test(line),
-        `the auth-gated port must be recorded first-wins, or the reason names the LAST gated port: ${line}`
+        /\[[\t ]+-n[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*\|\|/.test(line)
+          || /\[[\t ]+-z[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*&&/.test(line),
+        `the auth-gated port must be recorded first-wins — \`[ -n "$DEV_GATED" ] ||\` or \`[ -z "$DEV_GATED" ] &&\`; the operator is what makes it first-wins, not the test: ${line}`
       );
     }
   });
@@ -336,9 +444,7 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       .map((l) => l.trim())
       .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
     assert.ok(gatedArms.length > 0, 'expected a case arm recording an auth-gated server');
-    const labels = gatedArms
-      .map((l) => l.split(')')[0])
-      .map((lab) => lab.split('|').map((s) => s.trim()));
+    const labels = gatedArms.map((l) => caseLabelOf(l) || []);
     for (const status of ['401', '403', '407', '511']) {
       assert.ok(
         labels.some((lab) => lab.includes(status)),
@@ -378,30 +484,50 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     const captures = captureInvocations(screenshotApproachLines());
     assert.ok(captures.length > 0, 'expected at least one capture invocation');
     for (const line of captures) {
+      // A VALUE, AND A POSITIVE ONE. `--timeout=0` is playwright's own spelling of NO
+      // timeout, so a presence check accepts the exact state this assertion exists to
+      // forbid — driven against the previous version, which passed 15/15 with every
+      // capture at `--timeout=0`.
+      const flag = /--timeout[= ]([0-9]+)\b/.exec(line);
+      assert.ok(flag, `capture must be time-bounded — playwright screenshot defaults to no timeout: ${line}`);
       assert.ok(
-        /--timeout[= ]/.test(line),
-        `capture must be time-bounded — playwright screenshot defaults to no timeout: ${line}`
+        Number(flag[1]) > 0,
+        `--timeout=0 IS playwright's no-timeout setting — the bound must be positive: ${line}`
       );
     }
   });
 
-  test('a total capture failure removes its stray files, not just an empty directory', () => {
+  test('a failed viewport removes the file it may have written, by name', () => {
     // rmdir alone cannot honour a "leaves nothing behind" claim: it succeeds only on a
     // genuinely empty directory and its stderr is discarded, so a zero-byte or partial
     // .png from a crashed browser — which `[ -s ]` correctly scores as a failure —
-    // leaves BOTH the file and the directory in place, silently.
+    // would leave BOTH the file and the directory in place, silently.
+    //
+    // The removal lives in the capture loop's FAILURE arm, not in the all-failed branch,
+    // and that placement is the finding: scoped to the all-failed branch it left the
+    // PARTIAL case — two good shots and one stray file — still overclaimed by the docs.
+    // It is also BY NAME rather than a `*.png` glob, because the review directory is
+    // keyed to the phase and a whole second, so a concurrent audit of the same phase can
+    // share it and a glob would delete that audit's captures.
     const rows = guardedLines(screenshotApproachLines());
+    const removals = rows.filter((r) => /^rm -f\b/.test(r.line));
+    assert.ok(removals.length > 0, 'expected the capture loop to remove a failed viewport\u2019s stray file');
+    for (const row of removals) {
+      assert.ok(
+        !/\*/.test(row.line),
+        `stray-file removal must name the file, never glob the directory — a concurrent audit shares it: ${row.line}`
+      );
+      assert.ok(
+        /\$SHOT_NAME/.test(row.line),
+        `stray-file removal must target the viewport that just failed: ${row.line}`
+      );
+    }
     const removesDir = rows.filter((r) => /^rmdir\b/.test(r.line));
     assert.ok(removesDir.length > 0, 'expected the all-failed branch to remove the review directory');
-    const removesFiles = rows.filter((r) => /\brm -f[\t ].*\$SCREENSHOT_DIR/.test(r.line));
-    assert.ok(
-      removesFiles.length > 0,
-      'the all-failed branch must remove the files a crashed capture wrote, or rmdir cannot clean up after one'
-    );
-    for (const row of removesFiles) {
+    for (const row of removesDir) {
       assert.ok(
         row.guards.some((cond) => /CAPTURED/.test(cond)),
-        `stray-file removal must be confined to the capture-failure branch; governing conditions were ${JSON.stringify(row.guards)}`
+        `directory removal must be confined to the capture-failure branch; governing conditions were ${JSON.stringify(row.guards)}`
       );
     }
   });

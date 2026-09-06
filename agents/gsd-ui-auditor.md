@@ -159,6 +159,16 @@ if [ -n "$DEV_URL" ]; then
        && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
       CAPTURED=$((CAPTURED + 1))
     else
+      # Remove what THIS viewport may have written before scoring it a failure. A
+      # crashed browser commonly leaves a zero-byte or partial .png, which the
+      # `[ -s ]` above correctly refuses to count and which would otherwise sit in
+      # the review directory looking like evidence. Doing it here rather than in
+      # the all-failed branch below is what makes the claim true of a PARTIAL
+      # capture too — two good shots and one stray file was the gap.
+      # BY NAME, never a `*.png` glob: this directory is keyed to the phase and a
+      # whole second, so two audits of the same phase can share it, and a glob
+      # would delete the other one's captures.
+      rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
       FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
     fi
   done
@@ -171,13 +181,9 @@ if [ -n "$DEV_URL" ]; then
     echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
   else
     CAPTURE_STATUS="not captured (capture failed)"
-    # Remove what the failed captures WROTE before removing the directory. A crashed
-    # browser commonly leaves a zero-byte or partial .png behind; `[ -s ]` above
-    # correctly scores that as a failure, but rmdir then fails on the non-empty
-    # directory with its stderr discarded, so BOTH the stray file and the directory
-    # would survive. Scoped to the .png files in the timestamped directory this block
-    # created moments ago, and only on the all-three-failed path.
-    [ -n "$SCREENSHOT_DIR" ] && rm -f "$SCREENSHOT_DIR"/*.png
+    # Every viewport already removed its own stray file in the loop above, so the
+    # directory is empty here unless something ELSE put a file in it — and in that
+    # case rmdir correctly fails and leaves that file alone.
     rmdir "$SCREENSHOT_DIR" 2>/dev/null
     echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
   fi
