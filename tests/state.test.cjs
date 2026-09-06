@@ -20279,3 +20279,132 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
     });
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════
+// #4138: `state begin-phase` writes a null-phase STATE.md when the required
+// --phase argument is missing (.gsd/bug/fix-4138-begin-phase-arg-validation/
+// {10-diagnosis,50-test-matrix}.md). The verb's token validation rejects an
+// unexpected positional but lets a MISSING --phase through as null, which the
+// transition then serialises as the literal string "null" into three body
+// locations while the post-sync frontmatter rebuild drops current_phase /
+// current_phase_name entirely. The contract under test is the issue's Expected:
+// exit non-zero with a usage message and write nothing.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('#4138: state begin-phase guards its required --phase argument', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The issue's clean shape: a milestone-bound ROADMAP, phase dirs on disk
+  // (1-2 verification-passed), and a STATE.md whose progress block already
+  // carries the correct counters — the exact state a null-phase write or a
+  // counter zeroing would destroy.
+  function seedBoundedProject() {
+    const roadmap = [
+      '# Roadmap',
+      '',
+      '## Milestone v1.0: Test Milestone',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 1.    | 1/1            | Complete | 2026-01-01 |',
+      '| 2.    | 1/1            | Complete | 2026-01-02 |',
+      '| 3.    | 0/1            | Not Started |  |',
+      '| 4.    | 0/1            | Not Started |  |',
+      '',
+      '### Phase 1: Alpha',
+      '**Goal:** first',
+      '',
+      '### Phase 2: Beta',
+      '**Goal:** second',
+      '',
+      '### Phase 3: Gamma',
+      '**Goal:** third',
+      '',
+      '### Phase 4: Delta',
+      '**Goal:** fourth',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
+    ['01-alpha', '02-beta', '03-gamma', '04-delta'].forEach((dirName, idx) => {
+      const n = idx + 1;
+      const padded = String(n).padStart(2, '0');
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan\n');
+      if (n <= 2) {
+        fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary\n');
+        writePassedVerification(tmpDir, dirName, padded);
+      }
+    });
+    writeState(
+      tmpDir,
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'milestone_name: Test Milestone',
+        'status: executing',
+        'current_phase: 2',
+        'current_phase_name: Beta',
+        'progress:',
+        '  total_phases: 4',
+        '  completed_phases: 2',
+        '  total_plans: 4',
+        '  completed_plans: 2',
+        '  percent: 50',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 (Beta) — COMPLETE',
+        'Plan: 1 of 1',
+        'Status: Phase 2 complete',
+        'Last activity: 2026-01-02 — Phase 2 execution complete',
+        '',
+        '## Progress',
+        '',
+        'Progress: [█████▓▓▓▓▓] 50% (2/4 phases complete)',
+        '',
+        '## Session Continuity',
+        '',
+        'Last session: 2026-01-02T10:00:00.000Z',
+        '',
+      ].join('\n'),
+    );
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+  }
+
+  // #4138 row 1 — the failing-first regression. A begin-phase that names no
+  // phase must exit non-zero with a usage message and leave STATE.md
+  // byte-identical: no "Phase null" prose, no current_phase removal, no
+  // state.json publication, no milestone claim for the literal phase "null".
+  test('beginPhaseWithoutPhaseFailsClosedAndWritesNothing', () => {
+    const before = seedBoundedProject();
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+    const result = runGsdTools(['state', 'begin-phase'], tmpDir);
+
+    assert.strictEqual(result.success, false, '#4138: a missing --phase must fail the command');
+    assert.notStrictEqual(result.exitCode, 0, '#4138: a usage error must exit non-zero');
+    assert.match(result.error, /--phase/, `the usage message must name the required flag; got: ${result.error}`);
+    assert.strictEqual(
+      fs.readFileSync(statePath, 'utf8'),
+      before,
+      '#4138: an invalid invocation must not write STATE.md (no null-phase serialisation, no current_phase removal)',
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, '.planning', 'state.json')),
+      false,
+      '#4138: an invalid invocation must not publish the state contract',
+    );
+  });
+});
