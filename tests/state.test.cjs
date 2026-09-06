@@ -18192,8 +18192,11 @@ describe('#4129: completed_phases derives from the ROADMAP authority and survive
    * plans/summaries and a passing verification; phase 1's SUMMARY carries a
    * NEWER mtime than its verification → `verification status` routes `stale`
    * → disk numerator 2, ROADMAP truth 3. STATE.md starts at the truth (3).
+   * `includeStoredProgress: false` writes STATE.md with NO stored progress
+   * block, so the reported counters are exactly what the derivation computes
+   * (the read-path ratchet has no stored block to lean on).
    */
-  function buildStaleVerificationFixture(cwd, initialCompleted = 3) {
+  function buildStaleVerificationFixture(cwd, initialCompleted = 3, includeStoredProgress = true) {
     const planningDir = path.join(cwd, '.planning');
     const phasesDir = path.join(planningDir, 'phases');
     fs.mkdirSync(phasesDir, { recursive: true });
@@ -18218,45 +18221,49 @@ describe('#4129: completed_phases derives from the ROADMAP authority and survive
     }
     fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmapLines.join('\n'));
 
-    fs.writeFileSync(
-      path.join(planningDir, 'STATE.md'),
-      [
-        '---',
-        'gsd_state_version: 1.0',
-        'milestone: v1.0',
-        'milestone_name: Programme',
-        'status: executing',
-        'current_phase: 4',
-        'last_updated: 2026-01-03T10:00:00.000Z',
+    const stateLines = [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.0',
+      'milestone_name: Programme',
+      'status: executing',
+      'current_phase: 4',
+      'last_updated: 2026-01-03T10:00:00.000Z',
+    ];
+    if (includeStoredProgress) {
+      stateLines.push(
         'progress:',
         '  total_phases: 18',
         `  completed_phases: ${initialCompleted}`,
         '  total_plans: 6',
         '  completed_plans: 6',
         '  percent: 17',
-        '---',
-        '',
-        '# Project State',
-        '',
-        '## Current Position',
-        '',
-        'Phase: 4 of 18 (P4) — EXECUTING',
-        'Plan: 1 of 2',
-        'Status: Executing Phase 4',
-        'Last activity: 2026-01-03',
-        '',
-        '## Progress',
-        '',
-        `Progress: [██░░░░░░░░] 17% (${initialCompleted}/18 phases complete)`,
-        '',
-        '## Session',
-        '',
-        'Last session: 2026-01-03T10:00:00.000Z',
-        'Stopped at: Finished phase 3',
-        'Resume file: None',
-        '',
-      ].join('\n'),
+      );
+    }
+    stateLines.push(
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 4 of 18 (P4) — EXECUTING',
+      'Plan: 1 of 2',
+      'Status: Executing Phase 4',
+      'Last activity: 2026-01-03',
+      '',
+      '## Progress',
+      '',
+      `Progress: [██░░░░░░░░] 17% (${initialCompleted}/18 phases complete)`,
+      '',
+      '## Session',
+      '',
+      'Last session: 2026-01-03T10:00:00.000Z',
+      'Stopped at: Finished phase 3',
+      'Resume file: None',
+      '',
     );
+    fs.writeFileSync(path.join(planningDir, 'STATE.md'), stateLines.join('\n'));
 
     for (const p of [1, 2, 3]) {
       const pp = String(p).padStart(2, '0');
@@ -18330,15 +18337,7 @@ describe('#4129: completed_phases derives from the ROADMAP authority and survive
   test('stateJsonDerivesCompletedPhasesFromRoadmapAuthority', (t) => {
     const cwd = createTempDir('gsd-4129-jsonfloor-');
     t.after(() => cleanup(cwd));
-    buildStaleVerificationFixture(cwd, 3);
-
-    // Drop the stored block: the derivation has no stored value to ratchet
-    // against, so the reported counter IS the derived numerator.
-    const statePath = path.join(cwd, '.planning', 'STATE.md');
-    fs.writeFileSync(
-      statePath,
-      fs.readFileSync(statePath, 'utf-8').replace(/^progress:[\s\S]*?---/m, '---'),
-    );
+    buildStaleVerificationFixture(cwd, 3, false);
 
     const result = runGsdTools(['state', 'json'], cwd);
     assert.ok(result.success, `state json failed: ${result.error}`);
@@ -18372,19 +18371,17 @@ describe('#4129: completed_phases derives from the ROADMAP authority and survive
   test('floorIsInertWithoutCanonicalProgressTable', (t) => {
     const cwd = createTempDir('gsd-4129-notable-');
     t.after(() => cleanup(cwd));
-    buildStaleVerificationFixture(cwd, 2);
+    buildStaleVerificationFixture(cwd, 2, false);
 
     // Rewrite the ROADMAP with the table stripped — checklist only.
+    // CRLF-tolerant line split (local/no-crlf-fragile-split).
     const roadmapPath = path.join(cwd, '.planning', 'ROADMAP.md');
     const withoutTable = fs
       .readFileSync(roadmapPath, 'utf-8')
-      .split('\n')
+      .split(/\r?\n/)
       .filter((line) => !line.trimStart().startsWith('|'))
       .join('\n');
     fs.writeFileSync(roadmapPath, withoutTable);
-
-    const statePath = path.join(cwd, '.planning', 'STATE.md');
-    fs.writeFileSync(statePath, fs.readFileSync(statePath, 'utf-8').replace(/^progress:[\s\S]*?---/m, '---'));
 
     const result = runGsdTools(['state', 'json'], cwd);
     assert.ok(result.success, `state json failed: ${result.error}`);

@@ -7391,6 +7391,16 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
   // fix-4129-completed-phases-recompute/{10-diagnosis,50-test-matrix}.md.
   // ─────────────────────────────────────────────────────────────────────────
   describe('#4129: phase complete increments completed_phases to the ROADMAP truth', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4129-phase-'));
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
     // Body Progress percent through the repo's own field extractor (never raw
     // substring matching on rendered STATE.md — CONTRIBUTING.md prohibits it).
     function bodyProgressPercentFromState(stateContent) {
@@ -7514,7 +7524,7 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       // The ROADMAP row this very transaction flipped is the authority.
       const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8');
       assert.ok(/^- \[x\] Phase 3: Gamma/m.test(roadmap), 'precondition: the transaction flipped the phase 3 ROADMAP checkbox');
-      assert.ok(/^\| 3\.    \| 2\/2            \| Complete \|/m.test(roadmap), 'precondition: the transaction flipped the phase 3 table row');
+      assert.ok(/^\| 3\.\s*\|\s*2\/2\s*\|\s*Complete\s*\|/m.test(roadmap), 'precondition: the transaction flipped the phase 3 table row');
     });
 
     test('phaseCompleteIsIdempotentOnTheRoadmapTruth', () => {

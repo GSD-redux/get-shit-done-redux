@@ -17,11 +17,16 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession, stateCurrentPositionSlice } from './state-document.cjs';
-import { KNOWN_TEMPLATE_DEFAULTS, toFiniteNumber } from './state-document.cjs';
+import { KNOWN_TEMPLATE_DEFAULTS, toFiniteNumber, computeProgressPercent } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { deriveProgressFromRoadmap, clampPercent, clampPercentFromFraction } from './phase-lifecycle.cjs';
 import { escapeRegex } from './pattern.cjs';
+// #4129: the completion-ratio kernel for the resync-arm ratchet's percent
+// (planning-scope's SCOPE — state-document's own dependency, no cycle here:
+// state-document never imports this module).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateMdSchemaMod = require('./state-md-schema.cjs');
 const { STATE_FIELD_SCHEMA } = stateMdSchemaMod;
@@ -685,6 +690,63 @@ function preservedValuesEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * #4129: the resync-arm progress merge. A resyncing write whose scan MEASURED
+ * something no longer wholesale-replaces the curated block — the declared
+ * `progress-ratchet` mergeStrategy ("completed_plans/completed_phases only ever
+ * ratchet UP toward the derived value (#2969)", state-md-schema.cts) now holds
+ * on the write path too, matching what the read path (`shouldPreserveExistingProgress`)
+ * has always enforced. Rules, mirroring the `deriveProgressKeys` branch above:
+ *
+ * - total_plans / total_phases always take the derived value (#2440 — totals
+ *   correct in BOTH directions).
+ * - completed_plans / completed_phases take the derived value only when it is
+ *   strictly GREATER (#2969's `>` not `>=`); else the curated value survives
+ *   (a hand-corrected or previously-correct counter can never be re-derived
+ *   downward — the #4129 clobber).
+ * - any other key keeps the curated value (the existing branch's convention).
+ * - percent is RECOMPUTED from the merged counters through the single kernel
+ *   (`computeProgressPercent`), because either side's stored percent was
+ *   computed against that side's counters and the merged block may mix them
+ *   (curated completed, derived totals). Recomputation runs ONLY when the
+ *   derived block itself carried a percent — an upstream withhold
+ *   (#1761 milestone-unbounded, #3217 scope) nulled percent deliberately and
+ *   this merge must not resurrect it.
+ *
+ * Frontmatter scalars arrive as STRINGS ("2", not 2), so every comparison
+ * coerces through `toFiniteNumber` — never a `typeof === 'number'` test
+ * (scanMeasuredSomething's own convention).
+ */
+function mergeResyncProgressRatchet(
+  curatedRecord: Record<string, unknown>,
+  derivedRecord: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...derivedRecord };
+  for (const [key, value] of Object.entries(curatedRecord)) {
+    if (key === 'total_plans' || key === 'total_phases' || key === 'percent') continue;
+    if (key === 'completed_plans' || key === 'completed_phases') {
+      const derivedNum = toFiniteNumber(derivedRecord[key]) ?? -Infinity;
+      const curatedNum = toFiniteNumber(value) ?? -Infinity;
+      // Ratchet up only (strictly greater, #2969); else keep curated.
+      if (derivedNum > curatedNum) continue;
+      merged[key] = value;
+    } else {
+      merged[key] = value;
+    }
+  }
+  if (toFiniteNumber(derivedRecord.percent) !== null) {
+    const recomputed = computeProgressPercent(
+      toFiniteNumber(merged.completed_plans),
+      toFiniteNumber(merged.total_plans),
+      toFiniteNumber(merged.completed_phases),
+      toFiniteNumber(merged.total_phases),
+      planningScopeMod.SCOPE.COMPLETE,
+    );
+    if (recomputed !== null) merged.percent = recomputed;
+  }
+  return merged;
+}
+
+/**
  * Executor for `preservation: 'preserve-always'` (ADR-3408 §8.1). Only
  * `progress` carries this policy today. Preserves #3242/#1446/#2440/#2969
  * semantics byte-for-byte on every row the behavior table marks unchanged;
@@ -698,25 +760,41 @@ function applyPreserveAlways(field: string, cls: FieldClassification, ctx: Prese
   const derived = ctx.postFm[field];
   const derivedMeasured = scanMeasuredSomething(cls, derived);
   const curatedMeasured = scanMeasuredSomething(cls, curated);
-  // On a resyncing write the fresh derivation is authoritative — UNLESS it
-  // measured nothing while the curated block did (#3756), AND the caller did
-  // not explicitly name a progress-affecting field this write. The
-  // unmeasured-scan guard exists to stop an INCIDENTAL resync (e.g. `state
-  // add-decision`, whose `resync` defaults true for reasons that have
-  // nothing to do with `progress`) from dropping a real curated block when a
-  // milestone-scoped disk scan measures nothing (#3756's archived-milestone
-  // case). It must not also block a write the user pointed AT `progress` on
-  // purpose: `preserve-always`'s own contract is "never overwrite unless the
-  // caller explicitly names this field" (FIELD_CLASSIFICATION doc comment),
-  // and `state update Progress` / `state patch Progress=...` are exactly
-  // that naming — the resync they trigger must win even when the disk scan
-  // it also drives (e.g. because there are no phase dirs at all) reads as
-  // "unmeasured" (tests/frontmatter.test.cjs: "state.update \"Progress\"
-  // resyncs progress frontmatter from the updated body", pre-existing, #3242).
-  if (ctx.resync && (derivedMeasured || !curatedMeasured || ctx.explicitProgressField)) return;
+  // On a resyncing write the fresh derivation is authoritative in two cases
+  // (#3756 / ADR-3473 §8.6, unchanged): when the caller EXPLICITLY named a
+  // progress-affecting field (`preserve-always`'s contract is "never
+  // overwrite unless the caller explicitly names this field" — `state update
+  // Progress` is exactly that naming, pre-existing #3242 behavior), and when
+  // the derivation measured something the curated block did not (an
+  // unmeasured CURATED block is not worth protecting). The unmeasured-DERIVED
+  // guard also stands: an incidental resync (e.g. `state add-decision`, whose
+  // `resync` defaults true for reasons that have nothing to do with
+  // `progress`) that measured nothing must not drop a real curated block
+  // (#3756's archived-milestone case) — that falls through to the wholesale
+  // restore below.
+  //
+  // #4129 narrows the remaining arm. A resyncing write whose scan MEASURED
+  // something while the curated block is also real previously wholesale-
+  // replaced the curated block with the derived one — no monotonic guard, so
+  // any under-counting derivation (a stale-dated verification, #2348) silently
+  // reverted every hand-correction and every correct value an earlier write
+  // had persisted, while the read path (`shouldPreserveExistingProgress`)
+  // kept reporting the higher stored counters. That arm now falls through to
+  // `mergeResyncProgressRatchet` — the declared `progress-ratchet`
+  // mergeStrategy, finally enforced on the write path: totals derived both
+  // directions (#2440), completed counters up-only (#2969), percent
+  // recomputed from the merged counters.
+  if (ctx.resync && (ctx.explicitProgressField || (derivedMeasured && !curatedMeasured))) return;
 
   let next: unknown;
-  if (cls.mergeStrategy === 'progress-ratchet' && ctx.deriveProgressKeys && derived && derivedMeasured) {
+  if (cls.mergeStrategy === 'progress-ratchet' && ctx.resync && derived && derivedMeasured && curatedMeasured) {
+    // #4129 resync arm — see mergeResyncProgressRatchet's doc. Reached only
+    // after the early-out above, so curatedMeasured is guaranteed true here.
+    next = mergeResyncProgressRatchet(
+      curated as Record<string, unknown>,
+      (derived ?? {}) as Record<string, unknown>,
+    );
+  } else if (cls.mergeStrategy === 'progress-ratchet' && ctx.deriveProgressKeys && derived && derivedMeasured) {
     // #2440: total_plans and total_phases always take the derived (post-sync)
     // value even under !resync. This is used by cmdStatePlannedPhase where
     // total_plans must correct upward after plans are added. For body-only

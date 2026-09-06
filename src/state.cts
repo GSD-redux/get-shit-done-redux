@@ -69,6 +69,13 @@ import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verificationMod = require('./verification.cjs');
 const { isPhaseComplete } = verificationMod;
+// #4129: the single owner of "count the ROADMAP's milestone Complete rows"
+// (phase-lifecycle.cts) — reused for the completed-phases numerator floor so
+// this scan cannot grow a second ROADMAP parser. Pure computation module (no
+// I/O), so it introduces no cycle on this path.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseLifecycleMod = require('./phase-lifecycle.cjs');
+const { deriveProgressFromRoadmap } = phaseLifecycleMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -3014,6 +3021,34 @@ function buildStateFrontmatter(
             // write silently clobbered the three stored siblings with the
             // under-scoped disk numbers.
             const diskCountsWithheld = milestonedButUnbounded || roadmapAbsentWithAssertedMilestone;
+            // #4129: floor the completed-phases numerator at the ROADMAP's own
+            // milestone Complete-row count. The disk numerator counts ONLY
+            // phase dirs whose *-VERIFICATION.md routes `passed` (isPhaseComplete,
+            // #2957 disk-strict — the gate stays untouched), so a completed
+            // phase whose verification reads `stale` (a SUMMARY committed or
+            // edited after it, #2348 clean-commit-time clock) or `missing`
+            // (pre-verification era, hand-flipped ROADMAP row) drops out of the
+            // count forever — while every other surface (the ROADMAP row
+            // `phase complete` just flipped, the body `Completed Phases` field
+            // completePhaseCore derives from deriveProgressFromRoadmap) still
+            // asserts the phase complete. max(disk, ROADMAP) keeps the disk
+            // signal for gap detection (a verification-passed phase whose ROADMAP
+            // row is not yet flipped still counts) while never UNDER-counting
+            // what the ROADMAP asserts. Scoped exactly like the denominator:
+            // the same milestone window (roadmapScope), the same
+            // safeToUseRoadmapCount gate, and never under the #3354/#3573
+            // withhold — a whole-document Complete-row count must not leak
+            // through an untrustworthy scope. Reuses deriveProgressFromRoadmap
+            // (phase-lifecycle.cts, the one owner of "read the Progress table")
+            // — no second ROADMAP parser here. A ROADMAP without a canonical
+            // `## Progress` table resolves no table → floor inert (disk count
+            // stands), the owner's own answer to "what is countable".
+            const roadmapCompletedPhases = roadmapScope !== null && safeToUseRoadmapCount && !diskCountsWithheld
+              ? deriveProgressFromRoadmap(roadmapScope).completedPhases
+              : null;
+            const flooredCompletedPhases = roadmapCompletedPhases !== null
+              ? Math.max(diskCompletedPhases, roadmapCompletedPhases)
+              : diskCompletedPhases;
             return {
               // The two WITHHOLD shapes (#3354 milestoned-but-unbounded, #3573
               // roadmap-absent-with-asserted-milestone) must be evaluated BEFORE
@@ -3024,7 +3059,7 @@ function buildStateFrontmatter(
                 ? null
                 : (safeToUseRoadmapCount ? Math.max(phaseDirs.length, roadmapPhaseCount) : phaseDirs.length),
               milestoneBounded,
-              completedPhases: diskCountsWithheld ? null : diskCompletedPhases,
+              completedPhases: diskCountsWithheld ? null : flooredCompletedPhases,
               totalPlans: diskCountsWithheld ? null : diskTotalPlans,
               completedPlans: diskCountsWithheld ? null : diskTotalSummaries,
               phaseDirScope,
@@ -3395,6 +3430,73 @@ function readStoredCompletedPlans(existingFm: Record<string, unknown> | null | u
   return readStoredProgressCounter(existingFm, 'completed_plans');
 }
 
+/**
+ * #4129: is this authoritativeFm value a PARTIAL progress intent? The #2736
+ * seam was string-only (names); #4129 extends it with one object direction —
+ * the `progress` key carrying the sub-keys a transition resolved
+ * authoritatively (completePhase's ROADMAP-derived completed_phases/percent).
+ * Anything else keeps the seam's existing contract untouched.
+ */
+function isPartialProgressIntent(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * #4129: merge a PARTIAL progress intent (see isPartialProgressIntent) into a
+ * frontmatter object's `progress` block. Sub-keys are accepted only when they
+ * are a declared `progress.*` row in FIELD_CLASSIFICATION — the single policy
+ * source (ADR-3408 §8.5) decides which leaves exist; an intent may not invent
+ * one. Returns whether anything changed.
+ *
+ * `completedOnlyRaise` (the post-preservation re-assert posture): completed
+ * counters apply only when strictly greater than what is already in the block,
+ * so the #2969 monotonic property preservation just enforced survives the
+ * intent. `percent` follows its sibling: it is applied when a completed
+ * counter moved this call (the intent percent was computed from the intent
+ * counters and is coherent with them) or when the block has no percent to
+ * lose (a repair, never a regression of an upstream withhold — the withhold
+ * nulled percent upstream precisely so no write would re-assert one over
+ * untrustworthy counts; here the intent's own counts ARE the trustworthy
+ * source, the post-completion ROADMAP).
+ */
+function applyAuthoritativeProgressSubkeys(
+  fm: Record<string, unknown>,
+  intent: Record<string, unknown>,
+  opts: { completedOnlyRaise: boolean },
+): boolean {
+  const current = fm['progress'];
+  const base: Record<string, unknown> = isPartialProgressIntent(current)
+    ? { ...current }
+    : {};
+  let changed = false;
+  let completedMoved = false;
+  for (const [subkey, value] of Object.entries(intent)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    if (!getFieldClassification(`progress.${subkey}`)) continue;
+    const isCompletedCounter = subkey === 'completed_phases' || subkey === 'completed_plans';
+    if (isCompletedCounter && opts.completedOnlyRaise) {
+      const currentNum = toFiniteNumber(base[subkey]);
+      if (currentNum !== null && currentNum >= value) continue;
+    }
+    if (isCompletedCounter && !Object.is(base[subkey], value)) completedMoved = true;
+    if (!Object.is(base[subkey], value)) {
+      base[subkey] = value;
+      changed = true;
+    }
+  }
+  // percent: applied only when a completed counter moved (coherent with the
+  // counters that just landed) or when no percent exists to contradict.
+  const intentPercent = intent['percent'];
+  if (typeof intentPercent === 'number' && Number.isFinite(intentPercent) && (completedMoved || toFiniteNumber(base['percent']) === null)) {
+    if (!Object.is(base['percent'], intentPercent)) {
+      base['percent'] = intentPercent;
+      changed = true;
+    }
+  }
+  if (changed) fm['progress'] = base;
+  return changed;
+}
+
 function syncStateFrontmatter(
   content: string,
   cwd: string | undefined,
@@ -3620,10 +3722,16 @@ function syncStateFrontmatter(
   // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`) — never runs
   // the final word on a field the transition just resolved. The prose parser
   // remains the fallback for genuinely unknown prose only.
+  // #4129: the `progress` key carries a PARTIAL block (the object direction of
+  // this seam — see applyAuthoritativeProgressSubkeys) for the same reason:
+  // completePhase holds the POST-completion ROADMAP, and the disk scan this
+  // function drives reads the PRE-completion one.
   if (authoritativeFm) {
     for (const [key, value] of Object.entries(authoritativeFm)) {
       if (typeof value === 'string' && value.trim().length > 0) {
         derivedFm[key] = value;
+      } else if (key === 'progress' && isPartialProgressIntent(value)) {
+        applyAuthoritativeProgressSubkeys(derivedFm, value, { completedOnlyRaise: false });
       }
     }
   }
@@ -4194,12 +4302,20 @@ function applyPostSyncPreservation(
   // (equal), so the #1695 restore fires and would put the stale pre-transition
   // name back over the authoritative one. Intent beats both the prose
   // re-derivation and the curated restore — the transition just resolved it.
+  // #4129: for the `progress` key the re-assert is a FLOOR, not an override —
+  // the #2969 monotonic property preservation just enforced (completed
+  // counters never move down) must not be undone by the intent, so completed
+  // sub-keys apply only-raise here (see applyAuthoritativeProgressSubkeys).
   let authoritativeReasserted = false;
   if (authoritativeFm) {
     for (const [key, value] of Object.entries(authoritativeFm)) {
       if (typeof value === 'string' && value.trim().length > 0 && preservation.postFm[key] !== value) {
         preservation.postFm[key] = value;
         authoritativeReasserted = true;
+      } else if (key === 'progress' && isPartialProgressIntent(value)) {
+        if (applyAuthoritativeProgressSubkeys(preservation.postFm, value, { completedOnlyRaise: true })) {
+          authoritativeReasserted = true;
+        }
       }
     }
   }
