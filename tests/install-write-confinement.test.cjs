@@ -4013,3 +4013,179 @@ describe('Bug #4086: saveLocalPatches resolves skills/ manifest keys at the runt
 });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4145 (self-heal side). saveLocalPatches'
+// preserve-check resolved gsd-pristine/ entries strictly by the manifest-keyed
+// path, so a hash-matching snapshot stored without the gsd-core/ prefix was
+// pushed into regeneration from the incoming release; when upstream changed
+// the file, the candidate hash-mismatched and was discarded. The correct
+// baseline was never consumed and never pruned — the state repeated on every
+// future update. The fix rescues exact-recorded-hash orphans by relocating
+// them to the canonical path.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4145-saveLocalPatches-orphan-rescue', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+
+const ROOT = path.join(__dirname, '..');
+const INSTALL = require(path.join(ROOT, 'bin', 'install.js'));
+const { cleanup } = require('./helpers.cjs');
+
+const MANIFEST_NAME = 'gsd-file-manifest.json';
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+describe('Bug #4145: saveLocalPatches rescues hash-matching orphaned pristine snapshots', () => {
+  let tmpDir;
+  let configDir;
+  let newSrcDir;
+  let pristineDir;
+
+  const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+  const OLD_PRISTINE = '# Old Release Content\nThis is the outgoing pristine.\n';
+  const NEW_RELEASE = '# New Release Content\nUpstream rewrote this file wholesale in v2.\n';
+  const USER_MODIFIED = OLD_PRISTINE + '## User addition\nUser customization here.\n';
+
+  beforeEach((t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-slp-'));
+    configDir = path.join(tmpDir, 'config');
+    newSrcDir = path.join(tmpDir, 'new-release-src');
+    pristineDir = path.join(configDir, 'gsd-pristine');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(newSrcDir, { recursive: true });
+    t.after(() => {
+      cleanup(tmpDir);
+    });
+  });
+
+  function seedFixture({ orphanRel, orphanContent, canonicalContent, newReleaseContent }) {
+    fs.writeFileSync(path.join(configDir, FILE), USER_MODIFIED);
+    fs.writeFileSync(
+      path.join(configDir, MANIFEST_NAME),
+      JSON.stringify({ version: '1.0.0', files: { [FILE]: sha256(OLD_PRISTINE) } }, null, 2),
+    );
+    if (canonicalContent !== undefined) {
+      fs.mkdirSync(path.dirname(path.join(pristineDir, FILE)), { recursive: true });
+      fs.writeFileSync(path.join(pristineDir, FILE), canonicalContent);
+    }
+    if (orphanRel !== undefined) {
+      fs.mkdirSync(path.dirname(path.join(pristineDir, orphanRel)), { recursive: true });
+      fs.writeFileSync(path.join(pristineDir, orphanRel), orphanContent);
+    }
+    fs.mkdirSync(path.dirname(path.join(newSrcDir, FILE)), { recursive: true });
+    fs.writeFileSync(path.join(newSrcDir, FILE), newReleaseContent);
+  }
+
+  /**
+   * Core regression (self-heal): the hash-matching snapshot sits at
+   * bin/lib/frontmatter.cjs — without the gsd-core/ segment. The new release
+   * changed the file upstream, so regeneration candidates are discarded.
+   * After the fix the orphan is relocated to the canonical manifest-keyed
+   * path and the unprefixed copy no longer lingers.
+   */
+  test('#4145: saveLocalPatches relocates a hash-matching unprefixed orphan to the canonical pristine path', () => {
+    const orphanRel = 'bin/lib/frontmatter.cjs';
+    seedFixture({ orphanRel, orphanContent: OLD_PRISTINE, newReleaseContent: NEW_RELEASE });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const canonical = path.join(pristineDir, FILE);
+    assert.ok(fs.existsSync(canonical), 'canonical prefixed pristine must exist after the update');
+    assert.equal(sha256(fs.readFileSync(canonical, 'utf8')), sha256(OLD_PRISTINE),
+      'relocated baseline must carry the outgoing (recorded-hash) bytes, not new-release bytes');
+    assert.equal(fs.existsSync(path.join(pristineDir, orphanRel)), false,
+      'the unprefixed orphan must not linger once relocated');
+  });
+
+  /**
+   * Stale canonical (new-release bytes) + hash-matching orphan elsewhere:
+   * the stale entry is removed by the #3407 path and then rescued from the
+   * orphan — the file must not end in no-baseline limbo.
+   */
+  test('#4145: rescues after stale-canonical removal when a hash-matching orphan exists', () => {
+    seedFixture({
+      orphanRel: 'legacy/frontmatter.cjs',
+      orphanContent: OLD_PRISTINE,
+      canonicalContent: NEW_RELEASE, // stale — hash mismatch
+      newReleaseContent: NEW_RELEASE,
+    });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const canonical = path.join(pristineDir, FILE);
+    assert.ok(fs.existsSync(canonical), 'canonical pristine must exist after stale removal + rescue');
+    assert.equal(sha256(fs.readFileSync(canonical, 'utf8')), sha256(OLD_PRISTINE),
+      'rescued baseline must carry the recorded-hash bytes');
+    assert.equal(fs.existsSync(path.join(pristineDir, 'legacy', 'frontmatter.cjs')), false,
+      'the orphan must be consumed by the relocation');
+  });
+
+  /** Negative space: no orphan, upstream changed — regeneration discard (#3407) is unchanged. */
+  test('#4145: leaves the baseline absent when no orphan exists and upstream changed', () => {
+    seedFixture({ newReleaseContent: NEW_RELEASE });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    assert.equal(fs.existsSync(path.join(pristineDir, FILE)), false,
+      'no hash-matching source exists — the baseline must stay absent (over-broad/no-baseline fallback)');
+  });
+
+  /** Negative space: a mismatching orphan is neither adopted nor deleted. */
+  test('#4145: never adopts nor deletes a hash-mismatching orphan', () => {
+    const orphanRel = 'bin/lib/frontmatter.cjs';
+    seedFixture({ orphanRel, orphanContent: NEW_RELEASE, newReleaseContent: NEW_RELEASE });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    assert.equal(fs.existsSync(path.join(pristineDir, FILE)), false,
+      'mismatching bytes must not be written to the canonical pristine path');
+    assert.equal(fs.existsSync(path.join(pristineDir, orphanRel)), true,
+      'pruning files the recorded hashes do not vouch for is not this fix\'s job');
+  });
+
+  /** Preserve-path lock: an already-correct canonical stays put; the preserve loop ignores the orphan. */
+  test('#4145: preserves an already-correct canonical and leaves a coexisting identical orphan in place', () => {
+    const orphanRel = 'bin/lib/frontmatter.cjs';
+    seedFixture({
+      orphanRel,
+      orphanContent: OLD_PRISTINE,
+      canonicalContent: OLD_PRISTINE, // already correct
+      newReleaseContent: NEW_RELEASE,
+    });
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const canonical = path.join(pristineDir, FILE);
+    assert.ok(fs.existsSync(canonical));
+    assert.equal(sha256(fs.readFileSync(canonical, 'utf8')), sha256(OLD_PRISTINE),
+      'preserved canonical must be byte-identical to before the run');
+    assert.equal(fs.existsSync(path.join(pristineDir, orphanRel)), true,
+      'the preserve path must not disturb unrelated files');
+  });
+});
+  });
+}
