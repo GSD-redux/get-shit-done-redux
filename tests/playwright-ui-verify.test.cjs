@@ -2,7 +2,7 @@
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
 
-const { test, describe } = require('node:test');
+const { test, describe, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -151,6 +151,19 @@ function logicalLines(lines) {
 // two-line `then` form is recognised, and ANY residual line still carrying a bare
 // control keyword this walker did not consume THROWS. A test that cannot parse the
 // block fails loudly; it never reports on a stack it has lost track of.
+// Does this text carry a shell control keyword the walker did not consume?
+//
+// QUOTED TEXT IS REMOVED FIRST — `echo "we do work"` threw on the `do` inside a string,
+// and a guard that false-fires is a guard that gets deleted. The boundary set includes
+// the redirection and grouping characters, because `fi>/dev/null` was accepted (and so
+// silently failed to pop the scope stack) purely for want of `>` in it. `else` is in the
+// keyword list for the same reason: `else echo unparsed` reached neither the bare-`else`
+// branch nor this check. All three driven.
+function hasControlKeyword(text) {
+  const bare = text.replace(/'[^']*'/g, ' ').replace(/"(?:[^"\\]|\\.)*"/g, ' ');
+  return /(^|[\t ;&|(){}<>])(if|then|else|elif|fi|do|done|case|esac)([\t ;&|(){}<>]|$)/.test(bare);
+}
+
 function guardedLines(lines) {
   const stack = [];
   const rows = [];
@@ -171,7 +184,19 @@ function guardedLines(lines) {
       throw new Error(`bash reader: '${pendingIf}' opened an if with no 'then' — got ${JSON.stringify(t)}`);
     }
     const ifMatch = /^if[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
-    if (ifMatch) { stack.push(ifMatch[1]); continue; }
+    if (ifMatch) {
+      // The lazy quantifier still spans `;`, so `if A; then :; fi; if true; then` matched
+      // as ONE header whose "condition" swallowed a complete if/fi and a second `if` —
+      // and the echo that followed inherited a guard mentioning CAPTURED that governed
+      // nothing. Driven: bash printed the success line with CAPTURED=0 while the
+      // structural assertion passed. A condition is not allowed to contain control
+      // keywords; if it does, this is a compound line the walker cannot model.
+      if (hasControlKeyword(ifMatch[1])) {
+        throw new Error(`bash reader: compound if header — ${JSON.stringify(t)}`);
+      }
+      stack.push(ifMatch[1]);
+      continue;
+    }
     const ifPending = /^if[\t ]+(.{1,4000}?)[\t ]*$/.exec(t);
     if (ifPending && !/;/.test(ifPending[1])) { pendingIf = ifPending[1]; continue; }
     const elifMatch = /^elif[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
@@ -187,7 +212,7 @@ function guardedLines(lines) {
     // uses a form it cannot model, and continuing would report guards it no longer knows.
     // Word-boundary matched so `elif`/`fi` inside a string or an identifier does not fire;
     // an over-fire here costs a loud test failure, an under-fire costs a false clean.
-    if (/(^|[\t ;&|(])(if|then|elif|fi|do|done|case|esac)([\t ;&|)]|$)/.test(t)) {
+    if (hasControlKeyword(t)) {
       throw new Error(`bash reader: unparsed control construct — ${JSON.stringify(t)}`);
     }
     rows.push({ line: t, guards: stack.slice() });
@@ -215,23 +240,34 @@ function guardedLines(lines) {
 // uses, and it is what the false PASS above needed. A `#` starts a comment only when it is
 // outside quotes AND at the start of a word — `foo#bar` is one word to bash, not a comment.
 function stripComment(line) {
+  // A STACK, not a single quote flag. Three constructs defeated the flat scanner, all
+  // driven: `$'x\' # quoted'` (ANSI-C quoting, where a backslash-escaped quote is NOT the
+  // terminator the flat scanner took it for), `"$(printf "%s" " # ")"` (a command
+  // substitution restarts quoting inside an already-open double quote), and their
+  // combinations. A `#` opens a comment only with the stack EMPTY and at a word start.
+  const stack = [];
+  const top = () => stack[stack.length - 1];
   let out = '';
-  let quote = null;       // null | "'" | '"'
   for (let i = 0; i < line.length; i += 1) {
     const c = line[i];
-    if (quote === "'") { out += c; if (c === "'") quote = null; continue; }
-    if (quote === '"') {
+    const ctx = top();
+    if (ctx === 'sq') { out += c; if (c === "'") stack.pop(); continue; }
+    if (ctx === 'ansi') {                       // $'...' — backslash escapes ARE processed
       if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
-      out += c; if (c === '"') quote = null; continue;
+      out += c; if (c === "'") stack.pop(); continue;
     }
     if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
-    if (c === "'" || c === '"') { out += c; quote = c; continue; }
-    if (c === '#' && (i === 0 || /[\t ]/.test(line[i - 1]))) {
-      // A `\` that the removed text was hiding did NOT continue the line in bash, so this
+    if (c === '$' && line[i + 1] === "'") { out += c + line[i + 1]; i += 1; stack.push('ansi'); continue; }
+    if (c === '$' && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
+    if (c === ')' && ctx === 'cmd') { out += c; stack.pop(); continue; }
+    if (c === '"' && ctx === 'dq') { out += c; stack.pop(); continue; }
+    if (c === '"') { out += c; stack.push('dq'); continue; }
+    if (c === "'" && ctx !== 'dq') { out += c; stack.push('sq'); continue; }
+    if (c === '#' && stack.length === 0 && (i === 0 || /[\t ]/.test(line[i - 1]))) {
+      // A `\` the removed text was hiding did NOT continue the line in bash, so this
       // reader must not treat it as one. Driven: `echo one \ # x` followed by
-      // `--timeout=30000` runs the second line as its OWN command — bash never joins them.
-      // Keeping the backslash would make logicalLines() join what bash does not, so a flag
-      // on the following line would satisfy an assertion the real command never receives.
+      // `--timeout=30000` runs the second line as its OWN command — bash never joins
+      // them, and keeping the backslash would make logicalLines() join what bash does not.
       return out.replace(/[\t ]+$/, '').replace(/\\+$/, '');
     }
     out += c;
@@ -253,17 +289,23 @@ function caseLabelOf(line) {
   let end = -1;
   for (let i = 0; i < t.length; i += 1) {
     const c = t[i];
+    // Escapes inside double quotes: `"a\")"` is ONE pattern, and reading its escaped
+    // quote as the terminator truncated the label and false-FAILED the arm. Driven.
+    if (quote === '"' && c === '\\') { i += 1; continue; }
     if (quote) { if (c === quote) quote = null; continue; }
     if (c === "'" || c === '"') { quote = c; continue; }
     if (c === '\\') { i += 1; continue; }
     if (c === ')') { end = i; break; }
   }
   if (end <= 0) return null;
-  const label = t.slice(0, end);
-  // A case label is patterns joined by `|`; anything with a space or `=` in it is a
-  // command line that merely happens to contain a `)`, not an arm.
-  if (/[\t =]/.test(label)) return null;
-  return label.split('|').map((x) => x.trim()).filter((x) => x !== '');
+  // Whitespace is legal before the arm terminator — `200 )` — and rejecting the label on
+  // any whitespace made caseLabelOf return null there, which silently downgraded the
+  // range check to the body test the case label had already made vacuous. Driven.
+  const patterns = t.slice(0, end).split('|').map((x) => x.trim());
+  if (patterns.length === 0 || patterns.some((x) => x === '' || /[\t =]/.test(x))) return null;
+  // Quotes are not part of the pattern: `"2"??` and `"401"` are the quoted spellings of
+  // `2??` and `401`, and returning them with quotes attached false-FAILED both.
+  return patterns.map((x) => x.replace(/['"]/g, ''));
 }
 
 function captureInvocations(lines) {
@@ -422,9 +464,12 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       // strictly worse than the last-wins bug this guards — and all 15 tests passed,
       // because a `-n` test was still textually present. Accept exactly the two forms
       // that mean "keep the first": `[ -n "$DEV_GATED" ] ||` and `[ -z "$DEV_GATED" ] &&`.
+      // The operator must gate THE ASSIGNMENT. `[ -n "$DEV_GATED" ] || :; DEV_GATED=...`
+      // satisfies a guard-anywhere-on-the-line regex and still reports the LAST gated
+      // port, because the `;` ends the conditional before the assignment runs. Driven.
       assert.ok(
-        /\[[\t ]+-n[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*\|\|/.test(line)
-          || /\[[\t ]+-z[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*&&/.test(line),
+        /\[[\t ]+-n[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*\|\|[\t ]*DEV_GATED=/.test(line)
+          || /\[[\t ]+-z[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*&&[\t ]*DEV_GATED=/.test(line),
         `the auth-gated port must be recorded first-wins — \`[ -n "$DEV_GATED" ] ||\` or \`[ -z "$DEV_GATED" ] &&\`; the operator is what makes it first-wins, not the test: ${line}`
       );
     }
@@ -488,11 +533,15 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       // timeout, so a presence check accepts the exact state this assertion exists to
       // forbid — driven against the previous version, which passed 15/15 with every
       // capture at `--timeout=0`.
-      const flag = /--timeout[= ]([0-9]+)\b/.exec(line);
-      assert.ok(flag, `capture must be time-bounded — playwright screenshot defaults to no timeout: ${line}`);
+      // THE LAST occurrence, because a repeated option is last-wins in the real command:
+      // `--timeout=30000 --timeout=0` passed a first-match read while passing no timeout
+      // at all. (The executed suite reads real argument boundaries and is the stronger
+      // check; this one keeps the source-level assertion honest.)
+      const found = [...line.matchAll(/--timeout[= ]([0-9]+)\b/g)];
+      assert.ok(found.length > 0, `capture must be time-bounded — playwright screenshot defaults to no timeout: ${line}`);
       assert.ok(
-        Number(flag[1]) > 0,
-        `--timeout=0 IS playwright's no-timeout setting — the bound must be positive: ${line}`
+        Number(found[found.length - 1][1]) > 0,
+        `--timeout=0 IS playwright's no-timeout setting — the effective bound must be positive: ${line}`
       );
     }
   });
@@ -611,7 +660,10 @@ const urlOf = (server) => `http://127.0.0.1:${server.address().port}`;
 function runProbe(url) {
   return new Promise((resolve, reject) => {
     execFile(process.execPath, ['-e', probeProgram(), url], { timeout: 30000 },
-      (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout).trim())));
+      // NOT trimmed. The bash `case "$PROBE" in 2??)` matches the RAW captured value, so
+      // a program emitting " 200" resolves no dev server in the product while a trimmed
+      // comparison here would call it 200 and pass.
+      (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout))));
   });
 }
 
@@ -646,10 +698,10 @@ describe('#4176 — the probe program, executed against real servers', () => {
   });
 
   test('nothing listening probes as 000', async () => {
-    const server = await listen((req, res) => { res.writeHead(200); res.end(); });
-    const dead = urlOf(server);
-    await close(server);
-    assert.strictEqual(await runProbe(dead), '000');
+    // Port 1 rather than a just-released ephemeral one: closing a server and probing its
+    // port is a race, and rebinding it inside that window was driven to return 200.
+    // Port 1 is privileged, so nothing in this test's world can be listening on it.
+    assert.strictEqual(await runProbe('http://127.0.0.1:1'), '000');
   });
 
   test('a port that accepts but never answers is time-bounded, not a hang', async () => {
@@ -668,33 +720,65 @@ describe('#4176 — the probe program, executed against real servers', () => {
 
 // The fence needs a POSIX shell. Windows CI has no bash on PATH by default, and the
 // repo's other fence-executing tests take the same platform gate.
-const BASH = process.platform === 'win32' ? null : 'bash';
+// The fence needs a POSIX shell. Gate on bash actually being RUNNABLE, not on the
+// platform: a `process.platform === 'win32'` gate also skips silently on any non-Windows
+// host without bash, and claims Windows has none when Git Bash is often present.
+const BASH_OK = (() => {
+  const r = spawnSync('bash', ['-c', 'exit 0'], { encoding: 'utf8', timeout: 15000 });
+  return r.status === 0;
+})();
 
-describe('#4176 — the capture fence, executed', { skip: BASH ? false : 'no bash on this platform' }, () => {
-  // Stub `node` and `npx` on PATH, run the fence, and read what it printed and left.
-  //  PROBE_<port>   the status the stubbed probe reports for that port
-  //  SHOT_FAIL      space-separated viewport names whose capture "fails"
-  //  SHOT_PARTIAL   viewport names whose failed capture still writes a zero-byte file
+describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+  const tmpDirs = [];
+  after(() => { for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true }); });
+
+  // Stub `node` and `npx` on PATH, run the fence, and read what it printed, what it left
+  // on disk, what it passed to the capture binary, and what CAPTURE_STATUS ended up as.
+  //
+  // EXIT STATUS AND FILE CONTENT ARE INDEPENDENT KNOBS, and that independence is the
+  // whole point of this harness. The first version derived both from one `SHOT_FAIL`
+  // list: success always wrote a non-empty file, failure never did. Two different
+  // regressions then passed every fixture — deleting the `[ -s ... ]` check, and
+  // ignoring the capture command's exit status — because with the two signals perfectly
+  // correlated, either one alone reproduces the correct answer. Both were driven.
+  //   SHOT_EXIT   viewports whose capture command exits non-zero
+  //   SHOT_WRITE  viewports that write a NON-EMPTY file (regardless of exit status)
+  //   SHOT_EMPTY  viewports that write a ZERO-BYTE file (the crashed-browser artefact)
   function runFence(env) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-'));
+    tmpDirs.push(dir);
     const bin = path.join(dir, 'bin');
     fs.mkdirSync(bin);
+    // node's own argv contract: `node -e <program> <arg1>` puts arg1 at $3. Selecting the
+    // last `http*` argument instead made the stub tolerate an inserted argument that real
+    // node would have handed to the program as argv[1], so a probe invocation that is
+    // wrong in the real world passed here.
     fs.writeFileSync(path.join(bin, 'node'),
-      '#!/bin/sh\nfor a in "$@"; do case "$a" in http*) url="$a";; esac; done\n'
+      '#!/bin/sh\n[ "$1" = "-e" ] || { echo "stub node: expected -e, got $1" >&2; exit 64; }\n'
+      + 'url="$3"\ncase "$url" in http*) ;; *) echo "stub node: argv[1] not a url: $url" >&2; exit 65;; esac\n'
       + 'port=${url##*:}\nport=${port%%/*}\neval "s=\\$PROBE_$port"\nprintf %s "${s:-000}"\n', { mode: 0o755 });
+    // One argument per line, so an assertion can read argument BOUNDARIES. `$*` collapsed
+    // them, which let `--user-agent="--timeout=30000"` satisfy the timeout assertion while
+    // passing no timeout option at all.
     fs.writeFileSync(path.join(bin, 'npx'),
       '#!/bin/sh\nout=""\nfor a in "$@"; do case "$a" in *.png) out="$a";; esac; done\n'
       + 'name=$(basename "$out" .png)\n'
-      + 'printf "%s\\n" "$*" >> "$ARGV_LOG"\n'
-      + '[ -n "$PLANT_FOREIGN" ] && printf other > "$(dirname "$out")/other-audit.png"\n'
-      + 'case " $SHOT_FAIL " in *" $name "*)\n'
-      + '  case " $SHOT_PARTIAL " in *" $name "*) : > "$out";; esac\n'
-      + '  exit 1;; esac\n'
-      + 'printf "png" > "$out"\nexit 0\n', { mode: 0o755 });
+      + '{ echo "--INVOCATION--"; for a in "$@"; do printf "%s\\n" "$a"; done; } >> "$ARGV_LOG"\n'
+      + 'case " $SHOT_WRITE " in *" $name "*) printf png > "$out";; esac\n'
+      + 'case " $SHOT_EMPTY " in *" $name "*) : > "$out";; esac\n'
+      + 'case " $SHOT_EXIT " in *" $name "*) exit 1;; esac\nexit 0\n', { mode: 0o755 });
     const argvLog = path.join(dir, 'argv.log');
     const script = path.join(dir, 'fence.sh');
-    fs.writeFileSync(script, `set -u\nPADDED_PHASE=07\n${screenshotApproachBlock()}\n`);
-    const r = spawnSync(BASH, [script], {
+    // No `set -u`: the agent does not run this block under it, and adding it changes the
+    // block's behaviour on an unset variable — a difference between the harness and the
+    // product is a finding the harness would then manufacture rather than detect.
+    // CAPTURE_STATUS is echoed because it, not the printed line, is what the report
+    // consumes: an unconditional `CAPTURE_STATUS="captured"` appended after the branches
+    // passed every assertion in the first version while making the final report lie.
+    fs.writeFileSync(script,
+      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${screenshotApproachBlock()}\n`
+      + 'printf "CAPTURE_STATUS=%s\\n" "$CAPTURE_STATUS"\n');
+    const r = spawnSync('bash', [script], {
       cwd: dir,
       encoding: 'utf8',
       timeout: 60000,
@@ -702,108 +786,146 @@ describe('#4176 — the capture fence, executed', { skip: BASH ? false : 'no bas
         ...process.env,
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
         ARGV_LOG: argvLog,
-        SHOT_FAIL: '', SHOT_PARTIAL: '',
+        SHOT_EXIT: '', SHOT_WRITE: 'desktop mobile tablet', SHOT_EMPTY: '',
         ...env,
       },
     });
+    const stdout = r.stdout || '';
     const reviews = path.join(dir, '.planning', 'ui-reviews');
-    const shotDirs = fs.existsSync(reviews) ? fs.readdirSync(reviews) : [];
+    const shotDirs = fs.existsSync(reviews) ? fs.readdirSync(reviews).sort() : [];
+    const argvRaw = fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '';
+    const status = /CAPTURE_STATUS=(.*)/.exec(stdout);
     return {
-      stdout: r.stdout || '',
+      stdout,
+      exitCode: r.status,
+      stderr: r.stderr || '',
+      captureStatus: status ? status[1] : null,
       dir,
-      argv: fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '',
+      // Each invocation as an array of its arguments — boundaries preserved.
+      invocations: argvRaw.split('--INVOCATION--\n').slice(1)
+        .map((b) => b.split('\n').filter((x) => x !== '')),
       shotDirs,
       files: shotDirs.length === 1 ? fs.readdirSync(path.join(reviews, shotDirs[0])).sort() : [],
     };
   }
 
+  // The fence must not fail as a PROGRAM. Appending `exit 42` to it passed every
+  // assertion in the first version, because the runner discarded the exit status.
+  function ok(r) {
+    assert.strictEqual(r.exitCode, 0, `the fence must exit 0; stderr: ${r.stderr}`);
+    return r;
+  }
+
   test('no dev server on any port is reported as such, and nothing is created', () => {
-    const r = runFence({});
+    const r = ok(runFence({}));
     assert.match(r.stdout, /No dev server on ports 3000, 5173 or 8080/);
+    assert.strictEqual(r.captureStatus, 'not captured (no dev server)');
     assert.deepStrictEqual(r.shotDirs, [], 'no review directory may be created without a dev server');
   });
 
-  test('a total capture failure NEVER prints a success claim, and leaves nothing behind', () => {
-    // The #4176 defect itself, and the maintainer's Major finding, decided by execution:
-    // hoisting the success echo out of its branch makes this fail no matter how the block
-    // is punctuated, because the assertion is over what the block PRINTED.
-    const r = runFence({ PROBE_3000: '200', SHOT_FAIL: 'desktop mobile tablet', SHOT_PARTIAL: 'desktop mobile tablet' });
+  test('a total capture failure NEVER claims success, in the message OR in the status', () => {
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
+      SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet' }));
     assert.doesNotMatch(r.stdout, /Screenshots captured/, 'a failed capture must never claim success');
     assert.doesNotMatch(r.stdout, /PARTIALLY captured/);
     assert.match(r.stdout, /Screenshot capture FAILED for all 3 viewports/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed)',
+      'the report reads CAPTURE_STATUS, not the printed line — both have to be honest');
     assert.deepStrictEqual(r.shotDirs, [], 'the review directory must not survive a total failure');
   });
 
-  test('a partial capture keeps the shots that worked and removes the stray files', () => {
-    // The review's finding 4, in the form the docs actually claim: the failed viewport's
-    // zero-byte file is gone while the two real captures remain.
-    const r = runFence({ PROBE_3000: '200', SHOT_FAIL: 'desktop', SHOT_PARTIAL: 'desktop' });
+  test('a capture that exits 0 without writing anything is NOT a capture', () => {
+    // The `[ -s ... ]` half of the check, isolated. Deleting it passes every fixture in
+    // which exit status and file content agree — which is why they are separate knobs.
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_WRITE: '', SHOT_EXIT: '' }));
+    assert.doesNotMatch(r.stdout, /Screenshots captured/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
+  });
+
+  test('a capture that writes a real file but exits non-zero is NOT a capture', () => {
+    // The exit-status half, isolated. Dropping it counts a crashed run that happened to
+    // leave a plausible file.
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop',
+      SHOT_WRITE: 'desktop mobile tablet' }));
+    assert.match(r.stdout, /PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
+    assert.strictEqual(r.captureStatus, 'partially captured');
+  });
+
+  test('a partial capture keeps the shots that worked and removes the stray file', () => {
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop',
+      SHOT_WRITE: 'mobile tablet', SHOT_EMPTY: 'desktop' }));
     assert.match(r.stdout, /Screenshots PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
+    assert.strictEqual(r.captureStatus, 'partially captured');
     assert.deepStrictEqual(r.files, ['mobile.png', 'tablet.png'],
       'the failed viewport\u2019s zero-byte file must not survive alongside the real captures');
   });
 
-  test('a concurrent audit sharing the directory keeps its own captures', () => {
-    // Why the removal is BY NAME and not `rm -f "$DIR"/*.png`: the review directory is
-    // keyed to the phase and one whole second, so a second audit of the same phase can
-    // land in it. Under the glob, this audit's total failure deleted that one's captures.
-    // Here a foreign file is planted into the shared directory and every viewport then
-    // fails: our three stray files go, the neighbour's stays, and rmdir correctly declines
-    // to remove a directory that is no longer empty. The surviving directory is the
-    // intended outcome, not a leak — which is why the AGENTS.md capture paragraph says
-    // so explicitly rather than eliding it. (Named without its path: this file does not
-    // READ that document, and spelling the path would register it as a docs reader with
-    // the docs-guard lint, which is a claim about this test that is not true.)
-    const r = runFence({ PROBE_3000: '200', SHOT_FAIL: 'desktop mobile tablet',
-      SHOT_PARTIAL: 'desktop mobile tablet', PLANT_FOREIGN: '1' });
-    assert.match(r.stdout, /Screenshot capture FAILED for all 3 viewports/);
-    assert.strictEqual(r.shotDirs.length, 1, 'the shared directory must survive, since it is not ours alone');
-    assert.deepStrictEqual(r.files, ['other-audit.png'],
-      'cleanup must remove only the files this audit wrote, never the whole directory\u2019s .png files');
+  test('two audits of the same phase in the same second do not share a directory', () => {
+    // The ONLY thing that makes the cleanup safe. Both audits write `desktop.png`,
+    // `mobile.png`, `tablet.png`, so no per-file rule can establish ownership — a
+    // cross-model review drove exactly that: with a shared directory, this audit's
+    // cleanup deleted a neighbour's identically-named capture. Ownership therefore has
+    // to come from the directory name, and this asserts it does.
+    const a = ok(runFence({ PROBE_3000: '200', PADDED_PHASE: '07' }));
+    const b = ok(runFence({ PROBE_3000: '200', PADDED_PHASE: '07' }));
+    assert.strictEqual(a.shotDirs.length, 1);
+    assert.strictEqual(b.shotDirs.length, 1);
+    assert.notStrictEqual(a.shotDirs[0], b.shotDirs[0],
+      'a phase + whole-second directory name is not unique; the audit must add its own identity');
   });
 
-  test('all three captures succeeding is the only path that prints "captured"', () => {
-    const r = runFence({ PROBE_3000: '200' });
+  test('all three captures succeeding is the only path that claims "captured"', () => {
+    const r = ok(runFence({ PROBE_3000: '200' }));
     assert.match(r.stdout, /Screenshots captured to .* \(3\/3\) from http:\/\/localhost:3000/);
+    assert.strictEqual(r.captureStatus, 'captured');
     assert.deepStrictEqual(r.files, ['desktop.png', 'mobile.png', 'tablet.png']);
   });
 
   test('the resolved port is the one captured, not a hard-coded 3000', () => {
-    const r = runFence({ PROBE_5173: '200' });
+    const r = ok(runFence({ PROBE_5173: '200' }));
     assert.match(r.stdout, /from http:\/\/localhost:5173/);
-    assert.ok(r.argv.includes('http://localhost:5173'), `capture argv: ${r.argv}`);
-    assert.ok(!r.argv.includes('http://localhost:3000'), `capture argv: ${r.argv}`);
+    for (const call of r.invocations) {
+      assert.ok(call.includes('http://localhost:5173'), `capture argv: ${JSON.stringify(call)}`);
+      assert.ok(!call.includes('http://localhost:3000'), `capture argv: ${JSON.stringify(call)}`);
+    }
   });
 
   test('a 2xx that is not 200 still resolves a dev server', () => {
-    const r = runFence({ PROBE_3000: '204' });
-    assert.match(r.stdout, /Screenshots captured/);
+    assert.match(ok(runFence({ PROBE_3000: '204' })).stdout, /Screenshots captured/);
   });
 
   test('the FIRST auth-gated port is the one reported', () => {
-    // The review's finding 5, decided by behaviour: flipping the guard's operator makes
-    // DEV_GATED empty and this reports "no dev server", which fails here.
-    const r = runFence({ PROBE_3000: '401', PROBE_8080: '403' });
+    const r = ok(runFence({ PROBE_3000: '401', PROBE_8080: '403' }));
     assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 \(HTTP 401\) is auth-gated/);
+    assert.strictEqual(r.captureStatus, 'not captured (dev server auth-gated)');
   });
 
   test('the whole auth-required class is reported as gated, not as absent', () => {
     for (const status of ['401', '403', '407', '511']) {
-      const r = runFence({ PROBE_3000: status });
-      assert.ok(
-        r.stdout.includes(`(HTTP ${status}) is auth-gated`),
-        `HTTP ${status} means the server answered and demanded credentials; it must not read as absent — got: ${r.stdout.trim()}`
-      );
+      const r = ok(runFence({ PROBE_3000: status }));
+      assert.ok(r.stdout.includes(`(HTTP ${status}) is auth-gated`),
+        `HTTP ${status} means the server answered and demanded credentials; it must not read as absent — got: ${r.stdout.trim()}`);
     }
   });
 
-  test('every capture invocation carries a positive timeout', () => {
-    const r = runFence({ PROBE_3000: '200' });
-    const calls = r.argv.split('\n').filter((l) => l.includes('screenshot'));
-    assert.strictEqual(calls.length, 3, `expected 3 capture invocations: ${r.argv}`);
-    for (const call of calls) {
-      const m = /--timeout[= ]([0-9]+)\b/.exec(call);
-      assert.ok(m && Number(m[1]) > 0, `capture must pass a positive --timeout: ${call}`);
+  test('every capture invocation passes a positive timeout as its own argument', () => {
+    // ARGUMENT BOUNDARIES, and the LAST occurrence. A text search over a collapsed
+    // command line accepted `--timeout=30000 --timeout=0` (bash keeps the last, i.e. no
+    // timeout) and `--user-agent="--timeout=30000"` (no timeout option at all). Both
+    // were driven against the first version of this assertion.
+    const r = ok(runFence({ PROBE_3000: '200' }));
+    assert.strictEqual(r.invocations.length, 3, `expected 3 capture invocations: ${JSON.stringify(r.invocations)}`);
+    for (const call of r.invocations) {
+      const values = [];
+      for (let i = 0; i < call.length; i += 1) {
+        const inline = /^--timeout=(.*)$/.exec(call[i]);
+        if (inline) { values.push(inline[1]); continue; }
+        if (call[i] === '--timeout') values.push(call[i + 1]);
+      }
+      assert.ok(values.length > 0, `capture must pass --timeout as its own argument: ${JSON.stringify(call)}`);
+      const effective = values[values.length - 1];   // a repeated option: the last wins
+      assert.ok(/^[0-9]+$/.test(effective) && Number(effective) > 0,
+        `the effective --timeout must be a positive integer (0 IS playwright's no-timeout): ${JSON.stringify(call)}`);
     }
   });
 });

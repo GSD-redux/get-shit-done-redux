@@ -137,7 +137,12 @@ for PORT in 3000 5173 8080; do
 done
 
 if [ -n "$DEV_URL" ]; then
-  SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
+  # The `-$$` is what makes this directory THIS audit's. Phase plus a whole-second
+  # timestamp is not unique: two audits of the same phase starting inside one second
+  # land in the same directory, and from there no cleanup rule can be safe, because
+  # both audits write exactly `desktop.png`, `mobile.png` and `tablet.png` — a
+  # filename cannot establish whose it is. Ownership has to come from the directory.
+  SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -p "$SCREENSHOT_DIR"
 
   # Capture each viewport from the RESOLVED port, and believe only what the
@@ -165,9 +170,10 @@ if [ -n "$DEV_URL" ]; then
       # the review directory looking like evidence. Doing it here rather than in
       # the all-failed branch below is what makes the claim true of a PARTIAL
       # capture too — two good shots and one stray file was the gap.
-      # BY NAME, never a `*.png` glob: this directory is keyed to the phase and a
-      # whole second, so two audits of the same phase can share it, and a glob
-      # would delete the other one's captures.
+      # By name rather than a `*.png` glob. For this audit's own files the two are
+      # equivalent; the name form additionally leaves alone anything else that happens
+      # to be in the directory. What actually keeps a CONCURRENT audit's captures safe
+      # is the `-$$` in the directory above, never this line.
       rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
       FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
     fi
