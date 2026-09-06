@@ -2661,6 +2661,279 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// workstream-scoped phase allocation vs sibling git worktrees (#4225)
+//
+// The #3849 widening horizon (collectSiblingWorktreePhaseNums) scans each
+// sibling's ROOT .planning/. A --ws allocation must instead scan the sibling's
+// copy of the SAME workstream: workstream numbering is independent of the root
+// roadmap (Workstream Namespacing REQ-WS-01 — workstream state is isolated in
+// .planning/workstreams/{name}/), so a sibling's root-roadmap numbers must not
+// leak into a workstream allocation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase add --ws workstream-scoped allocation vs sibling git worktrees (#4225)', () => {
+  const activeWorktrees = [];
+  const activeDirs = [];
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000 });
+  }
+
+  /**
+   * The #4225 topology: a committed ROOT roadmap with phases 1..rootMax (every
+   * linked worktree carries it), plus workstream `wsName` whose own roadmap and
+   * phases/ hold 1..wsMax.
+   */
+  function initWsRepo(repoDir, rootMax, wsName, wsMax) {
+    const rootLines = ['# Roadmap', '', '## Milestone v1.0', ''];
+    for (let i = 1; i <= rootMax; i++) {
+      rootLines.push(`### Phase ${i}: root phase ${i}`, '', '**Goal:** root goal', '');
+    }
+    fs.mkdirSync(path.join(repoDir, '.planning', 'phases'), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, '.planning', 'ROADMAP.md'), rootLines.join('\n') + '\n');
+
+    const wsBase = path.join(repoDir, '.planning', 'workstreams', wsName);
+    const wsLines = ['# Workstream Roadmap', '', '## Milestone v1.0', ''];
+    for (let i = 1; i <= wsMax; i++) {
+      wsLines.push(`### Phase ${i}: ws phase ${i}`, '', '**Goal:** ws goal', '');
+    }
+    fs.mkdirSync(path.join(wsBase, 'phases'), { recursive: true });
+    if (wsMax > 0) {
+      fs.mkdirSync(path.join(wsBase, 'phases', String(wsMax).padStart(2, '0') + '-ws-phase-' + wsMax));
+    }
+    fs.writeFileSync(path.join(wsBase, 'ROADMAP.md'), wsLines.join('\n') + '\n');
+
+    git(['init', '-b', 'main'], repoDir);
+    git(['config', 'user.email', 'test@example.com'], repoDir);
+    git(['config', 'user.name', 'Test'], repoDir);
+    git(['add', '-A'], repoDir);
+    git(['commit', '-m', 'init'], repoDir);
+    return wsBase;
+  }
+
+  /** A sibling linked worktree checked out at HEAD (carries the committed root roadmap). */
+  function addSiblingAtHead(repoDir) {
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-sib-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    return worktreeDir;
+  }
+
+  function teardown() {
+    while (activeWorktrees.length) {
+      const { repoDir, worktreeDir } = activeWorktrees.pop();
+      try {
+        git(['worktree', 'remove', '--force', worktreeDir], repoDir);
+      } catch (_) { /* best-effort; cleanup() below still removes the directory */ }
+      cleanup(worktreeDir);
+    }
+    while (activeDirs.length) cleanup(activeDirs.pop());
+  }
+
+  afterEach(teardown);
+
+  test('phase add --ws numbers from the workstream, not the sibling root roadmaps (issue verbatim)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-main-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.add', 'New workstream feature', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      3,
+      '#4225: the workstream\'s own next number (max 2 + 1), not the root roadmap\'s 39 + 1'
+    );
+    assert.strictEqual(output.padded, '03');
+    assert.strictEqual(
+      output.directory,
+      '.planning/workstreams/ws-alpha/phases/03-new-workstream-feature',
+      'directory must land inside the workstream with the workstream-scoped number'
+    );
+
+    const wsRoadmap = fs.readFileSync(
+      path.join(repoDir, '.planning', 'workstreams', 'ws-alpha', 'ROADMAP.md'),
+      'utf-8'
+    );
+    assert.ok(wsRoadmap.includes('### Phase 3: New workstream feature'), 'ws roadmap entry must be Phase 3');
+    assert.ok(wsRoadmap.includes('**Depends on:** Phase 2'), 'dependency must reference the in-workstream predecessor');
+
+    // The root roadmap and root phases/ are a different numbering universe — untouched.
+    const rootRoadmap = fs.readFileSync(path.join(repoDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.ok(!rootRoadmap.includes('New workstream feature'), 'root roadmap must not gain the workstream phase');
+    assert.ok(
+      !fs.readdirSync(path.join(repoDir, '.planning', 'phases')).some((e) => e.startsWith('40-')),
+      'root phases/ must not gain a 40- directory'
+    );
+  });
+
+  test('phase add --ws still skips a number held by the SAME workstream in a sibling', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-same-ws-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling's ws-alpha copy holds Phase 3 (a branch that already minted it).
+    const sibWsPhases = path.join(sibling, '.planning', 'workstreams', 'ws-alpha', 'phases');
+    fs.mkdirSync(path.join(sibWsPhases, '03-sibling-only'), { recursive: true });
+    const sibWsRoadmap = path.join(sibling, '.planning', 'workstreams', 'ws-alpha', 'ROADMAP.md');
+    fs.appendFileSync(sibWsRoadmap, '\n### Phase 3: sibling-only phase\n\n**Goal:** taken\n');
+
+    const result = runGsdTools(['query', 'phase.add', 'Contended', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      4,
+      '#4225 keeps the #3849 widening: a number taken by the same workstream on another branch is still taken — but the sibling root roadmap\'s 39 must not decide it'
+    );
+  });
+
+  test('phase add --ws numbers the FIRST phase of an empty workstream as 1', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-empty-ws-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-empty', 0);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.add', 'First steps', '--ws', 'ws-empty'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 1, 'an empty workstream starts at 1, not root-max+1 (40)');
+    assert.strictEqual(output.padded, '01');
+    assert.ok(
+      fs.existsSync(path.join(repoDir, '.planning', 'workstreams', 'ws-empty', 'phases', '01-first-steps')),
+      'directory should be 01-first-steps inside the workstream'
+    );
+  });
+
+  test('phase add --ws at the root maximum is coincidentally equal, with an in-workstream dependency', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-ws39-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 39);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.add', 'Fortieth in workstream', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 40, 'the workstream\'s own 39+1 — correct for its own reason');
+    const wsRoadmap = fs.readFileSync(
+      path.join(repoDir, '.planning', 'workstreams', 'ws-alpha', 'ROADMAP.md'),
+      'utf-8'
+    );
+    assert.ok(
+      wsRoadmap.includes('**Depends on:** Phase 39'),
+      'Phase 39 dependency is legitimate here: it exists in THIS workstream'
+    );
+  });
+
+  test('a sibling holding only ANOTHER workstream\'s numbers does not affect --ws allocation', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-beta-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling's ws-beta (a different, independent numbering universe) is at 50.
+    const betaPhases = path.join(sibling, '.planning', 'workstreams', 'ws-beta', 'phases');
+    fs.mkdirSync(path.join(betaPhases, '50-beta-heavy'), { recursive: true });
+    const betaRoadmap = path.join(sibling, '.planning', 'workstreams', 'ws-beta', 'ROADMAP.md');
+    fs.mkdirSync(path.dirname(betaRoadmap), { recursive: true });
+    fs.writeFileSync(betaRoadmap, ['# Workstream Roadmap', '', '### Phase 50: beta heavy', '', '**Goal:** beta', ''].join('\n') + '\n');
+
+    const result = runGsdTools(['query', 'phase.add', 'Alpha next', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      3,
+      'cross-workstream numbers (root 39 in the sibling root roadmap, ws-beta 50) are different universes — ws-alpha numbers from its own 2+1'
+    );
+  });
+
+  test('a sibling without the workstream directory contributes nothing (fail open)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-no-ws-sib-'));
+    activeDirs.push(repoDir);
+    const wsBase = initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling predates the workstream: its checkout has no ws-alpha at all.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture SETUP, not teardown: strips the sibling's workstreams/ so it lacks the active scope; teardown() owns the dir's removal
+    fs.rmSync(path.join(sibling, '.planning', 'workstreams'), { recursive: true, force: true });
+
+    const result = runGsdTools(['query', 'phase.add', 'Local only', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      3,
+      'a missing workstream scope in a sibling contributes nothing — local ws sources decide'
+    );
+    assert.ok(fs.existsSync(path.join(wsBase, 'phases', '03-local-only')));
+  });
+
+  test('phase add-batch --ws numbers sequentially from the workstream, not the root roadmap', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-batch-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(
+      ['query', 'phase.add-batch', '--descriptions', '["Batch A","Batch B"]', '--ws', 'ws-alpha'],
+      repoDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phases[0].phase_number, 3, '#4225: the batch allocator shares the scoped horizon');
+    assert.strictEqual(output.phases[1].phase_number, 4);
+  });
+
+  test('without --ws, allocation keeps the #3849 global sibling horizon byte-for-byte', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-flat-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 440, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling's ROOT roadmap holds Phase 441 (#3849's shape).
+    fs.appendFileSync(
+      path.join(sibling, '.planning', 'ROADMAP.md'),
+      '\n### Phase 441: sibling root phase\n\n**Goal:** taken\n'
+    );
+
+    const result = runGsdTools(['query', 'phase.add', 'Flat allocation'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      442,
+      'no --ws: the sibling ROOT roadmap still widens the horizon exactly as #3849 shipped'
+    );
+  });
+
+  test('phase next-decimal --ws is unaffected (planningDir-scoped already)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-dec-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.next-decimal', '2', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.next, '02.1', 'next-decimal was never sibling-widened; the fix must not change it');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase add-batch command (#2165)
 // ─────────────────────────────────────────────────────────────────────────────
 
