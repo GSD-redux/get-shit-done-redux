@@ -1142,8 +1142,8 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  * (B0) buildIsolatedPath() co-location invariant (see below).
  * (B) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd_run is NOT on
  *     PATH, the stub at ${HERMES_HOME}/gsd-core/bin/gsd-tools.cjs is invoked.
- *     On POSIX it also plants a leaked gsd_run on PATH first (#4205), which is
- *     what makes it fail on a clean machine as well as a leaking one.
+ *     It plants a leaked gsd_run on PATH first (#4205), on every platform,
+ *     which is what makes it fail on a clean machine as well as a leaking one.
  * (C) Default Hermes path behavioral: stub at $HOME/.hermes/gsd-core/bin/
  *     gsd-tools.cjs is invoked when HERMES_HOME is not set.
  * (D) Resolution order: non-Claude homes are probed BEFORE the hard error,
@@ -1276,9 +1276,10 @@ function extractShellBlocks(content) {
  * process.execPath, prepend it to the gsd_run-filtered PATH.  The filtered
  * PATH excludes any directory that contains an executable `gsd_run`.
  *
- * On Windows the co-location bug does not apply (gsd_run resolves via .cmd/.ps1,
- * not the bare binary probed here), and symlinks may require elevated privileges,
- * so we skip the symlink step entirely on that platform.
+ * On Windows symlinks may require elevated privileges, so the symlink step is
+ * skipped there; the filter itself still applies, because npm writes the same
+ * extensionless gsd_run shim beside gsd_run.cmd and X_OK degrades to F_OK on
+ * that platform (#4344).
  *
  * The caller is responsible for cleaning up `result.nodeBinDir` when non-null
  * (pass it to `cleanup()` in a `t.after` or `finally` block).
@@ -1436,10 +1437,10 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
   // the stub: on a CLEAN machine the bare HERMES_HOME assertion passes whether
   // buildIsolatedPath() filters gsd_run or gsd-tools, so it only catches the bug
   // on a machine that already has the leak. Planting the sentinel makes it fail
-  // on any machine. The sentinel is POSIX-only (an extensionless sh script), so
-  // it is skipped on Windows — where this test still covers the HERMES_HOME arm
-  // itself, which is why it is not gated behind the platform check wholesale.
-  // Windows-native coverage of the leak is tracked in #4344.
+  // on any machine — including Windows, where the leak the filter must catch is
+  // the extensionless Bourne shim npm writes beside gsd_run.cmd, and where
+  // fs.constants.X_OK "has no effect ... (will behave like fs.constants.F_OK)"
+  // per the fs docs, so the same probe sees it (#4344).
   test('(B) buildIsolatedPath strips a leaked PATH gsd_run; the ${HERMES_HOME} stub wins', (t) => {
     const fakeHome       = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-home-b-'));
     const fakeHermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-hermes-'));
@@ -1448,20 +1449,36 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
     t.after(() => cleanup(fakeHermesHome));
     t.after(() => cleanup(fakeRuntime));
 
-    if (process.platform !== 'win32') {
-      const sentinelBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4205-sentinel-'));
-      t.after(() => cleanup(sentinelBinDir));
-      const sentinelPath = path.join(sentinelBinDir, 'gsd_run');
-      fs.writeFileSync(sentinelPath, '#!/bin/sh\necho "SENTINEL_INVOKED:$*"\n');
-      fs.chmodSync(sentinelPath, 0o755);
-      // Simulate the reported leak: a real gsd_run reachable on PATH.
-      const prevPath = process.env.PATH;
-      process.env.PATH = `${sentinelBinDir}${path.delimiter}${process.env.PATH}`;
-      t.after(() => { process.env.PATH = prevPath; });
-    }
+    const sentinelBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4205-sentinel-'));
+    t.after(() => cleanup(sentinelBinDir));
+    const sentinelPath = path.join(sentinelBinDir, 'gsd_run');
+    fs.writeFileSync(sentinelPath, '#!/bin/sh\necho "SENTINEL_INVOKED:$*"\n');
+    fs.chmodSync(sentinelPath, 0o755);
 
-    const { isolatedPath, nodeBinDir } = buildIsolatedPath();
+    // Simulate the reported leak: a real gsd_run reachable on PATH.
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${sentinelBinDir}${path.delimiter}${prevPath}`;
+    let isolated;
+    try {
+      isolated = buildIsolatedPath();
+    } finally {
+      // Restore before the child spawns, not in a t.after: on Windows
+      // process.env spreads as `Path`, so a still-live leak would compete with
+      // snippetEnv()'s `PATH` override for the casing the child receives.
+      process.env.PATH = prevPath;
+    }
+    const { isolatedPath, nodeBinDir } = isolated;
     t.after(() => { if (nodeBinDir) cleanup(nodeBinDir); });
+
+    // The leak assertion that holds on every platform: a filter probing the
+    // wrong name leaves sentinelBinDir on the isolated PATH. The stdout
+    // assertions below cannot carry that on Windows, where whether bash
+    // resolves the shim depends on the mount's exec heuristics, not on the
+    // filter under test.
+    assert.ok(
+      !isolatedPath.split(path.delimiter).includes(sentinelBinDir),
+      `Expected buildIsolatedPath to strip the leaked ${sentinelBinDir}, got:\n${isolatedPath}`,
+    );
 
     const hermesBinDir = path.join(fakeHermesHome, 'gsd-core', 'bin');
     fs.mkdirSync(hermesBinDir, { recursive: true });
