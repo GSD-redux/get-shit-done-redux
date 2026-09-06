@@ -878,6 +878,36 @@ increases monotonically across waves. `{status}` is `complete` (success),
    ask for one recovery path: `continue waiting`, `kill and retry`, or
    `kill and switch to inline execution`.
 
+   **A working executor is never steered (#4218).** The threshold above measures a
+   period WITHOUT MEANINGFUL PROGRESS. It is not a maximum total runtime, and it is not
+   a budget the executor has to finish inside. A plan with a long verification or
+   closeout tail legitimately spends many minutes between its last commit and its
+   SUMMARY.
+
+   Before treating an executor as stalled, reconcile activity as well as artifacts:
+
+   - **Commits exist and SUMMARY.md is missing, with recent meaningful activity →
+     KEEP WAITING.** Do not steer it, do not interrupt it, do not re-dispatch it. Recent
+     RED/GREEN/REFACTOR commits, passing verification, or ongoing reasoning/tool
+     telemetry from the child are all meaningful activity.
+   - **Only after `${EXECUTOR_STALL_THRESHOLD_MINUTES}` of no meaningful progress** —
+     measured from the LAST sign of progress, not from dispatch — may the pause above
+     fire, and it asks the user; it does not act on its own.
+
+   **Never inject urgency or finalization instructions into a live executor.** Messages
+   of the "Finalize immediately", "wrap up now", "you are taking too long" family are
+   forbidden: they arrive mid-verification and turn a correct run into a truncated one.
+   If an executor must be stopped, the pause above is the only route, and `kill and
+   retry` is a clean restart — not a nudge.
+
+   **The absence of a local OS test/build process is NOT idleness (#4218).** The
+   orchestrator cannot see the child's work this way: a native subagent runs in the
+   runtime's own session, not as a visible local process, and an executor between two
+   tool calls — reasoning, reading a file, waiting on a runtime round-trip — shows no
+   process at all. Judge progress ONLY by the signals this workflow names: commits on
+   the expected branch, the SUMMARY, and the child's own activity. A process listing is
+   not one of them.
+
    If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
 
    **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by

@@ -1182,3 +1182,57 @@ describe('execute-phase workflow: #3684 review findings — join normalization',
     }
   });
 });
+
+// ── #4218: a live executor must not be steered or cut short ──────────────────
+//
+// allow-test-rule: source-text-is-the-product — the workflow .md IS the
+// instruction the orchestrator executes; its text is the artifact under test.
+//
+// Reported on Codex: an executor with recent RED/GREEN/REFACTOR commits and
+// passing verification had not yet written its SUMMARY because it was finishing
+// closeout. The parent saw no local OS test/build process, inferred an "idle
+// tail", and sent "Finalize immediately" into a working child. In CLI runs the
+// same inference interrupted an executor before GREEN, leaving a RED commit and
+// an uncommitted edit.
+describe('execute-phase: stall surveillance must not steer a working executor (#4218)', () => {
+  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+  const clause = workflow.slice(workflow.indexOf('A working executor is never steered'));
+
+  test('the stall threshold is a period without progress, not a maximum runtime', () => {
+    assert.ok(clause.length > 0, 'the #4218 clause must exist');
+    assert.match(clause, /period WITHOUT MEANINGFUL PROGRESS/,
+      'the threshold must be defined by absence of progress');
+    assert.match(clause, /not a maximum total runtime/,
+      'a long-but-progressing plan must not be treated as stalled');
+    assert.match(clause, /measured from the LAST sign of progress, not from dispatch/,
+      'measuring from dispatch is what turns a slow plan into a false stall');
+  });
+
+  test('commits + missing SUMMARY + recent activity resolves to KEEP WAITING', () => {
+    assert.match(clause, /KEEP WAITING/,
+      'the verdict for a working executor must be explicit');
+    assert.match(clause, /Do not steer it, do not interrupt it, do not re-dispatch it/,
+      'all three interventions the report describes must be named and forbidden');
+  });
+
+  test('urgency and finalization messages are forbidden outright', () => {
+    assert.match(clause, /Never inject urgency or finalization instructions into a live executor/,
+      'the prohibition must be stated as a rule, not implied');
+    assert.match(clause, /Finalize immediately/,
+      'the reported message must be named so it cannot be read as permitted');
+  });
+
+  test('a missing local OS process is not evidence of idleness', () => {
+    assert.match(clause, /absence of a local OS test\/build process is NOT idleness/,
+      'the false signal the orchestrator acted on must be ruled out by name');
+    assert.match(clause, /A process listing is\s{1,10}not one of them/,
+      'the workflow must say which signals DO count, and that a process listing is not one');
+  });
+
+  test('the only sanctioned stop is the existing user-facing pause', () => {
+    assert.match(clause, /the pause above is the only route/,
+      'stopping an executor must stay a user decision, not an orchestrator nudge');
+    assert.match(clause, /`kill and\s{1,10}retry` is a clean restart — not a nudge/,
+      'the distinction between restarting and steering must be explicit');
+  });
+});
