@@ -17,6 +17,11 @@
  * - Outer bullet loop → seam's `iterateBullets` (for the header-fallback path)
  *
  * Resolves #1364 (markdown-header + em-dash recall) and #1365 (fail-loud gate).
+ *
+ * #4130 follow-up (hardening): the three bullet grammars below consume the
+ * decision ID atomically and narrow the em-dash first separator, eliminating
+ * the quadratic-backtracking cliff on pathological single bullets. Output is
+ * byte-identical on all legal inputs — see the notes at DECISION_ID_SOURCE.
  */
 
 import {
@@ -75,6 +80,28 @@ const NON_TRACKABLE_TAGS = new Set(['informational', 'folded', 'deferred']);
 const DECISION_ID_SOURCE = 'D[0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*';
 
 /**
+ * #4130 follow-up (hardening): how the three grammars below CONSUME the ID —
+ * atomically, via the `(?=(X))\1` lookahead emulation (lookarounds are atomic
+ * in ECMAScript; the backreference must replay exactly what the lookahead
+ * captured, so the engine can never give the ID tail back one character at a
+ * time). That give-back was quadratic driver #1: the tail class
+ * `[A-Za-z0-9_-]*` overlaps the pre-separator class `[^:*]*` (every id char
+ * is also `[^:*]`), so on a FAILING bullet the base regex re-split the tail
+ * O(n) times with an O(n) scan after each — measured ~1.1s @ 40k chars on
+ * `- **D-` + `a-`×20k (the #4357 review's deferred cliff).
+ *
+ * Byte-identical on all legal inputs: a successful match always consumes the
+ * MAXIMAL id run (the lookahead's own match is exactly that maximal run), and
+ * the continuation's success depends only on the position of the first
+ * `:`/`*` (or `*` for the em-dash form) after the id boundary — id chars
+ * contain neither, so moving the boundary inside the run cannot change
+ * success or any capture. Group 1 stays the full id (the lookahead's capture
+ * IS group 1), so handlers keep reading match[1]/[2]/[3] untouched. Pinned by
+ * the differential property test against a frozen copy of the pre-hardening
+ * grammars and by the regex-lattice test in tests/decisions.test.cjs.
+ */
+
+/**
  * #4130: the bold lead-in that ATTEMPTS the ID grammar above — used by the
  * parse-miss guard and the #3939 join regexes, where recognising MORE shapes
  * is the conservative direction (an over-broad match can only make a
@@ -90,9 +117,13 @@ const ID_ATTEMPT_SOURCE = 'D(?:[0-9][A-Za-z0-9]*)?-';
  * Colon form: `- **D[phase]-NN[ [tags]]:** text`
  * (#1343: `[^:*]*` subsumes any pre-colon prose, stops at `:**`)
  * Group 1 captures the FULL id including any phase prefix (#4130).
+ * The ID is consumed atomically `(?=(…))\1` — see the hardening note above
+ * the constants (#4130 follow-up); with the tail unable to give back, the
+ * remaining `[^:*]*:` scan has a single viable split and the whole match is
+ * linear in line length.
  */
 const bulletColonRe = new RegExp(
-  `^\\s*-\\s+\\*\\*(${DECISION_ID_SOURCE})(?:\\s*\\[([^\\]]+)\\])?[^:*]*:\\*\\*\\s*(.*)$`,
+  `^\\s*-\\s+\\*\\*(?=(${DECISION_ID_SOURCE}))\\1(?:\\s*\\[([^\\]]+)\\])?[^:*]*:\\*\\*\\s*(.*)$`,
 );
 
 /**
@@ -102,9 +133,20 @@ const bulletColonRe = new RegExp(
  * outside the closing `**`. This form was not handled pre-T1 (bug #1364).
  *
  * Accepts both U+2014 em-dash (—) and U+2013 en-dash (–) for robustness.
+ *
+ * #4130 follow-up (hardening), quadratic driver #2: the first separator was
+ * `[^*]*[—–]`, whose leading class ALSO accepts the dash — on a failing
+ * dash-laden title the engine retried the separator at every dash position
+ * with an O(n) scan after each (~1.7s @ 40k). Narrowed to `[^*—–]*[—–]`:
+ * the leading class now excludes the dash, so the separator is the FIRST
+ * dash — one viable split, single pass. Behavior-preserving because every
+ * candidate dash lies before the first `*` (the leading class cannot cross
+ * a star), so the trailing `[^*]*` reaches that same first star from any
+ * candidate and `**` succeeds or fails identically; no capture involves the
+ * dash position. The ID is atomic like the other forms (driver #1).
  */
 const bulletEmDashRe = new RegExp(
-  `^\\s*-\\s+\\*\\*(${DECISION_ID_SOURCE})(?:\\s*\\[([^\\]]+)\\])?[^*]*[—–][^*]*\\*\\*\\s*(.*)$`,
+  `^\\s*-\\s+\\*\\*(?=(${DECISION_ID_SOURCE}))\\1(?:\\s*\\[([^\\]]+)\\])?[^*—–]*[—–][^*]*\\*\\*\\s*(.*)$`,
 );
 
 /**
@@ -117,9 +159,12 @@ const bulletEmDashRe = new RegExp(
  * (e.g. `D-07 ratio 3:1:**`) still fails the anchor and falls through to the parse-miss
  * guard — matching bulletColonRe's `[^:*]*` discipline that the separator colon is the
  * only colon permitted before `**`. (#1639)
+ *
+ * The ID is consumed atomically `(?=(…))\1` like the other forms — the
+ * hardening note above the constants explains why (#4130 follow-up).
  */
 const bulletTitledColonRe = new RegExp(
-  `^\\s*-\\s+\\*\\*(${DECISION_ID_SOURCE})(?:\\s*\\[([^\\]]+)\\])?[^:*]*:[^:*]*\\*\\*\\s*(.*)$`,
+  `^\\s*-\\s+\\*\\*(?=(${DECISION_ID_SOURCE}))\\1(?:\\s*\\[([^\\]]+)\\])?[^:*]*:[^:*]*\\*\\*\\s*(.*)$`,
 );
 
 /**
