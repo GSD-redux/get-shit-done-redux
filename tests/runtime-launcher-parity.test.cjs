@@ -59,16 +59,21 @@ const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
 const SNIPPET_SCRUB = { GEMINI_CONFIG_DIR: '', CLAUDE_ENV_FILE: '', BASH_ENV: '' };
 function snippetEnv(overrides = {}) {
   const env = { ...process.env, ...TEST_ENV_BASE, ...SNIPPET_SCRUB, ...overrides };
-  // Windows env vars are case-insensitive; a spread of process.env is not.
-  // The host PATH enumerates as `Path` there, so `{ ...process.env, PATH: x }`
+  // Windows env vars are case-insensitive; a spread of process.env is not. The
+  // host PATH enumerates as `Path` there, so `{ ...process.env, PATH: x }`
   // yields BOTH keys — and libuv's make_program_env sorts the child's block
-  // case-insensitively but never drops duplicates, so the child can still
-  // resolve the host PATH and defeat the isolation this whole file rests on.
-  // Drop every other casing whenever a caller supplies its own PATH.
-  if ('PATH' in overrides) {
-    for (const key of Object.keys(env)) {
-      if (key !== 'PATH' && key.toUpperCase() === 'PATH') delete env[key];
-    }
+  // case-insensitively but never drops duplicates, so the ambient twin of
+  // anything scrubbed here still reaches the child and defeats the isolation
+  // this whole file rests on. Every key this function sets wins over any other
+  // casing of itself; keys it does not set are left alone, so a caller that
+  // passes no PATH override still gets the host PATH.
+  const canonical = new Map(
+    [...Object.keys(TEST_ENV_BASE), ...Object.keys(SNIPPET_SCRUB), ...Object.keys(overrides)]
+      .map((key) => [key.toUpperCase(), key]),
+  );
+  for (const key of Object.keys(env)) {
+    const owner = canonical.get(key.toUpperCase());
+    if (owner !== undefined && owner !== key) delete env[key];
   }
   return env;
 }
@@ -89,8 +94,10 @@ function runBashFile(scriptPath, options = {}) {
 const NODE_BIN = process.platform === 'win32' ? 'node.exe' : 'node';
 
 /**
- * Put an executable copy of this interpreter in `dir` under `name`, and return
- * `dir` so a caller can prepend it to a PATH.
+ * Put an executable link to this interpreter in `dir` under `name`, and return
+ * `dir` so a caller can prepend it to a PATH. Callers use it for both halves of
+ * a fixture: the node the launcher needs, and the gsd_run sentinel it must not
+ * reach. The content never matters, only that the name resolves.
  *
  * Windows symlinks need elevation, so a hard link is used there instead: it
  * needs no privilege, but it cannot cross volumes, hence the copy fallback.
@@ -155,15 +162,18 @@ function hasGsdRun(dir) {
  * @returns {{ isolatedPath: string, nodeBinDir: string }}
  */
 function buildIsolatedPath(basePath = process.env.PATH) {
-  // An empty PATH element means "the current directory" to a POSIX shell, so
-  // it is dropped along with the gsd_run-bearing dirs: keeping one would put
-  // the fixture's own cwd on PATH, and `path.join('', 'gsd_run')` probes cwd
-  // rather than a directory, so hasGsdRun cannot even see what it would admit.
-  // Joining the surviving dirs (rather than the filtered string) also keeps a
-  // fully-filtered PATH from ending in a delimiter, which means the same thing.
-  const filteredDirs = (basePath || '/usr/bin:/bin')
+  // Only absolute directories survive. An empty element means "the current
+  // directory" to a POSIX shell and `.` says so explicitly, so either one puts
+  // the child's cwd on PATH — and hasGsdRun cannot see what it would admit,
+  // since `path.join('.', 'gsd_run')` probes the *runner's* cwd instead of the
+  // child's. Joining the survivors (rather than the filtered string) also keeps
+  // a fully-filtered PATH from ending in a delimiter, which means the same
+  // thing. Dropping a relative entry can only tighten the isolation, never
+  // loosen it.
+  const fallback = ['/usr/bin', '/bin'].join(path.delimiter);
+  const filteredDirs = (basePath || fallback)
     .split(path.delimiter)
-    .filter((p) => p !== '' && !hasGsdRun(p));
+    .filter((p) => path.isAbsolute(p) && !hasGsdRun(p));
 
   const nodeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-node-'));
   try {
@@ -1416,20 +1426,27 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
         'every GSD_RUN_NAMES entry must be filtered out of the isolated PATH',
       );
 
-      // (iv) no empty element survives, in either of the two ways one appears:
-      // an ambient `::` in the input, and a PATH every entry of which was
-      // filtered. A POSIX shell reads an empty element as the current
-      // directory, which would put the fixture's own cwd back on PATH.
-      const emptyElementCases = {
-        ambient: `${emptyDir}${path.delimiter}${path.delimiter}${emptyDir}`,
+      // (iv) every surviving element is absolute. A shell resolves an empty
+      // element, `.`, or any relative entry against the *child's* working
+      // directory, so each one is a way to put a cwd gsd_run back on PATH —
+      // and hasGsdRun cannot see any of them, because it probes relative to the
+      // runner's cwd instead. Three ways one arrives: an ambient `::`, an
+      // explicit `.`, and a PATH every entry of which was filtered (which used
+      // to leave a trailing delimiter, meaning the same thing).
+      const relativeElementCases = {
+        emptyElement: `${emptyDir}${path.delimiter}${path.delimiter}${emptyDir}`,
+        dotElement: `${emptyDir}${path.delimiter}.${path.delimiter}${emptyDir}`,
+        relativeElement: `${emptyDir}${path.delimiter}sub/dir`,
         fullyFiltered: fakeBinDir,
       };
-      for (const [label, basePath] of Object.entries(emptyElementCases)) {
+      for (const [label, basePath] of Object.entries(relativeElementCases)) {
         const probe = buildIsolatedPath(basePath);
         t.after(() => cleanup(probe.nodeBinDir));
-        assert.ok(
-          !probe.isolatedPath.split(path.delimiter).includes(''),
-          `${label}: isolated PATH must carry no empty element (it would resolve cwd), got: ${probe.isolatedPath}`,
+        const relative = probe.isolatedPath.split(path.delimiter).filter((dir) => !path.isAbsolute(dir));
+        assert.deepStrictEqual(
+          relative,
+          [],
+          `${label}: isolated PATH must carry only absolute dirs (a relative one resolves the child's cwd), got: ${probe.isolatedPath}`,
         );
       }
     },
@@ -1455,15 +1472,18 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
 
     const sentinelBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4205-sentinel-'));
     t.after(() => cleanup(sentinelBinDir));
-    const sentinelPath = path.join(sentinelBinDir, 'gsd_run');
-    fs.writeFileSync(sentinelPath, '#!/bin/sh\necho "SENTINEL_INVOKED:$*"\n');
-    fs.chmodSync(sentinelPath, 0o755);
     if (process.platform === 'win32') {
-      // What msys bash resolves for a bare `gsd_run` there: it appends `.exe`
-      // during PATH lookup, while the extensionless script above is executable
-      // only under the mount's `#!` heuristic. Any real executable serves — the
-      // assertions are about where GSD_TOOLS lands, not what the sentinel says.
+      // What msys bash resolves for a bare `gsd_run`: it appends `.exe` during
+      // PATH lookup. Planted ALONE, so the leak this fixture proves is the
+      // extension-only one — an extensionless sibling would let an
+      // extension-blind filter strip the directory for the wrong reason and
+      // pass. It cannot print SENTINEL_INVOKED (it is this interpreter under
+      // another name), which is what the GSD_TOOLS assertion below is for.
       linkExecutable(sentinelBinDir, 'gsd_run.exe');
+    } else {
+      const sentinelPath = path.join(sentinelBinDir, 'gsd_run');
+      fs.writeFileSync(sentinelPath, '#!/bin/sh\necho "SENTINEL_INVOKED:$*"\n');
+      fs.chmodSync(sentinelPath, 0o755);
     }
 
     // Simulate the reported leak: a real gsd_run reachable on PATH. Passed in
@@ -1519,8 +1539,13 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
     );
     // The same claim without depending on the sentinel producing output:
     // whatever the resolver picked, it did not come from the leaked directory.
+    // Matched by basename, not by absolute path — git-bash prints `/c/Users/…`
+    // where os.tmpdir() gives `C:\Users\…` (see the note above the (E) PATH
+    // fallback assertion), so an absolute-path comparison never matches on
+    // Windows and would assert nothing there. The mkdtemp suffix keeps the
+    // basename unique.
     assert.ok(
-      !normStdout.includes(sentinelBinDir.replace(/\\/g, '/')),
+      !normStdout.includes(path.basename(sentinelBinDir)),
       `Expected GSD_TOOLS to resolve outside the leaked ${sentinelBinDir}, got:\n${stdout.trim()}`,
     );
     // Assert the hermes dir itself: every arm of the resolver ends in
