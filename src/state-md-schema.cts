@@ -78,13 +78,13 @@ export type FieldMergeStrategy = 'progress-ratchet';
  * `normalizeStateStatus`, not by reading this docstring's prior claim):
  * this is NOT a closed set the `status` frontmatter key is restricted to at
  * runtime. `normalizeStateStatus` is deliberately LENIENT: its fallback
- * returns the caller's raw, UNRECOGNIZED prose unchanged, and when none of
- * its vocabulary entries recognize the whole-field input, that fallback —
- * A status value outside this seven-member set is not rejected, coerced, or
- * normalized; it passes straight through into the frontmatter.
- * `STATUS_LIFECYCLE_ENUM` is therefore the set of values the normalizer maps
- * recognized input ONTO, not a runtime-enforced closed vocabulary for the
- * field.
+ * returns the caller's raw, UNRECOGNIZED prose unchanged — when none of its
+ * vocabulary entries recognize the whole-field input, that raw value is what
+ * the function returns. A status value outside this seven-member set is not
+ * rejected, coerced, or normalized; it passes straight through into the
+ * frontmatter. `STATUS_LIFECYCLE_ENUM` is therefore the set of values the
+ * normalizer maps recognized input ONTO, not a runtime-enforced closed
+ * vocabulary for the field.
  *
  * #4186: recognition is ANCHORED (whole-field match against the declared
  * `STATUS_EXACT_TOKENS` / `STATUS_ANCHORED_PATTERNS` tables in
