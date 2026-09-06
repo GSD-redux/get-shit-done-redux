@@ -42,7 +42,8 @@ contract documented in ADR-0894 (capability declaration format) and the
    ```bash
    gsd_run check predicate --predicate '<predicate JSON>' [--phase-dir …] [--phase-number …] [--phase-req-ids …] --raw
    ```
-3. `check-command-router.cts:cmdCheckPredicate` parses the predicate, builds the
+3. `check-command-router.cts:cmdCheckPredicate` parses the predicate, confines
+   `--phase-dir` to the project (see **Path confinement** below), builds the
    production subprocess binding, and calls
    `gate-predicate-evaluator.cjs:evaluatePredicate`, which dispatches by
    `predicate.kind`.
@@ -55,6 +56,25 @@ contract documented in ADR-0894 (capability declaration format) and the
      malformed predicate / unknown kind), route per `onError` (`halt` or `skip`).
    - **Step 2** — if the command succeeded, a `blocking: true` gate halts on
      `block: true`; an advisory gate shows `message` and continues.
+
+## Path confinement
+
+`--phase-dir` is the only directory path supplied to predicate evaluation, and
+both built-in kinds read it: `artifact-frontmatter-equals` searches it for the
+artifact, and `command-exit-zero` interpolates it as `${PHASE_DIR}`. It is
+therefore resolved against the project root and rejected if it escapes:
+
+- A relative value resolves against the project root, never the process cwd.
+- The value is canonicalized with `realpath`, so a symlink whose target lands
+  outside the project is rejected along with a plain out-of-project path.
+- Rejection is a **check-command failure** (non-zero exit), which the two-step
+  contract routes per `onError` — never a `block: false` verdict sourced from
+  outside the project.
+- A blank value stays the "no phase context" shape: the evaluator treats it as
+  absent and falls back to the project root.
+
+The predicate's own `artifact` suffix is confined under the resolved phase
+directory separately, so neither the root nor the leaf can traverse out.
 
 ## Built-in kinds
 
@@ -76,7 +96,7 @@ the gate context; all others are left untouched for `sh` to interpret:
 | Placeholder | Source | Workflow flag |
 |---|---|---|
 | `${PHASE_NUMBER}` | the active phase number | `--phase-number` |
-| `${PHASE_DIR}` | the active phase directory | `--phase-dir` |
+| `${PHASE_DIR}` | the active phase directory, confined to the project (see **Path confinement**) | `--phase-dir` |
 | `${PHASE_REQ_IDS}` | the phase's requirement ids | `--phase-req-ids` |
 
 An undefined placeholder interpolates to the empty string.

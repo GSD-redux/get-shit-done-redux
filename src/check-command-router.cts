@@ -1362,10 +1362,35 @@ function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): vo
     error('predicate --predicate value must be valid JSON', ERROR_REASON.USAGE);
     return;
   }
+  // SECURITY (path confinement, #4354): `--phase-dir` reaches here from the
+  // workflow gate-dispatch on behalf of a capability-declared gate, and was
+  // previously used verbatim. `findPhaseArtifact` below confines the artifact
+  // SUFFIX under phaseDir but nothing confined phaseDir itself, so an
+  // out-of-project directory (or an in-project symlink resolving out of it)
+  // could source a BLOCKING gate's `block:false` verdict; the same value also
+  // interpolates into `${PHASE_DIR}` for the `command-exit-zero` kind. Confine
+  // it at this seam — cmdCheckPredicate is the ONLY caller of evaluatePredicate,
+  // so ctx.phaseDir cannot be produced anywhere else — and forward the
+  // realpath-canonical form so the shell interpolation resolves to the same
+  // verified path the check saw.
+  //
+  // Blank is NOT an error: `--phase-dir "${PHASE_DIR}"` with PHASE_DIR unset is
+  // the workflow's documented "no phase context" shape, which the evaluator
+  // already treats as absent (falling back to the project root).
+  const rawPhaseDir = flags['phase-dir'];
+  let phaseDir: string | undefined;
+  if (typeof rawPhaseDir === 'string' && rawPhaseDir.trim().length > 0) {
+    const confined = validatePath(rawPhaseDir, projectDir, { allowAbsolute: true });
+    if (!confined.safe) {
+      error(`predicate --phase-dir must resolve inside the project: ${confined.error}`, ERROR_REASON.USAGE);
+      return;
+    }
+    phaseDir = confined.resolved;
+  }
   const ctx = {
     cwd: projectDir,
     phaseNumber: flags['phase-number'],
-    phaseDir: flags['phase-dir'],
+    phaseDir,
     phaseReqIds: flags['phase-req-ids'],
   };
   let result;

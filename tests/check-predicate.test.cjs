@@ -153,3 +153,135 @@ describe('partitionPredicateArgs (#4130 follow-up)', () => {
     assert.deepEqual(positionals, ['p1', 'p2', 'p3']);
   });
 });
+
+// ─── #4354: --phase-dir confinement (the flag → ctx seam) ─────────────────────
+
+/**
+ * DEFECT (#4354): `cmdCheckPredicate` built `ctx.phaseDir` from `--phase-dir`
+ * verbatim. `findPhaseArtifact` confines the artifact *suffix* under phaseDir
+ * (`validatePath(artifactSuffix, phaseDir)`) but nothing confined phaseDir
+ * itself, so a BLOCKING capability-declared gate could source a `block:false`
+ * verdict from any directory on the machine — and the same unconfined value
+ * interpolated into `${PHASE_DIR}` for the `command-exit-zero` kind.
+ *
+ * These drive the real CLI because the defect lived in the flag -> ctx seam,
+ * not in the pure evaluator: only the CLI wrapper knows the project root to
+ * confine against, and only it can map a rejection to the non-zero exit the
+ * two-step gate contract routes per `onError`.
+ */
+describe('check predicate — --phase-dir project confinement (#4354)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { runGsdTools, createTempDir, cleanup } = require('./helpers.cjs');
+
+  const FRONTMATTER = '---\nstatus: complete\n---\n# Summary\n';
+
+  const ARTIFACT_PREDICATE = JSON.stringify({
+    kind: 'artifact-frontmatter-equals',
+    artifact: 'SUMMARY.md',
+    field: 'status',
+    equals: 'complete',
+  });
+  // Passes iff ${PHASE_DIR} resolves to a directory holding the outside artifact.
+  const COMMAND_PREDICATE = JSON.stringify({
+    kind: 'command-exit-zero',
+    command: 'test -f "${PHASE_DIR}/01-SUMMARY.md"',
+  });
+
+  /**
+   * A project whose in-project phase dir AND an unrelated outside dir both hold
+   * an artifact satisfying the predicate. Only the artifact's LOCATION differs
+   * between the passing case and the must-not-pass cases.
+   */
+  function makeFixture(t) {
+    const project = createTempDir('pred-4354-proj-');
+    const outside = createTempDir('pred-4354-out-');
+    t.after(() => { cleanup(project); cleanup(outside); });
+    const inside = path.join(project, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(inside, { recursive: true });
+    fs.writeFileSync(path.join(inside, '01-SUMMARY.md'), FRONTMATTER, 'utf8');
+    fs.writeFileSync(path.join(outside, '01-SUMMARY.md'), FRONTMATTER, 'utf8');
+    return { project, outside, inside };
+  }
+
+  function runPredicate(fx, phaseDir, predicateJson) {
+    return runGsdTools(
+      ['check', 'predicate',
+        '--predicate', predicateJson || ARTIFACT_PREDICATE,
+        '--phase-dir', phaseDir,
+        '--cwd', fx.project,
+        '--raw'],
+      fx.project,
+    );
+  }
+
+  /** Non-zero exit is the fail-closed shape: a step-1 command failure, routed per onError. */
+  function assertRejected(result, label) {
+    assert.strictEqual(
+      result.success, false,
+      `${label}: an out-of-project --phase-dir must fail the check COMMAND, not return a verdict. stdout: ${result.output}`,
+    );
+    assert.match(result.error, /--phase-dir must resolve inside the project/,
+      `${label}: the error must name the offending flag and the confinement rule`);
+  }
+
+  test('[negative] an unrelated outside directory cannot satisfy the gate', (t) => {
+    const fx = makeFixture(t);
+    assertRejected(runPredicate(fx, fx.outside), 'absolute outside dir');
+  });
+
+  test('[negative] a symlink inside the project resolving outside cannot satisfy the gate', (t) => {
+    const fx = makeFixture(t);
+    const link = path.join(fx.project, '.planning', 'phases', 'escape');
+    try {
+      fs.symlinkSync(fx.outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (e && ['EPERM', 'EACCES', 'ENOTSUP'].includes(e.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw e;
+    }
+    assertRejected(runPredicate(fx, link), 'in-project symlink to outside');
+  });
+
+  test('[negative] ${PHASE_DIR} interpolation cannot reach outside the project', (t) => {
+    const fx = makeFixture(t);
+    assertRejected(runPredicate(fx, fx.outside, COMMAND_PREDICATE), 'command-exit-zero interpolation');
+  });
+
+  test('[happy] an in-project phase dir still resolves its artifact and passes', (t) => {
+    const fx = makeFixture(t);
+    const result = runPredicate(fx, fx.inside);
+    assert.strictEqual(result.success, true, `in-project --phase-dir must still be accepted; stderr: ${result.error}`);
+    const verdict = JSON.parse(result.output);
+    assert.strictEqual(verdict.block, false);
+    assert.strictEqual(verdict.details.match, true);
+  });
+
+  test('[happy] a project-relative in-project phase dir resolves against the project root', (t) => {
+    const fx = makeFixture(t);
+    const result = runPredicate(fx, path.join('.planning', 'phases', '01-demo'));
+    assert.strictEqual(result.success, true, `relative --phase-dir must be accepted; stderr: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).block, false);
+  });
+
+  test('[happy] ${PHASE_DIR} interpolation still reaches an in-project phase dir', (t) => {
+    const fx = makeFixture(t);
+    const result = runPredicate(fx, fx.inside, COMMAND_PREDICATE);
+    assert.strictEqual(result.success, true, `in-project command predicate must run; stderr: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).block, false);
+  });
+
+  test('[bva:empty] a blank --phase-dir stays the "no phase context" fallback, not an error', (t) => {
+    const fx = makeFixture(t);
+    // The evaluator treats a blank phaseDir as absent and falls back to the
+    // project root; confinement must not turn that into a hard command failure.
+    // The project root holds no SUMMARY.md, so the expected verdict is block:true.
+    const result = runPredicate(fx, '');
+    assert.strictEqual(result.success, true, `blank --phase-dir must not fail the command; stderr: ${result.error}`);
+    const verdict = JSON.parse(result.output);
+    assert.strictEqual(verdict.block, true);
+    assert.strictEqual(verdict.details.artifactNotFound, true);
+  });
+});
