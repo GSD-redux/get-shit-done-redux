@@ -398,12 +398,13 @@ one, and takes its own artifacts with it: each viewport that fails has the
 partial or zero-byte file it may have written removed, so a partial capture
 leaves only the shots that actually succeeded, and a total failure removes the
 review directory outright. The directory is allocated atomically — `mkdir`
-without `-p`, retried under a fresh suffix when the name is taken — so it belongs
-to exactly one audit. That is what makes the cleanup safe to state without
-qualification: two audits of the same phase in the same second, or one shell
-running the audit twice, would otherwise share a directory and write the same
-three filenames, and no per-file rule could then tell whose capture it was
-deleting.
+without `-p`, retried under a fresh suffix when the name is taken — so exactly one
+audit wins a given name: two audits of the same phase in the same second, or one
+shell running the audit twice, would otherwise share a directory and write the
+same three filenames, and no per-file rule could then tell whose capture it was
+deleting. The guarantee is over creation, not over the pathname for all time —
+nothing here defends against another process substituting a parent directory
+mid-audit.
 
 ---
 

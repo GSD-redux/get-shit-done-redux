@@ -151,12 +151,12 @@ if [ -n "$DEV_URL" ]; then
   SCREENSHOT_DIR="$SCREENSHOT_BASE"
   SUFFIX=1
   until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
-    SCREENSHOT_DIR="$SCREENSHOT_BASE-$SUFFIX"
-    SUFFIX=$((SUFFIX + 1))
     if [ "$SUFFIX" -gt 99 ]; then
       SCREENSHOT_DIR=""
       break
     fi
+    SCREENSHOT_DIR="$SCREENSHOT_BASE-$SUFFIX"
+    SUFFIX=$((SUFFIX + 1))
   done
 
   if [ -z "$SCREENSHOT_DIR" ]; then
@@ -192,8 +192,8 @@ if [ -n "$DEV_URL" ]; then
         # capture too — two good shots and one stray file was the gap.
         # By name rather than a `*.png` glob. For this audit's own files the two are
         # equivalent; the name form additionally leaves alone anything else that happens
-        # to be in the directory. What actually keeps a CONCURRENT audit's captures safe
-        # is the `-$$` in the directory above, never this line.
+        # to be in the directory. What keeps a CONCURRENT audit's captures safe is the
+        # atomic allocation above, never this line.
         rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
         FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
       fi

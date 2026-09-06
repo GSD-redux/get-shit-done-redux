@@ -160,8 +160,33 @@ function logicalLines(lines) {
 // keyword list for the same reason: `else echo unparsed` reached neither the bare-`else`
 // branch nor this check. All three driven.
 function hasControlKeyword(text) {
-  const bare = text.replace(/'[^']*'/g, ' ').replace(/"(?:[^"\\]|\\.)*"/g, ' ');
-  return /(^|[\t ;&|(){}<>])(if|then|else|elif|fi|do|done|case|esac)([\t ;&|(){}<>]|$)/.test(bare);
+  return /(^|[\t ;&|(){}<>])(if|then|else|elif|fi|do|done|case|esac)([\t ;&|(){}<>]|$)/.test(blankQuoted(text));
+}
+
+// Replace the CONTENTS of quoted spans with spaces, walking the line once.
+//
+// Two independent regexes (`/'[^']*'/` then `/"..."/`) is not the same thing, and the
+// difference is a false PASS: an apostrophe inside a double-quoted string — legal, and
+// `test "'" = x` is the driven case — pairs with the next apostrophe several tokens
+// away, and the single-quote pass then erases the real `then`, `fi` and `if` between
+// them. The guard saw no control keyword and the walker kept a stale CAPTURED guard on a
+// hoisted success echo. Whichever regex runs first, the other one is wrong.
+function blankQuoted(text) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\' && quote === '"') { out += '  '; i += 1; continue; }
+      if (c === quote) { quote = null; out += ' '; continue; }
+      out += ' ';
+      continue;
+    }
+    if (c === '\\') { out += '  '; i += 1; continue; }
+    if (c === "'" || c === '"') { quote = c; out += ' '; continue; }
+    out += c;
+  }
+  return out;
 }
 
 function guardedLines(lines) {
@@ -275,6 +300,11 @@ function stripComment(line) {
     if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
     if (c === '$' && line[i + 1] === "'") { out += c + line[i + 1]; i += 1; stack.push('ansi'); continue; }
     if (c === '$' && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
+    // Nested parens inside `$( )`. A raw subshell — `$( (printf x); printf "%s" " # " )`
+    // — closed the outer context at the INNER `)`, after which every quote was
+    // misclassified and the trailing continuation was truncated away. Driven. Depth is
+    // tracked on the stack itself: a bare `(` inside cmd pushes, its `)` pops.
+    if (c === '(' && ctx === 'cmd') { out += c; stack.push('cmd'); continue; }
     if (c === ')' && ctx === 'cmd') { out += c; stack.pop(); continue; }
     // `${var#pattern}` — the `#` there is a removal operator, not a comment, and the
     // scanner truncated `echo ${value# #}` mid-expansion. Driven.
@@ -310,43 +340,53 @@ function stripComment(line) {
 // up to the FIRST unquoted `)`; a quoted one is part of a pattern, not the terminator.
 function caseLabelOf(line) {
   const t = line.trim().replace(/^\(/, '');
-  // Walk once, tracking quotes, and split on `|` only OUTSIDE them. A blanket
-  // `split('|')` turned the single literal pattern `"401|403|407|511"` into four
-  // statuses (false PASS), while stripping quotes afterwards turned the literal
-  // `"2??"` into what looked like a range (false PASS on an arm that accepts only the
-  // statuses it enumerates). Both driven. So each pattern also records whether ANY of
-  // it was quoted: a quoted `?` is a literal question mark, not a wildcard.
+  // Walk once, tracking quotes, splitting on `|` only OUTSIDE them, and recording
+  // activity PER CHARACTER rather than per pattern.
+  //
+  // One boolean per pattern cannot express either direction, and both were driven:
+  // `2\?\?` escapes the wildcards so bash matches them literally — an exact-match arm
+  // that read as a range (false PASS) — while `"2"??` quotes only the digit and IS a
+  // range, which a whole-pattern flag called quoted (false FAIL). What decides whether a
+  // `?` is a wildcard is whether THAT `?` was quoted or escaped, so that is what is kept.
   const patterns = [];
   let cur = '';
-  let quoted = false;
+  let active = [];        // per character: is this an ACTIVE (unquoted, unescaped) glob metachar
   let quote = null;
   let end = -1;
+  const push = (c, isActive) => { cur += c; active.push(isActive); };
   for (let i = 0; i < t.length; i += 1) {
     const c = t[i];
     if (quote) {
-      if (c === '\\' && quote === '"') { cur += t[i + 1] ?? ''; i += 1; continue; }
+      if (c === '\\' && quote === '"') { push(t[i + 1] ?? '', false); i += 1; continue; }
       if (c === quote) { quote = null; continue; }
-      cur += c; quoted = true; continue;
+      push(c, false);
+      continue;
     }
-    if (c === '\\') { cur += t[i + 1] ?? ''; i += 1; continue; }   // `4\01` is 401
-    if (c === "'" || c === '"') { quote = c; quoted = true; continue; }
-    if (c === '|') { patterns.push({ text: cur.trim(), quoted }); cur = ''; quoted = false; continue; }
+    if (c === '\\') { push(t[i + 1] ?? '', false); i += 1; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === '|') { patterns.push({ text: cur.trim(), active }); cur = ''; active = []; continue; }
     if (c === ')') { end = i; break; }
-    cur += c;
+    push(c, true);
   }
   if (end < 0) return null;
-  patterns.push({ text: cur.trim(), quoted });
+  patterns.push({ text: cur.trim(), active });
   // Whitespace only disqualifies an UNQUOTED pattern: `"x y"` is one legal pattern, and
   // rejecting the whole label for it false-FAILED an otherwise-valid arm. Driven.
   if (patterns.length === 0
-      || patterns.some((x) => x.text === '' || (!x.quoted && /[\t ]/.test(x.text)))) return null;
+      || patterns.some((x) => x.text === ''
+        || x.text.split('').some((ch, k) => /[\t ]/.test(ch) && x.active[k]))) return null;
   return patterns;
 }
+
 
 // A pattern that actually matches a RANGE of 2xx statuses. A quoted `"2??"` matches the
 // three literal characters `2??` and no status at all, so its wildcards do not count.
 function isTwoXxRange(pattern) {
-  return !pattern.quoted && /^2(\?\?|\[0-9\]\[0-9\]|\*)$/.test(pattern.text);
+  const { text, active } = pattern;
+  if (!/^2(\?\?|\[0-9\]\[0-9\]|\*)$/.test(text)) return false;
+  // Every metacharacter in the matched shape must be ACTIVE. `2\?\?` has the right text
+  // and no active wildcards, so it matches exactly the three characters `2??`.
+  return text.split('').every((ch, k) => !/[?*[\]]/.test(ch) || active[k]);
 }
 
 function captureInvocations(lines) {
@@ -596,16 +636,16 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // The removal lives in the capture loop's FAILURE arm, not in the all-failed branch,
     // and that placement is the finding: scoped to the all-failed branch it left the
     // PARTIAL case — two good shots and one stray file — still overclaimed by the docs.
-    // It is also BY NAME rather than a `*.png` glob, because the review directory is
-    // keyed to the phase and a whole second, so a concurrent audit of the same phase can
-    // share it and a glob would delete that audit's captures.
+    // It is also BY NAME rather than a `*.png` glob. That is the narrower operation and
+    // leaves alone anything else in the directory; what keeps a CONCURRENT audit's
+    // captures safe is the atomic allocation, not this line.
     const rows = guardedLines(screenshotApproachLines());
     const removals = rows.filter((r) => /^rm -f\b/.test(r.line));
     assert.ok(removals.length > 0, 'expected the capture loop to remove a failed viewport\u2019s stray file');
     for (const row of removals) {
       assert.ok(
         !/\*/.test(row.line),
-        `stray-file removal must name the file, never glob the directory — a concurrent audit shares it: ${row.line}`
+        `stray-file removal must name the file, never glob the directory: ${row.line}`
       );
       assert.ok(
         /\$SHOT_NAME/.test(row.line),
@@ -645,7 +685,12 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // outright, the block stays in the haystack, and the assertion is then satisfied by the
     // block's own text. That is a false clean, and CRLF-fragility is a class this repo lints
     // for (local/no-crlf-fragile-split). Assert on the Screenshots report field itself.
-    const surfaces = splitLines(fs.readFileSync(AUDITOR_PATH, 'utf-8'))
+    // HTML comments removed FIRST. Commenting out both real fields and adding a visible
+    // hard-coded `Screenshots: captured` line satisfied a scan of the raw source: the
+    // commented lines still matched, and the rendered text no longer carried the
+    // variable at all. Driven.
+    const rendered = fs.readFileSync(AUDITOR_PATH, 'utf-8').replace(/<!--[\s\S]*?-->/g, '');
+    const surfaces = splitLines(rendered)
       .filter((l) => /^\*\*Screenshots:\*\*/.test(l.trim()));
     assert.ok(surfaces.length > 0, 'expected a Screenshots report field in the agent output template');
     // The field's VALUE, not a mention on the line. `**Screenshots:** captured
@@ -709,11 +754,19 @@ const urlOf = (server) => `http://127.0.0.1:${server.address().port}`;
 function runProbe(url) {
   return new Promise((resolve, reject) => {
     execFile(process.execPath, ['-e', probeProgram(), url], { timeout: 30000 },
-      // Trim exactly what `$( )` trims — TRAILING NEWLINES — and nothing else. A blanket
-      // .trim() accepted a program emitting " 200", which the product's `case` rejects;
-      // no trimming at all rejected "200\n", which the product ACCEPTS, because command
-      // substitution strips it. Both directions were driven; this models the substitution.
-      (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout).replace(/\n+$/, ''))));
+      // MODEL THE WHOLE SHELL EXPRESSION, not just the program. The fence runs
+      //   PROBE=$(node -e '…' "$url" 2>/dev/null || echo "000"); PROBE=${PROBE:-000}
+      // so a program that PRINTS 200 and then exits non-zero yields `200000` — which
+      // matches no arm and reads as absent. Ignoring the exit code here accepted exactly
+      // that mutant. `$( )` strips trailing newlines and nothing else: a blanket .trim()
+      // accepted " 200" (which the block's `case` rejects) and no trim at all rejected
+      // "200\n" (which it accepts). All three directions driven.
+      (err, stdout) => {
+        const code = err && typeof err.code === 'number' ? err.code : 0;
+        const raw = String(stdout) + (code !== 0 ? '000\n' : '');
+        const substituted = raw.replace(/\n+$/, '');
+        resolve(substituted === '' ? '000' : substituted);
+      });
   });
 }
 
@@ -825,7 +878,13 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // them, which let `--user-agent="--timeout=30000"` satisfy the timeout assertion while
     // passing no timeout option at all.
     fs.writeFileSync(path.join(bin, 'npx'),
-      '#!/bin/sh\nout=""\nfor a in "$@"; do case "$a" in *.png) out="$a";; esac; done\n'
+      // VERIFY THE COMMAND SELECTION. A stub that manufactures screenshots for whatever
+      // it is handed accepts `npx --version playwright screenshot ...`, which the real
+      // offline npx answers by printing its version and capturing nothing. Driven: that
+      // mutant passed every assertion here and failed against the real binary.
+      '#!/bin/sh\n[ "$1" = "playwright" ] && [ "$2" = "screenshot" ] || '
+      + '{ echo "stub npx: not invoked as `playwright screenshot`: $1 $2" >&2; exit 66; }\n'
+      + 'out=""\nfor a in "$@"; do case "$a" in *.png) out="$a";; esac; done\n'
       + 'name=$(basename "$out" .png)\n'
       // NUL-DELIMITED. A newline-delimited log splits an argument that CONTAINS a
       // newline into two, so `--user-agent=$'audit\\n--timeout=30000'` — one argument
@@ -853,11 +912,18 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // Capture the block's OWN status before the instrumentation runs: a trailing
     // `printf` resets `$?`, so appending `false` to the fence exited 0 and the
     // exit-status assertion passed on a fence that had failed. Driven.
+    // THE INSTRUMENTATION WRITES FILES, NOT STDOUT. Anything printed to stdout is
+    // forgeable by the block under test: a `CAPTURE_STATUS` whose VALUE contains a
+    // newline forged a second status line, and a `printf "FENCE_RC=0"` forged a clean
+    // exit — both passed a stdout-scraping reader, whether it took the first match or
+    // the last. A file the block never names cannot be forged by the block's own output.
+    const statusFile = path.join(dir, 'capture-status.out');
+    const rcFile = path.join(dir, 'fence-rc.out');
     fs.writeFileSync(script,
       `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${screenshotApproachBlock()}\n`
       + 'FENCE_RC=$?\n'
-      + 'printf "CAPTURE_STATUS=%s\\n" "$CAPTURE_STATUS"\n'
-      + 'printf "FENCE_RC=%s\\n" "$FENCE_RC"\n');
+      + `printf %s "$CAPTURE_STATUS" > ${JSON.stringify(statusFile)}\n`
+      + `printf %s "$FENCE_RC" > ${JSON.stringify(rcFile)}\n`);
     const r = spawnSync('bash', [script], {
       cwd: dir,
       encoding: 'utf8',
@@ -875,16 +941,14 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const shotDirs = fs.existsSync(reviews) ? fs.readdirSync(reviews).sort() : [];
     const filesIn = (d) => fs.readdirSync(path.join(reviews, d)).sort();
     const argvRaw = fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '';
-    // The LAST occurrence. Reading the first accepted a fence that printed the honest
-    // value and then reassigned the variable — the report would render the second.
-    const statusAll = [...stdout.matchAll(/^CAPTURE_STATUS=(.*)$/gm)];
-    const status = statusAll.length ? statusAll[statusAll.length - 1] : null;
-    const rcLine = /^FENCE_RC=([0-9]+)$/m.exec(stdout);
+    const readOut = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null);
+    const status = readOut(statusFile);
+    const rcRead = readOut(rcFile);
     return {
       stdout,
-      exitCode: rcLine ? Number(rcLine[1]) : r.status,
+      exitCode: rcRead !== null && rcRead !== '' ? Number(rcRead) : r.status,
       stderr: r.stderr || '',
-      captureStatus: status ? status[1] : null,
+      captureStatus: status,
       dir,
       // Each invocation as an array of its arguments — boundaries preserved.
       invocations: argvRaw.split('--INVOCATION--\0').slice(1)
@@ -943,16 +1007,23 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
   test('a capture that writes a real file but exits non-zero is NOT a capture, and its file goes', () => {
     // The exit-status half, isolated. Dropping it counts a crashed run that happened to
     // leave a plausible file.
-    const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop',
-      SHOT_WRITE: 'desktop mobile tablet' }));
-    assert.match(r.stdout, /PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
-    assert.strictEqual(r.captureStatus, 'partially captured');
-    // And the file is REMOVED. Restricting the cleanup to empty files only passed every
-    // fixture, because none of them paired a failure with a non-empty artefact — a
-    // plausible-looking png from a run that crashed after writing is the worst case to
-    // leave behind, not the least.
-    assert.deepStrictEqual(r.files, ['mobile.png', 'tablet.png'],
-      'a failed viewport\u2019s file must go whether or not it happens to be empty');
+    // EVERY viewport, not just the first. A cleanup skipping one specific name
+    // (`if [ "$SHOT_NAME" != mobile ]`) passed a fixture set that only ever failed
+    // `desktop`, and the total-failure fixtures conceal it because the directory is
+    // removed wholesale. Driven.
+    const others = { desktop: ['mobile.png', 'tablet.png'], mobile: ['desktop.png', 'tablet.png'],
+      tablet: ['desktop.png', 'mobile.png'] };
+    for (const [failed, survivors] of Object.entries(others)) {
+      const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: failed,
+        SHOT_WRITE: 'desktop mobile tablet' }));
+      assert.match(r.stdout, new RegExp(`PARTIALLY captured .*\\(2/3\\).*failed: ?${failed}`));
+      assert.strictEqual(r.captureStatus, 'partially captured');
+      // Restricting the cleanup to empty files only also passed every earlier fixture,
+      // because none paired a failure with a non-empty artefact — a plausible-looking
+      // png from a run that crashed after writing is the worst case to leave, not the least.
+      assert.deepStrictEqual(r.files, survivors,
+        `a failed ${failed} capture must take its file with it, empty or not`);
+    }
   });
 
   test('a partial capture keeps the shots that worked and removes the stray file', () => {
@@ -984,6 +1055,28 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       `after the second audit cleaned up, exactly the first audit's directory must remain: ${JSON.stringify(second.shotDirs)}`);
     assert.deepStrictEqual(second.filesIn(second.shotDirs[0]), ['desktop.png', 'mobile.png', 'tablet.png'],
       'the second audit\u2019s failure cleanup must not touch the first audit\u2019s captures');
+  });
+
+  test('an exhausted allocation is a capture failure, not a write outside the project', () => {
+    // The safety branch had NO fixture: replacing its guard with `if false; then` passed
+    // every assertion. With SCREENSHOT_DIR empty the capture would write to /desktop.png
+    // — outside the project entirely — so the branch that prevents it is exactly the kind
+    // that must not be taken on trust.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-full-'));
+    tmpDirs.push(dir);
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    fs.mkdirSync(reviews, { recursive: true });
+    // Occupy the base name and every suffix the loop will try.
+    fs.mkdirSync(path.join(reviews, '07-20300101-000000'));
+    for (let i = 1; i <= 99; i += 1) fs.mkdirSync(path.join(reviews, `07-20300101-000000-${i}`));
+    const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
+    assert.match(r.stdout, /Could not allocate a review directory/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
+    assert.doesNotMatch(r.stdout, /Screenshots captured/);
+    assert.strictEqual(r.invocations.length, 0,
+      'nothing may be captured when no directory was allocated — the path would be outside the project');
+    assert.strictEqual(fs.readdirSync(reviews).length, 100,
+      'the exhausted run must not have created a directory of its own');
   });
 
   test('all three captures succeeding is the only path that claims "captured"', () => {
