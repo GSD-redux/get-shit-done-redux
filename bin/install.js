@@ -10218,6 +10218,29 @@ function recoverOrphanedPristine(pristineDir, relPath, recordedHash, canonicalSk
 }
 
 /**
+ * #4135: honest N-of-M accounting for gsd-pristine/ baselines after an
+ * update. The #3407 promotion rule keeps only hash-validated candidates
+ * (byte-identical across the version span), so a multi-version update
+ * legitimately ends with near-zero baselines — the collapse itself is NOT a
+ * bug to hide; hiding it is. This renders the covered-of-total line the
+ * update output prints either way, so "1 of 13" can never present like a
+ * fully-covered run. Pure function (typed return) so tests lock the exact
+ * contract without matching console prose.
+ */
+function describeBaselineCoverage(totalModified, covered) {
+  const total = Math.max(0, totalModified);
+  const have = Math.min(Math.max(0, covered), total);
+  const uncovered = total - have;
+  return {
+    complete: uncovered === 0,
+    uncovered,
+    text: uncovered === 0
+      ? `gsd-pristine/ baselines cover ${have} of ${total} modified file(s)`
+      : `gsd-pristine/ baselines cover ${have} of ${total} modified file(s) — ${uncovered} will be reported no_baseline by the reapply verifier`,
+  };
+}
+
+/**
  * Detect user-modified GSD files by comparing against install manifest.
  * Backs up modified files to gsd-local-patches/ for reapply after update.
  * Also saves pristine copies (from manifest) to gsd-pristine/ to enable
@@ -10466,6 +10489,17 @@ function saveLocalPatches(configDir, pristineCtx) {
       }
       if (removed > 0) {
         console.log('  ' + yellow + 'i' + reset + '  Removed ' + removed + ' stale gsd-pristine/ snapshot(s); regenerated ' + regenerated + ' of those — falls back to over-broad verify heuristic for the rest');
+      }
+      // #4135: the honest N-of-M coverage line. Preserved/rescued/regenerated
+      // are disjoint buckets (see their accounting comments above), so their
+      // sum is exactly the files that ended this update with a hash-valid
+      // baseline. A partial result renders as an info line, not an error:
+      // the collapse is legitimate (#3407), hiding it was the bug.
+      const coverage = describeBaselineCoverage(modified.length, preserved + rescued + regenerated);
+      if (coverage.complete) {
+        console.log('  ' + green + '✓' + reset + '  ' + coverage.text);
+      } else {
+        console.log('  ' + yellow + 'i' + reset + '  ' + coverage.text);
       }
     }
   }
@@ -14209,6 +14243,7 @@ module.exports = {
     reportLocalPatches,
     validateHookFields,
     populatePristineDir,
+    describeBaselineCoverage,
     _resolveUserArtifactStagingRoot,
     _tryResolveUserArtifactStagingRoot,
     finishInstall,

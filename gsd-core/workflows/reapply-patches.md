@@ -169,7 +169,7 @@ Check if a `gsd-pristine/` directory exists alongside `gsd-local-patches/`:
 ```bash
 PRISTINE_DIR="$CONFIG_DIR/gsd-pristine"
 ```
-If it exists, the installer saved pristine copies at install time. Use these as the baseline. Both the deterministic verifier and the installer's preserve-check resolve each file's snapshot at its canonical path first and, when that misses, by the SHA-256 recorded in `pristine_hashes` — so a snapshot stored at a legacy path (for example, without the `gsd-core/` prefix an earlier release dropped) is still found and, on the next update, relocated to its canonical path (#4145).
+If it exists, the installer saved pristine copies at install time. Use these as the baseline. Both the deterministic verifier and the installer's preserve-check resolve each file's snapshot at its canonical path first and, when that misses, by the SHA-256 recorded in `pristine_hashes` — so a snapshot stored at a legacy path (for example, without the `gsd-core/` prefix an earlier release dropped) is still found and, on the next update, relocated to its canonical path (#4145). When no snapshot resolves under `gsd-pristine/`, the deterministic verifier additionally falls back to Option A's git-history walk itself (read-only, same recorded-hash match), which is what keeps Step 5a coverage non-zero on multi-version updates where the hash-validated regeneration had nothing it could promote (#4135).
 
 ### Option C: No baseline available (two-way fallback)
 If neither git history nor pristine snapshots are available, fall back to two-way comparison — but with **strengthened heuristics** (see Step 3).
@@ -362,8 +362,26 @@ VERIFY_STATUS=$?
 DRIFTED_COUNT="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.drifted||0))")"
 DRIFTED_FILES="$(echo "$VERIFY_OUTPUT"  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.drifted_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
 NO_BASELINE_COUNT="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.no_baseline||0))")"
-NO_BASELINE_FILES="$(echo "$VERIFY_OUTPUT"  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.no_baseline_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
+NO_BASELINE_FILES="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.no_baseline_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
+BASELINE_COVERED="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.baseline_covered||0))")"
+CHECKED_COUNT="$(echo "$VERIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.checked||0))")"
 ```
+
+**Baseline coverage headline (#4135)** — BEFORE any pass/fail statement, print the coverage
+N-of-M line. A run where 12 of 13 files were not diff-verified must never present the same way
+as a fully-verified one:
+
+```text
+Baseline coverage: {BASELINE_COVERED} of {CHECKED_COUNT} file(s) verified against a pristine
+baseline ({CHECKED_COUNT - BASELINE_COVERED} unverified)
+```
+
+The verifier also reports this on every run (JSON field `baseline_covered`; the human summary
+leads with the same line). Operators who want the gate itself to fail on low coverage (cautious
+environments) pass the opt-in strict flag when invoking the verifier:
+`--min-baseline-coverage <fraction between 0 and 1>` — below the threshold the verifier exits
+with code 3 (a real content failure still exits 1 and outranks it). Without the flag the
+default advisory posture is unchanged.
 
 **If `NO_BASELINE_COUNT` is greater than 0**, emit an advisory warning (non-blocking — the gate still exits 0 for these files). Do NOT halt:
 

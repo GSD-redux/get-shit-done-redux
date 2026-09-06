@@ -20,11 +20,21 @@
  *     [--classify]                   # pre-merge mode: classify each backed-up
  *                                    # file as incorporated / needs_merge /
  *                                    # unknown (#4136); always exits 0
+ *     [--min-baseline-coverage <0..1>]  # OPT-IN strict gate (#4135): exit 3
+ *                                    # when the fraction of files verified
+ *                                    # against a resolved pristine baseline
+ *                                    # (baseline_covered / checked) falls below
+ *                                    # the threshold. Default: off — a
+ *                                    # low-coverage run stays green per the
+ *                                    # documented #934 advisory posture, but
+ *                                    # its coverage is ALWAYS headline-reported.
  *
  * Exit codes (default gate mode):
  *   0 — every user-added line is present in the merged file (gate passes)
- *   1 — at least one missing line in at least one file (gate fails)
+ *   1 — at least one missing line in at least one file (gate fails); outranks
+ *       a coverage-gate failure when both apply
  *   2 — usage / structural error (e.g. patches dir missing)
+ *   3 — opt-in coverage gate failed (--min-baseline-coverage not met; #4135)
  *
  * Bug #2969: the Step 5 gate previously trusted Claude's free-text "verified:
  * yes/no" reporting per hunk. The LLM was filling in `yes` even when content
@@ -55,7 +65,7 @@ const SIGNIFICANT_MIN_CHARS = 12;
 const GSD_HOOK_VERSION_LINE_RE = /^(?:\/\/|#)\s*gsd-hook-version:\s*\S+\s*$/i;
 
 function parseArgs(argv) {
-  const opts = { patchesDir: null, configDir: null, pristineDir: null, json: false, classify: false };
+  const opts = { patchesDir: null, configDir: null, pristineDir: null, json: false, classify: false, minBaselineCoverage: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--patches-dir') opts.patchesDir = argv[++i];
@@ -63,9 +73,19 @@ function parseArgs(argv) {
     else if (arg === '--pristine-dir') opts.pristineDir = argv[++i];
     else if (arg === '--json') opts.json = true;
     else if (arg === '--classify') opts.classify = true;
-    else if (arg === '--help' || arg === '-h') {
+    else if (arg === '--min-baseline-coverage') {
+      const raw = argv[++i];
+      if (raw === undefined) {
+        throw new ExitError(2, '--min-baseline-coverage requires a value between 0 and 1');
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0 || value > 1) {
+        throw new ExitError(2, `--min-baseline-coverage must be a number between 0 and 1, got: ${raw}`);
+      }
+      opts.minBaselineCoverage = value;
+    } else if (arg === '--help' || arg === '-h') {
       process.stdout.write(
-        'usage: verify-reapply-patches.cjs --patches-dir <path> --config-dir <path> [--pristine-dir <path>] [--json] [--classify]\n',
+        'usage: verify-reapply-patches.cjs --patches-dir <path> --config-dir <path> [--pristine-dir <path>] [--json] [--classify] [--min-baseline-coverage <0..1>]\n',
       );
       throw new ExitError(0);
     } else {
@@ -408,6 +428,47 @@ function resolveSkillsRedirect(configDir) {
   }
 }
 
+/**
+ * #4135: baseline-coverage accounting. A file counts as baseline-covered
+ * when its diff was actually computed against a resolved pristine baseline,
+ * i.e. its reason is one of the baseline-diff outcomes (null = lines
+ * verified present, OK_NO_USER_LINES_VS_PRISTINE = no user lines versus
+ * the baseline, FAIL_USER_LINES_MISSING = lines missing). Everything else
+ * is uncovered: the silent skips (no baseline anywhere per #934/#4135,
+ * drift per #3657, no-pristine over-broad with nothing significant) AND
+ * the structural failures (installed missing / not a file / read error),
+ * which never reached a baseline — they are loud blocking failures, but
+ * they were not baseline-verified either, and this aggregate exists to
+ * state exactly how much of the run the gate could reason about. When
+ * --pristine-dir is absent the whole run is over-broad (#2998 fallback):
+ * no file was verified against a baseline, covered is 0 by construction.
+ */
+const BASELINE_VERIFIED_REASONS = new Set([
+  REASON.OK_NO_USER_LINES_VS_PRISTINE,
+  REASON.FAIL_USER_LINES_MISSING,
+]);
+
+function classifyBaselineCoverage(results, pristineDirProvided) {
+  if (!pristineDirProvided) return 0;
+  let covered = 0;
+  for (const r of results) {
+    if (r.reason === null || BASELINE_VERIFIED_REASONS.has(r.reason)) covered++;
+  }
+  return covered;
+}
+
+/**
+ * #4135: the headline string for the human summary. A run with 12 of 13
+ * files unbaselined must not present the same way as a fully-verified one —
+ * the N-of-M form is the issue's own framing, and the unverified tail is
+ * only rendered when it is non-zero.
+ */
+function coverageHeadline(covered, total) {
+  const unverified = Math.max(0, total - covered);
+  const base = `Baseline coverage: ${covered} of ${total} file(s) verified against a pristine baseline`;
+  return unverified > 0 ? `${base} (${unverified} unverified)` : base;
+}
+
 function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashes, skillsRedirect }) {
   const backupPath = path.join(patchesDir, relPath);
   const installedPath = resolveInstalledPath(configDir, relPath, skillsRedirect);
@@ -453,6 +514,14 @@ function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashe
   // so the pre-merge classifier reasons over the exact same semantics.
   const { resolution, content: pristineContent } =
     resolvePristineBaseline({ relPath, configDir, pristineDir, pristineHashes });
+
+  // Bug #3657: the resolved snapshot hash-mismatches the recorded baseline.
+  // Skip the file with a diagnostic code rather than diffing against the
+  // wrong baseline (a re-anchor or git-aware baseline step is required).
+  if (resolution === PRISTINE_RESOLUTION.DRIFTED) {
+    result.reason = REASON.OK_PRISTINE_DRIFT_DETECTED;
+    return result;
+  }
 
   // Bug #934 / #4145: a hash was recorded (modern installer) but no
   // hash-matching pristine exists anywhere under gsd-pristine/ —
@@ -682,14 +751,52 @@ function main() {
   const no_baseline = noBaselineResults.length;
   const no_baseline_files = noBaselineResults.map((r) => r.file);
 
+  // Bug #4135: baseline coverage is a first-class aggregate. The collapse
+  // this reports is silent by design in every other surface (no_baseline is
+  // advisory, exit stays 0), which is exactly why it must be counted here:
+  // "A clean verifier exit reads as 'hunks survived'. On this run it meant
+  // '12 of 13 files were not checked at all.'"
+  const baseline_covered = classifyBaselineCoverage(results, Boolean(opts.pristineDir));
+
+  // Bug #4135: the opt-in strict coverage gate. Threshold semantics are >=
+  // (a run exactly at the threshold passes); an empty run is vacuously
+  // covered (nothing checked cannot be under-covered). A content failure
+  // (exit 1) outranks a coverage failure — it is the louder, more specific
+  // signal.
+  let coverageGateFailed = false;
+  if (opts.minBaselineCoverage !== null) {
+    const ratio = results.length === 0 ? 1 : baseline_covered / results.length;
+    coverageGateFailed = ratio < opts.minBaselineCoverage;
+  }
+
   if (opts.json) {
     process.stdout.write(
-      JSON.stringify({ checked: results.length, failures: failures.length, drifted, drifted_files, no_baseline, no_baseline_files, results }, null, 2) + '\n',
+      JSON.stringify({ checked: results.length, failures: failures.length, drifted, drifted_files, no_baseline, no_baseline_files, baseline_covered, results }, null, 2) + '\n',
     );
   } else {
     process.stdout.write(`# Hunk Verification Gate (#2969)\n\n`);
     process.stdout.write(`Checked: ${results.length} file(s)\n`);
-    process.stdout.write(`Failures: ${failures.length}\n\n`);
+    process.stdout.write(`Failures: ${failures.length}\n`);
+    // #4135: the coverage headline is printed on EVERY run, before any
+    // per-file detail, so a near-zero-coverage green run can never render
+    // identically to a fully-verified one.
+    process.stdout.write(`${coverageHeadline(baseline_covered, results.length)}\n\n`);
+    if (baseline_covered < results.length) {
+      if (!opts.pristineDir) {
+        process.stdout.write(`No --pristine-dir: over-broad fallback — nothing was verified against a pristine baseline (#2998).\n\n`);
+      } else {
+        const skipped = results.filter((r) => r.reason !== null && !BASELINE_VERIFIED_REASONS.has(r.reason));
+        process.stdout.write(`## Files not verified against a pristine baseline\n\n`);
+        process.stdout.write(`Advisory (non-blocking): their user customizations may or may not have survived the merge.\n\n`);
+        for (const r of skipped) {
+          process.stdout.write(`- ${r.file} (${r.reason})\n`);
+        }
+        process.stdout.write('\n');
+      }
+    }
+    if (coverageGateFailed) {
+      process.stdout.write(`COVERAGE GATE FAILED: baseline coverage ${(opts.minBaselineCoverage * 100).toFixed(1)}% required, ${results.length === 0 ? 100 : ((baseline_covered / results.length) * 100).toFixed(1)}% achieved (#4135 strict mode).\n\n`);
+    }
     if (failures.length > 0) {
       process.stdout.write(`## Files with missing user-added content\n\n`);
       for (const r of failures) {
@@ -705,11 +812,14 @@ function main() {
     }
   }
 
-  return failures.length > 0 ? 1 : 0;
+  if (failures.length > 0) return 1;
+  if (coverageGateFailed) return 3;
+  return 0;
 }
 
 if (require.main === module) {
   runMain(main);
 }
 
-module.exports = { computeUserAddedLines, isSignificantLine, verifyFile, classifyFile, walk, REASON, CLASSIFICATION, PRISTINE_RESOLUTION, resolvePristineBaseline, readPristineHashes, sha256, resolveInstalledPath, resolveSkillsRedirect };
+module.exports = { computeUserAddedLines, isSignificantLine, verifyFile, classifyFile, walk, REASON, CLASSIFICATION, PRISTINE_RESOLUTION, resolvePristineBaseline, readPristineHashes, sha256, resolveInstalledPath, resolveSkillsRedirect, coverageHeadline, classifyBaselineCoverage };
+
