@@ -1182,3 +1182,80 @@ describe('execute-phase workflow: #3684 review findings — join normalization',
     }
   });
 });
+
+// ── #4217: an abnormally-ended child must be reconciled, not failed ──────────
+//
+// allow-test-rule: source-text-is-the-product — the workflow .md IS the
+// instruction the orchestrator executes; its text is the artifact under test.
+//
+// On Codex the parent waited for a normal terminal child response, then
+// interrupted and closed a child that had already implemented the plan, passed
+// verification, made the commits and written the SUMMARY — closing it as
+// `turn_aborted` with the completion evidence on disk. The fallback that covers
+// this was headed "(Copilot and runtimes where Agent() may not return)", so the
+// rule that already said "applies to all runtimes" forty lines later read as
+// someone else's rule.
+describe('execute-phase: completion reconciliation for an abnormally-ended child (#4217)', () => {
+  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+
+  test('the completion-signal fallback heading is runtime-neutral, not Copilot-scoped', () => {
+    // Bounded quantifier: the heading is one line, and an unbounded [^)]* over
+    // whole-file content is the catastrophic-backtracking shape the repo's
+    // no-unbounded-quantifier rule bans.
+    assert.ok(
+      /\*\*Completion signal fallback \(EVERY runtime[^)]{0,120}\):\*\*/.test(workflow),
+      'the fallback heading must not scope itself to one runtime — that is how Codex read past it',
+    );
+  });
+
+  test('reconciliation is REQUIRED before any plan is classified as failed', () => {
+    assert.match(
+      workflow,
+      /An abnormally-ended child is not evidence of failure \(#4217\)/,
+      'the workflow must state that an abnormal end is not a failure verdict',
+    );
+    assert.match(
+      workflow,
+      /REQUIRED before any plan is classified as failed/,
+      'reconciliation must be ordered BEFORE classification, not offered as an alternative',
+    );
+  });
+
+  test('every abnormal termination shape is named, so none reads as out of scope', () => {
+    // The Codex report is `turn_aborted`; naming only that would repeat the
+    // heading mistake one runtime later.
+    for (const shape of ['interrupted', 'aborted', 'closed', 'killed', 'timed out', 'turn_aborted']) {
+      assert.ok(
+        workflow.includes(shape),
+        `the abnormal-termination list must name "${shape}"`,
+      );
+    }
+  });
+
+  test('SUMMARY + matching commits resolve to complete, and forbid re-dispatch', () => {
+    const clause = workflow.slice(workflow.indexOf('An abnormally-ended child is not evidence of failure'));
+    assert.match(clause, /SUMMARY\.md present AND matching commits present/,
+      'the complete-verdict predicate must be stated');
+    assert.match(clause, /do NOT re-dispatch/,
+      're-dispatching a plan whose commits already landed would redo the work on top of itself');
+  });
+
+  test('Codex is named in the runtime-compatibility block', () => {
+    const compat = workflow.slice(
+      workflow.indexOf('<runtime_compatibility>'),
+      workflow.indexOf('</runtime_compatibility>'),
+    );
+    assert.ok(compat.length > 0, 'the runtime_compatibility block must exist');
+    assert.match(compat, /\*\*Codex:\*\*/,
+      'Codex must be named where Claude Code and Copilot are — its absence is what made the fallback read as not-my-runtime');
+  });
+
+  test('the fallback rule holds however the session ended, including an orchestrator-initiated close', () => {
+    const compat = workflow.slice(
+      workflow.indexOf('<runtime_compatibility>'),
+      workflow.indexOf('</runtime_compatibility>'),
+    );
+    assert.match(compat, /including when the\s{1,10}orchestrator itself interrupted or closed it/,
+      'the orchestrator closing the child is the exact case #4217 reports — it must not be an exception');
+  });
+});
