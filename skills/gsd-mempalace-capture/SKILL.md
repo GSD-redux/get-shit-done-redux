@@ -5,6 +5,7 @@ argument-hint: "[CONTEXT.md|PLAN.md|SUMMARY.md]"
 allowed-tools:
   - Read
   - Bash
+  - Grep
 ---
 
 
