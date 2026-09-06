@@ -617,6 +617,7 @@
       "docs-update/steps/dispatch-monorepo-packages.md",
       "execute-phase/steps/codebase-drift-gate.md",
       "execute-phase/steps/executor-isolation-dispatch.md",
+      "execute-phase/steps/executor-progress-policy.md",
       "execute-phase/steps/gap-closure-artifacts.md",
       "execute-phase/steps/partial-wave.md",
       "execute-phase/steps/per-plan-executor-routing.md",
