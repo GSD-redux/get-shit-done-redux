@@ -63,23 +63,84 @@ function listTemplates(root = ROOT) {
   return found.map((name) => `${TEMPLATE_DIR}/${name}`);
 }
 
-const HEADING = /^## Task Commits[ \t]*$/;
+// EXACTLY the shipped awk's class, `/^## Task Commits[ \t\r]*$/`. Mirroring it
+// beats normalising the input: stripping `\r` globally first made
+// `## Task\r Commits` a heading here that neither parser recognises, so the
+// guard reported clean over a section the parser never opens.
+const HEADING = /^## Task Commits[ \t\r]*$/;
 const NEXT_HEADING = /^## /;
-// A numbered task line. The hash must be backticked; everything between the
-// task label and the hash is free prose.
-const TASK_LINE = /^\d+\.\s+\*\*Task\s+\d+:.*\*\*\s*-\s*`[^`]+`/;
-// A task-shaped line whose hash is NOT backticked — the specific drift this
-// guard exists to catch, reported separately so the message is actionable.
-const TASK_LINE_NO_BACKTICK = /^\d+\.\s+\*\*Task\s+\d+:.*\*\*\s*-\s*[^`\s]/;
+// TWO patterns, and the split is the point: one DETECTS a task row, the other
+// says whether that row is CANONICAL. A finding is a row the first matches and
+// the second does not.
+//
+// This guard is deliberately STRICTER than the production parser, and that is a
+// design choice rather than an accident. Four earlier shapes each tried to
+// approximate what the parser accepts and each disagreed with it in both
+// directions: a separator-keyed pair missed an em-dash drift; a
+// presence-anywhere test passed a code span sitting in the LABEL; a positional
+// test matched the closing `**` of a LATER bold phrase; and excluding `*` from
+// the label made an ordinary title like `migrate src/*.js` fail DETECTION, so
+// the row was skipped and its missing hash never reported. The parser locates a
+// hash by shape (`[0-9a-f]{7,40}` in backticks) and the templates ship the
+// placeholders `hash` and `abc123f`, so the guard cannot run the parser's own
+// test — but it can pin the ONE canonical row shape these authored files use,
+// including what the token must LOOK like, and refuse everything else.
+//
+// The label runs to its FIRST closing `**` and admits anything else —
+// asterisks and code spans included. Excluding either produced misses above; a
+// title is prose and the guard has no business constraining it.
+//
+// TEMPERED, not merely non-greedy, and the difference is a live defect. `.*?`
+// backtracks: when the rest of the pattern fails at the first `**`, the engine
+// extends the label through a LATER bold phrase and tries again, so
+// ``- B (**see** - `parser`)`` matched with `see` supplying the closing `**`
+// and read clean while both parsers omitted B. `(?:(?!\*\*).)*` cannot cross a
+// `**` at all, so the label ends where the label ends.
+// `[\s\S]`, not `.`: the dot excludes `\r`, so a carriage return INSIDE a title
+// made detection skip the whole row and its missing hash went unreported —
+// the same silent-miss direction as the asterisk exclusion above.
+const LABEL = String.raw`\*\*Task\s+\d+:(?:(?!\*\*)[\s\S])*\*\*`;
+// DETECT: a numbered task row whose label closes. The closing `**` is required
+// — without it, prose inside the section that merely opens with `2. **Task 2: …`
+// is read as a task row and reported as drifted.
+const TASK_LINE = new RegExp(String.raw`^\s*\d+\.\s+${LABEL}`);
+// CANONICAL: label, one punctuation separator, then IMMEDIATELY a backticked
+// token that is a single ALPHANUMERIC RUN. Pinning the token's SHAPE is what
+// closes the last miss class: `` `B, C` `` and `` `B;C` `` satisfy any "there is
+// a backticked thing here" test while the parser's hex match rejects the whole
+// token and records no commit at all.
+//
+// Shape, not content, and the distinction is load-bearing — these are TEMPLATES.
+// A real hash is alphanumeric, but the shipped placeholders are illustrative
+// rather than valid (`summary.md` uses `def456g` and `hij789k`, which the
+// parser's own `[0-9a-f]{7,40}` would reject), so requiring hex here fails on
+// the very files the guard exists to watch. Separators are what a hash slot
+// cannot contain; letters outside a-f are simply someone's placeholder.
+const CANONICAL_TASK_LINE = new RegExp(
+  String.raw`^\s*\d+\.\s+${LABEL}\s*[-–—:]\s*\x60[0-9A-Za-z]+\x60`,
+);
 
-function sliceSection(lines) {
-  const start = lines.findIndex((line) => HEADING.test(line));
-  if (start === -1) return null;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i += 1) {
-    if (NEXT_HEADING.test(lines[i])) { end = i; break; }
+/**
+ * Collect EVERY `## Task Commits` section, matching the production awk exactly:
+ * `/^## Task Commits/ { inside=1; next } /^## / { inside=0 } inside` reopens on
+ * a second matching heading, so a guard that read only the first section left
+ * later ones — including one inside a fenced example — unchecked while the
+ * parser consumed them.
+ */
+function sliceSections(lines) {
+  const sections = [];
+  let current = null;
+  // A `## Task Commits` line is itself a `## ` line, so it TERMINATES the
+  // previous section as well as opening a new one. Opening without closing left
+  // consecutive sections reporting the first as unterminated — a finding on a
+  // file both production fences read correctly.
+  const close = () => { if (current) { current.terminated = true; current = null; } };
+  for (const line of lines) {
+    if (HEADING.test(line)) { close(); current = { body: [], terminated: false }; sections.push(current); continue; }
+    if (NEXT_HEADING.test(line)) { close(); continue; }
+    if (current) current.body.push(line);
   }
-  return { body: lines.slice(start + 1, end), terminated: end < lines.length };
+  return sections;
 }
 
 /**
@@ -101,26 +162,27 @@ function findSummaryTaskCommitsDrift(root = ROOT) {
       throw new ExitError(1, `lint-summary-task-commits-drift: failed to read ${rel}: ${error.message}`);
     }
 
-    const lines = content.replace(/\r\n/g, '\n').split('\n');
-    const section = sliceSection(lines);
+    const lines = content.split('\n');   // no CR normalisation — HEADING mirrors the awk's own class
+    const sections = sliceSections(lines);
 
-    if (!section) {
+    if (sections.length === 0) {
       failures.push(`${rel}: no '## Task Commits' heading — the parser's section anchor is gone`);
       continue;
     }
-    if (!section.terminated) {
-      failures.push(`${rel}: '## Task Commits' is the last '## ' section — the parser slices to the next '## ' heading and would run to EOF`);
-    }
 
-    const backticked = section.body.filter((line) => TASK_LINE.test(line));
-    if (backticked.length === 0) {
-      failures.push(`${rel}: '## Task Commits' section carries no backtick-delimited task line — the parser matches \`hash\` inside this slice`);
-    }
-
-    for (const line of section.body) {
-      if (!TASK_LINE.test(line) && TASK_LINE_NO_BACKTICK.test(line)) {
-        failures.push(`${rel}: task line drops the backtick delimiter: ${line.trim()}`);
+    let canonicalTotal = 0;
+    for (const section of sections) {
+      if (!section.terminated) {
+        failures.push(`${rel}: '## Task Commits' is the last '## ' section — the parser slices to the next '## ' heading and would run to EOF`);
       }
+      for (const line of section.body) {
+        if (!TASK_LINE.test(line)) continue;
+        if (CANONICAL_TASK_LINE.test(line)) { canonicalTotal += 1; continue; }
+        failures.push(`${rel}: task line is not the canonical \`**Task N: …** - \`hash\`\` shape: ${line.trim()}`);
+      }
+    }
+    if (canonicalTotal === 0) {
+      failures.push(`${rel}: no '## Task Commits' section carries a canonical task line — the parser matches \`hash\` inside these slices`);
     }
   }
 
@@ -148,4 +210,4 @@ function main() {
 
 if (require.main === module) runMain(main);
 
-module.exports = { findSummaryTaskCommitsDrift, listTemplates, sliceSection, TEMPLATE_DIR, TEMPLATE_RE };
+module.exports = { findSummaryTaskCommitsDrift, listTemplates, sliceSections, TEMPLATE_DIR, TEMPLATE_RE };
