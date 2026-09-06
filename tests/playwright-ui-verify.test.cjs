@@ -174,9 +174,17 @@ function guardedLines(lines) {
     if (pendingIf !== null) {
       // Only `then` may follow; anything else means we mis-read the `if` header.
       if (t === 'then' || t.startsWith('then ')) {
+        const tail = t === 'then' ? '' : t.slice(5).trim();
+        // The compound check belongs on EVERY path that opens a scope, not just the
+        // one-line `if`. `if COND` + `then :; fi; if true; then` reached this branch and
+        // pushed a condition whose tail closed the scope and opened another — bash
+        // printed the success line with CAPTURED=0 while the walker reported the echo
+        // as governed. Driven.
+        if (hasControlKeyword(tail)) {
+          throw new Error(`bash reader: compound then-clause — ${JSON.stringify(t)}`);
+        }
         stack.push(pendingIf);
         pendingIf = null;
-        const tail = t === 'then' ? '' : t.slice(5).trim();
         if (tail === '') continue;
         rows.push({ line: tail, guards: stack.slice() });
         continue;
@@ -200,7 +208,15 @@ function guardedLines(lines) {
     const ifPending = /^if[\t ]+(.{1,4000}?)[\t ]*$/.exec(t);
     if (ifPending && !/;/.test(ifPending[1])) { pendingIf = ifPending[1]; continue; }
     const elifMatch = /^elif[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
-    if (elifMatch) { if (stack.length) stack[stack.length - 1] = elifMatch[1]; continue; }
+    if (elifMatch) {
+      // Same omission as the `if` header carried, and the same false PASS: the lazy
+      // quantifier swallowed `:; fi; if true` into the stored condition.
+      if (hasControlKeyword(elifMatch[1])) {
+        throw new Error(`bash reader: compound elif header — ${JSON.stringify(t)}`);
+      }
+      if (stack.length) stack[stack.length - 1] = elifMatch[1];
+      continue;
+    }
     if (t === 'else') { if (stack.length) stack[stack.length - 1] = `!(${stack[stack.length - 1]})`; continue; }
     if (t === 'fi') { stack.pop(); continue; }
     if (/^(for|while|until)\b/.test(t) && /;[\t ]*do$/.test(t)) { stack.push(''); continue; }
@@ -260,6 +276,15 @@ function stripComment(line) {
     if (c === '$' && line[i + 1] === "'") { out += c + line[i + 1]; i += 1; stack.push('ansi'); continue; }
     if (c === '$' && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
     if (c === ')' && ctx === 'cmd') { out += c; stack.pop(); continue; }
+    // `${var#pattern}` — the `#` there is a removal operator, not a comment, and the
+    // scanner truncated `echo ${value# #}` mid-expansion. Driven.
+    if (c === '$' && line[i + 1] === '{') { out += c + line[i + 1]; i += 1; stack.push('param'); continue; }
+    if (c === '}' && ctx === 'param') { out += c; stack.pop(); continue; }
+    // Backticks are command substitution too, and they reopened the hidden-continuation
+    // bypass the `$( )` handling had closed: `--user-agent="$DEV_URL""`printf "%s" " # "`"`
+    // truncated the line and hid the continuation carrying a hard-coded port. Driven.
+    if (c === '`' && ctx === 'btick') { out += c; stack.pop(); continue; }
+    if (c === '`') { out += c; stack.push('btick'); continue; }
     if (c === '"' && ctx === 'dq') { out += c; stack.pop(); continue; }
     if (c === '"') { out += c; stack.push('dq'); continue; }
     if (c === "'" && ctx !== 'dq') { out += c; stack.push('sq'); continue; }
@@ -285,27 +310,43 @@ function stripComment(line) {
 // up to the FIRST unquoted `)`; a quoted one is part of a pattern, not the terminator.
 function caseLabelOf(line) {
   const t = line.trim().replace(/^\(/, '');
+  // Walk once, tracking quotes, and split on `|` only OUTSIDE them. A blanket
+  // `split('|')` turned the single literal pattern `"401|403|407|511"` into four
+  // statuses (false PASS), while stripping quotes afterwards turned the literal
+  // `"2??"` into what looked like a range (false PASS on an arm that accepts only the
+  // statuses it enumerates). Both driven. So each pattern also records whether ANY of
+  // it was quoted: a quoted `?` is a literal question mark, not a wildcard.
+  const patterns = [];
+  let cur = '';
+  let quoted = false;
   let quote = null;
   let end = -1;
   for (let i = 0; i < t.length; i += 1) {
     const c = t[i];
-    // Escapes inside double quotes: `"a\")"` is ONE pattern, and reading its escaped
-    // quote as the terminator truncated the label and false-FAILED the arm. Driven.
-    if (quote === '"' && c === '\\') { i += 1; continue; }
-    if (quote) { if (c === quote) quote = null; continue; }
-    if (c === "'" || c === '"') { quote = c; continue; }
-    if (c === '\\') { i += 1; continue; }
+    if (quote) {
+      if (c === '\\' && quote === '"') { cur += t[i + 1] ?? ''; i += 1; continue; }
+      if (c === quote) { quote = null; continue; }
+      cur += c; quoted = true; continue;
+    }
+    if (c === '\\') { cur += t[i + 1] ?? ''; i += 1; continue; }   // `4\01` is 401
+    if (c === "'" || c === '"') { quote = c; quoted = true; continue; }
+    if (c === '|') { patterns.push({ text: cur.trim(), quoted }); cur = ''; quoted = false; continue; }
     if (c === ')') { end = i; break; }
+    cur += c;
   }
-  if (end <= 0) return null;
-  // Whitespace is legal before the arm terminator — `200 )` — and rejecting the label on
-  // any whitespace made caseLabelOf return null there, which silently downgraded the
-  // range check to the body test the case label had already made vacuous. Driven.
-  const patterns = t.slice(0, end).split('|').map((x) => x.trim());
-  if (patterns.length === 0 || patterns.some((x) => x === '' || /[\t =]/.test(x))) return null;
-  // Quotes are not part of the pattern: `"2"??` and `"401"` are the quoted spellings of
-  // `2??` and `401`, and returning them with quotes attached false-FAILED both.
-  return patterns.map((x) => x.replace(/['"]/g, ''));
+  if (end < 0) return null;
+  patterns.push({ text: cur.trim(), quoted });
+  // Whitespace only disqualifies an UNQUOTED pattern: `"x y"` is one legal pattern, and
+  // rejecting the whole label for it false-FAILED an otherwise-valid arm. Driven.
+  if (patterns.length === 0
+      || patterns.some((x) => x.text === '' || (!x.quoted && /[\t ]/.test(x.text)))) return null;
+  return patterns;
+}
+
+// A pattern that actually matches a RANGE of 2xx statuses. A quoted `"2??"` matches the
+// three literal characters `2??` and no status at all, so its wildcards do not count.
+function isTwoXxRange(pattern) {
+  return !pattern.quoted && /^2(\?\?|\[0-9\]\[0-9\]|\*)$/.test(pattern.text);
 }
 
 function captureInvocations(lines) {
@@ -381,12 +422,12 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     // construction: a case-gated arm is judged on its LABEL, and only an arm with no case
     // label may earn acceptance from a comparison in its body.
     const acceptsRange = armLabel !== null
-      ? armLabel.some((pat) => /^2(\?\?|\[0-9\]\[0-9\]|\*)$/.test(pat))
+      ? armLabel.some(isTwoXxRange)
       : (/-ge[\t ]+200\b/.test(acceptArm) || /\br\.ok\b/.test(block));
     assert.ok(
       acceptsRange,
       armLabel !== null
-        ? `the case label that admits a status must be a 2xx RANGE (2?? / 2[0-9][0-9] / 2*), not an enumerated status — a range test inside an exact-match arm decides nothing: label was ${JSON.stringify(armLabel)}`
+        ? `the case label that admits a status must be an UNQUOTED 2xx range (2?? / 2[0-9][0-9] / 2*), not an enumerated status and not a quoted literal — a range test inside an exact-match arm decides nothing: label was ${JSON.stringify(armLabel)}`
         : `the arm that sets DEV_URL must accept a 2xx RANGE, not an enumerated status: ${acceptArm}`
     );
   });
@@ -489,7 +530,7 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       .map((l) => l.trim())
       .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
     assert.ok(gatedArms.length > 0, 'expected a case arm recording an auth-gated server');
-    const labels = gatedArms.map((l) => caseLabelOf(l) || []);
+    const labels = gatedArms.map((l) => (caseLabelOf(l) || []).map((x) => x.text));
     for (const status of ['401', '403', '407', '511']) {
       assert.ok(
         labels.some((lab) => lab.includes(status)),
@@ -571,8 +612,12 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
         `stray-file removal must target the viewport that just failed: ${row.line}`
       );
     }
-    const removesDir = rows.filter((r) => /^rmdir\b/.test(r.line));
-    assert.ok(removesDir.length > 0, 'expected the all-failed branch to remove the review directory');
+    // The directory removal is `rm -rf`, not `rmdir`, and the atomic allocation is what
+    // licenses that: a directory won by this audit alone can be removed whole. `rmdir`
+    // could not honour the docs claim — it fails on any file the capture command wrote
+    // under a name this block never asked for, leaving both behind.
+    const removesDir = rows.filter((r) => /\brm -rf[\t ]+"?\$SCREENSHOT_DIR"?$/.test(r.line));
+    assert.ok(removesDir.length > 0, 'expected the all-failed branch to remove the review directory whole');
     for (const row of removesDir) {
       assert.ok(
         row.guards.some((cond) => /CAPTURED/.test(cond)),
@@ -603,9 +648,13 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     const surfaces = splitLines(fs.readFileSync(AUDITOR_PATH, 'utf-8'))
       .filter((l) => /^\*\*Screenshots:\*\*/.test(l.trim()));
     assert.ok(surfaces.length > 0, 'expected a Screenshots report field in the agent output template');
+    // The field's VALUE, not a mention on the line. `**Screenshots:** captured
+    // <!-- $CAPTURE_STATUS -->` renders a hard-coded word while satisfying an
+    // includes() check — the status is computed, carried, and then dropped at the one
+    // place a reader sees it. Driven.
     assert.ok(
-      surfaces.every((l) => l.includes('$CAPTURE_STATUS')),
-      'every Screenshots report field must render $CAPTURE_STATUS, or the status is computed and dropped'
+      surfaces.every((l) => /^\*\*Screenshots:\*\*[\t ]*\{?[\t ]*\$CAPTURE_STATUS\b/.test(l.trim())),
+      `every Screenshots report field must render $CAPTURE_STATUS as its value: ${JSON.stringify(surfaces)}`
     );
   });
 });
@@ -660,10 +709,11 @@ const urlOf = (server) => `http://127.0.0.1:${server.address().port}`;
 function runProbe(url) {
   return new Promise((resolve, reject) => {
     execFile(process.execPath, ['-e', probeProgram(), url], { timeout: 30000 },
-      // NOT trimmed. The bash `case "$PROBE" in 2??)` matches the RAW captured value, so
-      // a program emitting " 200" resolves no dev server in the product while a trimmed
-      // comparison here would call it 200 and pass.
-      (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout))));
+      // Trim exactly what `$( )` trims — TRAILING NEWLINES — and nothing else. A blanket
+      // .trim() accepted a program emitting " 200", which the product's `case` rejects;
+      // no trimming at all rejected "200\n", which the product ACCEPTS, because command
+      // substitution strips it. Both directions were driven; this models the substitution.
+      (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout).replace(/\n+$/, ''))));
   });
 }
 
@@ -698,10 +748,21 @@ describe('#4176 — the probe program, executed against real servers', () => {
   });
 
   test('nothing listening probes as 000', async () => {
-    // Port 1 rather than a just-released ephemeral one: closing a server and probing its
-    // port is a race, and rebinding it inside that window was driven to return 200.
-    // Port 1 is privileged, so nothing in this test's world can be listening on it.
-    assert.strictEqual(await runProbe('http://127.0.0.1:1'), '000');
+    // A port this test HELD and then released, not a well-known one: node's fetch
+    // rejects port 1 as a bad port before it ever attempts a connection, so probing it
+    // exercises URL validation rather than an absent listener — the wrong mechanism,
+    // reaching the right answer. Driven. Binding first also removes the guesswork about
+    // what else on the host might be listening; the residual is the window between the
+    // close and the probe, which is why a rebind is retried rather than asserted through.
+    let observed = null;
+    for (let attempt = 0; attempt < 3 && observed !== '000'; attempt += 1) {
+      const server = await listen((req, res) => { res.writeHead(200); res.end(); });
+      const dead = urlOf(server);
+      await close(server);
+      observed = await runProbe(dead);
+    }
+    assert.strictEqual(observed, '000',
+      'a closed but valid port must probe as 000 through a real connection refusal');
   });
 
   test('a port that accepts but never answers is time-bounded, not a hang', async () => {
@@ -744,18 +805,21 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
   //   SHOT_EXIT   viewports whose capture command exits non-zero
   //   SHOT_WRITE  viewports that write a NON-EMPTY file (regardless of exit status)
   //   SHOT_EMPTY  viewports that write a ZERO-BYTE file (the crashed-browser artefact)
-  function runFence(env) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-'));
-    tmpDirs.push(dir);
+  function runFence(env, sharedDir) {
+    const dir = sharedDir || fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-'));
+    if (!sharedDir) tmpDirs.push(dir);
     const bin = path.join(dir, 'bin');
-    fs.mkdirSync(bin);
+    fs.mkdirSync(bin, { recursive: true });
     // node's own argv contract: `node -e <program> <arg1>` puts arg1 at $3. Selecting the
     // last `http*` argument instead made the stub tolerate an inserted argument that real
     // node would have handed to the program as argv[1], so a probe invocation that is
     // wrong in the real world passed here.
     fs.writeFileSync(path.join(bin, 'node'),
       '#!/bin/sh\n[ "$1" = "-e" ] || { echo "stub node: expected -e, got $1" >&2; exit 64; }\n'
-      + 'url="$3"\ncase "$url" in http*) ;; *) echo "stub node: argv[1] not a url: $url" >&2; exit 65;; esac\n'
+      // Real node accepts `-e PROGRAM -- URL` and still hands URL to the program as
+      // argv[1]; a stub that stopped at `$3` reported absence and false-FAILED eleven
+      // fence tests on a legal invocation.
+      + 'shift 2\n[ "$1" = "--" ] && shift\nurl="$1"\ncase "$url" in http*) ;; *) echo "stub node: argv[1] not a url: $url" >&2; exit 65;; esac\n'
       + 'port=${url##*:}\nport=${port%%/*}\neval "s=\\$PROBE_$port"\nprintf %s "${s:-000}"\n', { mode: 0o755 });
     // One argument per line, so an assertion can read argument BOUNDARIES. `$*` collapsed
     // them, which let `--user-agent="--timeout=30000"` satisfy the timeout assertion while
@@ -763,10 +827,21 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     fs.writeFileSync(path.join(bin, 'npx'),
       '#!/bin/sh\nout=""\nfor a in "$@"; do case "$a" in *.png) out="$a";; esac; done\n'
       + 'name=$(basename "$out" .png)\n'
-      + '{ echo "--INVOCATION--"; for a in "$@"; do printf "%s\\n" "$a"; done; } >> "$ARGV_LOG"\n'
+      // NUL-DELIMITED. A newline-delimited log splits an argument that CONTAINS a
+      // newline into two, so `--user-agent=$'audit\\n--timeout=30000'` — one argument
+      // passing no timeout option at all — read as two arguments, the second of which
+      // satisfied the timeout assertion. Driven.
+      + '{ printf "%s\\0" "--INVOCATION--"; for a in "$@"; do printf "%s\\0" "$a"; done; } >> "$ARGV_LOG"\n'
       + 'case " $SHOT_WRITE " in *" $name "*) printf png > "$out";; esac\n'
       + 'case " $SHOT_EMPTY " in *" $name "*) : > "$out";; esac\n'
       + 'case " $SHOT_EXIT " in *" $name "*) exit 1;; esac\nexit 0\n', { mode: 0o755 });
+    // A `date` stub, so the collision case can actually be CONSTRUCTED. Without it the
+    // uniqueness test was vacuous: two runs a second apart get different names from the
+    // timestamp alone, so it passed with the uniqueness mechanism removed entirely.
+    // Driven — that is exactly how the first version of this test passed.
+    if (env.FIXED_DATE) {
+      fs.writeFileSync(path.join(bin, 'date'), `#!/bin/sh\nprintf %s "${env.FIXED_DATE}"\n`, { mode: 0o755 });
+    }
     const argvLog = path.join(dir, 'argv.log');
     const script = path.join(dir, 'fence.sh');
     // No `set -u`: the agent does not run this block under it, and adding it changes the
@@ -775,9 +850,14 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // CAPTURE_STATUS is echoed because it, not the printed line, is what the report
     // consumes: an unconditional `CAPTURE_STATUS="captured"` appended after the branches
     // passed every assertion in the first version while making the final report lie.
+    // Capture the block's OWN status before the instrumentation runs: a trailing
+    // `printf` resets `$?`, so appending `false` to the fence exited 0 and the
+    // exit-status assertion passed on a fence that had failed. Driven.
     fs.writeFileSync(script,
       `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${screenshotApproachBlock()}\n`
-      + 'printf "CAPTURE_STATUS=%s\\n" "$CAPTURE_STATUS"\n');
+      + 'FENCE_RC=$?\n'
+      + 'printf "CAPTURE_STATUS=%s\\n" "$CAPTURE_STATUS"\n'
+      + 'printf "FENCE_RC=%s\\n" "$FENCE_RC"\n');
     const r = spawnSync('bash', [script], {
       cwd: dir,
       encoding: 'utf8',
@@ -793,19 +873,25 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const stdout = r.stdout || '';
     const reviews = path.join(dir, '.planning', 'ui-reviews');
     const shotDirs = fs.existsSync(reviews) ? fs.readdirSync(reviews).sort() : [];
+    const filesIn = (d) => fs.readdirSync(path.join(reviews, d)).sort();
     const argvRaw = fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '';
-    const status = /CAPTURE_STATUS=(.*)/.exec(stdout);
+    // The LAST occurrence. Reading the first accepted a fence that printed the honest
+    // value and then reassigned the variable — the report would render the second.
+    const statusAll = [...stdout.matchAll(/^CAPTURE_STATUS=(.*)$/gm)];
+    const status = statusAll.length ? statusAll[statusAll.length - 1] : null;
+    const rcLine = /^FENCE_RC=([0-9]+)$/m.exec(stdout);
     return {
       stdout,
-      exitCode: r.status,
+      exitCode: rcLine ? Number(rcLine[1]) : r.status,
       stderr: r.stderr || '',
       captureStatus: status ? status[1] : null,
       dir,
       // Each invocation as an array of its arguments — boundaries preserved.
-      invocations: argvRaw.split('--INVOCATION--\n').slice(1)
-        .map((b) => b.split('\n').filter((x) => x !== '')),
+      invocations: argvRaw.split('--INVOCATION--\0').slice(1)
+        .map((b) => b.split('\0').filter((x) => x !== '')),
       shotDirs,
-      files: shotDirs.length === 1 ? fs.readdirSync(path.join(reviews, shotDirs[0])).sort() : [],
+      filesIn,
+      files: shotDirs.length === 1 ? filesIn(shotDirs[0]) : [],
     };
   }
 
@@ -813,6 +899,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
   // assertion in the first version, because the runner discarded the exit status.
   function ok(r) {
     assert.strictEqual(r.exitCode, 0, `the fence must exit 0; stderr: ${r.stderr}`);
+    assert.ok(r.captureStatus !== null, 'the fence must leave CAPTURE_STATUS set');
     return r;
   }
 
@@ -842,13 +929,30 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
   });
 
-  test('a capture that writes a real file but exits non-zero is NOT a capture', () => {
+  test('a capture that exits 0 leaving a ZERO-BYTE file is NOT a capture', () => {
+    // The `-s` in `[ -s ... ]` doing its own work. Relaxing it to `[ -e ]` — the file
+    // merely EXISTS — passed every fixture until this one, because no scenario paired a
+    // clean exit with an empty file. A crashed browser writing a zero-byte png and
+    // exiting 0 is precisely the shape #4176 is about.
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet',
+      SHOT_EXIT: '' }));
+    assert.doesNotMatch(r.stdout, /Screenshots captured/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
+  });
+
+  test('a capture that writes a real file but exits non-zero is NOT a capture, and its file goes', () => {
     // The exit-status half, isolated. Dropping it counts a crashed run that happened to
     // leave a plausible file.
     const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop',
       SHOT_WRITE: 'desktop mobile tablet' }));
     assert.match(r.stdout, /PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
     assert.strictEqual(r.captureStatus, 'partially captured');
+    // And the file is REMOVED. Restricting the cleanup to empty files only passed every
+    // fixture, because none of them paired a failure with a non-empty artefact — a
+    // plausible-looking png from a run that crashed after writing is the worst case to
+    // leave behind, not the least.
+    assert.deepStrictEqual(r.files, ['mobile.png', 'tablet.png'],
+      'a failed viewport\u2019s file must go whether or not it happens to be empty');
   });
 
   test('a partial capture keeps the shots that worked and removes the stray file', () => {
@@ -860,18 +964,26 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       'the failed viewport\u2019s zero-byte file must not survive alongside the real captures');
   });
 
-  test('two audits of the same phase in the same second do not share a directory', () => {
-    // The ONLY thing that makes the cleanup safe. Both audits write `desktop.png`,
-    // `mobile.png`, `tablet.png`, so no per-file rule can establish ownership — a
-    // cross-model review drove exactly that: with a shared directory, this audit's
-    // cleanup deleted a neighbour's identically-named capture. Ownership therefore has
-    // to come from the directory name, and this asserts it does.
-    const a = ok(runFence({ PROBE_3000: '200', PADDED_PHASE: '07' }));
-    const b = ok(runFence({ PROBE_3000: '200', PADDED_PHASE: '07' }));
-    assert.strictEqual(a.shotDirs.length, 1);
-    assert.strictEqual(b.shotDirs.length, 1);
-    assert.notStrictEqual(a.shotDirs[0], b.shotDirs[0],
-      'a phase + whole-second directory name is not unique; the audit must add its own identity');
+  test('two audits colliding on the same second get separate directories, and the first keeps its captures', () => {
+    // CONSTRUCTED, not hoped for. `date` is stubbed to a fixed value and both runs share
+    // one working directory, so the two audits genuinely contend for the same name — the
+    // case a wall-clock test can never reach, and the case that matters: both write
+    // exactly `desktop.png`, `mobile.png`, `tablet.png`, so no per-file rule can
+    // establish ownership, and a shared directory means the loser's total-failure
+    // cleanup destroys the winner's captures. Ownership must come from the directory.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-race-'));
+    tmpDirs.push(dir);
+    const fixed = { FIXED_DATE: '20300101-000000', PADDED_PHASE: '07' };
+    const first = ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
+    // The second audit fails every viewport, so its cleanup runs — under a shared
+    // directory that cleanup is what deleted the first audit's work.
+    const second = ok(runFence({ ...fixed, PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
+      SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet' }, dir));
+    assert.strictEqual(first.shotDirs.length, 1, 'the first audit must get a directory');
+    assert.strictEqual(second.shotDirs.length, 1,
+      `after the second audit cleaned up, exactly the first audit's directory must remain: ${JSON.stringify(second.shotDirs)}`);
+    assert.deepStrictEqual(second.filesIn(second.shotDirs[0]), ['desktop.png', 'mobile.png', 'tablet.png'],
+      'the second audit\u2019s failure cleanup must not touch the first audit\u2019s captures');
   });
 
   test('all three captures succeeding is the only path that claims "captured"', () => {
@@ -890,8 +1002,15 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     }
   });
 
-  test('a 2xx that is not 200 still resolves a dev server', () => {
-    assert.match(ok(runFence({ PROBE_3000: '204' })).stdout, /Screenshots captured/);
+  test('any 2xx resolves a dev server, not an enumerated few', () => {
+    // 299 is the point: a mutant that swaps the `2??` glob for an enumeration wide
+    // enough to cover the statuses a test happens to use — `200|204` — passes a fixture
+    // set built from plausible statuses. A status no enumeration would think to list is
+    // what makes this a RANGE test rather than a longer list.
+    for (const status of ['200', '201', '204', '206', '299']) {
+      assert.match(ok(runFence({ PROBE_3000: status })).stdout, /Screenshots captured/,
+        `HTTP ${status} is a 2xx and must resolve a dev server`);
+    }
   });
 
   test('the FIRST auth-gated port is the one reported', () => {
@@ -918,6 +1037,9 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     for (const call of r.invocations) {
       const values = [];
       for (let i = 0; i < call.length; i += 1) {
+        // `--` ends option parsing; everything after it is a positional, so
+        // `-- --timeout=30000` passes NO timeout option. Driven against the first version.
+        if (call[i] === '--') break;
         const inline = /^--timeout=(.*)$/.exec(call[i]);
         if (inline) { values.push(inline[1]); continue; }
         if (call[i] === '--timeout') values.push(call[i + 1]);

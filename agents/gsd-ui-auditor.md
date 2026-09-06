@@ -137,65 +137,84 @@ for PORT in 3000 5173 8080; do
 done
 
 if [ -n "$DEV_URL" ]; then
-  # The `-$$` is what makes this directory THIS audit's. Phase plus a whole-second
-  # timestamp is not unique: two audits of the same phase starting inside one second
-  # land in the same directory, and from there no cleanup rule can be safe, because
-  # both audits write exactly `desktop.png`, `mobile.png` and `tablet.png` — a
-  # filename cannot establish whose it is. Ownership has to come from the directory.
-  # PID-plus-timestamp rather than `mktemp -d`, matching gsd-code-fixer.md, which
-  # replaced mktemp's XXXXXX with the same `$$` + epoch suffix for a repo-relative
-  # path under #2647: on Windows/Git Bash `mktemp` produced an un-removable short
-  # `C:/mvwtNN` path to dodge MAX_PATH.
-  SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)-$$"
-  mkdir -p "$SCREENSHOT_DIR"
-
-  # Capture each viewport from the RESOLVED port, and believe only what the
-  # exit status and the file on disk actually say.
-  CAPTURED=0
-  FAILED_SHOTS=""
-  for SHOT in "desktop:1440,900" "mobile:375,812" "tablet:768,1024"; do
-    SHOT_NAME="${SHOT%%:*}"
-    SHOT_VIEWPORT="${SHOT##*:}"
-    # --timeout is not belt-and-braces here: `playwright screenshot` passes it to
-    # context.setDefaultTimeout() and defaults it to 0 — NO timeout — so this CLI path
-    # drops the 30s bound the Playwright library applies everywhere else. Without it a
-    # hung navigation blocks the audit forever, which is the same failure the probe's
-    # AbortSignal.timeout(5000) closes one step earlier.
-    if npx playwright screenshot "$DEV_URL" \
-         "$SCREENSHOT_DIR/$SHOT_NAME.png" \
-         --viewport-size="$SHOT_VIEWPORT" \
-         --timeout=30000 >/dev/null 2>&1 \
-       && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
-      CAPTURED=$((CAPTURED + 1))
-    else
-      # Remove what THIS viewport may have written before scoring it a failure. A
-      # crashed browser commonly leaves a zero-byte or partial .png, which the
-      # `[ -s ]` above correctly refuses to count and which would otherwise sit in
-      # the review directory looking like evidence. Doing it here rather than in
-      # the all-failed branch below is what makes the claim true of a PARTIAL
-      # capture too — two good shots and one stray file was the gap.
-      # By name rather than a `*.png` glob. For this audit's own files the two are
-      # equivalent; the name form additionally leaves alone anything else that happens
-      # to be in the directory. What actually keeps a CONCURRENT audit's captures safe
-      # is the `-$$` in the directory above, never this line.
-      rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
-      FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
+  # ALLOCATE THE DIRECTORY ATOMICALLY. `mkdir` WITHOUT `-p` fails when the directory
+  # already exists, so exactly one caller can win it; `-p` succeeds for both and hands
+  # two audits the same directory. That matters because phase plus a whole-second
+  # timestamp is not unique — two audits of the same phase in one second collide, and
+  # so does the same shell running this block twice — and from a shared directory no
+  # cleanup can be safe, since both audits write exactly `desktop.png`, `mobile.png`
+  # and `tablet.png`. A filename can never establish whose it is; winning the mkdir can.
+  # A PID suffix does NOT solve this: `$$` names the shell, not the invocation, so it is
+  # identical across two runs in one shell and inside command substitution.
+  mkdir -p .planning/ui-reviews
+  SCREENSHOT_BASE=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
+  SCREENSHOT_DIR="$SCREENSHOT_BASE"
+  SUFFIX=1
+  until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
+    SCREENSHOT_DIR="$SCREENSHOT_BASE-$SUFFIX"
+    SUFFIX=$((SUFFIX + 1))
+    if [ "$SUFFIX" -gt 99 ]; then
+      SCREENSHOT_DIR=""
+      break
     fi
   done
 
-  if [ "$CAPTURED" -eq 3 ]; then
-    CAPTURE_STATUS="captured"
-    echo "Screenshots captured to $SCREENSHOT_DIR (3/3) from $DEV_URL"
-  elif [ "$CAPTURED" -gt 0 ]; then
-    CAPTURE_STATUS="partially captured"
-    echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
-  else
+  if [ -z "$SCREENSHOT_DIR" ]; then
+    # The allocation loop above gave up. Never fall through: with SCREENSHOT_DIR empty
+    # the capture below would write to /desktop.png, outside the project entirely.
     CAPTURE_STATUS="not captured (capture failed)"
-    # Every viewport already removed its own stray file in the loop above, so the
-    # directory is empty here unless something ELSE put a file in it — and in that
-    # case rmdir correctly fails and leaves that file alone.
-    rmdir "$SCREENSHOT_DIR" 2>/dev/null
-    echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
+    echo "Could not allocate a review directory under .planning/ui-reviews — code-only audit"
+  else
+    # Capture each viewport from the RESOLVED port, and believe only what the
+    # exit status and the file on disk actually say.
+    CAPTURED=0
+    FAILED_SHOTS=""
+    for SHOT in "desktop:1440,900" "mobile:375,812" "tablet:768,1024"; do
+      SHOT_NAME="${SHOT%%:*}"
+      SHOT_VIEWPORT="${SHOT##*:}"
+      # --timeout is not belt-and-braces here: `playwright screenshot` passes it to
+      # context.setDefaultTimeout() and defaults it to 0 — NO timeout — so this CLI path
+      # drops the 30s bound the Playwright library applies everywhere else. Without it a
+      # hung navigation blocks the audit forever, which is the same failure the probe's
+      # AbortSignal.timeout(5000) closes one step earlier.
+      if npx playwright screenshot "$DEV_URL" \
+           "$SCREENSHOT_DIR/$SHOT_NAME.png" \
+           --viewport-size="$SHOT_VIEWPORT" \
+           --timeout=30000 >/dev/null 2>&1 \
+         && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
+        CAPTURED=$((CAPTURED + 1))
+      else
+        # Remove what THIS viewport may have written before scoring it a failure. A
+        # crashed browser commonly leaves a zero-byte or partial .png, which the
+        # `[ -s ]` above correctly refuses to count and which would otherwise sit in
+        # the review directory looking like evidence. Doing it here rather than in
+        # the all-failed branch below is what makes the claim true of a PARTIAL
+        # capture too — two good shots and one stray file was the gap.
+        # By name rather than a `*.png` glob. For this audit's own files the two are
+        # equivalent; the name form additionally leaves alone anything else that happens
+        # to be in the directory. What actually keeps a CONCURRENT audit's captures safe
+        # is the `-$$` in the directory above, never this line.
+        rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
+        FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
+      fi
+    done
+
+    if [ "$CAPTURED" -eq 3 ]; then
+      CAPTURE_STATUS="captured"
+      echo "Screenshots captured to $SCREENSHOT_DIR (3/3) from $DEV_URL"
+    elif [ "$CAPTURED" -gt 0 ]; then
+      CAPTURE_STATUS="partially captured"
+      echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
+    else
+      CAPTURE_STATUS="not captured (capture failed)"
+      # `rm -rf`, not `rmdir`, and the atomic allocation above is what licenses it: this
+      # directory was won by this audit and shared with nobody, so removing it whole
+      # cannot destroy another audit's work. rmdir could not honour the claim — it fails
+      # on any file the capture command wrote under a name this block did not ask for,
+      # leaving both that file and the directory behind while the docs said otherwise.
+      rm -rf "$SCREENSHOT_DIR"
+      echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
+    fi
   fi
 elif [ -n "$DEV_GATED" ]; then
   CAPTURE_STATUS="not captured (dev server auth-gated)"
