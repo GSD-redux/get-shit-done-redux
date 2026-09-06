@@ -949,6 +949,168 @@ describe('roadmap-parser: getMilestoneInfo #2135 — milestone_name clobber', ()
   });
 });
 
+// ─── getMilestoneInfo — #4134 punctuation-fragment name refusal ───────────────
+// The §7.2 pinned rule takes everything AFTER the heading's own version token
+// as the name. For a name-then-version heading (`# Roadmap: Project — Name
+// (v1.13)` — the shape a first-ever ROADMAP.md drifts into, since nothing
+// templates its H1) that remainder is literally `)`, which the rule used to
+// return as a COMPLETE-scope "name". ADR-3180 §7.2 rule 6 is the floor this
+// violates: a version known but a name unresolvable is TRUNCATED carrying
+// `name: null` — a punctuation-only remainder is heading structure, not a
+// curated name (#4134).
+
+describe('roadmap-parser: getMilestoneInfo #4134 — name-then-version heading', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('#4134 — name-then-version H1 never yields a punctuation-fragment name (rule 6: TRUNCATED, name null)', () => {
+    writeState(tmpDir, { milestone: 'v1.13' });
+    writeRoadmap(tmpDir, [
+      '# Roadmap: GSD Core — Native OMP Runtime Support (v1.13)',
+      '',
+      '### Phase 1: Runtime Adapter Interface',
+    ].join('\n'));
+    const info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.scope, SCOPE.TRUNCATED, `scope: ${JSON.stringify(info)}`);
+    assert.strictEqual(info.value.version, 'v1.13');
+    assert.strictEqual(info.value.name, null);
+  });
+
+  test('#4134 — ROADMAP-only fallback path also refuses the ")" fragment', () => {
+    // No STATE.md: the first open milestone heading supplies the version.
+    writeRoadmap(tmpDir, [
+      '# Roadmap: GSD Core — Native OMP Runtime Support (v1.13)',
+      '',
+      '### Phase 1: Runtime Adapter Interface',
+    ].join('\n'));
+    const info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.scope, SCOPE.TRUNCATED, `scope: ${JSON.stringify(info)}`);
+    assert.strictEqual(info.value.version, 'v1.13');
+    assert.strictEqual(info.value.name, null);
+  });
+
+  test('#4134 — the refusal is level-agnostic (H2/H3 carry the same fragment)', () => {
+    for (const [level, heading] of [
+      [2, '## Native OMP Runtime Support (v1.13)'],
+      [3, '### Native OMP Runtime Support (v1.13)'],
+    ]) {
+      writeState(tmpDir, { milestone: 'v1.13' });
+      writeRoadmap(tmpDir, `${heading}\n\n### Phase 1: Setup\n`);
+      const info = getMilestoneInfo(tmpDir);
+      assert.strictEqual(info.scope, SCOPE.TRUNCATED, `H${level}: ${JSON.stringify(info)}`);
+      assert.strictEqual(info.value.version, 'v1.13');
+      assert.strictEqual(info.value.name, null);
+    }
+  });
+
+  test('#4134 — every punctuation-only remainder is refused (garbage family)', () => {
+    // Each fragment survives stripLeadingDelimiter (it does not START with a
+    // delimiter char) and carries no letter or digit anywhere — the exact
+    // shape that used to be returned as a "name".
+    const fragments = [')', '()', '**', '.,;:', ']}', '🎉'];
+    for (const fragment of fragments) {
+      writeState(tmpDir, { milestone: 'v1.2' });
+      writeRoadmap(tmpDir, `## v1.2 — ${fragment}\n\n### Phase 1: Setup\n`);
+      const info = getMilestoneInfo(tmpDir);
+      assert.strictEqual(info.scope, SCOPE.TRUNCATED, `fragment ${JSON.stringify(fragment)}: ${JSON.stringify(info)}`);
+      assert.strictEqual(info.value.version, 'v1.2');
+      assert.strictEqual(info.value.name, null, `fragment ${JSON.stringify(fragment)} must not become a name`);
+    }
+  });
+
+  test('#4134 control — version-last without parens was already name:null and stays so', () => {
+    writeState(tmpDir, { milestone: 'v1.2.3' });
+    writeRoadmap(tmpDir, '# Milestone Name v1.2.3\n\n### Phase 1: Setup\n');
+    const info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.value.version, 'v1.2.3');
+    assert.strictEqual(info.value.name, null);
+    assert.strictEqual(info.scope, SCOPE.TRUNCATED);
+  });
+
+  test('#4134 negative space — canonical delimiter forms parse identically', () => {
+    const cases = [
+      ['## v2.0: The Big Launch', 'The Big Launch'],
+      ['## v2.5 — Galaxy Release', 'Galaxy Release'],
+      ['## v2.6 – En Dash Form', 'En Dash Form'],
+      ['## v2.7 - Hyphen Form', 'Hyphen Form'],
+      ['## v2.8 Space Only Form', 'Space Only Form'],
+    ];
+    for (const [heading, expected] of cases) {
+      writeState(tmpDir, { milestone: heading.match(/v\d+(?:\.\d+)*/)[0] });
+      writeRoadmap(tmpDir, `${heading}\n\n### Phase 1: Setup\n`);
+      const info = getMilestoneInfo(tmpDir);
+      assert.strictEqual(info.scope, SCOPE.COMPLETE, `${heading}: ${JSON.stringify(info)}`);
+      assert.strictEqual(info.value.name, expected, `${heading}: ${JSON.stringify(info.value)}`);
+    }
+  });
+
+  test('#4134 negative space — parenthetical names are retained (#3171)', () => {
+    writeState(tmpDir, { milestone: 'v1.2' });
+    writeRoadmap(tmpDir, '## v1.2 — Name (Part 2)\n\n### Phase 1: Setup\n');
+    const info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.name, 'Name (Part 2)');
+  });
+
+  test('#4134 negative space — markers, digit-only names, CRLF headings unchanged', () => {
+    // Trailing status marker still stripped, not treated as a "name" (a ✅
+    // TRAILING marker would make the heading closed and skipped — 📋 does not).
+    writeState(tmpDir, { milestone: 'v3.0' });
+    writeRoadmap(tmpDir, '## v3.0 — Planned 📋\n\n### Phase 1: Setup\n');
+    let info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.name, 'Planned');
+
+    // A digit-only name IS a name (\p{N} counts as a word character).
+    writeState(tmpDir, { milestone: 'v4.0' });
+    writeRoadmap(tmpDir, '## v4.0 — 42\n\n### Phase 1: Setup\n');
+    info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.name, '42');
+
+    // CRLF heading: the trailing \r must never become part of the verdict.
+    writeState(tmpDir, { milestone: 'v2.0' });
+    writeRoadmap(tmpDir, '## v2.0 — CRLF Name\r\n\r\n### Phase 1: Setup\r\n');
+    info = getMilestoneInfo(tmpDir);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.name, 'CRLF Name');
+  });
+
+  test('#4134 — property: a word-char remainder is always a name, a punctuation-only remainder never is', () => {
+    // Document-shaped generator (#2371): fixed literal token alphabets, NOT
+    // derived from the parser's own regexes. Fragments are token lists joined
+    // with single spaces, so no token can glue onto the version token and
+    // trigger the sub-milestone continuation grammar (`v1.3-B`).
+    const WORD = fc.constantFrom('Alpha', 'Beta', 'R2D2', '42', '名称', 'küche');
+    const PUNCT = fc.constantFrom(')', '(', '—', ':', '.', '**', ']');
+    const minor = fc.integer({ min: 0, max: 9 });
+    const tokens = fc.array(fc.oneof(WORD, PUNCT), { minLength: 1, maxLength: 6 });
+
+    const prop = fc.property(minor, tokens, (m, toks) => {
+      const version = `v1.${m}`;
+      const fragment = toks.join(' ').trim();
+      const hasWordChar = /[\p{L}\p{N}]/u.test(fragment);
+      const out = roadmapParser.listMilestoneHeadings(`## ${version} ${fragment}\n`);
+      assert.strictEqual(out.length, 1, `heading not enumerated: ${version} ${fragment}`);
+      assert.strictEqual(out[0].version, version, `continuation grammar leaked into the version: ${JSON.stringify(out[0])}`);
+      // The biconditional IS the #4134 contract: a remainder with at least one
+      // letter/digit is a curated name; one with none is heading structure.
+      assert.strictEqual(
+        out[0].name !== null,
+        hasWordChar,
+        `fragment ${JSON.stringify(fragment)} (hasWordChar=${hasWordChar}) yielded name ${JSON.stringify(out[0].name)}`,
+      );
+    });
+
+    const result = fc.check(prop, { seed: 20260905, numRuns: 300 });
+    if (result.failed) {
+      assert.fail(`#4134 property violated (replay seed=20260905): ${JSON.stringify(result.counterexample)}`);
+    }
+  });
+});
+
 // ─── isMilestoneShippedInRoadmap ──────────────────────────────────────────────
 
 // #2562: this module owns milestone-heading classification, so its own shipped

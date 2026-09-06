@@ -207,7 +207,9 @@ describe('representative corpus — decision-coverage guard (#2347)', () => {
   for (const fx of manifest.fixtures) {
     const label = fx.currentBuggyOutput
       ? `${fx.file} → currently passed:true, skipped:true (#2347)`
-      : `${fx.file} → outcome could-not-parse, passed:false`;
+      : typeof fx.expectedTotal === 'number'
+        ? `${fx.file} → parsed but uncovered, passed:false (#4130)`
+        : `${fx.file} → outcome could-not-parse, passed:false`;
     test(label, () => {
       tmpDir = makeProject();
       const phaseDir = makePhaseDir(tmpDir, '01-repcorpus');
@@ -225,6 +227,17 @@ describe('representative corpus — decision-coverage guard (#2347)', () => {
         assert.strictEqual(j.skipped, fx.currentBuggyOutput.skipped, `${fx.file}: skipped`);
         assert.strictEqual(j.reason, fx.currentBuggyOutput.reason, `${fx.file}: reason`);
         assert.strictEqual(j.total, fx.currentBuggyOutput.total, `${fx.file}: total`);
+      } else if (typeof fx.expectedTotal === 'number') {
+        // #4130: the fixture's D5-NN phase-prefixed ids are now READ by the
+        // parser, so the gate reports a real coverage verdict (nothing covers
+        // them in this bare project) instead of could-not-parse. The coverage
+        // path emits no `reason` field at all — absence is part of the
+        // expectation.
+        assert.strictEqual(j.passed, fx.expectedPassed, `${fx.file}: passed. Got ${JSON.stringify(j)}`);
+        assert.strictEqual(j.reason, undefined,
+          `${fx.file}: the coverage verdict must carry no could-not-parse reason. Got ${JSON.stringify(j)}`);
+        assert.strictEqual(j.total, fx.expectedTotal, `${fx.file}: total. Got ${JSON.stringify(j)}`);
+        assert.strictEqual(j.covered, fx.expectedCovered, `${fx.file}: covered. Got ${JSON.stringify(j)}`);
       } else {
         assert.strictEqual(j.passed, fx.expectedPassed, `${fx.file}: passed. Got ${JSON.stringify(j)}`);
         assert.strictEqual(j.reason, fx.expectedReason, `${fx.file}: reason. Got ${JSON.stringify(j)}`);
