@@ -51,15 +51,24 @@ The body is divided into named XML-style blocks. The blocks appear in a fixed or
 
 ## Decision identifier format
 
-Every decision in `<decisions>` carries a sequential `D-NN` identifier:
+Every decision in `<decisions>` carries a sequential `D-NN` identifier. An optional
+phase-number prefix may sit between the `D` and the hyphen (`D4-01`) — useful on
+multi-phase projects where bare `D-01` collides across phases; the digits are read
+as part of the identifier (#4130):
 
 ```markdown
 ### Layout style
 - **D-01:** Card-based layout, not timeline or list
 - **D-02:** Each card shows: author avatar, name, timestamp, full post content, reaction counts
+
+### Phase-4 decisions
+- **D4-01:** Phase-scoped identifier, distinct from any other phase's D-01
 ```
 
-Identifiers are scoped to the phase. `D-01` in Phase 3 is unrelated to `D-01` in Phase 7. The plan-checker (Dimension 7) verifies that every `D-NN` is addressed by at least one task action in the generated plans.
+Alphanumeric tails (`D-INFRA-01`) are also accepted. Identifiers are scoped to the
+phase. `D-01` in Phase 3 is unrelated to `D-01` in Phase 7. The plan-checker
+(Dimension 7) verifies that every decision identifier is addressed by at least one
+task action in the generated plans.
 
 ---
 

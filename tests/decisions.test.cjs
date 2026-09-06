@@ -234,14 +234,20 @@ describe('extractDecisions — typed outcome (#1364 + #1365)', () => {
 // literal "D-" token, so they isolate the bold-bullet evidence from the old
 // D--token path.
 describe('extractDecisions — format-agnostic evidence test (#2347)', () => {
+  // #4130 note: this fixture originally used the D5-NN phase-prefixed shape
+  // from #2347's own reproduction. #4130 made the digit-run phase prefix LEGAL
+  // (see the #4130 blocks below — D5-01 now parses), so the "prefix the parser
+  // cannot read" fixture here uses a DEC-NN multi-letter prefix instead: still
+  // an ID-shaped bold lead-in, still outside the parser's D-prefixed universe,
+  // so the fail-loud contract this describe-block pins is unchanged.
   test('populated <decisions> block with a non-D- ID prefix is could-not-parse, not none-present', () => {
     const md = '<decisions>\n'
-      + '- **D5-01:** choose the primary datastore\n'
-      + '- **D5-02:** pick the queue technology\n'
-      + '- **D5-03:** settle on the auth model\n'
+      + '- **DEC-01:** choose the primary datastore\n'
+      + '- **DEC-02:** pick the queue technology\n'
+      + '- **DEC-03:** settle on the auth model\n'
       + '</decisions>\n';
     const r = extractDecisions(md);
-    assert.strictEqual(r.decisions.length, 0, 'parser cannot read the D5- prefix (0 extracted)');
+    assert.strictEqual(r.decisions.length, 0, 'parser cannot read the DEC- prefix (0 extracted)');
     assert.strictEqual(r.outcome, 'could-not-parse',
       'a populated block the parser cannot read must FAIL LOUD, not pass as none-present');
   });
@@ -2214,5 +2220,305 @@ describe('check.decision-coverage-plan — wrapped bold lead-in does not hard-bl
       `Both wrapped decisions must be counted. Got: ${JSON.stringify(parsed)}`);
     assert.strictEqual(parsed.covered, 2,
       `Both wrapped decisions must be seen as covered by the plan. Got: ${JSON.stringify(parsed)}`);
+  });
+});
+
+// ─── #4130: phase-prefixed decision IDs (D4-01) must parse ───────────────────
+//
+// The three declaration grammars all anchored on the literal `**D-`, so an ID
+// carrying a phase-number prefix between the leading letter and the hyphen
+// (D4-01, D12-01 — the reporter's D3-NN/D4-NN/D5-NN multi-phase convention,
+// where bare D-01 collides across 18 phases) matched none of them — and none
+// of the parse-miss guard or the #3939 join regexes either, so such a bullet
+// was INVISIBLE to the extractor while the #2347 evidence detector correctly
+// called the file decision-shaped. Net effect: the whole CONTEXT.md collapsed
+// to could-not-parse with 0 extracted and the gate reported a format problem
+// instead of a coverage result. The extractor now accepts an optional
+// digit-run phase prefix on the same grammar the detector already recognized.
+
+describe('parseDecisions — phase-prefixed IDs parse in every form (#4130)', () => {
+  test('FAIL-FIRST: - **D4-01:** single-line colon form with a phase prefix parses', () => {
+    // Before the fix: outcome could-not-parse, 0 extracted (the issue's own
+    // b-phase-prefix fixture — the only variable vs the parsing baseline is
+    // the `4` in the ID).
+    const md = '<decisions>\n- **D4-01:** a short single-line decision.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed',
+      `A phase-prefixed colon bullet must parse. Got: ${JSON.stringify(r)}`);
+    assert.deepStrictEqual(r.decisions.map((d) => d.id), ['D4-01'],
+      `The full prefixed id must be reported. Got: ${JSON.stringify(r.decisions)}`);
+    assert.strictEqual(r.decisions[0].text, 'a short single-line decision.');
+  });
+
+  test('- **D12-01:** two-digit phase prefix parses', () => {
+    const md = '<decisions>\n- **D12-01:** two-digit phase.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed');
+    assert.deepStrictEqual(r.decisions.map((d) => d.id), ['D12-01']);
+  });
+
+  test('em-dash form - **D4-01 — title** body parses with a phase prefix', () => {
+    const md = '<decisions>\n- **D4-01 — the chosen datastore** use Postgres.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed');
+    assert.deepStrictEqual(r.decisions.map((d) => d.id), ['D4-01']);
+  });
+
+  test('titled-colon form - **D4-01: Title.** body parses with a phase prefix', () => {
+    const md = '<decisions>\n- **D4-01: The chosen datastore.** use Postgres.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed');
+    assert.deepStrictEqual(r.decisions.map((d) => d.id), ['D4-01']);
+  });
+
+  test('D5-NN (the #2347 reproduction shape) now parses — the multi-phase convention is legal', () => {
+    const md = '<decisions>\n'
+      + '- **D5-01:** choose the primary datastore\n'
+      + '- **D5-02:** pick the queue technology\n'
+      + '- **D5-03:** settle on the auth model\n'
+      + '</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed',
+      `The exact #2347 fixture grammar must now be readable. Got: ${JSON.stringify(r)}`);
+    assert.deepStrictEqual(r.decisions.map((d) => d.id), ['D5-01', 'D5-02', 'D5-03']);
+  });
+
+  test('phase prefix + [tags] honors tags and trackable:false', () => {
+    const md = '<decisions>\n- **D4-01 [informational]:** reference only.\n</decisions>\n';
+    const ds = parseDecisions(md);
+    assert.deepStrictEqual(ds.map((d) => d.id), ['D4-01']);
+    assert.ok(ds[0].tags.includes('informational'),
+      `Tags must survive the prefixed grammar. Got: ${JSON.stringify(ds[0])}`);
+    assert.strictEqual(ds[0].trackable, false);
+  });
+
+  test("phase-prefixed decision under ### Claude's Discretion is non-trackable", () => {
+    const md = "<decisions>\n### Claude's Discretion\n- **D4-01:** internal choice.\n</decisions>\n";
+    const ds = parseDecisions(md);
+    assert.deepStrictEqual(ds.map((d) => d.id), ['D4-01']);
+    assert.strictEqual(ds[0].trackable, false);
+  });
+
+  test('phase-prefixed bullet with a wrapped bold lead-in parses like the one-line form (#4130 x #3939)', () => {
+    const oneLine = extractDecisions(inBlock('- **D4-01: Persist the raw delivery headers.** JSON arrays preserve order.'));
+    const wrapped = extractDecisions(inBlock(
+      '- **D4-01: Persist the raw delivery\n  headers.** JSON arrays preserve order.'));
+    assert.strictEqual(oneLine.outcome, 'parsed');
+    assert.strictEqual(wrapped.outcome, 'parsed',
+      `A wrapped prefixed declaration must join and parse. Got: ${JSON.stringify(wrapped)}`);
+    assert.deepStrictEqual(wrapped.decisions.map((d) => d.id), ['D4-01']);
+    assert.deepStrictEqual(wrapped.decisions[0].text, oneLine.decisions[0].text,
+      'Wrapping must stay markdown-insignificant for prefixed ids too.');
+  });
+});
+
+describe('parseDecisions — phase-prefix failure modes stay loud, prose stays prose (#4130)', () => {
+  test('- **D4x-01:** (non-digit inside the prefix) is a genuine parse-miss → could-not-parse', () => {
+    const md = '<decisions>\n- **D4x-01:** a typo in the phase prefix.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'could-not-parse',
+      `A malformed phase prefix must fail loud, not silently extract or vanish. Got: ${JSON.stringify(r)}`);
+    assert.deepStrictEqual(r.decisions, [],
+      'A malformed prefix must never be extracted as a decision.');
+  });
+
+  test('a malformed phase-prefixed bullet poisons a file that also has valid decisions (FIX B parity)', () => {
+    // Before the fix this file was outcome:parsed with D-01 only — D4x-02 was
+    // silently invisible to the extractor AND the guard (the exact silent-drop
+    // class #1365 FIX B exists to prevent, surviving for prefixed ids).
+    const md = '<decisions>\n- **D-01:** valid.\n- **D4x-02:** malformed prefix.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'could-not-parse',
+      `A parse-miss on a prefixed bullet must block, not silently drop. Got: ${JSON.stringify(r)}`);
+  });
+
+  test('D-initial hyphenated prose labels stay none-present (the widened guard must not reach prose)', () => {
+    // `Deferred-until-later` is `D` + letters + `-`: the letter-initial run is
+    // a prose word, not a digit-run phase prefix, so it must stay invisible to
+    // the parse-miss guard exactly as before #4130.
+    const md = '<decisions>\n'
+      + '- **Deferred-until-later:** we revisit the queue choice next phase.\n'
+      + '- **Note:** nothing else was decided here.\n'
+      + '</decisions>\n';
+    assert.strictEqual(extractDecisions(md).outcome, 'none-present',
+      'D-initial hyphenated prose labels must not become parse-misses.');
+  });
+
+  test('bare D-01 baseline and D-INFRA-01 alnum tail parse unchanged', () => {
+    const md = '<decisions>\n- **D-01:** bare.\n- **D-INFRA-01:** alnum tail.\n</decisions>\n';
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed');
+    assert.deepStrictEqual(r.decisions.map((d) => d.id), ['D-01', 'D-INFRA-01']);
+  });
+});
+
+// ─── #4130 properties: detector/extractor ID-grammar parity ─────────────────
+//
+// The bug was a grammar DISAGREEMENT: the #2347 evidence detector accepted
+// `D4-01` as decision-shaped while the extractor's `**D-` anchor rejected it,
+// so the file failed loud as a whole instead of being read. These properties
+// pin the parity invariant in both directions for the D-prefixed universe:
+// every well-formed digit-prefixed id (the shape the detector already calls
+// decision-shaped) must PARSE to its exact id in every bullet form, and every
+// malformed variant of that shape (a non-digit inside the digit-run prefix)
+// must FAIL LOUD — never a silent none-present, never a silent extraction.
+// If either grammar drifts from the other again, one of these fires.
+
+describe('#4130 properties: digit-prefixed ids parse or fail loud, never vanish', () => {
+  const phasePrefixedIdArb = fc
+    .tuple(fc.integer({ min: 1, max: 99 }), fc.integer({ min: 1, max: 99 }))
+    .map(([phase, seq]) => `D${phase}-${String(seq).padStart(2, '0')}`);
+
+  test('property: every well-formed phase-prefixed bullet parses to its exact id, in every form', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...Object.keys(BULLET_FORMS)),
+        phasePrefixedIdArb,
+        tagsArb,
+        proseArb(2, 8),
+        proseArb(1, 6),
+        fc.boolean(),
+        (form, id, tags, title, body, withCategory) => {
+          const heading = withCategory ? '### Implementation\n' : '';
+          const line = renderBullet(form, id, tags, title, body);
+          const r = extractDecisions(inBlock(heading + line));
+          assert.strictEqual(r.outcome, 'parsed',
+            `A well-formed phase-prefixed declaration must parse. form=${form} line=${JSON.stringify(line)} → ${JSON.stringify(r)}`);
+          assert.deepStrictEqual(r.decisions.map((d) => d.id), [id],
+            `The prefixed id must round-trip exactly. form=${form} id=${id} → ${JSON.stringify(r.decisions)}`);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('property: a non-digit injected into the phase prefix fails loud, never silently', (t) => {
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    t.after(() => { console.warn = originalWarn; });
+
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...Object.keys(BULLET_FORMS)),
+        phasePrefixedIdArb,
+        fc.constantFrom('x', 'X', 'z'),
+        (form, id, junk) => {
+          const badId = id.replace(/^(D\d)/, `$1${junk}`);
+          const line = renderBullet(form, badId, '', 'title', 'body');
+          const r = extractDecisions(inBlock(line));
+          assert.strictEqual(r.outcome, 'could-not-parse',
+            `A malformed phase prefix must fail loud. form=${form} line=${JSON.stringify(line)} → ${JSON.stringify(r)}`);
+          assert.deepStrictEqual(r.decisions, [],
+            `A malformed phase prefix must never be extracted. form=${form} line=${JSON.stringify(line)}`);
+          return true;
+        },
+      ),
+    );
+  });
+});
+
+// ─── #4130 gate-level: the gates read phase-prefixed decisions end-to-end ────
+
+describe('check.decision-coverage-plan — phase-prefixed decisions are readable (#4130)', () => {
+  let tmpDir;
+  let planningDir;
+  let phaseDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4130-');
+    planningDir = path.join(tmpDir, '.planning');
+    phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('FAIL-FIRST: CONTEXT.md with D4-01 covered by the plan → passed:true, total:1, covered:1', () => {
+    // Before the fix: reason could-not-parse, total 0 — the gate reported a
+    // format problem for the whole file instead of a coverage result.
+    writeContextFile(phaseDir, [
+      '# Phase 4 Context',
+      '',
+      '<decisions>',
+      '### Implementation',
+      '- **D4-01:** use the phase-scoped datastore',
+      '</decisions>',
+    ].join('\n'));
+    writePlanFile(phaseDir, '01', '# Plan\n## Must Haves\n- D4-01: provision the datastore\n');
+
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+    const result = runDecisionCoveragePlan(phaseDir, contextPath, tmpDir);
+    const parsed = JSON.parse(result.output || '{}');
+    assert.strictEqual(parsed.passed, true,
+      `A plan covering the prefixed decision must pass. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.total, 1,
+      `The prefixed decision must be counted. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.covered, 1,
+      `The prefixed decision must be seen as covered. Got: ${JSON.stringify(parsed)}`);
+  });
+
+  test('D4-01 not covered → passed:false with the uncovered id, NOT could-not-parse', () => {
+    writeContextFile(phaseDir, [
+      '# Phase 4 Context',
+      '',
+      '<decisions>',
+      '- **D4-01:** use the phase-scoped datastore',
+      '</decisions>',
+    ].join('\n'));
+    writePlanFile(phaseDir, '01', '# Plan\n## Must Haves\n- Something unrelated.\n');
+
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+    const result = runDecisionCoveragePlan(phaseDir, contextPath, tmpDir);
+    const parsed = JSON.parse(result.output || '{}');
+    assert.strictEqual(parsed.passed, false,
+      `An uncovered prefixed decision must fail on coverage. Got: ${JSON.stringify(parsed)}`);
+    assert.notStrictEqual(parsed.reason, 'could-not-parse',
+      `The gate must report a coverage result, not a format problem. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.total, 1);
+    assert.strictEqual(parsed.covered, 0);
+    assert.deepStrictEqual(
+      (parsed.uncovered || []).map((u) => u.id),
+      ['D4-01'],
+      `The uncovered row must carry the prefixed id. Got: ${JSON.stringify(parsed.uncovered)}`,
+    );
+  });
+});
+
+describe('check.decision-coverage-verify — phase-prefixed decisions are readable (#4130)', () => {
+  let tmpDir;
+  let planningDir;
+  let phaseDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4130v-');
+    planningDir = path.join(tmpDir, '.planning');
+    phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('verify reads D4-01 and honors it when the plan mentions it (no could-not-parse)', () => {
+    writeContextFile(phaseDir, [
+      '# Phase 4 Context',
+      '',
+      '<decisions>',
+      '- **D4-01:** use the phase-scoped datastore',
+      '</decisions>',
+    ].join('\n'));
+    writePlanFile(phaseDir, '01', '# Plan\n## Must Haves\n- D4-01: provision the datastore\n');
+
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+    const result = runGsdTools(
+      ['query', 'check.decision-coverage-verify', phaseDir, contextPath],
+      tmpDir,
+    );
+    const parsed = JSON.parse(result.output || '{}');
+    assert.notStrictEqual(parsed.reason, 'could-not-parse',
+      `Verify must read prefixed decisions, not report a format mismatch. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.total, 1,
+      `The prefixed decision must be counted. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.honored, 1,
+      `A plan mentioning D4-01 honors it. Got: ${JSON.stringify(parsed)}`);
   });
 });

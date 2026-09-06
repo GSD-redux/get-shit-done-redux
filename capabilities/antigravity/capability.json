@@ -1,7 +1,7 @@
 {
   "id": "antigravity",
   "role": "runtime",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "Antigravity",
   "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
   "tier": "core",
