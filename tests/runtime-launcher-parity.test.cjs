@@ -1071,6 +1071,52 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
     );
   });
 
+  // --- (C0) Fixture env outranks the parent process -------------------------
+  test('(C0) an ambient CLAUDE_CONFIG_DIR cannot divert the fixture home (#4312)', (t) => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-home-'));
+    const fakeRuntime = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-rt-'));
+    const decoy = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-decoy-'));
+    const savedVar = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = decoy;
+    t.after(() => {
+      if (savedVar === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedVar;
+      cleanup(fakeHome);
+      cleanup(fakeRuntime);
+      cleanup(decoy);
+    });
+
+    for (const [root, marker] of [[fakeHome, 'FIXTURE'], [decoy, 'DECOY']]) {
+      const binDir = root === fakeHome
+        ? path.join(root, '.claude', 'gsd-core', 'bin')
+        : path.join(root, 'gsd-core', 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(binDir, 'gsd-tools.cjs'),
+        `#!/usr/bin/env node\nconsole.log("${marker}:" + process.argv.slice(2).join(","));\n`,
+      );
+    }
+
+    const scriptPath = path.join(fakeRuntime, 'test-ambient-config-dir.sh');
+    fs.writeFileSync(
+      scriptPath,
+      `unset GSD_TOOLS\n`
+        + `export RUNTIME_DIR=${JSON.stringify(fakeRuntime)}\n`
+        + `export HOME=${JSON.stringify(fakeHome)}\n`
+        + fs.readFileSync(SNIPPET_FILE, 'utf8')
+        + `\ngsd_run ping test\n`,
+    );
+
+    const { isolatedPath, nodeBinDir } = buildIsolatedPath();
+    t.after(() => cleanup(nodeBinDir));
+    const stdout = runBashFile(scriptPath, {
+      env: { PATH: isolatedPath, HOME: fakeHome },
+    });
+
+    assert.match(stdout, /FIXTURE:ping,test/);
+    assert.doesNotMatch(stdout, /DECOY:/);
+  });
+
   // --- (C) Behavioral: ~/.claude stub is resolved when local and PATH both miss
   test('(C) gsd_run resolves $HOME/.claude/gsd-core/bin/ stub when no local install and gsd_run not on PATH', (t) => {
     // Build a fake $HOME with a stub at .claude/gsd-core/bin/gsd-tools.cjs

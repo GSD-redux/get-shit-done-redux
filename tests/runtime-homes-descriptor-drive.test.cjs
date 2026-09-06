@@ -1198,6 +1198,10 @@ const {
   getGlobalSkillDir,
 } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'runtime-homes.cjs'));
 
+// #4312: captured before any test pins HOME, so the pin guard below can assert
+// it is actually in effect rather than trusting that it is.
+const REAL_HOME_AT_LOAD = os.homedir();
+
 // Helper: run fn with an env var temporarily set
 function withEnv(key, value, fn) {
   const orig = process.env[key];
@@ -1211,24 +1215,49 @@ function withEnv(key, value, fn) {
 }
 
 describe('bug #3126: runtime-homes getGlobalConfigDir — defaults', () => {
+  // #4312: the expectations are RELATIVE segments, resolved against a fixture
+  // home inside each test rather than against the real os.homedir(). antigravity
+  // resolves through an fs probe (~/.gemini/antigravity{,-ide,-cli}), so a
+  // contributor who has antigravity-cli installed — and nothing else — got
+  // `.gemini/antigravity-cli` here and a red suite from a clean clone. The
+  // neighbouring GOLDEN DEFAULTS block already states this hazard and skips
+  // antigravity for it; pinning the home keeps the row instead of dropping it,
+  // and makes every other row immune to an installed runtime at the same time.
+  // The probe's PREFERENCE order is covered with an injected existsSync in the
+  // dot-home-nested suite, so nothing is lost here.
   const defaults = [
-    ['claude',      path.join(os.homedir(), '.claude')],
-    ['cursor',      path.join(os.homedir(), '.cursor')],
-    ['codex',       path.join(os.homedir(), '.codex')],
-    ['copilot',     path.join(os.homedir(), '.copilot')],
-    ['antigravity', path.join(os.homedir(), '.gemini', 'antigravity')],
-    ['windsurf',    path.join(os.homedir(), '.codeium', 'windsurf')],
-    ['augment',     path.join(os.homedir(), '.augment')],
-    ['trae',        path.join(os.homedir(), '.trae')],
-    ['qwen',        path.join(os.homedir(), '.qwen')],
-    ['hermes',      path.join(os.homedir(), '.hermes')],
-    ['codebuddy',   path.join(os.homedir(), '.codebuddy')],
-    ['cline',       path.join(os.homedir(), '.cline')],
-    ['opencode',    path.join(os.homedir(), '.config', 'opencode')],
-    ['kilo',        path.join(os.homedir(), '.config', 'kilo')],
+    ['claude',      ['.claude']],
+    ['cursor',      ['.cursor']],
+    ['codex',       ['.codex']],
+    ['copilot',     ['.copilot']],
+    ['antigravity', ['.gemini', 'antigravity']],
+    ['windsurf',    ['.codeium', 'windsurf']],
+    ['augment',     ['.augment']],
+    ['trae',        ['.trae']],
+    ['qwen',        ['.qwen']],
+    ['hermes',      ['.hermes']],
+    ['codebuddy',   ['.codebuddy']],
+    ['cline',       ['.cline']],
+    ['opencode',    ['.config', 'opencode']],
+    ['kilo',        ['.config', 'kilo']],
   ];
-  for (const [runtime, expected] of defaults) {
-    test(`${runtime} default configDir`, () => {
+  for (const [runtime, segments] of defaults) {
+    test(`${runtime} default configDir`, (t) => {
+      // os.homedir() reads $HOME on POSIX and %USERPROFILE% on Windows; both are
+      // set so the fixture holds on either. An EMPTY home is the point: it is
+      // the state the golden defaults describe — no probe candidate present.
+      const fixtureHome = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-home-'));
+      const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+      process.env.HOME = fixtureHome;
+      process.env.USERPROFILE = fixtureHome;
+      t.after(() => {
+        for (const [k, v] of Object.entries(savedHome)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+        cleanup(fixtureHome);
+      });
+      const expected = path.join(fixtureHome, ...segments);
       // Derive env-var list from the registry so new runtimes are auto-covered.
       // GROK_AGENTS_HOME is kept explicitly (grok has no registry entry).
       const { runtimes: _reg3126 } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'));
@@ -1251,6 +1280,50 @@ describe('bug #3126: runtime-homes getGlobalConfigDir — defaults', () => {
       }
     });
   }
+  // #4312 regression guard, deterministic on CI: the rows above are only
+  // hermetic while the home pin is actually in effect. Asserting the pin itself
+  // fails on EVERY machine if someone drops it, instead of only on a machine
+  // that happens to have an antigravity-cli install — which is what let the
+  // original defect survive seven commits.
+  test('#4312: the default rows run against a pinned, empty fixture home', (t) => {
+    const realHome = REAL_HOME_AT_LOAD;
+    const fixtureHome = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-pin-'));
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = fixtureHome;
+    process.env.USERPROFILE = fixtureHome;
+    t.after(() => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      cleanup(fixtureHome);
+    });
+    assert.notStrictEqual(os.homedir(), realHome,
+      'os.homedir() must follow the pinned fixture, not the developer\'s real home');
+    assert.deepEqual(require('node:fs').readdirSync(fixtureHome), [],
+      'the fixture home must be empty — a golden DEFAULT is what resolution returns with no probe candidate present');
+    assert.strictEqual(getGlobalConfigDir('antigravity'), path.join(fixtureHome, '.gemini', 'antigravity'));
+  });
+
+  // The other half of the same contract: the probe is real, and it is why the
+  // rows cannot assert against whatever home the contributor happens to have.
+  test('#4312: an antigravity-cli install moves the resolved dir — the hazard the pin exists for', (t) => {
+    const decoyHome = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-decoy-'));
+    require('node:fs').mkdirSync(path.join(decoyHome, '.gemini', 'antigravity-cli'), { recursive: true });
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = decoyHome;
+    process.env.USERPROFILE = decoyHome;
+    t.after(() => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      cleanup(decoyHome);
+    });
+    assert.strictEqual(getGlobalConfigDir('antigravity'), path.join(decoyHome, '.gemini', 'antigravity-cli'),
+      'the fs probe is documented behaviour — a default row asserting the real home is asserting this away');
+  });
+
   test('unknown runtime falls back to ~/.claude', () => {
     withEnv('CLAUDE_CONFIG_DIR', undefined, () => {
       assert.strictEqual(getGlobalConfigDir('unknown-xyz'), path.join(os.homedir(), '.claude'));
