@@ -1400,6 +1400,31 @@ overall verification status. The asymmetry is deliberate — by verify time
 the work is done, and a fuzzy substring miss should not fail an otherwise
 green phase.
 
+### Invoking the plan gate directly
+
+The plan-phase translation gate is runnable standalone (the same form the
+workflow's gate dispatch uses):
+
+```bash
+gsd_run check decision-coverage-plan <phase-dir> <context-path>
+```
+
+The context path may also be supplied with the `--context` flag, following
+the same convention as the other flag-taking check verbs (e.g.
+`check predicate`):
+
+```bash
+gsd_run check decision-coverage-plan <phase-dir> --context <path>
+gsd_run check decision-coverage-plan --context <path> [<phase-dir>]
+```
+
+The flag wins when both a positional context path and `--context` are given;
+the positional form keeps working unchanged. A `--context` with no value is
+a caller error — the gate fails closed with the missing-argument error, the
+same as calling it with no context path at all, rather than silently
+skipping. The phase directory remains a separate positional argument (there
+is no `--phase` flag; the workflow caller passes both positionals).
+
 ### How to write decisions the gates accept
 
 The discuss-phase template already produces `D-NN`-numbered decisions.

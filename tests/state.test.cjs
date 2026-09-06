@@ -20279,3 +20279,346 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
     });
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════
+// #4138: `state begin-phase` writes a null-phase STATE.md when the required
+// --phase argument is missing (.gsd/bug/fix-4138-begin-phase-arg-validation/
+// {10-diagnosis,50-test-matrix}.md). The verb's token validation rejects an
+// unexpected positional but lets a MISSING --phase through as null, which the
+// transition then serialises as the literal string "null" into three body
+// locations while the post-sync frontmatter rebuild drops current_phase /
+// current_phase_name entirely. The contract under test is the issue's Expected:
+// exit non-zero with a usage message and write nothing.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('#4138: state begin-phase guards its required --phase argument', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // The issue's clean shape: a milestone-bound ROADMAP, phase dirs on disk
+  // (1-2 verification-passed), and a STATE.md whose progress block already
+  // carries the correct counters — the exact state a null-phase write or a
+  // counter zeroing would destroy.
+  function seedBoundedProject() {
+    const roadmap = [
+      '# Roadmap',
+      '',
+      '## Milestone v1.0: Test Milestone',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 1.    | 1/1            | Complete | 2026-01-01 |',
+      '| 2.    | 1/1            | Complete | 2026-01-02 |',
+      '| 3.    | 0/1            | Not Started |  |',
+      '| 4.    | 0/1            | Not Started |  |',
+      '',
+      '### Phase 1: Alpha',
+      '**Goal:** first',
+      '',
+      '### Phase 2: Beta',
+      '**Goal:** second',
+      '',
+      '### Phase 3: Gamma',
+      '**Goal:** third',
+      '',
+      '### Phase 4: Delta',
+      '**Goal:** fourth',
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
+    ['01-alpha', '02-beta', '03-gamma', '04-delta'].forEach((dirName, idx) => {
+      const n = idx + 1;
+      const padded = String(n).padStart(2, '0');
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan\n');
+      if (n <= 2) {
+        fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary\n');
+        writePassedVerification(tmpDir, dirName, padded);
+      }
+    });
+    writeState(
+      tmpDir,
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'milestone_name: Test Milestone',
+        'status: executing',
+        'current_phase: 2',
+        'current_phase_name: Beta',
+        'progress:',
+        '  total_phases: 4',
+        '  completed_phases: 2',
+        '  total_plans: 4',
+        '  completed_plans: 2',
+        '  percent: 50',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 (Beta) — COMPLETE',
+        'Plan: 1 of 1',
+        'Status: Phase 2 complete',
+        'Last activity: 2026-01-02 — Phase 2 execution complete',
+        '',
+        '## Progress',
+        '',
+        'Progress: [█████▓▓▓▓▓] 50% (2/4 phases complete)',
+        '',
+        '## Session Continuity',
+        '',
+        'Last session: 2026-01-02T10:00:00.000Z',
+        '',
+      ].join('\n'),
+    );
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+  }
+
+  // #4138 row 1 — the failing-first regression. A begin-phase that names no
+  // phase must exit non-zero with a usage message and leave STATE.md
+  // byte-identical: no "Phase null" prose, no current_phase removal, no
+  // state.json publication, no milestone claim for the literal phase "null".
+  test('beginPhaseWithoutPhaseFailsClosedAndWritesNothing', () => {
+    const before = seedBoundedProject();
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+    const result = runGsdTools(['state', 'begin-phase'], tmpDir);
+
+    assert.strictEqual(result.success, false, '#4138: a missing --phase must fail the command');
+    assert.notStrictEqual(result.exitCode, 0, '#4138: a usage error must exit non-zero');
+    assert.match(result.error, /--phase/, `the usage message must name the required flag; got: ${result.error}`);
+    assert.strictEqual(
+      fs.readFileSync(statePath, 'utf8'),
+      before,
+      '#4138: an invalid invocation must not write STATE.md (no null-phase serialisation, no current_phase removal)',
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(tmpDir, '.planning', 'state.json')),
+      false,
+      '#4138: an invalid invocation must not publish the state contract',
+    );
+
+    // Row 12: no milestone claim leaked for the literal phase "null" — the
+    // next VALID begin-phase must report no conflict (#3311 claim point).
+    const valid = runGsdTools(['state', 'begin-phase', '--phase', '3', '--name', 'gamma'], tmpDir);
+    assert.ok(valid.success, `follow-up valid begin-phase failed: ${valid.error}`);
+    const validOut = JSON.parse(valid.output);
+    assert.strictEqual(validOut.milestone_conflict, null, '#4138: the errored call must not have claimed phase "null"');
+  });
+
+  // #4138 row 2 — a flag-shaped `--phase` value resolves to null in
+  // parseNamedArgs (command-arg-projection.cjs: "a value flag whose next token
+  // is absent or starts with `--` yields null"); the guard must catch it the
+  // same way as an absent flag.
+  test('beginPhaseFlagShapedPhaseValueFailsClosed', () => {
+    const before = seedBoundedProject();
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '--name', 'gamma'], tmpDir);
+
+    assert.strictEqual(result.success, false, '#4138: a flag-shaped --phase value is a missing phase');
+    assert.notStrictEqual(result.exitCode, 0, '#4138: usage error must exit non-zero');
+    assert.match(result.error, /--phase/, `the usage message must name the required flag; got: ${result.error}`);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'),
+      before,
+      '#4138: STATE.md must stay byte-identical',
+    );
+  });
+
+  // #4138 row 3 — empty string. CONTRIBUTING's CLI matrix requires `--phase ""`
+  // as a distinct negative case; pre-fix it wrote `Status: Executing Phase `
+  // (trailing space) and claimed the empty phase.
+  test('beginPhaseEmptyPhaseValueFailsClosed', () => {
+    const before = seedBoundedProject();
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', ''], tmpDir);
+
+    assert.strictEqual(result.success, false, '#4138: an empty --phase is a missing phase');
+    assert.notStrictEqual(result.exitCode, 0, '#4138: usage error must exit non-zero');
+    assert.match(result.error, /--phase/, `the usage message must name the required flag; got: ${result.error}`);
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'),
+      before,
+      '#4138: STATE.md must stay byte-identical',
+    );
+  });
+
+  // #4138 row 4 — whitespace-only value is the same missing argument.
+  test('beginPhaseWhitespacePhaseValueFailsClosed', () => {
+    const before = seedBoundedProject();
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '   '], tmpDir);
+
+    assert.strictEqual(result.success, false, '#4138: a whitespace-only --phase is a missing phase');
+    assert.notStrictEqual(result.exitCode, 0, '#4138: usage error must exit non-zero');
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'),
+      before,
+      '#4138: STATE.md must stay byte-identical',
+    );
+  });
+
+  // #4138 row 5 (not-the-bug pin): --name is OPTIONAL. A begin-phase that
+  // names a phase but no slug must keep succeeding exactly as today — the
+  // issue's Expected guards only the no-PHASE direction.
+  test('beginPhaseWithoutNameStillSucceeds', () => {
+    seedBoundedProject();
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '3'], tmpDir);
+
+    assert.ok(result.success, `begin-phase --phase 3 must succeed without --name: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.phase, '3');
+    assert.strictEqual(out.phase_name, null, 'no --name means a null name, which is legitimate');
+    const fm = frontmatterLib.extractFrontmatter(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'),
+    );
+    assert.strictEqual(String(fm.current_phase), '3', 'phase identity must land in frontmatter');
+  });
+
+  // #4138 row 6 (boundary, not-the-bug pin): the FIRST legitimate phase of a
+  // fresh milestone must keep initializing STATE.md exactly as today — zero
+  // counters on a first-phase begin are legitimate, and the guard must not
+  // have made the verb refuse its own happy path.
+  test('beginPhaseFirstLegitimatePhaseStillInitializes', () => {
+    seedBoundedProject();
+    // Reset to a fresh-milestone STATE.md: no completed phases, phase 1 beginning.
+    writeState(
+      tmpDir,
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'milestone_name: Test Milestone',
+        'status: planning',
+        'progress:',
+        '  total_phases: 4',
+        '  completed_phases: 0',
+        '  total_plans: 4',
+        '  completed_plans: 0',
+        '  percent: 0',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 1 (Alpha) — READY TO EXECUTE',
+        'Plan: 0 of ?',
+        'Status: Ready to execute Phase 1',
+        'Last activity: 2026-01-01 — roadmap created',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '1', '--name', 'alpha', '--plans', '1'], tmpDir);
+
+    assert.ok(result.success, `first-phase begin must succeed: ${result.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+    const fm = frontmatterLib.extractFrontmatter(after);
+    assert.strictEqual(String(fm.current_phase), '1', 'current_phase must be initialized');
+    assert.strictEqual(fm.status, 'executing', 'status must flip to executing');
+    assert.strictEqual(fm.last_activity_desc, 'Phase 1 execution started');
+    const position = stateDocument.stateExtractField(after, 'Phase');
+    assert.match(position ?? '', /^1 \(alpha\) — EXECUTING/, `Current Position Phase line must carry the phase identity; got: ${position}`);
+  });
+
+  // #4138 row 7 (Defect 2 pin): a CORRECT invocation must never zero
+  // progress.completed_phases / progress.percent — the issue's table shows
+  // 5/33 becoming 0/0 on gsd-core 1.12.0. On next the #4359 write-path
+  // ratchet keeps the curated completed counters; this row pins that contract
+  // on the begin-phase verb so the zeroing class cannot return unnoticed.
+  test('beginPhasePreservesSuppliedCompletedPhasesAndPercent', () => {
+    seedBoundedProject();
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '3', '--name', 'gamma'], tmpDir);
+
+    assert.ok(result.success, `begin-phase failed: ${result.error}`);
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
+    const fm = frontmatterLib.extractFrontmatter(after);
+    assert.ok(fm.progress, 'progress block must survive the write');
+    assert.strictEqual(
+      Number(fm.progress.completed_phases),
+      2,
+      `#4138: completed_phases must stay at the stored 2 (phases 1-2 verification-passed), got ${fm.progress.completed_phases}`,
+    );
+    assert.strictEqual(
+      Number(fm.progress.percent),
+      50,
+      `#4138: percent must stay coherent with the preserved counters (2/4), got ${fm.progress.percent}`,
+    );
+    assert.strictEqual(String(fm.current_phase), '3', 'the begun phase must land in frontmatter');
+  });
+
+  // #4138 row 8 (Defect 2 pin, resume variant): the #3127 resume branch must
+  // preserve the counters identically — a wave-continue begin is still an
+  // ordinary correct usage.
+  test('beginPhaseResumePreservesSuppliedCounters', () => {
+    seedBoundedProject();
+    // Body already executing phase 3 → the #3127 resume branch fires.
+    writeState(
+      tmpDir,
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'milestone: v1.0',
+        'milestone_name: Test Milestone',
+        'status: executing',
+        'current_phase: 3',
+        'current_phase_name: Gamma',
+        'progress:',
+        '  total_phases: 4',
+        '  completed_phases: 2',
+        '  total_plans: 4',
+        '  completed_plans: 2',
+        '  percent: 50',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 3 (Gamma) — EXECUTING',
+        'Plan: 1 of 1',
+        'Status: Executing Phase 3',
+        'Last activity: 2026-01-02 — Phase 3 execution started',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '3', '--name', 'gamma'], tmpDir);
+
+    assert.ok(result.success, `resume begin-phase failed: ${result.error}`);
+    const fm = frontmatterLib.extractFrontmatter(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'),
+    );
+    assert.strictEqual(Number(fm.progress.completed_phases), 2, '#4138: resume must not zero completed_phases');
+    assert.strictEqual(Number(fm.progress.percent), 50, '#4138: resume must not zero percent');
+  });
+
+  // #4138 row 9 (existing-guard pin): the sibling --plans validation already
+  // exits non-zero without writing; pinned so the two required-argument
+  // guards stay symmetric.
+  test('beginPhaseNonNumericPlansStillFailsClosed', () => {
+    const before = seedBoundedProject();
+
+    const result = runGsdTools(['state', 'begin-phase', '--phase', '3', '--plans', 'abc'], tmpDir);
+
+    assert.strictEqual(result.success, false, 'a non-numeric --plans must fail the command');
+    assert.notStrictEqual(result.exitCode, 0, 'usage error must exit non-zero');
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'),
+      before,
+      'STATE.md must stay byte-identical',
+    );
+  });
+});

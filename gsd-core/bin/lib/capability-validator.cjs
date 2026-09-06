@@ -1956,6 +1956,11 @@ const KNOWN_HOST_BEHAVIORS = new Set([
   'sourceMarkerFile',
   'tomlConfigInstall',
   'trackCategoryDescription',
+  // #2586: declares runtime-level feature axes GSD does not/cannot support on
+  // this host (e.g. Codex's `["context-warnings","phase-lifecycle-display"]`)
+  // — present-and-populated / absent-is-unsupported-empty convention, so
+  // omitting the key on every other runtime carries no inverted meaning.
+  'unsupportedFeatures',
   'verificationStyle',
   'writeCategoryDescription',
 ]);
