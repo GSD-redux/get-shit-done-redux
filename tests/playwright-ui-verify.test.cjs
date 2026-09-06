@@ -560,3 +560,250 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// EXECUTED, not read. Everything above asserts over the block's TEXT, and a
+// cross-model adversarial pass over the first version of this file broke eight of
+// those assertions with legal shell and legal JavaScript — a `fi # comment` that
+// desynchronised the scope walker, a `--timeout=0`, an exact-match `case` label
+// carrying a vacuous range test, a `redirect:"follow"` surviving only inside a JS
+// comment. Each is fixed above, and each fix is one more regex standing between a
+// claim and its evidence.
+//
+// The durable answer to "your test parses a language it does not lex" is to stop
+// parsing and start running. These two suites do that: the first executes the probe
+// program against real local HTTP servers (which is exactly how the reviewing
+// maintainer verified it by hand), the second executes the whole bash fence against
+// stub `node`/`npx` binaries and reads what it actually prints and leaves on disk.
+// A textual bypass cannot survive either one, because neither reads the text.
+// ---------------------------------------------------------------------------
+
+const http = require('http');
+const os = require('os');
+const { spawnSync, execFile } = require('child_process');
+
+// The probe is `node -e '<program>' "<url>"`. Take the program out verbatim.
+function probeProgram() {
+  const line = logicalLines(screenshotApproachLines().map(stripComment))
+    .find((l) => /\bnode\b[\t ]+-e[\t ]+'/.test(l));
+  assert.ok(line, 'expected the block to probe with `node -e`');
+  const open = line.indexOf("-e ") + 3;
+  assert.strictEqual(line[open], "'", 'expected the probe program in single quotes');
+  const close = line.indexOf("'", open + 1);
+  assert.ok(close > open, 'unterminated probe program');
+  return line.slice(open + 1, close);
+}
+
+function listen(handler) {
+  return new Promise((resolve) => {
+    const server = http.createServer(handler);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+const close = (server) => new Promise((resolve) => server.close(resolve));
+const urlOf = (server) => `http://127.0.0.1:${server.address().port}`;
+
+// ASYNC, and that is not a style choice. The servers above live in THIS process, so a
+// spawnSync here blocks the very event loop that has to answer the probe: every request
+// hung, the probe's own AbortSignal fired at 5s, and three tests failed with '000' against
+// live servers while the two that "passed" passed vacuously. Measured while writing this
+// suite — a self-inflicted instance of the false-clean class the rest of this file is about.
+function runProbe(url) {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, ['-e', probeProgram(), url], { timeout: 30000 },
+      (err, stdout) => (err && !stdout ? reject(err) : resolve(String(stdout).trim())));
+  });
+}
+
+describe('#4176 — the probe program, executed against real servers', () => {
+  test('a redirecting dev server resolves to its final 2xx, not to "absent"', async () => {
+    // The originating bug: `curl` without -L against a root that 307s read as no server.
+    // A regression to redirect:"manual" or a deleted redirect key cannot pass this,
+    // whatever the block's comments say — the program is RUN.
+    const target = await listen((req, res) => { res.writeHead(200); res.end('ok'); });
+    const redirector = await listen((req, res) => {
+      res.writeHead(307, { Location: `${urlOf(target)}/` });
+      res.end();
+    });
+    try {
+      assert.strictEqual(await runProbe(urlOf(redirector)), '200',
+        'a 307 to a live 2xx must probe as 200 — following redirects is the #4176 fix');
+    } finally { await close(redirector); await close(target); }
+  });
+
+  test('a 2xx that is not 200 is still a dev server', async () => {
+    const server = await listen((req, res) => { res.writeHead(204); res.end(); });
+    try {
+      assert.strictEqual(await runProbe(urlOf(server)), '204');
+    } finally { await close(server); }
+  });
+
+  test('an auth-gated server reports its status, not absence', async () => {
+    const server = await listen((req, res) => { res.writeHead(401); res.end(); });
+    try {
+      assert.strictEqual(await runProbe(urlOf(server)), '401');
+    } finally { await close(server); }
+  });
+
+  test('nothing listening probes as 000', async () => {
+    const server = await listen((req, res) => { res.writeHead(200); res.end(); });
+    const dead = urlOf(server);
+    await close(server);
+    assert.strictEqual(await runProbe(dead), '000');
+  });
+
+  test('a port that accepts but never answers is time-bounded, not a hang', async () => {
+    // The issue's own third case. Without AbortSignal.timeout this never returns and the
+    // audit blocks forever; a presence check on the string "AbortSignal" cannot tell the
+    // difference between a bound that fires and one that does not.
+    const server = await listen(() => { /* accept, never respond */ });
+    try {
+      const started = Date.now();
+      assert.strictEqual(await runProbe(urlOf(server)), '000');
+      assert.ok(Date.now() - started < 20000,
+        'the probe must abort a non-answering port rather than hang');
+    } finally { await close(server); }
+  });
+});
+
+// The fence needs a POSIX shell. Windows CI has no bash on PATH by default, and the
+// repo's other fence-executing tests take the same platform gate.
+const BASH = process.platform === 'win32' ? null : 'bash';
+
+describe('#4176 — the capture fence, executed', { skip: BASH ? false : 'no bash on this platform' }, () => {
+  // Stub `node` and `npx` on PATH, run the fence, and read what it printed and left.
+  //  PROBE_<port>   the status the stubbed probe reports for that port
+  //  SHOT_FAIL      space-separated viewport names whose capture "fails"
+  //  SHOT_PARTIAL   viewport names whose failed capture still writes a zero-byte file
+  function runFence(env) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-'));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'node'),
+      '#!/bin/sh\nfor a in "$@"; do case "$a" in http*) url="$a";; esac; done\n'
+      + 'port=${url##*:}\nport=${port%%/*}\neval "s=\\$PROBE_$port"\nprintf %s "${s:-000}"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'npx'),
+      '#!/bin/sh\nout=""\nfor a in "$@"; do case "$a" in *.png) out="$a";; esac; done\n'
+      + 'name=$(basename "$out" .png)\n'
+      + 'printf "%s\\n" "$*" >> "$ARGV_LOG"\n'
+      + '[ -n "$PLANT_FOREIGN" ] && printf other > "$(dirname "$out")/other-audit.png"\n'
+      + 'case " $SHOT_FAIL " in *" $name "*)\n'
+      + '  case " $SHOT_PARTIAL " in *" $name "*) : > "$out";; esac\n'
+      + '  exit 1;; esac\n'
+      + 'printf "png" > "$out"\nexit 0\n', { mode: 0o755 });
+    const argvLog = path.join(dir, 'argv.log');
+    const script = path.join(dir, 'fence.sh');
+    fs.writeFileSync(script, `set -u\nPADDED_PHASE=07\n${screenshotApproachBlock()}\n`);
+    const r = spawnSync(BASH, [script], {
+      cwd: dir,
+      encoding: 'utf8',
+      timeout: 60000,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        ARGV_LOG: argvLog,
+        SHOT_FAIL: '', SHOT_PARTIAL: '',
+        ...env,
+      },
+    });
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    const shotDirs = fs.existsSync(reviews) ? fs.readdirSync(reviews) : [];
+    return {
+      stdout: r.stdout || '',
+      dir,
+      argv: fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '',
+      shotDirs,
+      files: shotDirs.length === 1 ? fs.readdirSync(path.join(reviews, shotDirs[0])).sort() : [],
+    };
+  }
+
+  test('no dev server on any port is reported as such, and nothing is created', () => {
+    const r = runFence({});
+    assert.match(r.stdout, /No dev server on ports 3000, 5173 or 8080/);
+    assert.deepStrictEqual(r.shotDirs, [], 'no review directory may be created without a dev server');
+  });
+
+  test('a total capture failure NEVER prints a success claim, and leaves nothing behind', () => {
+    // The #4176 defect itself, and the maintainer's Major finding, decided by execution:
+    // hoisting the success echo out of its branch makes this fail no matter how the block
+    // is punctuated, because the assertion is over what the block PRINTED.
+    const r = runFence({ PROBE_3000: '200', SHOT_FAIL: 'desktop mobile tablet', SHOT_PARTIAL: 'desktop mobile tablet' });
+    assert.doesNotMatch(r.stdout, /Screenshots captured/, 'a failed capture must never claim success');
+    assert.doesNotMatch(r.stdout, /PARTIALLY captured/);
+    assert.match(r.stdout, /Screenshot capture FAILED for all 3 viewports/);
+    assert.deepStrictEqual(r.shotDirs, [], 'the review directory must not survive a total failure');
+  });
+
+  test('a partial capture keeps the shots that worked and removes the stray files', () => {
+    // The review's finding 4, in the form the docs actually claim: the failed viewport's
+    // zero-byte file is gone while the two real captures remain.
+    const r = runFence({ PROBE_3000: '200', SHOT_FAIL: 'desktop', SHOT_PARTIAL: 'desktop' });
+    assert.match(r.stdout, /Screenshots PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
+    assert.deepStrictEqual(r.files, ['mobile.png', 'tablet.png'],
+      'the failed viewport\u2019s zero-byte file must not survive alongside the real captures');
+  });
+
+  test('a concurrent audit sharing the directory keeps its own captures', () => {
+    // Why the removal is BY NAME and not `rm -f "$DIR"/*.png`: the review directory is
+    // keyed to the phase and one whole second, so a second audit of the same phase can
+    // land in it. Under the glob, this audit's total failure deleted that one's captures.
+    // Here a foreign file is planted into the shared directory and every viewport then
+    // fails: our three stray files go, the neighbour's stays, and rmdir correctly declines
+    // to remove a directory that is no longer empty. The surviving directory is the
+    // intended outcome, not a leak — which is why the AGENTS.md capture paragraph says
+    // so explicitly rather than eliding it. (Named without its path: this file does not
+    // READ that document, and spelling the path would register it as a docs reader with
+    // the docs-guard lint, which is a claim about this test that is not true.)
+    const r = runFence({ PROBE_3000: '200', SHOT_FAIL: 'desktop mobile tablet',
+      SHOT_PARTIAL: 'desktop mobile tablet', PLANT_FOREIGN: '1' });
+    assert.match(r.stdout, /Screenshot capture FAILED for all 3 viewports/);
+    assert.strictEqual(r.shotDirs.length, 1, 'the shared directory must survive, since it is not ours alone');
+    assert.deepStrictEqual(r.files, ['other-audit.png'],
+      'cleanup must remove only the files this audit wrote, never the whole directory\u2019s .png files');
+  });
+
+  test('all three captures succeeding is the only path that prints "captured"', () => {
+    const r = runFence({ PROBE_3000: '200' });
+    assert.match(r.stdout, /Screenshots captured to .* \(3\/3\) from http:\/\/localhost:3000/);
+    assert.deepStrictEqual(r.files, ['desktop.png', 'mobile.png', 'tablet.png']);
+  });
+
+  test('the resolved port is the one captured, not a hard-coded 3000', () => {
+    const r = runFence({ PROBE_5173: '200' });
+    assert.match(r.stdout, /from http:\/\/localhost:5173/);
+    assert.ok(r.argv.includes('http://localhost:5173'), `capture argv: ${r.argv}`);
+    assert.ok(!r.argv.includes('http://localhost:3000'), `capture argv: ${r.argv}`);
+  });
+
+  test('a 2xx that is not 200 still resolves a dev server', () => {
+    const r = runFence({ PROBE_3000: '204' });
+    assert.match(r.stdout, /Screenshots captured/);
+  });
+
+  test('the FIRST auth-gated port is the one reported', () => {
+    // The review's finding 5, decided by behaviour: flipping the guard's operator makes
+    // DEV_GATED empty and this reports "no dev server", which fails here.
+    const r = runFence({ PROBE_3000: '401', PROBE_8080: '403' });
+    assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 \(HTTP 401\) is auth-gated/);
+  });
+
+  test('the whole auth-required class is reported as gated, not as absent', () => {
+    for (const status of ['401', '403', '407', '511']) {
+      const r = runFence({ PROBE_3000: status });
+      assert.ok(
+        r.stdout.includes(`(HTTP ${status}) is auth-gated`),
+        `HTTP ${status} means the server answered and demanded credentials; it must not read as absent — got: ${r.stdout.trim()}`
+      );
+    }
+  });
+
+  test('every capture invocation carries a positive timeout', () => {
+    const r = runFence({ PROBE_3000: '200' });
+    const calls = r.argv.split('\n').filter((l) => l.includes('screenshot'));
+    assert.strictEqual(calls.length, 3, `expected 3 capture invocations: ${r.argv}`);
+    for (const call of calls) {
+      const m = /--timeout[= ]([0-9]+)\b/.exec(call);
+      assert.ok(m && Number(m[1]) > 0, `capture must pass a positive --timeout: ${call}`);
+    }
+  });
+});
