@@ -121,6 +121,17 @@ layers:
 |---|---|---|
 | **Differential attribution size ratchet** (primary, #2724 / ADR-2719 §4) | The same computed-attribution check that replaced the golden-install-parity fixtures also reports growth in any `gsd-core/workflows/*.md` or `agents/gsd-*.md` file, with the exact byte delta, comparing PR HEAD against `next`. Unacknowledged growth is a hard failure; shrinkage needs no acknowledgment. No committed snapshot — nothing to regenerate by hand. | `tests/emitted-attribution.test.cjs` (real-tree test) via `tests/helpers/emitted-diff.cjs` |
 | **Loose tier hard caps** (backstop) | Absolute outer red lines per tier — workflows: `XL ≤ 98304`, `LARGE ≤ 61440`, `DEFAULT ≤ 40960` bytes; agents: `XL ≤ 57344`, `LARGE ≤ 49152`, `DEFAULT ≤ 24576` bytes. A cap is **never raised** when a file approaches it: crossing it means *extract*, not bump. Independent of the ratchet above — unaffected by #2724. | `XL/LARGE/DEFAULT_CAP` in each guard file |
+| **Headroom census + reserved margin** (visibility, [#4261](https://github.com/open-gsd/gsd-core/issues/4261)) | Every run prints each capped file's remaining bytes and percentage used — green runs included — sorted least-headroom-first, and appends a table of the files past a **95% reserved margin** to the GitHub job summary. The margin **reports, it does not fail**: a file at 96% is not broken, it is a file whose next contributor should extract before adding. Nothing here raises or relaxes a cap. | `buildHeadroomRows` / `marginFor` in `scripts/workflow-size.cjs` |
+
+Why the census exists: each PR's CI measures only its own base plus its own
+diff, so two PRs that are individually under a cap can be jointly over it, and
+no run either of them produces can show that. The census does not solve that
+directly — measuring on the merge result would, and was deliberately left out
+of #4261's approved scope — but it makes the density that causes it legible
+before the collision, which a passing run previously did not. It also replaces
+the hand-written per-tier high-water comments in both guard files, which had
+gone stale by several kilobytes and were themselves the reason the shrinking
+margin went unnoticed.
 
 `discuss-phase.md` additionally has a thin-dispatcher target of `< 32000` bytes
 (the discuss-phase progressive-disclosure split, #717). A net-new agent is

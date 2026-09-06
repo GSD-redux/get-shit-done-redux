@@ -42,7 +42,16 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('node:os');
 const path = require('path');
-const { lfByteCount } = require('../scripts/workflow-size.cjs');
+const {
+  lfByteCount,
+  measureMdFiles,
+  MARGIN_RATIO,
+  marginFor,
+  buildHeadroomRows,
+  formatHeadroomTable,
+  buildHeadroomSummaryMarkdown,
+  appendHeadroomStepSummary,
+} = require('../scripts/workflow-size.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const AGENTS_DIR = path.join(__dirname, '..', 'agents');
@@ -51,9 +60,16 @@ const isGsdAgent = (f) => f.startsWith('gsd-');
 // Tier HARD CAPS (#1074, bytes) — absolute red lines, not high-water-hugging
 // ceilings. Day-to-day creep is caught per-agent by the baseline guard below;
 // these sit above each tier's current high-water with real headroom:
-//   XL      56 KiB — high-water gsd-debugger 51,043 → ~6.3 KB headroom
-//   LARGE   48 KiB — high-water gsd-executor 42,342 → ~6.8 KB headroom
-//   DEFAULT 24 KiB — high-water gsd-ui-researcher 19,095 → ~5.5 KB headroom
+//   XL      56 KiB
+//   LARGE   48 KiB
+//   DEFAULT 24 KiB
+//
+// #4261: the per-tier high-water marks that used to be written out here went
+// stale — the LARGE line claimed "gsd-executor 42,342 → ~6.8 KB headroom"
+// while the real high-water had reached 99.6% of the cap, so the comment
+// documenting the margin was itself the reason nobody noticed the margin was
+// gone. Hand-maintained measurements of a moving tree do not survive; the
+// headroom census below emits the live numbers on every run instead.
 const XL_CAP = 57344;       // 56 KiB
 const LARGE_CAP = 49152;    // 48 KiB
 const DEFAULT_CAP = 24576;  // 24 KiB
@@ -139,6 +155,128 @@ describe('SIZE: agent hard-cap boundary fixtures (#1074 — negative proof)', ()
 // exact byte delta and requires an entry in tests/emitted-drift-ack.json, ADR-2719 §4 /
 // must-have 6). The tier hard caps above are unaffected — they are independent of the
 // deleted baseline and remain the outer bound.
+
+// ─── #4261: headroom visibility + reserved margin ──────────────────────────
+//
+// The hard caps above are red lines and this changes none of them. What was
+// missing is everything BELOW the red line: a passing run said nothing, so a
+// contributor sitting at 99.6% of a cap and one at 60% got identical
+// feedback — green — and the density that produces merge-time collisions was
+// invisible to the people creating it.
+//
+// Two levels, matching the shape `execute-phase.md` already has by hand (a
+// hard ceiling plus a lower margin "so minor future edits don't re-trip the
+// gate"), which until now was the only capped file with one:
+//
+//   1. the census, printed every run, green or not
+//   2. the reserved margin, which REPORTS rather than fails
+//
+// The margin deliberately does not fail. A cap breach is a red line; a file
+// at 96% is not broken, it is a file whose next contributor should know to
+// extract before adding. Failing there would turn a warning into a second
+// red line and force exactly the +N bumps this policy forbids.
+const AGENT_HEADROOM_ROWS = buildHeadroomRows(
+  measureMdFiles(AGENTS_DIR, isGsdAgent),
+  capFor,
+);
+
+describe('SIZE: agent headroom census (issue #4261)', () => {
+  test('reports every agent\'s remaining bytes, and never fails for it', (t) => {
+    for (const line of formatHeadroomTable(AGENT_HEADROOM_ROWS)) t.diagnostic(line);
+    const pressured = AGENT_HEADROOM_ROWS.filter((r) => r.overMargin);
+    t.diagnostic(
+      `agents: ${AGENT_HEADROOM_ROWS.length} | over the ${Math.round(MARGIN_RATIO * 100)}% margin: ${pressured.length}`,
+    );
+    appendHeadroomStepSummary('Agent size headroom', AGENT_HEADROOM_ROWS);
+
+    // The census is reporting, not a gate — the only thing asserted is that it
+    // measured the corpus at all. A census that silently went empty (a moved
+    // directory, a broken predicate) would otherwise read as good news.
+    assert.equal(AGENT_HEADROOM_ROWS.length, ALL_AGENTS.length);
+  });
+
+  test('names the agents inside the reserved margin', (t) => {
+    for (const r of AGENT_HEADROOM_ROWS.filter((row) => row.overMargin)) {
+      t.diagnostic(
+        `RESERVED MARGIN: ${r.name}.md is ${r.bytes} bytes — ${r.headroom} under the ${r.tier} cap ` +
+        `(${r.usedPct.toFixed(1)}%), past the ${r.margin}-byte margin. The cap is not moving: ` +
+        `extract shared boilerplate to gsd-core/references/ and load it lazily before adding more.`,
+      );
+    }
+    // Intentionally no assertion on the COUNT. Pinning "3 agents are over the
+    // margin" would make this a baseline that every extraction has to update,
+    // which is the maintenance burden #2724 removed when it deleted the
+    // per-file size snapshot. The hard caps stay the only failing gate.
+  });
+});
+
+describe('SIZE: reserved-margin boundary fixtures (#4261 — negative proof)', () => {
+  // The margin loop above reports whatever the real corpus happens to be, so
+  // its comparison branch is not exercised by construction — the same gap the
+  // hard-cap fixtures above exist to close. Pin marginFor and the > operator
+  // at the boundary so a future ratio or operator edit cannot quietly widen
+  // the margin to nothing (RULESET.TESTS.boundary-coverage.fixtures).
+  test('marginFor sits strictly below its cap and fires at the boundary', () => {
+    for (const cap of [DEFAULT_CAP, LARGE_CAP, XL_CAP]) {
+      const margin = marginFor(cap);
+      assert.ok(margin < cap, `margin ${margin} must sit below cap ${cap}`);
+      assert.equal(margin > cap * MARGIN_RATIO - 1, true, `margin ${margin} must track the ratio`);
+      assert.equal(margin > margin, false, 'a file exactly at the margin is NOT over it');
+      assert.equal(margin + 1 > margin, true, 'one byte past the margin IS over it');
+    }
+  });
+
+  test('marginFor floors, so a tiny cap can never produce a margin at the cap', () => {
+    // Rounding here would put the margin ON the cap for small caps, making the
+    // warning fire only when the hard gate already had.
+    assert.equal(marginFor(1), 0);
+    assert.equal(marginFor(20), 19);
+    assert.ok(marginFor(20) < 20);
+  });
+});
+
+describe('SIZE: headroom job summary (#4261)', () => {
+  // The census is only useful if it reaches a human. The diagnostics above go
+  // to the test log; this is the copy that lands on the PR's checks page,
+  // which is where a reviewer actually looks.
+  const row = (over) => ({
+    name: 'gsd-example', tier: 'LARGE', bytes: over ? 49000 : 10000,
+    cap: 49152, margin: 46694, headroom: over ? 152 : 39152,
+    usedPct: over ? 99.7 : 20.3, overMargin: over,
+  });
+
+  test('a clean corpus still reports how many files it measured', () => {
+    const md = buildHeadroomSummaryMarkdown('Agent size headroom', [row(false), row(false)]);
+    // "no table" must be distinguishable from "nothing ran".
+    assert.match(md, /All 2 files are under the 95% reserved margin\./);
+    assert.doesNotMatch(md, /\| file \|/);
+  });
+
+  test('a pressured corpus renders one table row per file over the margin', () => {
+    const md = buildHeadroomSummaryMarkdown('Agent size headroom', [row(true), row(false)]);
+    assert.match(md, /\*\*1 of 2\*\* files are over the 95% reserved margin\./);
+    assert.match(md, /\| `gsd-example` \| LARGE \| 49000 \| 49152 \| 152 \| 99\.7% \|/);
+  });
+
+  test('writes to GITHUB_STEP_SUMMARY when set, and is a no-op when it is not', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-size-summary-'));
+    try {
+      const file = path.join(tmp, 'summary.md');
+      assert.equal(appendHeadroomStepSummary('T', [row(true)], { GITHUB_STEP_SUMMARY: file }), true);
+      assert.match(fs.readFileSync(file, 'utf8'), /### T/);
+      assert.equal(appendHeadroomStepSummary('T', [row(true)], {}), false);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('an unwritable summary path reports but does not fail the run', () => {
+    // Reporting must never be able to red a suite that is otherwise green —
+    // the whole point of this block is that it is additive.
+    const unwritable = path.join(os.tmpdir(), 'agent-size-nope', 'nested', 'summary.md');
+    assert.equal(appendHeadroomStepSummary('T', [row(true)], { GITHUB_STEP_SUMMARY: unwritable }), false);
+  });
+});
 
 describe('SIZE: every agent is classified', () => {
   test('every agent falls in exactly one tier', () => {
