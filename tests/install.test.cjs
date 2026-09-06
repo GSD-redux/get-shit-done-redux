@@ -8086,14 +8086,28 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   const { installSpawnEnv } = require('./helpers.cjs');
   const installPath = path.join(__dirname, '..', 'bin', 'install.js');
 
-  // The emitted prefix is POSIX-normalized by design: it is substituted into
-  // markdown @-references, which use forward slashes universally, so a
-  // backslash there would leak into shipped content (#1615). On Windows the
-  // temp roots below arrive as `D:\a\...`, which appears in no emitted file.
-  // Comparing the raw root would make the negative arms pass vacuously —
+  // Two independent reasons the raw temp root does not appear in emitted
+  // content, both of which would make the negative arms pass VACUOUSLY —
   // "nothing references the checkout" is trivially true when the string being
-  // searched for cannot occur — so every comparison goes through this.
+  // searched for cannot occur:
+  //
+  //   1. The emitted prefix is POSIX-normalized by design, because it is
+  //      substituted into markdown @-references, which use forward slashes
+  //      universally; a backslash there would leak into shipped content
+  //      (#1615). On Windows the roots arrive as `D:\a\...`.
+  //   2. On macOS `os.tmpdir()` yields `/var/folders/...`, but `/var` is a
+  //      symlink to `/private/var`, and the installer resolves it — so the
+  //      emitted content carries `/private/var/folders/...` while
+  //      `fs.mkdtempSync` handed us the unresolved spelling.
+  //
+  // Every comparison therefore goes through both spellings.
   const toPosix = (p2) => p2.replace(/\\/g, '/');
+  const rootSpellings = (root) => {
+    const forms = new Set([toPosix(root)]);
+    try { forms.add(toPosix(fs.realpathSync(root))); } catch { /* root already gone */ }
+    return [...forms];
+  };
+  const mentionsRoot = (content, root) => rootSpellings(root).some((r) => content.includes(r));
 
   // Self-contained runner: the file's other runInstall helpers live inside
   // folded blocks and are not in scope here. #3156's sandboxed HOME still
@@ -8149,7 +8163,7 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   test('the default install still bakes the absolute checkout path (unchanged behavior)', () => {
     // The control. Without it, a change that broke the absolute form entirely
     // would satisfy every assertion below and look like a fix.
-    const carriers = allBodies(absDir).filter((f) => f.content.includes(toPosix(absDir)));
+    const carriers = allBodies(absDir).filter((f) => mentionsRoot(f.content, absDir));
     assert.ok(
       carriers.length > 0,
       '#4377 is opt-in: the default local install must keep emitting absolute includes',
@@ -8157,7 +8171,7 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
   });
 
   test('with the flag, NOTHING in the installed tree references the checkout it came from', () => {
-    const offenders = allBodies(relDir).filter((f) => f.content.includes(toPosix(relDir))).map((f) => f.rel);
+    const offenders = allBodies(relDir).filter((f) => mentionsRoot(f.content, relDir)).map((f) => f.rel);
     assert.deepEqual(offenders, [], 'no installed file may reference the checkout it was installed from');
   });
 
@@ -8208,17 +8222,36 @@ describe('#4377: --relative-includes emits project-relative @ includes for a loc
       // Both manifests record per-file absolute paths, which legitimately
       // differ between two different install roots.
       if (name === 'gsd-file-manifest.json' || name === 'gsd-install-state.json') continue;
-      const absRoot = toPosix(absDir);
-      const normalized = content
-        // (1) shell defaults: absolute install rewrote them to its own root;
-        //     the relative install left them at $HOME.
-        .split(`:-${absRoot}/.claude}`).join(':-$HOME/.claude}')
-        // (2) the include prefix itself, both the slash form and the bare
-        //     trailing form the word-boundary passes emit.
-        .split(`${absRoot}/.claude/`).join('.claude/')
-        .split(`${absRoot}/.claude`).join('.claude');
-      if (normalized !== rel.get(name)) mismatched.push(name);
+      let normalized = content;
+      for (const absRoot of rootSpellings(absDir)) {
+        normalized = normalized
+          // (1) shell defaults: the absolute install rewrote them to its own
+          //     root; the relative install left them at $HOME.
+          .split(`:-${absRoot}/.claude}`).join(':-$HOME/.claude}')
+          // (2) the include prefix itself, both the slash form and the bare
+          //     trailing form the word-boundary passes emit.
+          .split(`${absRoot}/.claude/`).join('.claude/')
+          .split(`${absRoot}/.claude`).join('.claude');
+      }
+      if (normalized !== rel.get(name)) mismatched.push({ name, normalized, actual: rel.get(name) });
     }
-    assert.deepEqual(mismatched, [], 'the flag must change the include prefix, and nothing beyond it');
+    // Report the FIRST divergence as text, not just a list of filenames. A
+    // bare file list says a difference exists somewhere in 236 files and
+    // leaves the reader to guess which bytes — and on a platform I cannot
+    // reproduce locally, guessing is what turns one CI round-trip into four.
+    const detail = mismatched.length === 0 ? '' : (() => {
+      const { name, normalized, actual } = mismatched[0];
+      let at = 0;
+      while (at < normalized.length && at < actual.length && normalized[at] === actual[at]) at += 1;
+      const from = Math.max(0, at - 60);
+      return `\nfirst divergence in ${name} at offset ${at}:\n`
+        + `  absolute(normalized): ${JSON.stringify(normalized.slice(from, at + 120))}\n`
+        + `  relative(actual):     ${JSON.stringify(actual.slice(from, at + 120))}\n`
+        + `(${mismatched.length} file(s) differ: ${mismatched.slice(0, 8).map((m) => m.name).join(', ')}${mismatched.length > 8 ? ', …' : ''})`;
+    })();
+    assert.deepEqual(
+      mismatched.map((m) => m.name), [],
+      `the flag must change the include prefix, and nothing beyond it${detail}`,
+    );
   });
 });
