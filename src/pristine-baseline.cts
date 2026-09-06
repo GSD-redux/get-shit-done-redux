@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 /**
  * SHA-256 hex digest of a file's raw bytes. Byte-for-byte the same digest
@@ -91,4 +92,91 @@ export function findPristineByHash(
     }
   }
   return null;
+}
+
+/**
+ * #4135: recover a pristine baseline from the config dir's OWN git history,
+ * anchored by the recorded pristine_hashes entry.
+ *
+ * The #3407 promotion rule keeps only regeneration candidates byte-identical
+ * across the whole version span, so a multi-version update leaves
+ * gsd-pristine/ holding exactly the files upstream did NOT change — near-zero
+ * coverage precisely where upstream churned the most. On a git-managed config
+ * dir the outgoing bytes often still exist in history (the workflow's
+ * documented Option A), and pristine_hashes is the same authority every other
+ * resolution tier trusts: a blob whose SHA-256 equals the recorded hash cannot
+ * be the wrong baseline. This is read-only recovery (git log / git show only).
+ *
+ * Guarantees:
+ * - Only an EXACT sha-256 match with the recorded hash is ever returned.
+ * - Newest-first commit order (git log default) makes multi-match resolution
+ *   deterministic; byte-identical matches are interchangeable anyway.
+ * - Any failure (git absent, not a repository, empty history, unreadable
+ *   blob, subprocess timeout) yields null — never a throw — so the caller's
+ *   OK_NO_BASELINE posture is the universal fallback.
+ * - The walk is bounded: at most GIT_MAX_COMMITS_PER_FILE commits per file.
+ */
+const GIT_MAX_COMMITS_PER_FILE = 100;
+/** Per-subprocess bound in ms — an unbounded git call is an indefinite hang. */
+const GIT_SUBPROCESS_TIMEOUT_MS = 10_000;
+/** git log --format=%H output cap; 100 full shas are ~4 KB, this is headroom. */
+const GIT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
+function isCleanRelativePosixPath(relPath: string): boolean {
+  if (!relPath || relPath.startsWith('/') || relPath.includes('\\') || relPath.includes('\0')) {
+    return false;
+  }
+  const segments = relPath.split('/');
+  return segments.every((seg) => seg.length > 0 && seg !== '.' && seg !== '..');
+}
+
+function gitExec(gitDir: string, args: string[]): string {
+  return execFileSync('git', args, {
+    cwd: gitDir,
+    encoding: 'utf8',
+    timeout: GIT_SUBPROCESS_TIMEOUT_MS,
+    maxBuffer: GIT_MAX_BUFFER_BYTES,
+    // windowsHide (#685): a console-window flash per git call would spam the
+    // user on Windows for what is a background, read-only history walk.
+    windowsHide: true,
+    // stderr is discarded: "file absent in commit" is an expected walk outcome,
+    // not operator-visible diagnostics.
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+}
+
+export function findPristineInGit(
+  gitDir: string,
+  relPath: string,
+  recordedHash: string,
+): string | null {
+  if (!gitDir || typeof relPath !== 'string' || typeof recordedHash !== 'string'
+    || recordedHash.length === 0 || !isCleanRelativePosixPath(relPath)) {
+    return null;
+  }
+  let commits: string[];
+  try {
+    const logOutput = gitExec(gitDir, ['log', '--format=%H', '--', relPath]).trim();
+    if (!logOutput) return null;
+    commits = logOutput.split('\n').slice(0, GIT_MAX_COMMITS_PER_FILE);
+  } catch {
+    return null; // git absent, not a repository, or the walk failed
+  }
+  for (const commit of commits) {
+    if (!/^[0-9a-f]{40}$/i.test(commit)) continue;
+    try {
+      const blob = gitExec(gitDir, ['show', `${commit}:${relPath}`]);
+      if (sha256String(blob) === recordedHash) {
+        return blob;
+      }
+    } catch {
+      // blob absent in this commit (rename/add boundary) — keep walking
+    }
+  }
+  return null;
+}
+
+/** sha256 of a utf8 string, matching how manifest hashes are recorded. */
+function sha256String(content: string): string {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
 }
