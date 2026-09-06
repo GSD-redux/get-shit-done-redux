@@ -1744,6 +1744,32 @@ describe('Bug #4136: deterministic Incorporated classification (--classify)', ()
     assert.equal(r0.reason, REASON.OK_UNVALIDATED_BASELINE);
   });
 
+  test('Row 4d-2: a #4145-recovered (hash-matched orphan) baseline can confirm adoption', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/import.md';
+    const pristineContent = 'stock line that is long enough to be significant s\n';
+    const userLine = 'user custom line upstream adopted, baseline stored unprefixed';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    // The pristine snapshot sits WITHOUT the gsd-core/ prefix (an earlier
+    // release's writer dropped it) — only the #4145 hash scan can find it.
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, 'workflows', 'import.md'), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    // A recovered baseline is hash-confirmed by construction, so it VALIDATES
+    // and may confirm adoption — the #4136 classifier composes with the
+    // #4145 recovery instead of treating it as unknown.
+    assert.equal(report.incorporated, 1);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.INCORPORATED);
+    assert.deepEqual(r0.missing, []);
+  });
+
   test('Row 4e: signature-looking short/fence lines do not drive the classification', () => {
     resetFixture();
     const FILE = 'gsd-core/workflows/health.md';
