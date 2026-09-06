@@ -4255,24 +4255,29 @@ describe('Codex install hook configuration (e2e)', () => {
 // and the managed-hooks registry.
 //
 // The Codex install branch in bin/install.js used to allowlist only two of the
-// four hook files the shipped build emits (gsd-check-update.js +
-// gsd-context-monitor.js), and gated the entire branch on !isMinimalMode so the
+// four hook files the shipped build emitted at the time (gsd-check-update.js +
+// gsd-context-monitor.js — the latter permanently removed by #2586, see below),
+// and gated the entire branch on !isMinimalMode so the
 // `core` profile installed none of them. The parent SessionStart hook spawn()s
 // the worker, which require()s the registry — so Codex was wired to a dependency
 // chain the same installer never delivered.
 //
 // These tests drive the real installer (bin/install.js) behaviorally into an
-// isolated temp config dir and assert the complete four-file set is delivered
+// isolated temp config dir and assert the complete three-file set is delivered
 // for both profiles, the registry is byte-for-byte, the version stamps resolve
 // to the installed package version, and unrelated user files are preserved.
 //
+// #2586 reduced the set back to three: gsd-context-monitor.js read a Claude-only
+// statusline bridge file Codex never writes, so it was a guaranteed silent no-op
+// on every Codex hook event and was dropped from CODEX_HOOKS_TO_COPY for good.
+//
 // Verified non-duplicate: the pre-existing 'Codex install hook configuration
 // (e2e)' suite above only asserts gsd-check-update.js delivery/wiring — it never
-// asserts on gsd-check-update-worker.js, managed-hooks-registry.cjs, or
-// gsd-context-monitor.js delivery, the core/full profile matrix, upgrade-refresh,
-// byte-for-byte registry copy, idempotency of the four-file set, user-file
-// preservation, or the core-profile negative-space (no agent files) — all
-// genuinely distinct assertions this fold adds.
+// asserts on gsd-check-update-worker.js, managed-hooks-registry.cjs, the
+// core/full profile matrix, upgrade-refresh, byte-for-byte registry copy,
+// idempotency of the three-file set, user-file preservation, or the
+// core-profile negative-space (no agent files) — all genuinely distinct
+// assertions this fold adds.
 
 'use strict';
 
@@ -4300,12 +4305,14 @@ const {
   INSTALL_TIMEOUT_MS,
 } = require('./helpers/timeouts.cjs');
 
-// The four-file hook set the Codex surface must deliver together (#2695).
+// The three-file hook set the Codex surface must deliver together (#2695).
+// gsd-context-monitor.js was removed from this set by #2586: it read a
+// Claude-only statusline bridge file Codex never writes, so it was a
+// guaranteed silent no-op on every Codex hook event.
 const CODEX_HOOK_FILES = [
   'gsd-check-update.js',
   'gsd-check-update-worker.js',
   'managed-hooks-registry.cjs',
-  'gsd-context-monitor.js',
 ];
 
 // Build hooks/dist before any install runs (the installer copies from there).
@@ -4341,9 +4348,9 @@ function runCodexInstall({ profile, preseed }) {
 // Older-version stamp used to pre-seed an "upgrade" scenario.
 const OLDER_VERSION = '1.7.0';
 
-describe('#2695: fresh Codex installs deliver the complete four-file hook set', () => {
+describe('#2695: fresh Codex installs deliver the complete three-file hook set', () => {
   for (const profile of ['core', 'full']) {
-    test(`fresh --profile=${profile} installs all four hook files`, (t) => {
+    test(`fresh --profile=${profile} installs all three hook files`, (t) => {
       const { configDir, result } = runCodexInstall({ profile });
       t.after(() => cleanup(configDir));
 
@@ -4359,8 +4366,8 @@ describe('#2695: fresh Codex installs deliver the complete four-file hook set', 
   }
 });
 
-describe('#2695: Codex upgrades refresh all four hook files to the current version', () => {
-  // Pre-seed all four files stamped at OLDER_VERSION so an upgrade must overwrite them.
+describe('#2695: Codex upgrades refresh all three hook files to the current version', () => {
+  // Pre-seed all three files stamped at OLDER_VERSION so an upgrade must overwrite them.
   function olderSeed() {
     const seed = {};
     for (const name of CODEX_HOOK_FILES) {
@@ -4375,12 +4382,12 @@ describe('#2695: Codex upgrades refresh all four hook files to the current versi
   }
 
   for (const profile of ['core', 'full']) {
-    test(`--profile=${profile} upgrade refreshes all four hook files`, (t) => {
+    test(`--profile=${profile} upgrade refreshes all three hook files`, (t) => {
       const { configDir, result } = runCodexInstall({ profile, preseed: olderSeed() });
       t.after(() => cleanup(configDir));
 
       const hooksDir = hooksDirOf(configDir);
-      // All four must now carry the current version stamp where one exists, and
+      // All three must now carry the current version stamp where one exists, and
       // the registry must no longer be the stale sentinel.
       for (const name of CODEX_HOOK_FILES) {
         const dest = path.join(hooksDir, name);
@@ -4475,8 +4482,8 @@ describe('#2695: unrelated user-owned hook files are preserved', () => {
   }
 });
 
-describe('#2695: re-running the installer is idempotent for the four-file set', () => {
-  test('a second full install leaves all four files present and correctly stamped', (t) => {
+describe('#2695: re-running the installer is idempotent for the three-file set', () => {
+  test('a second full install leaves all three files present and correctly stamped', (t) => {
     const first = runCodexInstall({ profile: 'full' });
     t.after(() => cleanup(first.configDir));
     // Second run into the SAME config dir.
@@ -10984,6 +10991,33 @@ describe('#2586 Codex context-monitor: stop installing, clean up on reinstall', 
     return path.join(home, 'hooks', 'gsd-context-monitor.cmd');
   }
 
+  // uninstall(), unlike install(), does not sandbox CODEX_HOME/HOME itself —
+  // runCodexInstall's own env-restore in its `finally` means those are back
+  // to the real environment by the time a bare `uninstall(true, 'codex')`
+  // would run. Mirrors runCodexInstall's own sandboxing exactly so uninstall
+  // operates on the temp fixture, never the real ~/.codex.
+  function runCodexUninstall(codexHome, cwd = path.join(__dirname, '..')) {
+    const previousCodeHome = process.env.CODEX_HOME;
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    const previousCwd = process.cwd();
+    process.env.CODEX_HOME = codexHome;
+    process.env.HOME = codexHome;
+    process.env.USERPROFILE = codexHome;
+    try {
+      process.chdir(cwd);
+      return uninstall(true, 'codex');
+    } finally {
+      process.chdir(previousCwd);
+      if (previousCodeHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodeHome;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+
   // The exact shape a real pre-#2586 install would have written: the shipped
   // gsd-context-monitor.js content (with its ownership markers intact) plus
   // hooks.json registrations for every CODEX_EXTENDED_HOOK_EVENTS member,
@@ -11169,7 +11203,7 @@ describe('#2586 Codex context-monitor: stop installing, clean up on reinstall', 
     runCodexInstall(codexHome);
     seedPreExisting2586Install(codexHome);
 
-    uninstall(true, 'codex');
+    runCodexUninstall(codexHome);
 
     assert.strictEqual(fs.existsSync(monitorScriptPath(codexHome)), false);
     if (fs.existsSync(hooksJsonPath(codexHome))) {
@@ -11180,7 +11214,7 @@ describe('#2586 Codex context-monitor: stop installing, clean up on reinstall', 
   test('uninstall does not throw on an unmodeled hooks.json event-value shape', () => {
     runCodexInstall(codexHome);
     fs.writeFileSync(hooksJsonPath(codexHome), JSON.stringify({ hooks: { Stop: 'not-an-array' } }, null, 2) + '\n', 'utf8');
-    assert.doesNotThrow(() => uninstall(true, 'codex'));
+    assert.doesNotThrow(() => runCodexUninstall(codexHome));
   });
 
   test('property: reconcileCodexHooksJsonEvent never removes a non-managed-shape command', () => {

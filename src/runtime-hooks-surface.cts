@@ -954,22 +954,37 @@ function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts
   // honors) before reading or writing, so a symlinked hooks.json is neither
   // silently destroyed nor left the caller no escape hatch.
   const symlinkGuard = _installEngineSymlinkGuard();
-  if (
-    fs.existsSync(hooksJsonPath) &&
-    symlinkGuard.hasExistingSymlinkBetween(targetDir, hooksJsonPath, {
-      allowOptInFollow: symlinkGuard.isSymlinkedDestOptIn(),
-    })
-  ) {
-    throw new Error(
-      `hooks.json at "${hooksJsonPath}" contains a symlink the install root "${targetDir}" does not trust — ` +
-        'refusing to read or write it. If this is an intentional user-owned symlink layout, re-run with ' +
-        'GSD_ALLOW_SYMLINKED_DEST=1.',
-    );
+  // The path this function actually reads/writes. Defaults to the nominal
+  // hooks.json path; reassigned below to the symlink's real target when the
+  // opt-in is active, so the write lands on the file the user's symlink
+  // points at instead of clobbering the symlink itself (see note below).
+  let effectiveHooksJsonPath = hooksJsonPath;
+  if (fs.existsSync(hooksJsonPath) && fs.lstatSync(hooksJsonPath).isSymbolicLink()) {
+    if (
+      symlinkGuard.hasExistingSymlinkBetween(targetDir, hooksJsonPath, {
+        allowOptInFollow: symlinkGuard.isSymlinkedDestOptIn(),
+      })
+    ) {
+      throw new Error(
+        `hooks.json at "${hooksJsonPath}" contains a symlink the install root "${targetDir}" does not trust — ` +
+          'refusing to read or write it. If this is an intentional user-owned symlink layout, re-run with ' +
+          'GSD_ALLOW_SYMLINKED_DEST=1.',
+      );
+    }
+    // hasExistingSymlinkBetween returned false only because the opt-in is
+    // active (a symlinked leaf always trips it otherwise) — so this IS a
+    // symlink and we are cleared to follow it. atomicWriteFileSync's final
+    // step is a rename(2) onto its target, which REPLACES an existing
+    // symlink at that path rather than writing through it; resolving to the
+    // real path here makes the read AND the write operate on the symlink's
+    // target, leaving the symlink itself untouched, matching what "follow"
+    // is supposed to mean.
+    effectiveHooksJsonPath = fs.realpathSync(hooksJsonPath);
   }
   let parsed: Record<string, unknown> = {};
   let currentContent: string | null = null;
-  if (fs.existsSync(hooksJsonPath)) {
-    const raw = fs.readFileSync(hooksJsonPath, 'utf8');
+  if (fs.existsSync(effectiveHooksJsonPath)) {
+    const raw = fs.readFileSync(effectiveHooksJsonPath, 'utf8');
     currentContent = raw;
     if (raw.trim()) {
       try {
@@ -1002,6 +1017,12 @@ function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts
   }
   parsed['hooks'] = hookTable;
   const eventEntries = Array.isArray(hookTable[eventName]) ? (hookTable[eventName] as unknown[]) : [];
+  // Minor 5 (#2586 review): an event key the user already had, already
+  // holding an empty array, must survive removal as an empty array — not be
+  // deleted outright. Deleting is only correct when OUR removal is what
+  // emptied a previously non-empty array. Tracked before the loop below can
+  // mutate anything.
+  const wasArrayEmpty = Array.isArray(hookTable[eventName]) && eventEntries.length === 0;
 
   let removedLegacy = false;
   const sanitizedEntries: unknown[] = [];
@@ -1039,6 +1060,10 @@ function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts
 
   if (sanitizedEntries.length > 0) {
     hookTable[eventName] = sanitizedEntries;
+  } else if (wasArrayEmpty) {
+    // Nothing of ours was ever here to remove — preserve the user's own
+    // empty array exactly as found (Minor 5).
+    hookTable[eventName] = [];
   } else {
     delete hookTable[eventName];
   }
@@ -1052,7 +1077,7 @@ function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts
   const changed = currentContent !== nextContent;
   const shouldWrite = changed && (currentContent !== null || Object.keys(parsed).length > 0);
   if (shouldWrite) {
-    atomicWriteFileSync(hooksJsonPath, nextContent, 'utf8');
+    atomicWriteFileSync(effectiveHooksJsonPath, nextContent, 'utf8');
   }
 
   return { changed: changed || removedLegacy, wrote: shouldWrite, path: hooksJsonPath };

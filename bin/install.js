@@ -12398,6 +12398,14 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           }
         }
 
+        // #2586: Codex's hook payload carries no context/token-usage field
+        // (confirmed against codex-rs/hooks/src/schema.rs), so agent-facing
+        // context warnings and GSD phase/lifecycle display cannot be
+        // supported on this runtime — state that plainly during install
+        // rather than silently omitting the capability. Matches
+        // capabilities/codex/capability.json's hostBehaviors.unsupportedFeatures.
+        console.log(`  ${dim}↳${reset} Codex: agent-facing context warnings and GSD phase/lifecycle display are unsupported (Codex's hook payload has no context-usage metric)`);
+
         // ── Codex extended hook events (#772, #2088) — REMOVED by #2586 ──────
         // gsd-context-monitor.js is no longer copied or registered for Codex
         // (see the CODEX_HOOKS_TO_COPY comment above): every one of these
