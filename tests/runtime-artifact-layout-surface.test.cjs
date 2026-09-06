@@ -1730,3 +1730,90 @@ describe('issue-69: applySurface preserves nested skill layout (no re-flatten)',
 });
   });
 }
+
+// ─── #4211: kimi-agents materialization ─────────────────────────────────────
+//
+// Kimi's managed tree is `agents/gsd.yaml` + `agents/gsd.md` +
+// `agents/subagents/gsd-*.{yaml,md}` (runtime-artifact-layout.cts
+// kimiAgentsKind), and install copies it recursively (_copyStaged in
+// src/install-engine.cts). Surface apply fell through to the flat
+// command/agent branch of _syncGsdDir, which reads only top-level `*.md`: it
+// ignored the YAML half and the subagents/ subtree, and rewrote `gsd.md` as
+// `gsdgsd.md` (the flat branch re-applies kind.prefix to a name that already
+// carries it) — corrupting Kimi's installed artifacts while still exiting 0.
+
+describe('#4211: applySurface materializes the kimi-agents kind like a fresh install', () => {
+  function kimiTree(dir, base = dir) {
+    if (!fs.existsSync(dir)) return [];
+    let out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out = out.concat(kimiTree(full, base));
+      else out.push(path.relative(base, full).split(path.sep).join('/'));
+    }
+    return out.sort();
+  }
+
+  function installKimi(t) {
+    const installed = runMinimalInstall({ runtime: 'kimi', scope: 'global' });
+    t.after(() => { try { cleanup(installed.root); } catch { /* best-effort */ } });
+    return { configDir: installed.configDir, agentsDir: path.join(installed.configDir, 'agents') };
+  }
+
+  test('the materialized tree is identical to the installed one — no gsdgsd.md, no dropped YAML', (t) => {
+    const { configDir, agentsDir } = installKimi(t);
+
+    const before = kimiTree(agentsDir);
+    assert.ok(before.includes('gsd.yaml'), 'precondition: install writes agents/gsd.yaml');
+    assert.ok(before.includes('gsd.md'), 'precondition: install writes agents/gsd.md');
+    assert.ok(before.some((f) => f.startsWith('subagents/gsd-') && f.endsWith('.yaml')),
+      'precondition: install writes agents/subagents/gsd-*.yaml');
+    const rootPromptBefore = fs.readFileSync(path.join(agentsDir, 'gsd.md'), 'utf8');
+
+    const layout = resolveRuntimeArtifactLayout('kimi', configDir, 'global');
+    applySurface(configDir, layout, realManifest(), CLUSTERS);
+
+    const after = kimiTree(agentsDir);
+    assert.deepEqual(after, before,
+      'surface apply must produce the same managed artifact tree as the install it re-stages');
+    assert.ok(!after.includes('gsdgsd.md'), 'the root prompt must not be re-prefixed into gsdgsd.md');
+    assert.equal(fs.readFileSync(path.join(agentsDir, 'gsd.md'), 'utf8'), rootPromptBefore,
+      'the root prompt content must survive re-materialization');
+  });
+
+  test('user-owned files under agents/ are preserved', (t) => {
+    const { configDir, agentsDir } = installKimi(t);
+
+    const userRoot = path.join(agentsDir, 'my-own-agent.yaml');
+    const userSub = path.join(agentsDir, 'subagents', 'my-own-subagent.yaml');
+    const userNote = path.join(agentsDir, 'subagents', 'notes.txt');
+    fs.writeFileSync(userRoot, 'name: mine\n');
+    fs.writeFileSync(userSub, 'name: mine-sub\n');
+    fs.writeFileSync(userNote, 'scratch\n');
+
+    const layout = resolveRuntimeArtifactLayout('kimi', configDir, 'global');
+    applySurface(configDir, layout, realManifest(), CLUSTERS);
+
+    for (const file of [userRoot, userSub, userNote]) {
+      assert.ok(fs.existsSync(file), `${path.basename(file)} is user-owned and must survive surface apply`);
+    }
+  });
+
+  test('a GSD subagent the surface no longer stages is pruned', (t) => {
+    const { configDir, agentsDir } = installKimi(t);
+
+    // Shaped exactly like a subagent an earlier version staged and this one
+    // does not — the case install's _removeGsdEntries prunes for this kind.
+    const retiredYaml = path.join(agentsDir, 'subagents', 'gsd-retired-agent.yaml');
+    const retiredPrompt = path.join(agentsDir, 'subagents', 'gsd-retired-agent.md');
+    fs.writeFileSync(retiredYaml, 'name: gsd-retired-agent\n');
+    fs.writeFileSync(retiredPrompt, '# retired\n');
+
+    const layout = resolveRuntimeArtifactLayout('kimi', configDir, 'global');
+    applySurface(configDir, layout, realManifest(), CLUSTERS);
+
+    assert.equal(fs.existsSync(retiredYaml), false, 'a stale GSD subagent must be pruned');
+    assert.equal(fs.existsSync(retiredPrompt), false, 'a stale GSD subagent prompt must be pruned');
+    assert.ok(fs.existsSync(path.join(agentsDir, 'gsd.yaml')), 'the live root agent must remain');
+  });
+});

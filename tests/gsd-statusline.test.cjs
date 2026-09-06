@@ -1741,16 +1741,30 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
       assert.equal(shortGsdStatus(''), null);
       assert.equal(shortGsdStatus(undefined), null);
     });
-    test('paused — the canonical stuck state — wins and renders uppercase (#2162 condition)', () => {
-      assert.equal(shortGsdStatus('paused — waiting on credentials'), 'PAUSED');
-      assert.equal(shortGsdStatus('stopped by user'), 'PAUSED');
+    test('paused — the canonical stuck state — renders uppercase (#2162 condition)', () => {
+      // The #2162 shout applies to the canonical token, which is what the
+      // state writer persists (#4186 anchored vocabulary).
+      assert.equal(shortGsdStatus('paused'), 'PAUSED');
+      assert.equal(shortGsdStatus('Paused'), 'PAUSED');
+      // #4186: narrative prose is no longer keyword-guessed — a paused-led
+      // narrative renders its first word (visible, never a silent wrong
+      // token), so the shout is reserved for the recognized token itself.
+      assert.equal(shortGsdStatus('paused — waiting on credentials'), 'paused');
+      assert.equal(shortGsdStatus('stopped by user'), 'stopped');
     });
-    test('collapses lifecycle narratives to canonical keywords via normalizeStateStatus', () => {
-      assert.equal(shortGsdStatus('Executing phase 7 of the parser milestone'), 'executing');
-      assert.equal(shortGsdStatus('Ready to plan next phase'), 'planning');
-      assert.equal(shortGsdStatus('Discussing scope with user'), 'discussing');
-      assert.equal(shortGsdStatus('Verifying UAT criteria'), 'verifying');
-      assert.equal(shortGsdStatus('Work complete'), 'completed');
+    test('collapses vocabulary values to canonical keywords via normalizeStateStatus (#4186 anchored)', () => {
+      // #4186: normalizeStateStatus recognizes the DECLARED vocabulary
+      // (whole-field match), so exactly those values collapse to keywords.
+      assert.equal(shortGsdStatus('Executing Phase 7'), 'executing');
+      assert.equal(shortGsdStatus('ready to plan'), 'planning');
+      assert.equal(shortGsdStatus('Discussing'), 'discussing');
+      assert.equal(shortGsdStatus('Verifying Phase 2'), 'verifying');
+      assert.equal(shortGsdStatus('Work complete'), 'Work');
+      // Narrative prose — vocabulary words embedded in longer sentences — is
+      // no longer guessed at (a `.planning/` mention in non-English prose
+      // used to render `planning`); it falls back to the first word.
+      assert.equal(shortGsdStatus('Executing phase 7 of the parser milestone'), 'Executing');
+      assert.equal(shortGsdStatus('Ready to plan next phase'), 'Ready');
     });
     test('matches the canonical vocabulary exactly — no drift from normalizeStateStatus', () => {
       const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
@@ -1777,9 +1791,15 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
     test('renders version · phase/total · status', () => {
       const out = formatGsdStateCompact({
         milestone: 'v1.12', phaseNum: '7', phaseTotal: '12',
-        status: 'Executing phase 7 — building the parser',
+        status: 'Executing Phase 7',
       });
       assert.equal(out, 'v1.12 · P7/12 · executing');
+      // #4186: narrative status is not keyword-guessed — first word renders.
+      const narrative = formatGsdStateCompact({
+        milestone: 'v1.12', phaseNum: '7', phaseTotal: '12',
+        status: 'Executing phase 7 — building the parser',
+      });
+      assert.equal(narrative, 'v1.12 · P7/12 · Executing');
     });
     test('prefers lifecycle active_phase over body phase number', () => {
       const out = formatGsdStateCompact({
@@ -1789,7 +1809,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
     });
     test('paused state renders uppercase in the compact line', () => {
       const out = formatGsdStateCompact({
-        milestone: 'v2.0', activePhase: '4.5', status: 'paused — waiting on review',
+        milestone: 'v2.0', activePhase: '4.5', status: 'paused',
       });
       assert.equal(out, 'v2.0 · P4.5 · PAUSED');
     });

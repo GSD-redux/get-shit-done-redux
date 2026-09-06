@@ -319,9 +319,19 @@ test('cmdInitTodos: real todo file produces a rendered bullet via the CLI', (t) 
 
   const json = runQueryInitTodos(dir);
   assert.equal(json.pending_read_ok, true);
-  assert.equal(json.todo_count, 1);
   assert.match(json.pending_todos_markdown, /Fix retry logic/);
-  assert.match(json.pending_todos_markdown, /Needs Add a max-attempts cap\.$/m);
+  // The Needs clause is asserted on the STRUCTURED field, not the rendered
+  // bullet: the bullet embeds the todo file's ABSOLUTE path, so its total
+  // length varies by runner tmpdir (macOS CI's /private/var/folders/… plus
+  // the test harness's gsd-test-run-* wrapper pushed the full bullet past
+  // renderPendingTodoBullet's intended 240-char cap, whose documented first
+  // degradation step is to drop the Needs clause — a correct product
+  // behavior this test must not depend on the runner's path length for).
+  assert.equal(json.todo_count, 1);
+  assert.ok(Array.isArray(json.todos) && json.todos.length === 1, 'todos array must carry the one todo');
+  // (the raw field keeps the trailing period; only the rendered bullet
+  // strips it — renderPendingTodoBullet's own unit rows pin that.)
+  assert.equal(json.todos[0].needs, 'Add a max-attempts cap.');
 });
 
 test('cmdInitTodos: needs clause survives a deterministically long base path (#4384 macOS shape)', (t) => {
