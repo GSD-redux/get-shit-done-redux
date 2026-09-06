@@ -1404,6 +1404,7 @@ describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', (
   test('#4145: findPristineByHash returns the sorted-first match, skips symlinks, and null on an absent dir', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-unit-'));
     const symRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-sym-'));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-out-'));
     try {
       const contentA = 'identical bytes that two snapshots happen to share\n';
       const hashA = sha256(contentA);
@@ -1422,7 +1423,9 @@ describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', (
         'absent dir resolves to null');
 
       // A symlink is never followed, even when its target would hash-match.
-      const outsideTarget = path.join(symRoot, 'outside-target.md');
+      // The target lives OUTSIDE symRoot so the only hashable entry inside the
+      // scanned tree is the symlink itself.
+      const outsideTarget = path.join(outsideRoot, 'outside-target.md');
       fs.writeFileSync(outsideTarget, contentA);
       fs.symlinkSync(outsideTarget, path.join(symRoot, 'sym.md'));
       assert.equal(findPristineByHash(symRoot, hashA), null,
@@ -1430,6 +1433,7 @@ describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', (
     } finally {
       cleanup(root);
       cleanup(symRoot);
+      cleanup(outsideRoot);
     }
   });
 });
