@@ -742,13 +742,22 @@ if [ -n "$PHASE_START" ]; then
     # The tip must be an ancestor-descendant maximum of the WHOLE set: every
     # other candidate must be an ancestor of it. Commit DATES are unusable —
     # a rebase or cherry-pick re-stamps them — so the ordering is topological.
+    #
+    # TWO LINEAR PASSES, not a pairwise scan. Ancestry is a partial order, so a
+    # running maximum is well defined: pass 1 keeps whichever candidate is a
+    # descendant of the one held, pass 2 confirms that candidate really covers
+    # the whole set (pass 1 alone cannot — on divergent branches it ends up
+    # holding an arbitrary incomparable element). Same verdict as comparing
+    # every pair, at ~2n `git merge-base` subprocesses instead of n(n-1); the
+    # pairwise form is fine for a handful of task commits and is not for a
+    # phase with hundreds.
     for cand in $(printf '%s' "$PHASE_TIP_CANDIDATES"); do
-      COVERS_ALL=1
-      for other in $(printf '%s' "$PHASE_TIP_CANDIDATES"); do
-        [ "$other" = "$cand" ] && continue
-        git merge-base --is-ancestor "$other" "$cand" 2>/dev/null || { COVERS_ALL=0; break; }
-      done
-      if [ "$COVERS_ALL" -eq 1 ]; then DIFF_TIP="$cand"; break; fi
+      if [ -z "$DIFF_TIP" ]; then DIFF_TIP="$cand"; continue; fi
+      git merge-base --is-ancestor "$DIFF_TIP" "$cand" 2>/dev/null && DIFF_TIP="$cand"
+    done
+    for other in $(printf '%s' "$PHASE_TIP_CANDIDATES"); do
+      [ "$other" = "$DIFF_TIP" ] && continue
+      git merge-base --is-ancestor "$other" "$DIFF_TIP" 2>/dev/null || { DIFF_TIP=""; break; }
     done
     if [ -z "$DIFF_TIP" ]; then
       echo "Note: phase task commits are on divergent branches; no single diff tip covers them. The reviewer agent's fallback will bound at HEAD."
