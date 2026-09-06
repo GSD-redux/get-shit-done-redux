@@ -1,7 +1,7 @@
 {
   "id": "live-dom-uat",
   "role": "feature",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "Live-DOM UAT",
   "description": "Default-off live-DOM verification (#2856). Confines browser MCP reach to one purpose-built agent (gsd-dom-verifier) that carries the browser globs in its own tools: line, registered as an additive step hook at execute:wave:post. agents/gsd-executor.md is deliberately NOT widened: for a first-party agent the static tool list is the only control that exists, no capability can grant tools to one (ADR-1244 D2), no hook kind grants tool permissions (ADR-857 D4), and there is no per-dispatch tool override. Gated by activationKey workflow.live_dom_uat (default false), so with the key off the capability resolves inactive and the hook does not render at all. NOTE on the browser profile lock: chrome-devtools-mcp holds an exclusive lock on $HOME/.cache/chrome-devtools-mcp/chrome-profile, and --isolated is a flag on the user's own MCP-server registration that GSD cannot pass. Concurrent execution waves sharing one profile will therefore collide; the step tolerates and reports that (onError: skip, never blocking) rather than pretending to coordinate a resource it does not own.",
   "tier": "full",
