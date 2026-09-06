@@ -1281,7 +1281,7 @@ describe('#3473 F2: resolveVerificationFile allowBare option', () => {
 // Two read-only verbs disagreed about the same directory at the same instant
 // (#4187). The fix opts the status reader — and findStaleVerificationSummary,
 // its internal legacy staleness check, whose only production caller is
-// readVerificationStatus — into the same `allowBare: true` the other five call
+// readVerificationStatus — into the same `allowBare: true` the other four call
 // sites already pass. Tier order is unchanged: a dashed candidate (canonical or
 // not) still outranks the bare name, so only bare-ONLY directories change
 // behavior, from `missing` to the report's actual frontmatter status.

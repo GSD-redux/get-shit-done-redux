@@ -474,16 +474,18 @@ interface ResolveVerificationFileOptions {
    * callers that do not want the bare tier.
    *
    * #4187: that historical asymmetry was drift, not contract. Six call sites
-   * grew around the shared resolver and five opted in (`cmdVerificationResolveFile`,
-   * `determinePhaseStatus`, both init `verification_path` projectors), leaving
-   * the status reader as the lone holdout — so `query verification.resolve-file`
-   * resolved a bare report in a directory where `query verification.status`
-   * answered `missing` and recommended re-running execute-phase for an
-   * already-verified phase. Since #4187 the two module-internal call sites
-   * pass `true` as well: every reader of the report set now recognizes the
-   * bare name. Tier order is unchanged — a dashed candidate (canonical or
-   * not, if it belongs to THIS phase) still outranks the bare match — so this
-   * only changes directories whose SOLE report is bare.
+   * grew around the shared resolver and four opted in
+   * (`cmdVerificationResolveFile`, `determinePhaseStatus`, both init
+   * `verification_path` projectors) — the two module-internal status-path
+   * call sites (`readVerificationStatus`, `findStaleVerificationSummary`)
+   * did not, so `query verification.resolve-file` resolved a bare report in
+   * a directory where `query verification.status` answered `missing` and
+   * recommended re-running execute-phase for an already-verified phase.
+   * Since #4187 those two pass `true` as well: every reader of the report
+   * set now recognizes the bare name. Tier order is unchanged — a dashed
+   * candidate (canonical or not, if it belongs to THIS phase) still outranks
+   * the bare match — so this only changes directories whose SOLE report is
+   * bare.
    */
   allowBare?: boolean;
   /**
