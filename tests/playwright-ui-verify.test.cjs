@@ -1050,32 +1050,47 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       'the failed viewport\u2019s zero-byte file must not survive alongside the real captures');
   });
 
-  test('two audits colliding on the same second get separate directories, and the first keeps its captures', () => {
-    // CONSTRUCTED, not hoped for. `date` is stubbed to a fixed value and both runs share
-    // one working directory, so the two audits genuinely contend for the same name — the
-    // case a wall-clock test can never reach, and the case that matters: both write
-    // exactly `desktop.png`, `mobile.png`, `tablet.png`, so no per-file rule can
-    // establish ownership, and a shared directory means the loser's total-failure
-    // cleanup destroys the winner's captures. Ownership must come from the directory.
+  test('audits colliding on the same second get separate directories, and none destroys another', () => {
+    // CONSTRUCTED, not hoped for. `date` is overridden to a fixed value and all three
+    // audits share one working directory, so they genuinely contend for the same base
+    // name — the case a wall-clock test can never reach, and the case that matters: every
+    // audit writes exactly `desktop.png`, `mobile.png`, `tablet.png`, so no per-file rule
+    // can establish ownership. Ownership must come from winning the directory.
+    //
+    // TWO SURVIVING AUDITS, not one. Reading the directory list after a single failing
+    // second run cannot see whether that run contended at all: its directory is removed
+    // either way, so freezing only the FIRST audit left the second on the real clock and
+    // the fixture still passed. Driven. Both successful audits must therefore be present,
+    // distinct, and both under the frozen base name.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-race-'));
     tmpDirs.push(dir);
     const fixed = { FIXED_DATE: '20300101-000000', PADDED_PHASE: '07' };
-    const first = ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
-    // PROVE THE CLOCK WAS FROZEN. If the override does not take, the two audits get
-    // different names from the timestamp alone, they never contend, and this test passes
-    // having constructed nothing — which is exactly what happened on windows-latest when
-    // the override was a file on PATH that Git Bash shadowed with /usr/bin/date.
-    assert.ok(first.shotDirs[0] && first.shotDirs[0].startsWith(`07-${fixed.FIXED_DATE}`),
-      `the date override did not take — this fixture cannot construct a collision: ${JSON.stringify(first.shotDirs)}`);
-    // The second audit fails every viewport, so its cleanup runs — under a shared
-    // directory that cleanup is what deleted the first audit's work.
-    const second = ok(runFence({ ...fixed, PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
+    const base = `07-${fixed.FIXED_DATE}`;
+    ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
+    const second = ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
+    assert.strictEqual(second.shotDirs.length, 2,
+      `two contending audits must hold two directories: ${JSON.stringify(second.shotDirs)}`);
+    for (const d of second.shotDirs) {
+      assert.ok(d.startsWith(base),
+        `every audit must be on the frozen base name or they never contend: ${JSON.stringify(second.shotDirs)}`);
+    }
+    assert.notStrictEqual(second.shotDirs[0], second.shotDirs[1],
+      'a contended base name must not be handed to two audits');
+    for (const d of second.shotDirs) {
+      assert.deepStrictEqual(second.filesIn(d), ['desktop.png', 'mobile.png', 'tablet.png'],
+        `each audit keeps its own three captures: ${d}`);
+    }
+    // And a third audit that fails everything removes only its own directory — under a
+    // shared one, its cleanup is what destroyed the neighbours' identically-named files.
+    const third = ok(runFence({ ...fixed, PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
       SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet' }, dir));
-    assert.strictEqual(first.shotDirs.length, 1, 'the first audit must get a directory');
-    assert.strictEqual(second.shotDirs.length, 1,
-      `after the second audit cleaned up, exactly the first audit's directory must remain: ${JSON.stringify(second.shotDirs)}`);
-    assert.deepStrictEqual(second.filesIn(second.shotDirs[0]), ['desktop.png', 'mobile.png', 'tablet.png'],
-      'the second audit\u2019s failure cleanup must not touch the first audit\u2019s captures');
+    assert.match(third.stdout, /Screenshot capture FAILED for all 3 viewports/);
+    assert.strictEqual(third.shotDirs.length, 2,
+      `the failing audit must remove only its own directory: ${JSON.stringify(third.shotDirs)}`);
+    for (const d of third.shotDirs) {
+      assert.deepStrictEqual(third.filesIn(d), ['desktop.png', 'mobile.png', 'tablet.png'],
+        `a failing audit's cleanup must not touch another audit's captures: ${d}`);
+    }
   });
 
   test('an exhausted allocation is a capture failure, not a write outside the project', () => {
@@ -1097,12 +1112,38 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // reason rather than for the reason it names.
     assert.doesNotMatch(r.stdout, /Screenshots captured/,
       'the date override did not take — the allocation was never exhausted');
+    // The MESSAGE, not just a generic failure. Dropping this line (it was lost when the
+    // vacuity guard above was added) let the fixture infer exhaustion from any capture
+    // failure with no invocations — an unfrozen clock plus a capture stub that fails
+    // early satisfied it while nothing was ever exhausted. Driven.
+    assert.match(r.stdout, /Could not allocate a review directory/,
+      'the exhaustion branch must be the one that ran, not merely some capture failure');
     assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
     assert.doesNotMatch(r.stdout, /Screenshots captured/);
     assert.strictEqual(r.invocations.length, 0,
       'nothing may be captured when no directory was allocated — the path would be outside the project');
     assert.strictEqual(fs.readdirSync(reviews).length, 100,
       'the exhausted run must not have created a directory of its own');
+  });
+
+  test('the last candidate suffix is tried, not skipped', () => {
+    // The retry loop once incremented past the bound before forming the next candidate,
+    // so with the base and `-1`..`-98` taken it reported exhaustion while `-99` was free.
+    // That correction had no test of its own — reverting it passed the whole suite — and
+    // an off-by-one at the END of a bounded loop is exactly the shape a fixture that only
+    // exercises the empty and exhausted cases will never reach.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-last-'));
+    tmpDirs.push(dir);
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    fs.mkdirSync(reviews, { recursive: true });
+    fs.mkdirSync(path.join(reviews, '07-20300101-000000'));
+    for (let i = 1; i <= 98; i += 1) fs.mkdirSync(path.join(reviews, `07-20300101-000000-${i}`));
+    const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
+    assert.doesNotMatch(r.stdout, /Could not allocate a review directory/,
+      'the last free candidate must be used, not skipped');
+    assert.match(r.stdout, /Screenshots captured/);
+    assert.ok(fs.existsSync(path.join(reviews, '07-20300101-000000-99')),
+      `the run must have allocated the one free suffix: ${JSON.stringify(fs.readdirSync(reviews).slice(-3))}`);
   });
 
   test('all three captures succeeding is the only path that claims "captured"', () => {
