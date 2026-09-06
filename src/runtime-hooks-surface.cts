@@ -1235,9 +1235,8 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
   if (!absoluteRunner) return { changed: false, wrote: false, path: hooksJsonPath };
 
   const scriptPath = shellCmdProjection.posixNormalize(path.resolve(targetDir, 'hooks', 'gsd-context-monitor.js'));
-  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
-  let managedCommand: string | undefined;
 
+  let managedCommand: string | undefined;
   if (platform === 'win32') {
     const shimIR = buildCodexHookWindowsShimIR(scriptPath, absoluteRunner);
     if (!shimIR) return { changed: false, wrote: false, path: hooksJsonPath };
@@ -1252,10 +1251,6 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
       return { changed: false, wrote: false, path: hooksJsonPath };
     }
     managedCommand = shimIR.hookCommand;
-    configuredEntrypoints.push(
-      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform, selfExecutable: true },
-      { runtime: 'codex', configPath: hooksJsonPath, scriptPath, interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)], platform },
-    );
   } else {
     managedCommand = projectManagedHookCommand({
       absoluteRunner,
@@ -1263,20 +1258,10 @@ function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: E
       runtime: 'codex',
       platform,
     }) ?? undefined;
-    if (managedCommand) {
-      configuredEntrypoints.push({
-        runtime: 'codex',
-        configPath: hooksJsonPath,
-        scriptPath,
-        interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)],
-        platform,
-      });
-    }
   }
 
   if (!managedCommand) return { changed: false, wrote: false, path: hooksJsonPath };
-  const result = reconcileCodexHooksJsonEvent(targetDir, eventName, { managedCommand, timeout: 10 });
-  return { ...result, configuredEntrypoints };
+  return reconcileCodexHooksJsonEvent(targetDir, eventName, { managedCommand, timeout: 10 });
 }
 
 // ---------------------------------------------------------------------------
