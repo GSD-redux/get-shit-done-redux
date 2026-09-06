@@ -2511,13 +2511,9 @@ describe('Bug #2185: normalizeNodePath — Linuxbrew + custom-prefix Cellar path
 // candidate — the one its layout would really have (the fnm #3704 stub rule).
 describe('Bug #4137: normalizeNodePath — keg-only Homebrew Cellar path falls back to raw execPath', () => {
   const ARM_KEG = '/opt/homebrew/Cellar/node@24/24.11.0/bin/node';
-  const ARM_STABLE = '/opt/homebrew/bin/node';
   const INTEL_KEG = '/usr/local/Cellar/node@20/20.11.0/bin/node';
-  const INTEL_STABLE = '/usr/local/bin/node';
   const LINUXBREW_KEG = '/home/linuxbrew/.linuxbrew/Cellar/node@22/22.11.0/bin/node';
-  const LINUXBREW_STABLE = '/home/linuxbrew/.linuxbrew/bin/node';
   const CUSTOM_KEG = '/custom/brew/Cellar/node@18/18.20.4/bin/node';
-  const CUSTOM_STABLE = '/custom/brew/bin/node';
 
   test('keg-only versioned Cellar path (the reported bug) → raw execPath unchanged', () => {
     // Apple Silicon, node@24 keg-only: <prefix>/bin/node is absent.
