@@ -2266,18 +2266,47 @@ function truncatePendingTodoText(value: string, maxLen: number): string {
  * algorithm duplicated as a test oracle is exactly the divergence class
  * this avoids).
  */
-function renderPendingTodosMarkdown(todos: Record<string, unknown>[]): string {
+function renderPendingTodosMarkdown(
+  todos: Record<string, unknown>[],
+  projectRoot?: string,
+): string {
   if (!Array.isArray(todos) || todos.length === 0) {
     return 'None yet.';
   }
-  return todos.map((todo) => renderPendingTodoBullet(todo)).join('\n');
+  return todos.map((todo) => renderPendingTodoBullet(todo, projectRoot)).join('\n');
 }
 
 function pendingTodoFieldAsString(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
 
-function renderPendingTodoBullet(todo: Record<string, unknown>): string {
+/**
+ * #4398: the bullet's link target, rendered relative to the project root.
+ *
+ * `todos[].path` is absolute by #2376 and stays that way in the JSON, but
+ * splicing that absolute path into the bullet made the 240-char budget a
+ * function of WHERE the repo is checked out: the same todo kept its
+ * "Needs ..." clause under a short root and lost it under a long one, so the
+ * needs -> title -> area drop order below fired on machine-dependent input.
+ * Relativizing the link restores determinism and matches the canonical
+ * example this feature documents (`.planning/todos/pending/<file>.md`).
+ *
+ * Falls back to the absolute path whenever relativizing would misrepresent
+ * the location -- no root to measure against, or a todo that resolves
+ * outside the project. That keeps the existing "link correctness > strict
+ * cap" rule intact: an over-budget bullet is a cosmetic loss, a link that
+ * points somewhere else is a wrong answer.
+ */
+function pendingTodoLinkTarget(value: unknown, projectRoot?: string): string {
+  const absolute = pendingTodoFieldAsString(value, '');
+  if (!absolute || !projectRoot) return absolute;
+  const relative = toPosixPath(path.relative(projectRoot, toNativePath(absolute)));
+  if (!relative || relative.startsWith('../') || relative === '..') return absolute;
+  if (path.isAbsolute(relative)) return absolute;
+  return relative;
+}
+
+function renderPendingTodoBullet(todo: Record<string, unknown>, projectRoot?: string): string {
   const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
   let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
   let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
@@ -2287,7 +2316,7 @@ function renderPendingTodoBullet(todo: Record<string, unknown>): string {
     typeof todo['needs'] === 'string'
       ? sanitizePendingTodoInline(todo['needs']).replace(/\.+$/, '')
       : '';
-  const link = `[todo file](${pendingTodoFieldAsString(todo['path'], '')})`;
+  const link = `[todo file](${pendingTodoLinkTarget(todo['path'], projectRoot)})`;
 
   const assemble = (): string => {
     const needsClause = needs ? ` — Needs ${needs}.` : '';
@@ -2420,7 +2449,7 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
     // (rather than emitted with possibly-wrong data) when pendingReadOk is
     // false, so the workflow's fail-safe check can key off field presence.
     pending_read_ok: pendingReadOk,
-    ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos) } : {}),
+    ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos, cwd) } : {}),
   };
 
   output(withProjectRoot(cwd, result), raw);

@@ -252,6 +252,85 @@ test('cmdInitTodos: bullet order is filename-sorted regardless of write/insertio
   assert.ok(lines[2].includes('Third todo'));
 });
 
+// ─── #4398: the bullet must not depend on where the repo is checked out ────
+
+// The #2618 cap fires needs -> title -> area, and the link is never truncated.
+// While the link carried the ABSOLUTE todo path, the length of the checkout
+// root was an input to that ladder: the same todo kept its "Needs ..." clause
+// under /tmp/x and lost it under macOS's /private/var/folders/... temp root,
+// so `next` was green on Linux and red on the macOS shard for one line of
+// prose nobody wrote differently. Asserting a clause survives at SOME path
+// length is what let that through, so this pins the invariant instead:
+// identical inputs, different roots, byte-identical bullet.
+function writeTodoFixture(root) {
+  const pendingDir = path.join(root, '.planning', 'todos', 'pending');
+  fs.mkdirSync(pendingDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pendingDir, '2026-09-01-fix-retry-logic.md'),
+    [
+      '---',
+      'created: 2026-09-01T00:00:00.000Z',
+      'title: Fix retry logic',
+      'area: api',
+      'severity: major',
+      '---',
+      '',
+      '## Problem',
+      '',
+      'Retries are unbounded.',
+      '',
+      '## Solution',
+      '',
+      'Add a max-attempts cap.',
+      '',
+    ].join('\n'),
+  );
+}
+
+test('#4398 cmdInitTodos: the rendered bullet is identical from a short and a deep checkout root', (t) => {
+  const shallowRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4398-'));
+  t.after(() => cleanup(shallowRoot));
+  // Nested inside the same temp dir so both roots live on one filesystem and
+  // the ONLY difference between the two runs is absolute path length.
+  const deepRoot = path.join(shallowRoot, 'nested', 'a'.repeat(60), 'b'.repeat(60), 'project');
+  fs.mkdirSync(deepRoot, { recursive: true });
+
+  writeTodoFixture(shallowRoot);
+  writeTodoFixture(deepRoot);
+
+  const shallow = runQueryInitTodos(shallowRoot);
+  const deep = runQueryInitTodos(deepRoot);
+
+  assert.ok(
+    deep.project_root.length - shallow.project_root.length > 120,
+    'fixture is only meaningful if the two roots differ substantially in length',
+  );
+  assert.equal(
+    deep.pending_todos_markdown,
+    shallow.pending_todos_markdown,
+    'the bullet must not vary with the checkout root',
+  );
+  // Guards the regression in both directions: relativizing the LINK must not
+  // have relativized the #2376 JSON field, which stays absolute by contract.
+  assert.ok(path.isAbsolute(shallow.todos[0].path));
+  assert.ok(path.isAbsolute(deep.todos[0].path));
+});
+
+test('#4398 cmdInitTodos: the bullet links to the todo relative to the project root', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4398-'));
+  t.after(() => cleanup(dir));
+  writeTodoFixture(dir);
+
+  const json = runQueryInitTodos(dir);
+  const expectedLink = '[todo file](.planning/todos/pending/2026-09-01-fix-retry-logic.md)';
+  assert.ok(
+    json.pending_todos_markdown.includes(expectedLink),
+    `expected the documented repo-relative link, got: ${json.pending_todos_markdown}`,
+  );
+  // The clause the cap used to eat is now budget-independent, so it survives.
+  assert.match(json.pending_todos_markdown, /Needs Add a max-attempts cap\.$/m);
+});
+
 // ─── workflow parity guard (DEFECT.GENERATIVE-FIX) ─────────────────────────
 
 function extractUpdateStateStep(workflowPath) {

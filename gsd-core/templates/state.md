@@ -174,6 +174,8 @@ Updated after each plan completion.
 **Pending Todos:** Ideas captured via /gsd-add-todo
 - One bullet per pending todo, rendered by `init.todos`'s `pending_todos_markdown`
   (each bullet capped at 240 characters: `- [date] [area] title — [todo file](path) — Needs ...`)
+- The link target is the todo's path relative to the project root, so the bullet
+  reads the same from any checkout (#4398); the `todos[].path` JSON field stays absolute
 - `None yet.` when there are no pending todos
 - No collapse-by-count fallback — every pending todo gets its own line, always
   (see #2618 design doc for why a "count if many" fallback was rejected)
