@@ -218,7 +218,6 @@ CLASSIFY_ARGS+=(--classify --json)
 
 # Informational: exits 0. The binding gate is Step 5a's post-merge verification run.
 CLASSIFY_OUTPUT="$(node "${GSD_HOME}/gsd-core/bin/verify-reapply-patches.cjs" "${CLASSIFY_ARGS[@]}")"
-INCORPORATED_COUNT="$(echo "$CLASSIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));process.stdout.write(String(d.incorporated||0))")"
 INCORPORATED_FILES="$(echo "$CLASSIFY_OUTPUT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));(d.incorporated_files||[]).forEach(f=>process.stdout.write(f+'\n'))")"
 ```
 
@@ -231,8 +230,10 @@ INCORPORATED_FILES="$(echo "$CLASSIFY_OUTPUT" | node -e "const d=JSON.parse(requ
 - Report the per-file status `Incorporated` — "Already in upstream v{version}" — in the
   Step 3 summary and the Step 7 report.
 - No Hunk Verification Table rows are required for these files (nothing was merged); the
-  classifier's structured output is the evidence. Step 5a passes them without
-  special-casing — every user-added line is present in the untouched install.
+  classifier's structured output is the evidence. If EVERY backed-up file is Incorporated,
+  still emit the table with a header row and a single note line naming the incorporated
+  files, so the Step 5b absent-table halt is not tripped. Step 5a passes these files
+  without special-casing — every user-added line is present in the untouched install.
 - This is what ends the re-graft cycle: because the installed file stays identical to what
   the release ships, the next update's hash comparison no longer flags it as modified, and
   the file drops out of `gsd-local-patches/` on the next cycle.
