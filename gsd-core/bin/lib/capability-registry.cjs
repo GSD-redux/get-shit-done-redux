@@ -1225,7 +1225,11 @@ const capabilities = {
         "tomlConfigInstall": true,
         "cleanupSkillSidecars": true,
         "agentTomlFiles": true,
-        "frontmatterDialect": "codex"
+        "frontmatterDialect": "codex",
+        "unsupportedFeatures": [
+          "context-warnings",
+          "phase-lifecycle-display"
+        ]
       }
     },
     "reviewer": {
@@ -6337,7 +6341,11 @@ const runtimes = {
         "tomlConfigInstall": true,
         "cleanupSkillSidecars": true,
         "agentTomlFiles": true,
-        "frontmatterDialect": "codex"
+        "frontmatterDialect": "codex",
+        "unsupportedFeatures": [
+          "context-warnings",
+          "phase-lifecycle-display"
+        ]
       }
     },
     "reviewer": {

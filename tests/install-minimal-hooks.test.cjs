@@ -2996,31 +2996,21 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
     return path.join(configDir, 'hooks');
   }
 
-  test('the installed context-monitor hook LOADS AND RUNS, not merely exists', () => {
+  test('#2586: gsd-context-monitor.js is no longer staged for Codex at all', () => {
+    // Was: "the installed context-monitor hook LOADS AND RUNS, not merely
+    // exists" — that row's premise (Codex ships this hook) is exactly what
+    // #2586 removes: its only documented metrics source is Claude's own
+    // statusline hook, which Codex never installs, so every registered Codex
+    // event was a guaranteed silent no-op. The #4087 bug class this describe
+    // block guards (a staged hook requiring an unshipped hooks/lib/ helper)
+    // remains covered live via Windsurf's own guards — see the
+    // "#4087 review: Windsurf install..." describe block below, unaffected
+    // by this change.
     const hooksDir = installCodex(tmpDir);
-    const hook = path.join(hooksDir, 'gsd-context-monitor.js');
-    assert.ok(fs.existsSync(hook), 'precondition: the hook itself must be staged');
-
-    // The actual defect. Before the fix this exited 1 with
-    // "Cannot find module './lib/hook-exit.js'".
-    // `exitCode`, not `status`: the process seam returns its own shape
-    // ({outcome, exitCode, stdout, stderr, ...}) and `status` reads undefined —
-    // which would compare unequal to 0 and pass this row for the wrong reason
-    // if the polarity were ever flipped.
-    const result = runNode([hook], { timeoutMs: 30000, input: '{}', env: { ...process.env } });
-    assert.strictEqual(
-      result.outcome, 'exited',
-      `the hook must run to completion, not time out or be killed. outcome=${result.outcome}`,
-    );
-    assert.strictEqual(
-      result.exitCode, 0,
-      'the installed Codex hook must load and exit 0 — a MODULE_NOT_FOUND at load fires on every '
-      + `registered event and is invisible to the installer's own exit code. stderr: ${result.stderr}`,
-    );
-    assert.doesNotMatch(
-      String(result.stderr || ''), /MODULE_NOT_FOUND|Cannot find module/,
-      'no missing-module error may reach stderr',
-    );
+    assert.strictEqual(fs.existsSync(path.join(hooksDir, 'gsd-context-monitor.js')), false,
+      'gsd-context-monitor.js must not be staged for Codex post-#2586');
+    assert.strictEqual(fs.existsSync(path.join(hooksDir, 'lib')), false,
+      'hooks/lib/ must not exist at all — nothing else Codex stages requires a lib/ helper');
   });
 
   // AC4: this is the row that stops the bug recurring. It derives the
@@ -3052,11 +3042,17 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
       if (!/\.(js|cjs)$/.test(entry)) continue;
       scan(fs.readFileSync(full, 'utf8'), seedRe);
     }
-    assert.ok(
-      required.size > 0,
-      'precondition: at least one staged Codex hook must require a ./lib/ helper — if this ever '
-      + 'goes to zero the bundle changed and this row silently stops testing anything',
-    );
+    // #2586: gsd-context-monitor.js was the only staged Codex hook requiring
+    // a ./lib/ helper; it is no longer staged for Codex at all, so the
+    // dependency closure is correctly empty. This row still proves the
+    // GRAMMAR holds (whatever IS required must be staged) — it is just that
+    // "whatever is required" is now the empty set for Codex specifically.
+    // The non-trivial case (closure size > 0) is covered live by the
+    // "#4087 review: Windsurf install..." describe block below.
+    assert.strictEqual(required.size, 0,
+      'no staged Codex hook should require a ./lib/ helper post-#2586 — if this becomes non-zero, '
+      + 'extend this row (do not just raise the bar back to ">0") so the new dependency stays proven');
+    assert.strictEqual(fs.existsSync(libDir), false, 'hooks/lib/ must not exist when nothing requires it');
 
     // Walk to a fixed point, exactly as the installer must.
     const checked = new Set();
@@ -3161,7 +3157,12 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
     const hooksDir = installCodex(tmpDir);
     const libDir = path.join(hooksDir, 'lib');
     const stagedLibs = fs.existsSync(libDir) ? fs.readdirSync(libDir).sort() : [];
-    assert.ok(stagedLibs.length > 0, 'precondition: some helper must have been staged');
+    // #2586: Codex's closure is now legitimately empty (gsd-context-monitor.js,
+    // the only staged Codex hook that ever required a helper, is no longer
+    // staged) — the deepStrictEqual below is still the real assertion and
+    // holds for the empty case too; the non-empty case remains covered live
+    // by the "#4087 review: Windsurf install..." describe block below.
+    assert.strictEqual(stagedLibs.length, 0, 'no helpers should be staged for Codex post-#2586');
 
     // Derive the closure independently of the installer.
     const seedRe = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;

@@ -1369,34 +1369,13 @@ function ensureCodexHooksJsonSessionStart(targetDir, opts = {}) {
 }
 
 /**
- * Ensure hooks.json contains exactly one managed GSD hook entry for the given
- * Codex event, wired to gsd-context-monitor.js. Preserves user-owned entries.
- *
- * Used for the new Codex events added in #772:
- *   SubagentStart — inject context / GSD_AGENT_NAME awareness at subagent open
- *   Stop          — post-session context headroom tracking
- *   PostToolUse   — mirror the Claude Code PostToolUse context monitor
- *
- * All three events are routed through gsd-context-monitor.js — the same hook
- * used for PostToolUse in the Claude Code baseline — so context-headroom
- * warnings surface at these key Codex session lifecycle moments.
- *
- * On Windows (#3426): writes a gsd-context-monitor.cmd shim alongside the .js
- * file and uses the .cmd path as the hook command — exactly the same fix as
- * SessionStart uses for gsd-check-update — to avoid the bash.exe POSIX-exec
- * failure when Codex's hook dispatcher tries to run node.exe through Git Bash.
- *
- * @param {string} targetDir
- * @param {string} eventName - One of 'SubagentStart', 'Stop', 'PostToolUse'.
- * @param {{ absoluteRunner: string|null, platform?: NodeJS.Platform }} opts
- * @returns {{ changed: boolean, wrote: boolean, path: string }}
- */
-function ensureCodexHooksJsonEvent(targetDir, eventName, opts = {}) {
-  return hooksSurface.ensureCodexHooksJsonEvent(targetDir, eventName, opts);
-}
-
-/**
- * Remove a GSD-managed event entry from hooks.json. Called during uninstall.
+ * Remove a GSD-managed event entry from hooks.json. Called during uninstall,
+ * and (#2586) unconditionally during install/reinstall to clean up a
+ * pre-#2586 install's stale gsd-context-monitor.js registrations — GSD no
+ * longer ADDS entries for these events (see CODEX_HOOKS_TO_COPY /
+ * cleanupOrphanedCodexContextMonitorScript in bin/install.js's Codex branch),
+ * only removes recognized ones, so the `ensureCodexHooksJsonEvent` wrapper
+ * that used to add them was removed as dead code.
  *
  * @param {string} targetDir
  * @param {string} eventName
@@ -8485,6 +8464,16 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         console.log(`  ${green}✓${reset} Removed managed Codex ${eventName} hook from hooks.json`);
       }
     }
+    // #2586: uninstall's own symmetric half of the orphaned-script cleanup —
+    // same GSD-owned + unreferenced gate as the install-time call.
+    const uninstallMonitorCleanup = hooksSurface.cleanupOrphanedCodexContextMonitorScript(targetDir);
+    for (const deletedPath of uninstallMonitorCleanup.deleted) {
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed orphaned Codex hook script (${path.basename(deletedPath)})`);
+    }
+    for (const warning of uninstallMonitorCleanup.warnings) {
+      console.warn(`  ${yellow}⚠${reset}  Could not remove orphaned Codex hook script ${warning.path}: ${warning.reason}`);
+    }
   }
 
   // 1a-kimi. Non-layout Kimi side-effect (#2095 EoS/kimi Upgrade 1): kimi's
@@ -12323,11 +12312,17 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // stageTransitiveHookLibs call after the copy loop. The #3579 boundary is
     // preserved: helpers no staged Codex hook requires (graphify tooling among
     // them) are still not shipped.
+    // #2586: gsd-context-monitor.js is deliberately NOT copied for Codex.
+    // It reads the statusline bridge file (${TMPDIR}/claude-ctx-{session_id}.json)
+    // written only by hooks/gsd-statusline.js, which Codex never installs — so
+    // every registered event was a guaranteed silent no-op (readSentinel throws
+    // ENOENT -> allow(undefined), every invocation, every event, no exceptions).
+    // A pre-#2586 install's stale copy + hooks.json registrations are cleaned
+    // up below (see the CODEX_EXTENDED_HOOK_EVENTS loop), not re-added here.
     const CODEX_HOOKS_TO_COPY = [
       'gsd-check-update.js',
       'gsd-check-update-worker.js',
       'managed-hooks-registry.cjs',
-      'gsd-context-monitor.js',
     ];
     const codexHooksSrc = path.join(src, 'hooks', 'dist');
     if (fs.existsSync(codexHooksSrc)) {
@@ -12529,35 +12524,48 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           }
         }
 
-        // ── Codex extended hook events (#772, #2088) ─────────────────────────
-        // Codex CLI stabilised a full hook-event set in rust-v0.137.0. GSD
-        // registers CODEX_EXTENDED_HOOK_EVENTS (#2088 adds the 6 documented
-        // events beyond the original #772 three) — all routed through
-        // gsd-context-monitor.js so context-headroom warnings surface at each
-        // lifecycle point: SubagentStart/SubagentStop (subagent open/close),
-        // Stop (final-response), PreToolUse/PostToolUse (tool boundaries),
-        // PermissionRequest (approval prompts), Pre/PostCompact (context
-        // compaction), and UserPromptSubmit (per-turn context injection). The
-        // context-monitor script decides per-payload what to do; unregistered
-        // events simply never fire.
-        //
-        // Guard: only register when the context-monitor file exists and the node
-        // runner is available — same guards as the SessionStart path above.
-        const contextMonitorFile = path.join(targetDir, 'hooks', 'gsd-context-monitor.js');
-        if (codexNodeRunner && fs.existsSync(contextMonitorFile)) {
-          for (const codexEvent of CODEX_EXTENDED_HOOK_EVENTS) {
-            const eventWrite = ensureCodexHooksJsonEvent(targetDir, codexEvent, {
-              absoluteRunner: codexNodeRunner,
-              platform: process.platform,
-            });
-            if (eventWrite.wrote) {
-              console.log(`  ${green}✓${reset} Configured Codex hooks (${codexEvent} via hooks.json)`);
-            } else if (eventWrite.changed) {
-              console.log(`  ${green}✓${reset} Verified Codex hooks (${codexEvent} via hooks.json)`);
-            }
+        // #2586: Codex's hook payload carries no context/token-usage field
+        // (confirmed against codex-rs/hooks/src/schema.rs), so agent-facing
+        // context warnings and GSD phase/lifecycle display cannot be
+        // supported on this runtime — state that plainly during install
+        // rather than silently omitting the capability. Matches
+        // capabilities/codex/capability.json's hostBehaviors.unsupportedFeatures.
+        console.log(`  ${dim}↳${reset} Codex: agent-facing context warnings and GSD phase/lifecycle display are unsupported (Codex's hook payload has no context-usage metric)`);
+
+        // ── Codex extended hook events (#772, #2088) — REMOVED by #2586 ──────
+        // gsd-context-monitor.js is no longer copied or registered for Codex
+        // (see the CODEX_HOOKS_TO_COPY comment above): every one of these
+        // events was a guaranteed silent no-op, since the metrics bridge file
+        // it reads is only ever written by Claude's own statusline hook.
+        // Every event in CODEX_EXTENDED_HOOK_EVENTS is unconditionally
+        // reconciled here — not gated on the script existing — so a
+        // pre-#2586 install's stale registrations (exact current shape, or a
+        // recognized legacy shape via isManagedHookCommand's
+        // includeLegacyAliases) are stripped on reinstall. Mirrors the
+        // unconditional uninstall-time loop over the same constant. A
+        // registration whose command does not match the managed shape (a
+        // hand-customized entry) survives untouched — see
+        // reconcileCodexHooksJsonEvent's isManagedHookCommand filter.
+        for (const codexEvent of CODEX_EXTENDED_HOOK_EVENTS) {
+          const eventCleanup = removeCodexHooksJsonEvent(targetDir, codexEvent);
+          if (eventCleanup.changed) {
+            console.log(`  ${green}✓${reset} Removed stale Codex ${codexEvent} context-monitor hook from hooks.json`);
           }
-        } else if (!codexNodeRunner) {
-          console.warn(`  ${yellow}⚠${reset}  Skipped Codex extended hook-event registration — Node runner unavailable.`);
+        }
+        // Delete the orphaned script (+ Windows .cmd shim) left by a
+        // pre-#2586 install, but ONLY once no surviving hooks.json
+        // registration under any event still references it, and only when
+        // the on-disk file is GSD's own (see design doc's Ownership check —
+        // a content-signature check, not manifest membership, so this works
+        // on the very first reinstall after upgrading, with no bootstrap
+        // gap). A deletion failure never reverts the (already safe,
+        // already-written) hooks.json cleanup above — must-have #8.
+        const monitorCleanup = hooksSurface.cleanupOrphanedCodexContextMonitorScript(targetDir);
+        for (const deletedPath of monitorCleanup.deleted) {
+          console.log(`  ${green}✓${reset} Removed orphaned Codex hook script (${path.basename(deletedPath)})`);
+        }
+        for (const warning of monitorCleanup.warnings) {
+          console.warn(`  ${yellow}⚠${reset}  Could not remove orphaned Codex hook script ${warning.path}: ${warning.reason}`);
         }
         // ── end Codex extended hook events ────────────────────────────────────
       }
