@@ -4,6 +4,7 @@ description: "Manage parallel workstreams — list, create, switch, status, prog
 allowed-tools:
   - Read
   - Bash
+  - Grep
 ---
 
 
