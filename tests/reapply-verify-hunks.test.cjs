@@ -210,6 +210,8 @@ describe('Bug #2969: deterministic Step 5 verification gate', () => {
     // this assertion, removing one breaks consumers that switch on the enum.
     // Bug #3657 added OK_PRISTINE_DRIFT_DETECTED.
     // Bug #934 added OK_NO_BASELINE.
+    // Bug #4136 added OK_UNVALIDATED_BASELINE (--classify refuses to confirm
+    // adoption on an on-disk snapshot with no recorded hash to validate it).
     assert.deepEqual(
       Object.keys(REASON).sort(),
       [
@@ -221,6 +223,7 @@ describe('Bug #2969: deterministic Step 5 verification gate', () => {
         'OK_NO_SIGNIFICANT_BACKUP_LINES',
         'OK_NO_USER_LINES_VS_PRISTINE',
         'OK_PRISTINE_DRIFT_DETECTED',
+        'OK_UNVALIDATED_BASELINE',
       ],
     );
   });
@@ -702,6 +705,7 @@ describe('Bug #3657: pristine-drift does not produce false FAIL_USER_LINES_MISSI
    * REASON enum shape-lock: the #3657 fix adds OK_PRISTINE_DRIFT_DETECTED.
    * This assertion locks the updated documented set of stable codes.
    * Any further additions require updating this assertion.
+   * Bug #4136 added OK_UNVALIDATED_BASELINE (see the #2969 fold's lock note).
    */
   test('REASON enum includes OK_PRISTINE_DRIFT_DETECTED added by the #3657 fix', () => {
     assert.deepEqual(
@@ -715,6 +719,7 @@ describe('Bug #3657: pristine-drift does not produce false FAIL_USER_LINES_MISSI
         'OK_NO_SIGNIFICANT_BACKUP_LINES',
         'OK_NO_USER_LINES_VS_PRISTINE',
         'OK_PRISTINE_DRIFT_DETECTED',
+        'OK_UNVALIDATED_BASELINE',
       ],
     );
   });
@@ -1172,6 +1177,7 @@ describe('Bug #4086: verifyFile resolves skills entries at the runtime skills ro
 }
 
 
+
 // ────────────────────────────────────────────────────────────────────────
 // Folded regression block — #4145 (a hash-matching gsd-pristine/ baseline
 // stored without the gsd-core/ prefix is never resolved). verifyFile() joined
@@ -1439,3 +1445,543 @@ describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', (
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4136 (the documented "Incorporated" per-file
+// status was unreachable: a customization upstream had adopted was silently
+// re-grafted on every future cycle, forever). Adds a --classify pre-merge
+// mode to the deterministic verifier: with a hash-validated pristine
+// baseline, a file whose EVERY significant user-added line is already
+// present verbatim in the freshly installed version is classified
+// `incorporated` — the workflow then leaves it untouched (status
+// Incorporated, "Already in upstream v{version}") instead of re-grafting.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4136-reapply-incorporated-status', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+/**
+ * Bug #4136: reapply-patches.md Step 4 item 6 defines three per-file statuses
+ * (Merged / Conflict / Incorporated) but no code path computed Incorporated —
+ * the term existed only in workflow prose, so superseded customizations were
+ * re-grafted forever (the merged file's hash never re-converged with the
+ * shipped manifest hash, so saveLocalPatches re-flagged it every update).
+ *
+ * Fix: `--classify` mode on the deterministic verifier. Pre-merge, per file:
+ *   - hash-validated pristine + >=1 significant user-added line + every one of
+ *     those lines present verbatim in the fresh install  → incorporated
+ *   - hash-validated pristine + some user lines absent               → needs_merge
+ *   - anything else (no/mismatched/absent/unvalidated baseline, zero user
+ *     lines, structural failure)                                     → unknown
+ *
+ * Incorporated is NEVER produced without baseline confirmation — the issue's
+ * law that a false Incorporated is worse than none. Per CONTRIBUTING's typed-
+ * surface standard, assertions go against the frozen CLASSIFICATION enum and
+ * the structured --json report; zero text matching on human output.
+ */
+
+const { test, describe, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const os = require('node:os');
+const path = require('node:path');
+const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON, CLASSIFICATION } = require(SCRIPT);
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let pristineDir;
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function writeBackupMeta(pristine_hashes) {
+  writeFile(path.join(patchesDir, 'backup-meta.json'), JSON.stringify({ pristine_hashes }, null, 2));
+}
+
+function resetFixture() {
+  for (const dir of [patchesDir, configDir, pristineDir]) {
+    cleanup(dir);
+  }
+  fs.mkdirSync(patchesDir);
+  fs.mkdirSync(configDir);
+  fs.mkdirSync(pristineDir);
+}
+
+/** Runs the verifier in --classify mode with --json. Returns { status, report }. */
+function runClassifier({ includePristine = true } = {}) {
+  const args = [
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    ...(includePristine ? ['--pristine-dir', pristineDir] : []),
+    '--classify',
+    '--json',
+  ];
+  const r = runNode(args, { timeoutMs: VERIFIER_TIMEOUT_MS });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+/** Runs the verifier in default post-merge gate mode with --json. */
+function runGate({ includePristine = true } = {}) {
+  const args = [
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    ...(includePristine ? ['--pristine-dir', pristineDir] : []),
+    '--json',
+  ];
+  const r = runNode(args, { timeoutMs: VERIFIER_TIMEOUT_MS });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+before(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4136-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'installed');
+  pristineDir = path.join(tmpRoot, 'pristine');
+  resetFixture();
+});
+
+after(() => {
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4136: deterministic Incorporated classification (--classify)', () => {
+  test('CLASSIFICATION enum exposes the documented set of stable codes', () => {
+    assert.deepEqual(
+      Object.keys(CLASSIFICATION).sort(),
+      ['INCORPORATED', 'NEEDS_MERGE', 'UNKNOWN'],
+    );
+  });
+
+  test('Row 1 (RED regression): all user-added lines already upstream → incorporated', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/execute-phase.md';
+    const pristineContent = [
+      'stock line one that is long enough to be significant',
+      'stock line two that is long enough to be significant',
+    ].join('\n') + '\n';
+    const userLine = 'user custom verification gate that upstream adopted verbatim';
+    const backupContent = pristineContent + userLine + '\n';
+    // Fresh install: upstream shipped the user's line PLUS its own new line.
+    const freshInstall = pristineContent + userLine + '\n' +
+      'brand-new unrelated upstream line shipped in this release\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0, `classify must exit 0; report=${JSON.stringify(report)}`);
+    assert.equal(report.incorporated, 1);
+    assert.equal(report.incorporated_files.length, 1);
+    assert.equal(report.incorporated_files[0].replace(/\\/g, '/'), FILE);
+    const r0 = report.results[0];
+    assert.equal(r0.file.replace(/\\/g, '/'), FILE);
+    assert.equal(r0.classification, CLASSIFICATION.INCORPORATED);
+    assert.deepEqual(r0.missing, []);
+  });
+
+  test('Row 2: user line absent from fresh install → needs_merge; gate still catches drops', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/plan-phase.md';
+    const pristineContent = 'stock baseline line long enough to be significant here\n';
+    const userLine = 'user custom instruction that upstream did NOT adopt yet';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + 'unrelated upstream line shipped in the release\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const cls = runClassifier();
+    assert.equal(cls.status, 0, 'classify is informational — needs_merge is not an error');
+    assert.equal(cls.report.incorporated, 0);
+    assert.deepEqual(cls.report.incorporated_files, []);
+    const c0 = cls.report.results[0];
+    assert.equal(c0.classification, CLASSIFICATION.NEEDS_MERGE);
+    assert.ok(c0.missing.includes(userLine), `missing must name the absent line; got ${JSON.stringify(c0.missing)}`);
+
+    // Negative proof: the post-merge gate is NOT weakened — a merge that
+    // drops the user line still fails the default (#2969) run.
+    const gate = runGate();
+    assert.equal(gate.status, 1);
+    assert.equal(gate.report.failures, 1);
+    const g0 = gate.report.results[0];
+    assert.equal(g0.status, 'fail');
+    assert.equal(g0.reason, REASON.FAIL_USER_LINES_MISSING);
+  });
+
+  test('Row 3 (boundary): partially-superseded is needs_merge, not Incorporated', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/ship.md';
+    const pristineContent = 'stock line that is long enough to be significant\n';
+    const adoptedLine = 'user line number one that upstream did adopt upstream';
+    const unadoptedLine = 'user line number two that upstream has NOT adopted';
+    const backupContent = pristineContent + adoptedLine + '\n' + unadoptedLine + '\n';
+    const freshInstall = pristineContent + adoptedLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'partial adoption must not classify Incorporated');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.NEEDS_MERGE);
+    assert.deepEqual(r0.missing, [unadoptedLine], 'only the un-adopted line is missing');
+  });
+
+  test('Row 4a: pristine drift (#3657 shape) → unknown, never Incorporated', () => {
+    resetFixture();
+    const FILE = 'agents/gsd-executor.md';
+    const oldPristine = 'old pristine line present when the backup was captured\n';
+    const newPristine = 'refreshed upstream snapshot line in the newer GSD release\n';
+    const userLine = 'user customisation line that upstream adopted in the release';
+    const backupContent = oldPristine + userLine + '\n';
+    const freshInstall = newPristine + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(oldPristine) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), newPristine); // hash mismatch → drift
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'a drifted baseline confirms nothing');
+    assert.deepEqual(report.incorporated_files, []);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_PRISTINE_DRIFT_DETECTED);
+  });
+
+  test('Row 4b: recorded hash but pristine absent (#934 shape) → unknown', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/debug.md';
+    const pristineContent = 'stock line that is long enough to be significant x\n';
+    const userLine = 'user custom line upstream adopted, but baseline is missing';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    // No pristine file on disk at all.
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'absent baseline confirms nothing even when all lines are present');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_NO_BASELINE);
+  });
+
+  test('Row 4c: no --pristine-dir (two-way fallback) → unknown', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/scan.md';
+    const pristineContent = 'stock line that is long enough to be significant y\n';
+    const userLine = 'user custom line upstream adopted, but no baseline was passed';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier({ includePristine: false });
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+  });
+
+  test('Row 4d: on-disk pristine but no recorded hash → unknown (unvalidated baseline)', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/undo.md';
+    const pristineContent = 'stock line that is long enough to be significant z\n';
+    const userLine = 'user custom line upstream adopted, but hash was never recorded';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    // Older installer: no pristine_hashes entry at all.
+    writeBackupMeta({});
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'an unvalidated snapshot cannot confirm adoption');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_UNVALIDATED_BASELINE);
+  });
+
+  test('Row 4d-2: a #4145-recovered (hash-matched orphan) baseline can confirm adoption', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/import.md';
+    const pristineContent = 'stock line that is long enough to be significant s\n';
+    const userLine = 'user custom line upstream adopted, baseline stored unprefixed';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    // The pristine snapshot sits WITHOUT the gsd-core/ prefix (an earlier
+    // release's writer dropped it) — only the #4145 hash scan can find it.
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, 'workflows', 'import.md'), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    // A recovered baseline is hash-confirmed by construction, so it VALIDATES
+    // and may confirm adoption — the #4136 classifier composes with the
+    // #4145 recovery instead of treating it as unknown.
+    assert.equal(report.incorporated, 1);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.INCORPORATED);
+    assert.deepEqual(r0.missing, []);
+  });
+
+  test('Row 4e: signature-looking short/fence lines do not drive the classification', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/health.md';
+    const pristineContent = 'stock line that is long enough to be significant w\n';
+    // The user hunk: a short heading (under the 12-char significance floor),
+    // a code fence, and ONE significant line.
+    const shortHeading = '## My Gate';
+    const fence = '```bash';
+    const significant = 'the substantive customization body line that matters';
+    const backupContent = pristineContent + shortHeading + '\n' + fence + '\n' + significant + '\n';
+    // Fresh install happens to contain the short heading (renamed section)
+    // and plenty of fences — but NOT the significant body line.
+    const freshInstall = pristineContent + '## My Gate\n' + '```bash\nls -la\n```\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'trivial-line presence must not fabricate adoption');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.NEEDS_MERGE);
+    assert.ok(r0.missing.includes(significant));
+    assert.ok(!r0.missing.includes(shortHeading), 'insufficiently-significant lines are excluded');
+    assert.ok(!r0.missing.includes(fence), 'structural lines are excluded');
+  });
+
+  test('Row 5: backup with zero significant delta vs validated pristine → unknown, never a skip', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/note.md';
+    const pristineContent = 'stock line that is long enough to be significant v\n';
+    const backupContent = pristineContent; // degenerate: backed up but identical
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), pristineContent);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_NO_USER_LINES_VS_PRISTINE);
+  });
+
+  test('Row 6: structural failures classify unknown; classify still exits 0', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/stats.md';
+    const pristineContent = 'stock line that is long enough to be significant u\n';
+    const userLine = 'user custom line that upstream adopted in this release';
+    const backupContent = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+    // Installed file deliberately absent.
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0, 'classify is informational; the post-merge gate enforces structure');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.FAIL_INSTALLED_MISSING);
+  });
+
+  test('Row 7: classify --json report shape is { checked, incorporated, incorporated_files, results }', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/help.md';
+    const pristineContent = 'stock line that is long enough to be significant t\n';
+    const userLine = 'user custom line that upstream adopted in this release';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { report } = runClassifier();
+    assert.deepEqual(Object.keys(report).sort(), ['checked', 'incorporated', 'incorporated_files', 'results']);
+    const r0 = report.results[0];
+    assert.deepEqual(Object.keys(r0).sort(), ['classification', 'file', 'missing', 'reason']);
+    assert.equal(typeof r0.file, 'string');
+    assert.equal(typeof r0.classification, 'string');
+    assert.ok(Array.isArray(r0.missing));
+  });
+
+  test('Row 8: Incorporated ends the re-graft cycle — the file drops out of the next backup', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/inbox.md';
+    const pristineV1 = 'stock v1 line that is long enough to be significant\n';
+    const userLine = 'user custom loop guard that upstream adopted in v2';
+    const backupContent = pristineV1 + userLine + '\n';
+    // v2 ships the user's line verbatim plus an unrelated upstream change.
+    const freshV2 = pristineV1 + userLine + '\n' + 'unrelated upstream improvement line in v2\n';
+
+    // Update #1: installer backs up the modified file + records the pristine.
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(pristineDir, FILE), pristineV1);
+    writeBackupMeta({ [FILE]: sha256(pristineV1) });
+    // The update wipes and installs v2; manifest now hashes v2's shipped bytes.
+    writeFile(path.join(configDir, FILE), freshV2);
+    const manifestV2 = { version: '2.0.0', files: { [FILE]: sha256(freshV2) } };
+    writeFile(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify(manifestV2, null, 2));
+
+    // Pre-flight classification: incorporated → the workflow leaves the file untouched.
+    const cls = runClassifier();
+    assert.equal(cls.status, 0);
+    assert.equal(cls.report.results[0].classification, CLASSIFICATION.INCORPORATED);
+    assert.equal(
+      fs.readFileSync(path.join(configDir, FILE), 'utf8'),
+      freshV2,
+      'incorporated files are NOT re-grafted — installed bytes stay as shipped',
+    );
+
+    // Post-merge gate passes on the untouched install (all user lines present).
+    const gate = runGate();
+    assert.equal(gate.status, 0, `gate must pass the untouched install; report=${JSON.stringify(gate.report)}`);
+    assert.equal(gate.report.failures, 0);
+
+    // Next update cycle: saveLocalPatches detection (manifest hash comparison)
+    // no longer flags the file — the forever loop is broken.
+    const stillModified = Object.entries(manifestV2.files)
+      .filter(([rel, hash]) => sha256(fs.readFileSync(path.join(configDir, rel), 'utf8')) !== hash)
+      .map(([rel]) => rel);
+    assert.deepEqual(stillModified, [], 'an incorporated file must drop out of the backup cycle');
+
+    // Counter-case (the pre-fix behavior): a re-grafted file WOULD be flagged again.
+    writeFile(path.join(configDir, FILE), freshV2 + userLine + '\n');
+    const reGraftedModified = Object.entries(manifestV2.files)
+      .filter(([rel, hash]) => sha256(fs.readFileSync(path.join(configDir, rel), 'utf8')) !== hash)
+      .map(([rel]) => rel);
+    assert.deepEqual(reGraftedModified, [FILE], 'a re-grafted file stays in the backup cycle forever');
+  });
+});
+
+describe('Bug #4136: workflow consumes the classifier (contract rows)', () => {
+  const WORKFLOW = path.join(ROOT, 'gsd-core', 'workflows', 'reapply-patches.md');
+
+  test('Step 4 runs the classifier before merging and gates it on PRISTINE_DIR', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    // reapply-patches.md is the installed runtime workflow — its text IS the
+    // deployed behavioral contract for --reapply, so structural assertions
+    // against the shipped text are the correct test form here.
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const classifyIdx = md.indexOf('--classify');
+    assert.ok(classifyIdx > 0, 'Step 4 must invoke the verifier with --classify');
+    const mergeRulesIdx = md.indexOf('### Three-way merge (when baseline is available)');
+    assert.ok(mergeRulesIdx > 0);
+    assert.ok(
+      classifyIdx < mergeRulesIdx,
+      'the classify invocation must precede the Step 4 merge rules (classify before merging)',
+    );
+    // Both invocations must be the runtime-installed path (locked separately
+    // by the #2994 fold); here we lock that the classify block is bounded by
+    // the same GSD_HOME-anchored script reference as the Step 5a gate.
+    const gateIdx = md.indexOf('verify-reapply-patches.cjs', classifyIdx);
+    assert.ok(gateIdx > classifyIdx, 'the Step 5a gate invocation must still follow the classify block');
+  });
+
+  test('Incorporated files are instructed NOT to be re-grafted', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const step4Idx = md.indexOf('## Step 4: Merge each file');
+    const step5Idx = md.indexOf('## Step 5: Hunk Verification Gate');
+    assert.ok(step4Idx > 0 && step5Idx > step4Idx);
+    const step4 = md.slice(step4Idx, step5Idx);
+    assert.ok(
+      step4.includes('INCORPORATED_FILES'),
+      'Step 4 must consume the classifier\'s incorporated_files list',
+    );
+    assert.ok(
+      /do NOT re-apply/i.test(step4),
+      'Step 4 must instruct that incorporated files are not re-grafted',
+    );
+    assert.ok(
+      step4.includes('Already in upstream'),
+      'the documented Step 7 Incorporated phrasing must be wired to the classifier output',
+    );
+  });
+
+  test('three-way merge rules include the already-present-verbatim rule', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const rulesIdx = md.indexOf('**Merge rules:**');
+    assert.ok(rulesIdx > 0);
+    const rulesBlock = md.slice(rulesIdx, md.indexOf('### Two-way merge'));
+    assert.ok(
+      rulesBlock.includes('already present verbatim'),
+      'the merge rule set must cover user content upstream already contains',
+    );
+  });
+
+  test('success_criteria covers the Incorporated / not-re-grafted contract', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const start = md.indexOf('<success_criteria>');
+    const end = md.indexOf('</success_criteria>');
+    assert.ok(start > 0 && end > start);
+    const block = md.slice(start, end);
+    assert.ok(
+      block.includes('Incorporated'),
+      'success_criteria must name the Incorporated disposition',
+    );
+    assert.ok(
+      /not re-grafted/i.test(block),
+      'success_criteria must require that superseded customizations are not re-grafted',
+    );
+  });
+});
+  });
+}
+
