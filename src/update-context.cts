@@ -138,6 +138,13 @@ function preferFirst(entries: RuntimeDirEntry[], preferred: string): RuntimeDirE
 // under $HOME can be a genuine project-local install at the same time. A
 // home-relative PATHNAME is therefore not sufficient evidence of globalness;
 // only being the selected candidate is.
+//
+// `home` is required by this module's own contract and `loadUpdateContext`
+// substitutes the OS home for an absent one. The pre-existing implicit-home
+// semantics of `path.resolve` are unchanged here, but the fast path now
+// exercises them too: calling the resolver directly with an empty or undefined
+// `home` — which the type forbids — reaches this probe where it previously did
+// not (Codex review of this PR).
 function resolveGlobalCandidate(
   fs: FsAdapter,
   env: Record<string, string | undefined>,

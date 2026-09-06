@@ -166,9 +166,10 @@ describe('resolveUpdateContext: runtime probing + env overrides', () => {
 
   // #4197: the dedup at line 88 above ("cwd === home does NOT misdetect as
   // LOCAL") only ever exercised the slow path, so the fast path added for #498
-  // could drop the guarantee without failing anything. These three rows put the
-  // same invariant on the fast path, and pin that fixing it did not simply make
-  // every fast-path answer GLOBAL.
+  // could drop the guarantee without failing anything. These five rows put the
+  // same invariant on the fast path, pin that both paths now resolve ONE global
+  // candidate, and pin that fixing it did not simply make every fast-path
+  // answer GLOBAL.
   test('cwd === home does NOT misdetect as LOCAL on the preferredConfigDir fast path (#4197)', () => {
     const fs = fakeFs({ [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x' });
     const r = resolveUpdateContext({
@@ -245,8 +246,12 @@ describe('resolveUpdateContext: runtime probing + env overrides', () => {
   });
 
   test('a genuine project-local install still reports LOCAL on the fast path (#4197)', () => {
-    // Non-vacuity control for the two rows above: the home-relative guard must
-    // reject ONLY the cwd === home case, not the fast path's LOCAL arm as such.
+    // Non-vacuity control: with no global candidate at all, a preferred
+    // cwd-local install stays LOCAL — the dedup must not swallow the fast
+    // path's LOCAL arm as such. (Stated over the ABSENCE of a global candidate,
+    // not over "cwd !== home": the env-collision row above is LOCAL-rejecting
+    // with cwd !== home, so a cwd-vs-home phrasing would contradict it —
+    // Codex review, round 2.)
     const local = `${CWD}/.claude`;
     const fs = fakeFs({ [ver(local)]: '1.39.0\n', [marker(local)]: 'x' });
     const r = resolveUpdateContext({
