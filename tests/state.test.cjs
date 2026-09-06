@@ -4067,8 +4067,20 @@ describe('#4243: begin-phase leaves prose lookalikes untouched, preserves unknow
     assert.ok(String(fm['stopped_at']).includes('curated stop note'), 'stopped_at must survive');
     const progress = fm['progress'];
     assert.ok(progress && typeof progress === 'object', 'progress block must survive');
-    assert.equal(progress['custom_subkey'], 77, 'custom progress subkey must survive');
-    assert.equal(progress['percent'], 40, 'progress.percent must survive');
+    // Numeric-tolerant: reconstructFrontmatter may serialize an unknown subkey
+    // as a quoted scalar, so it re-parses as a string — the VALUE surviving is
+    // the contract, not the YAML scalar shape.
+    assert.equal(Number(progress['custom_subkey']), 77, 'custom progress subkey must survive');
+    // With ROADMAP.md absent and a milestone asserted, the #3573/#4094 withhold
+    // keeps all four counters at their STORED values (pinned below) and omits
+    // percent (an unmeasured scan must not assert one, #3233). `percent` is a
+    // DECLARED derived subkey governed by that recorded semantics — unlike the
+    // custom subkey above, its absence here is the documented behavior, so this
+    // row deliberately does not pin its value in either arm.
+    assert.equal(Number(progress['total_phases']), 9, 'stored total_phases kept under the #3573 withhold');
+    assert.equal(Number(progress['completed_phases']), 4, 'stored completed_phases kept under the #3573 withhold');
+    assert.equal(Number(progress['total_plans']), 30, 'stored total_plans kept under the #3573 withhold');
+    assert.equal(Number(progress['completed_plans']), 12, 'stored completed_plans kept under the #3573 withhold');
     // Known keys still take the begin-phase update.
     assert.equal(fm['status'], 'executing');
     assert.equal(String(fm['current_phase']), '901');
@@ -4094,7 +4106,7 @@ describe('#4243: begin-phase leaves prose lookalikes untouched, preserves unknow
     assert.equal(fm['milestone_name'], 'Real Curated Name');
     const progress = fm['progress'];
     assert.ok(progress && typeof progress === 'object', 'progress block must survive');
-    assert.equal(progress['custom_subkey'], 77, 'custom progress subkey must survive');
+    assert.equal(Number(progress['custom_subkey']), 77, 'custom progress subkey must survive');
     assert.equal(fm['status'], 'executing');
   });
 
