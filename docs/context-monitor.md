@@ -62,6 +62,11 @@ degrades:
 | not a number, or outside 0-100 | the default for that key |
 | `critical >= warning` after resolution | **both** defaults — an inconsistent pair has no coherent reading, and honouring one side would silently discard the other |
 
+Note the two rows are different rules and compose in this order: an unusable
+value is replaced by ITS OWN default first, and only the resulting pair is
+checked. So `context_warning_threshold: 150` with `context_critical_threshold:
+30` resolves to 35 / 30 — not 35 / 25 — because 30 is usable and 30 < 35 holds.
+
 The pair check compares resolved values, so overriding only one key is still
 checked against the other's default: `context_warning_threshold: 20` on its own
 is inconsistent with the default critical of 25 and resolves back to 35 / 25.
@@ -69,6 +74,16 @@ Move both when either crosses the other. `gsd-tools config-set` validates the
 0-100 domain per key but deliberately does not enforce the pair, because it
 writes one key per call and a two-step retune is transiently inconsistent on
 disk.
+
+### Scope: the root project config only
+
+The monitor reads `<cwd>/.planning/config.json` and nothing else. It does not
+consult a workstream or sub-project config, so under `GSD_WORKSTREAM` (or
+`GSD_PROJECT`) a `gsd-tools config-set` lands in
+`.planning/workstreams/<name>/config.json` and the monitor keeps using the root
+value — or the default when the root has none. That is the same root-only scope
+`hooks.context_warnings` has always had; tune these keys in the root
+`.planning/config.json`.
 
 ## Debounce
 

@@ -8,8 +8,8 @@ group: Context Engineering Features
 
 **Requirements:**
 - REQ-CTX-01: Statusline MUST display context usage percentage to user
-- REQ-CTX-02: Context monitor MUST inject agent-facing warnings at ≤35% remaining (WARNING)
-- REQ-CTX-03: Context monitor MUST inject agent-facing warnings at ≤25% remaining (CRITICAL)
+- REQ-CTX-02: Context monitor MUST inject agent-facing warnings at the WARNING fire-point — ≤35% remaining by default, overridable per project via `hooks.context_warning_threshold`
+- REQ-CTX-03: Context monitor MUST inject agent-facing warnings at the CRITICAL fire-point — ≤25% remaining by default, overridable per project via `hooks.context_critical_threshold`
 - REQ-CTX-04: Warnings MUST debounce (5 tool uses between repeated warnings)
 - REQ-CTX-05: Severity escalation (WARNING→CRITICAL) MUST bypass debounce
 - REQ-CTX-06: Context monitor MUST differentiate GSD-active vs non-GSD-active projects

@@ -2590,10 +2590,14 @@ describe('#4285 regression: context-monitor thresholds resolve from .planning/co
   });
 
   test('an unusable value falls back to that key\'s default rather than throwing', () => {
-    // One row per rejection reason. Each is run at remaining 40, where the
-    // DEFAULT is silent and the honoured value (45) is not — so "silent" is the
-    // unique signature of a rejected value, and the accepted-45 test above is
-    // this table's non-vacuity control.
+    // One row per rejection reason, each run at remaining 40, where the default
+    // is silent and the honoured value (45) is not. Silence here is NOT a unique
+    // signature of rejection — Codex review of this PR showed that an accepted
+    // out-of-domain value can reach the same silence through the pair check
+    // instead (an accepted -5 pairs with the default critical 25, which is
+    // >= -5, so both revert and 40 is silent again). So this table proves
+    // "unusable input never fires early and never throws"; the two rows BELOW
+    // are what separate per-key fallback from honouring the value.
     const rejected = [
       ['string', '45'],
       ['above domain', 150],
@@ -2639,8 +2643,10 @@ describe('#4285 regression: context-monitor thresholds resolve from .planning/co
   test('an inconsistent pair falls back to BOTH defaults, not to the usable half', () => {
     // warning 20 / critical 25 is inconsistent (critical >= warning). Honouring
     // the warning half alone would leave remaining 30 SILENT; falling back to
-    // both defaults warns. The assertion distinguishes those two outcomes, so it
-    // fails if either side of the pair is honoured piecemeal.
+    // both defaults warns. NOTE the limit of this row, raised by Codex review:
+    // critical 25 IS the default here, so it cannot show that the CRITICAL side
+    // reverts — an implementation that reset only `warning` would pass it. The
+    // 45/50 block below is what pins both halves.
     const { exitCode, stdout } = runMonitorRaw({
       sessionId: sid('pair'),
       writeMetrics: true,
@@ -2671,6 +2677,92 @@ describe('#4285 regression: context-monitor thresholds resolve from .planning/co
     assert.match(stdout, /CONTEXT WARNING/,
       'warning 20 against the default critical 25 is inconsistent and resolves to 35/25, ' +
       'which warns at remaining 30');
+  });
+
+  test('an invalid key falls back alone — the sibling override survives', () => {
+    // Codex review: nothing above separated per-key fallback from a
+    // reset-BOTH implementation. Warning 45 is usable, critical is not.
+    // Per key -> (45, 25): remaining 40 is <= 45 and > 25, so WARNING.
+    // Reset both -> (35, 25): remaining 40 is above 35, so SILENCE.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('sibling'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: '30' } },
+    });
+
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unusable critical must not drag the usable warning override down with it');
+    assert.strictEqual(severityOf(stdout), 'warning',
+      'the critical side falls back to its own default 25, which remaining 40 is above');
+  });
+
+  test('a below-domain critical is rejected rather than honoured', () => {
+    // Codex review: the -5 row in the table above cannot tell rejection from
+    // acceptance. Here it can. Warning 45 with critical -5:
+    //   rejected -> (45, 25): remaining 20 is <= 25, so CRITICAL.
+    //   honoured -> (45, -5): remaining 20 is above -5, so merely WARNING.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('neg-critical'),
+      writeMetrics: true,
+      remaining: 20,
+      usedPct: 80,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: -5 } },
+    });
+
+    assert.strictEqual(severityOf(stdout), 'critical',
+      'a negative critical must fall back to 25 and escalate remaining 20; ' +
+      "'warning' here means -5 was honoured as a fire-point");
+  });
+
+  describe('an inconsistent pair of TWO configured values reverts both', () => {
+    // Codex review: the 20/25 row cannot prove the critical side resets, because
+    // 25 IS the default — an implementation that reset only `warning` would pass
+    // it. 45/50 is inconsistent with BOTH halves away from their defaults, so
+    // each reading below fails a different partial implementation.
+    const pair = { context_warning_threshold: 45, context_critical_threshold: 50 };
+
+    test('the warning half reverts: remaining 40 is silent', () => {
+      // Reverted -> warning 35, and 40 > 35 -> silence.
+      // Warning 45 preserved -> 40 <= 45 -> a warning would fire.
+      const { stdout } = runMonitorRaw({
+        sessionId: sid('pair45-40'), writeMetrics: true, remaining: 40, usedPct: 60,
+        planningConfig: { hooks: { ...pair } },
+      });
+      assert.strictEqual(stdout, '',
+        'output at remaining 40 means the configured warning 45 survived an inconsistent pair');
+    });
+
+    test('the critical half reverts: remaining 32 is WARNING, not CRITICAL', () => {
+      // Reverted -> critical 25, and 32 > 25 -> severity 'warning'.
+      // Critical 50 preserved -> 32 <= 50 -> severity 'critical'.
+      const { stdout } = runMonitorRaw({
+        sessionId: sid('pair45-32'), writeMetrics: true, remaining: 32, usedPct: 68,
+        planningConfig: { hooks: { ...pair } },
+      });
+      assert.match(stdout, /CONTEXT WARNING/, 'the default warning 35 must fire at remaining 32');
+      assert.strictEqual(severityOf(stdout), 'warning',
+        "'critical' at remaining 32 means the configured critical 50 survived an inconsistent pair");
+    });
+  });
+
+  test('an EQUAL pair is inconsistent too — critical must fire strictly deeper', () => {
+    // The boundary of the pair rule: `critical < warning`, not `<=`. With 45/45
+    // honoured, remaining 40 would be <= 45 on BOTH tests and every warning
+    // would arrive pre-escalated to CRITICAL. Rejected, both revert to 35/25 and
+    // remaining 40 is above the warning point.
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('equal-pair'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: 45 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'an equal pair must never fail the hook');
+    assert.strictEqual(stdout, '',
+      'an equal pair must revert to 35/25, leaving remaining 40 silent');
   });
 
   test('context_warnings:false still wins over configured thresholds', () => {
