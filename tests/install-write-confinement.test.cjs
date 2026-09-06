@@ -4237,3 +4237,144 @@ describe('Bug #4145: saveLocalPatches rescues hash-matching orphaned pristine sn
 });
   });
 }
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4135 (installer side). saveLocalPatches'
+// hash-validated regeneration (the #3407 promotion rule) keeps only
+// candidates byte-identical across the whole version span, so a
+// multi-version update leaves gsd-pristine/ holding near-zero baselines —
+// and the update output never says so in N-of-M terms. The fix keeps the
+// hash validation untouched (disk behavior is pinned here) and adds an
+// honest coverage summary via an exported typed helper.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4135-saveLocalPatches-coverage-line', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+
+const ROOT = path.join(__dirname, '..');
+const INSTALL = require(path.join(ROOT, 'bin', 'install.js'));
+const { cleanup } = require('./helpers.cjs');
+
+const MANIFEST_NAME = 'gsd-file-manifest.json';
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function countFiles(dir) {
+  let n = 0;
+  if (!fs.existsSync(dir)) return 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) n += countFiles(path.join(dir, entry.name));
+    else if (entry.isFile()) n += 1;
+  }
+  return n;
+}
+
+describe('Bug #4135: saveLocalPatches reports honest gsd-pristine coverage on multi-version updates', () => {
+  let tmpDir;
+  let configDir;
+  let newSrcDir;
+  let pristineDir;
+
+  beforeEach((t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4135-cov-'));
+    configDir = path.join(tmpDir, 'config');
+    newSrcDir = path.join(tmpDir, 'new-release-src');
+    pristineDir = path.join(configDir, 'gsd-pristine');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(newSrcDir, { recursive: true });
+    t.after(() => {
+      cleanup(tmpDir);
+    });
+  });
+
+  /**
+   * Seeds a multi-version-update fixture: `total` modified files, of which
+   * `identical` are byte-identical across the span (the only regenerable
+   * baselines) and the rest changed upstream in the incoming source.
+   */
+  function seedMultiVersionFixture(total, identical) {
+    const manifestFiles = {};
+    for (let i = 1; i <= total; i++) {
+      const rel = `gsd-core/workflows/flow-${String(i).padStart(2, '0')}.md`;
+      const pristine =
+        `# Flow ${i}\nStock content of the outgoing release for file ${i}.\n` +
+        `Second outgoing stock line ${i} with plenty of substance.\n`;
+      const user = pristine + `## User customisation ${i}\nCustom section on top of the outgoing release.\n`;
+      const incoming = (i <= identical)
+        ? pristine
+        : `# Flow ${i} (rewritten)\nIncoming release rewrote file ${i} across the span.\n`;
+      manifestFiles[rel] = sha256(pristine);
+      fs.mkdirSync(path.dirname(path.join(configDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(configDir, rel), user);
+      fs.mkdirSync(path.dirname(path.join(newSrcDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(newSrcDir, rel), incoming);
+    }
+    fs.writeFileSync(
+      path.join(configDir, MANIFEST_NAME),
+      JSON.stringify({ version: '1.10.0', timestamp: '2026-08-01T00:00:00Z', runtime: 'claude', scope: 'global', files: manifestFiles }, null, 2),
+    );
+    return total;
+  }
+
+  /**
+   * Core installer regression: the multi-version collapse itself is pinned
+   * (hash validation untouched — only the byte-identical file survives),
+   * and the honest N-of-M summary is available via the typed helper.
+   */
+  test('#4135: saveLocalPatches multi-version regen keeps hash validation and reports 1-of-13 coverage', () => {
+    const total = seedMultiVersionFixture(13, 1);
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const covered = countFiles(pristineDir);
+    assert.equal(covered, 1,
+      'the collapse is pinned: only the byte-identical file survives hash-validated regeneration');
+    assert.equal(typeof INSTALL.describeBaselineCoverage, 'function',
+      'the coverage summary must be rendered by an exported typed helper');
+    const summary = INSTALL.describeBaselineCoverage(total, covered);
+    assert.equal(summary.complete, false);
+    assert.equal(summary.uncovered, 12);
+    assert.equal(
+      summary.text,
+      'gsd-pristine/ baselines cover 1 of 13 modified file(s) — 12 will be reported no_baseline by the reapply verifier',
+      'partial coverage states the N-of-M collapse and its downstream effect',
+    );
+  });
+
+  /** Positive boundary: every modified file covered renders a complete summary. */
+  test('#4135: describeBaselineCoverage reports complete when every modified file is covered', () => {
+    const total = seedMultiVersionFixture(3, 3);
+
+    INSTALL.saveLocalPatches(configDir, {
+      packageSrc: newSrcDir, runtime: 'claude', pathPrefix: '$HOME/.claude/', isGlobal: true,
+    });
+
+    const covered = countFiles(pristineDir);
+    assert.equal(covered, 3, 'a fully byte-identical span regenerates every baseline');
+    const summary = INSTALL.describeBaselineCoverage(total, covered);
+    assert.equal(summary.complete, true);
+    assert.equal(summary.uncovered, 0);
+    assert.equal(
+      summary.text,
+      'gsd-pristine/ baselines cover 3 of 3 modified file(s)',
+      'complete coverage renders without a collapse tail',
+    );
+  });
+});
+  });
+}

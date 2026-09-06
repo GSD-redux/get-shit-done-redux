@@ -49,7 +49,7 @@ const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 // path under gsd-pristine/ (e.g. without the gsd-core/ prefix an earlier
 // release's writer dropped). Same module the installer's preserve-check uses,
 // so the two readers cannot drift apart again.
-const { findPristineByHash } = require('./lib/pristine-baseline.cjs');
+const { findPristineByHash, findPristineInGit } = require('./lib/pristine-baseline.cjs');
 
 const SIGNIFICANT_MIN_CHARS = 12;
 const GSD_HOOK_VERSION_LINE_RE = /^(?:\/\/|#)\s*gsd-hook-version:\s*\S+\s*$/i;
@@ -253,7 +253,7 @@ const PRISTINE_RESOLUTION = Object.freeze({
  * guard. Extracted from verifyFile's inline block so --classify reasons over
  * the exact same baseline semantics the post-merge gate enforces.
  */
-function resolvePristineBaseline({ relPath, pristineDir, pristineHashes }) {
+function resolvePristineBaseline({ relPath, configDir, pristineDir, pristineHashes }) {
   const hashKey = relPath.replace(/\\/g, '/');
   const recordedHash = pristineHashes && pristineHashes[hashKey];
   if (pristineDir) {
@@ -313,6 +313,27 @@ function resolvePristineBaseline({ relPath, pristineDir, pristineHashes }) {
     if (pristinePathExists) {
       // Present but not a regular file — over-broad mode is the safe side.
       return { resolution: PRISTINE_RESOLUTION.OVERBROAD, content: null };
+    }
+
+    // Bug #4135: still nothing under gsd-pristine/ — the multi-version
+    // regeneration collapse (the #3407 promotion rule only keeps files
+    // byte-identical across the WHOLE version span, so the surviving set is
+    // precisely the files upstream did not change). When the config dir is
+    // itself a git repository, its history may hold the outgoing bytes: this
+    // is the workflow's documented Option A (reapply-patches.md Step 2),
+    // anchored by the SAME authority every other tier trusts — exact
+    // pristine_hashes equality. Read-only (git log / git show); any failure
+    // (no git, not a repo, no matching blob) degrades to ABSENT_RECORDED.
+    // A recovered baseline is hash-confirmed by construction, so it VALIDATES.
+    if (!pristinePathExists && recordedHash) {
+      try {
+        const fromGit = findPristineInGit(configDir, hashKey, recordedHash);
+        if (fromGit !== null) {
+          return { resolution: PRISTINE_RESOLUTION.VALIDATED, content: fromGit };
+        }
+      } catch {
+        // git unavailable or history walk failed — ABSENT_RECORDED posture
+      }
     }
     // Bug #934: recordedHash is present (modern installer) but no
     // hash-matching pristine exists anywhere under gsd-pristine/ (the stat
@@ -431,15 +452,7 @@ function verifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHashe
   // hash-first recovery + #934 absent guard) moved into resolvePristineBaseline
   // so the pre-merge classifier reasons over the exact same semantics.
   const { resolution, content: pristineContent } =
-    resolvePristineBaseline({ relPath, pristineDir, pristineHashes });
-
-  // Bug #3657: the resolved snapshot hash-mismatches the recorded baseline.
-  // Skip the file with a diagnostic code rather than diffing against the
-  // wrong baseline (a re-anchor or git-aware baseline step is required).
-  if (resolution === PRISTINE_RESOLUTION.DRIFTED) {
-    result.reason = REASON.OK_PRISTINE_DRIFT_DETECTED;
-    return result;
-  }
+    resolvePristineBaseline({ relPath, configDir, pristineDir, pristineHashes });
 
   // Bug #934 / #4145: a hash was recorded (modern installer) but no
   // hash-matching pristine exists anywhere under gsd-pristine/ —
@@ -531,7 +544,7 @@ function classifyFile({ relPath, patchesDir, configDir, pristineDir, pristineHas
   }
 
   const { resolution, content: pristineContent } =
-    resolvePristineBaseline({ relPath, pristineDir, pristineHashes });
+    resolvePristineBaseline({ relPath, configDir, pristineDir, pristineHashes });
 
   if (resolution === PRISTINE_RESOLUTION.DRIFTED) {
     result.reason = REASON.OK_PRISTINE_DRIFT_DETECTED;

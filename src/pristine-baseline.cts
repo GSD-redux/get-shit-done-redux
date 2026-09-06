@@ -92,3 +92,19 @@ export function findPristineByHash(
   }
   return null;
 }
+
+/**
+ * #4135: recover a pristine baseline from the config dir's OWN git history,
+ * anchored by the recorded pristine_hashes entry.
+ *
+ * RED skeleton — returns null unconditionally so the regression rows for the
+ * coverage-widening tier fail behaviorally (ok_no_baseline posture unchanged)
+ * rather than at require time.
+ */
+export function findPristineInGit(
+  _gitDir: string,
+  _relPath: string,
+  _recordedHash: string,
+): string | null {
+  return null;
+}
