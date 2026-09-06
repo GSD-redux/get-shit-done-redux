@@ -2522,3 +2522,488 @@ describe('check.decision-coverage-verify — phase-prefixed decisions are readab
       `A plan mentioning D4-01 honors it. Got: ${JSON.stringify(parsed)}`);
   });
 });
+
+// ─── #4130 follow-up: check decision-coverage-plan --context <path> ──────────
+
+/**
+ * Row-1 failing-first regression for the --context flag (maintainer-directed
+ * follow-up to #4130, merged as #4357).
+ *
+ * Convention mirrored from the ONE flag-driven sibling check verb
+ * (`check predicate`, src/check-command-router.cts): `--flag value` pairs
+ * parsed with parsePredicateFlags semantics, `--context <path>` supplying the
+ * CONTEXT.md path, the flag WINNING over a same-purpose positional, and the
+ * positional form kept working (no sibling deprecates positionals; the
+ * plan-phase workflow caller passes positionals).
+ *
+ * Before the fix (probed on the base build):
+ *   - `--context <path>` alone landed `--context` in the args[2] phase slot →
+ *     plans scanned in a nonexistent `<project>/--context` dir → every
+ *     decision falsely uncovered (passed:false where the positional form
+ *     passes).
+ *   - `<phase> --context <path>` put the literal `--context` in the context
+ *     slot → silent "CONTEXT.md missing" green skip.
+ */
+describe('check.decision-coverage-plan — --context flag matches the positional form (#4130 follow-up)', () => {
+  let tmpDir;
+  let planningDir;
+  let phaseDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4130fu-');
+    planningDir = path.join(tmpDir, '.planning');
+    phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  /** Invoke the gate with a raw arg vector (after the subcommand). */
+  const runDcp = (args) => runGsdTools(['query', 'check.decision-coverage-plan', ...args], tmpDir);
+
+  const coveredContext = () => [
+    '# Phase 4 Context',
+    '',
+    '<decisions>',
+    '- **D4-01:** use the phase-scoped datastore',
+    '</decisions>',
+    '',
+  ].join('\n');
+
+  const coveredPlan = () => '# Plan\n## Must Haves\n- D4-01: provision the datastore\n';
+
+  test('ROW-1 RED: --context <path> alone routes identically to the positional form', () => {
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', coveredPlan());
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    const viaFlag = JSON.parse(runDcp(['--context', contextPath]).output || '{}');
+    const viaPositional = JSON.parse(runDcp([phaseDir, contextPath]).output || '{}');
+
+    // Before the fix: viaFlag was passed:false / covered:0 (the `--context`
+    // token landed in the phase-dir slot, so no plans were scanned).
+    assert.deepStrictEqual(viaFlag, viaPositional,
+      `--context must route identically to the positional form.\nflag: ${JSON.stringify(viaFlag)}\npos:  ${JSON.stringify(viaPositional)}`);
+    assert.strictEqual(viaPositional.passed, true, 'control: the covered fixture passes positionally');
+    assert.strictEqual(viaPositional.total, 1);
+    assert.strictEqual(viaPositional.covered, 1);
+  });
+
+  test('ROW-1 RED: <phase> --context <path> composes (flag value reaches the gate, not the phase slot)', () => {
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', coveredPlan());
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    const viaFlag = JSON.parse(runDcp([phaseDir, '--context', contextPath]).output || '{}');
+    const viaPositional = JSON.parse(runDcp([phaseDir, contextPath]).output || '{}');
+
+    // Before the fix: the literal `--context` was taken as the context path →
+    // silent "CONTEXT.md missing" green skip.
+    assert.deepStrictEqual(viaFlag, viaPositional,
+      `phase + --context must compose.\nflag: ${JSON.stringify(viaFlag)}\npos:  ${JSON.stringify(viaPositional)}`);
+    assert.strictEqual(viaFlag.passed, true);
+  });
+
+  test('ROW-1 RED: --context <path> <phase> (flag first) is order-independent', () => {
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', coveredPlan());
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    const viaFlagFirst = JSON.parse(runDcp(['--context', contextPath, phaseDir]).output || '{}');
+    const viaPositional = JSON.parse(runDcp([phaseDir, contextPath]).output || '{}');
+    assert.deepStrictEqual(viaFlagFirst, viaPositional);
+    assert.strictEqual(viaFlagFirst.passed, true);
+    assert.strictEqual(viaFlagFirst.covered, 1);
+  });
+
+  test('ROW-1 RED: --context wins when both flag and positional context are supplied', () => {
+    // Flag file: one covered decision (passed:true, total:1).
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', coveredPlan());
+    const flagContext = path.join(phaseDir, 'CONTEXT.md');
+    // Positional decoy: a none-present file (would skip with total:0).
+    const decoyContext = path.join(phaseDir, 'DECOY-CONTEXT.md');
+    fs.writeFileSync(decoyContext, '# Nothing decision-shaped here.\n');
+
+    const viaBoth = JSON.parse(runDcp([phaseDir, decoyContext, '--context', flagContext]).output || '{}');
+    const viaFlagOnly = JSON.parse(runDcp(['--context', flagContext]).output || '{}');
+
+    assert.deepStrictEqual(viaBoth, viaFlagOnly,
+      `--context must win over the positional context.\nboth: ${JSON.stringify(viaBoth)}\nflag: ${JSON.stringify(viaFlagOnly)}`);
+    assert.strictEqual(viaBoth.passed, true);
+    assert.strictEqual(viaBoth.total, 1);
+  });
+
+  test('uncovered decision via --context reports the coverage gap (no false pass, no false fail)', () => {
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', '# Plan\n## Must Haves\n- Something unrelated.\n');
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    const viaFlag = JSON.parse(runDcp(['--context', contextPath]).output || '{}');
+    const viaPositional = JSON.parse(runDcp([phaseDir, contextPath]).output || '{}');
+    assert.deepStrictEqual(viaFlag, viaPositional);
+    assert.strictEqual(viaFlag.passed, false);
+    assert.deepStrictEqual((viaFlag.uncovered || []).map((u) => u.id), ['D4-01']);
+  });
+
+  test('could-not-parse CONTEXT via --context fails loud exactly like the positional form', () => {
+    writeContextFile(phaseDir, [
+      '<decisions>',
+      '- **DEC-01:** an ID grammar the parser does not support',
+      '</decisions>',
+      '',
+    ].join('\n'));
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    const viaFlag = JSON.parse(runDcp(['--context', contextPath]).output || '{}');
+    const viaPositional = JSON.parse(runDcp([phaseDir, contextPath]).output || '{}');
+    assert.deepStrictEqual(viaFlag, viaPositional);
+    assert.strictEqual(viaFlag.passed, false);
+    assert.strictEqual(viaFlag.reason, 'could-not-parse');
+  });
+
+  test('back-compat: the positional form is byte-identical to a no-flag run (control row)', () => {
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', coveredPlan());
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    const a = runDcp([phaseDir, contextPath]).output;
+    const b = runDecisionCoveragePlan(phaseDir, contextPath, tmpDir).output;
+    assert.strictEqual(a, b);
+    assert.strictEqual(JSON.parse(a || '{}').passed, true);
+  });
+
+  test('--context <nonexistent-path> keeps the legitimate green skip', () => {
+    const missing = path.join(phaseDir, 'NOPE-CONTEXT.md');
+    const viaFlag = JSON.parse(runDcp(['--context', missing]).output || '{}');
+    const viaPositional = JSON.parse(runDcp([phaseDir, missing]).output || '{}');
+    assert.deepStrictEqual(viaFlag, viaPositional);
+    assert.strictEqual(viaFlag.passed, true);
+    assert.strictEqual(viaFlag.skipped, true);
+    assert.strictEqual(viaFlag.reason, 'CONTEXT.md missing');
+  });
+
+  test('valueless trailing --context falls through to the #2770 fail-closed caller error', () => {
+    // Mirrors the sibling parser (parsePredicateFlags): a `--flag` with no
+    // value is a boolean, never a path. The caller supplied no context path,
+    // which #2770 treats as a caller error — NOT as "no CONTEXT.md".
+    const viaFlag = JSON.parse(runDcp([phaseDir, '--context']).output || '{}');
+    assert.strictEqual(viaFlag.passed, false,
+      `A valueless --context is a caller error, not a green skip. Got: ${JSON.stringify(viaFlag)}`);
+    assert.strictEqual(viaFlag.reason, 'missing context path argument');
+  });
+
+  test('negative space: decision-coverage-verify keeps its positional arg surface (flag is plan-only)', () => {
+    writeContextFile(phaseDir, coveredContext());
+    writePlanFile(phaseDir, '01', coveredPlan());
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+
+    // The verify gate is out of scope by directive: its positional contract
+    // is unchanged, and it does not gain --context handling.
+    const verify = JSON.parse(runGsdTools(['query', 'check.decision-coverage-verify', phaseDir, contextPath], tmpDir).output || '{}');
+    assert.strictEqual(verify.total, 1);
+    assert.strictEqual(verify.honored, 1);
+
+    const verifyFlagForm = JSON.parse(runGsdTools(['query', 'check.decision-coverage-verify', phaseDir, '--context', contextPath], tmpDir).output || '{}');
+    assert.strictEqual(verifyFlagForm.skipped, true,
+      `verify must keep reading args[3] positionally (unchanged base behavior). Got: ${JSON.stringify(verifyFlagForm)}`);
+    assert.strictEqual(verifyFlagForm.reason, 'CONTEXT.md missing');
+  });
+});
+
+// ─── #4130 follow-up: parseDecisions regex hardening (quadratic backtracking) ─
+
+/**
+ * Row-1 failing-first regression for the regex-seam hardening.
+ *
+ * The #4357 security review measured ~740ms @ 40k chars on pathological
+ * single bullets and deferred the fix here. Mechanism (10-diagnosis.md):
+ * (1) the ID tail `[A-Za-z0-9][A-Za-z0-9_-]*` overlaps the pre-separator
+ *     class `[^:*]*`, so a failing match re-splits the tail O(n) times with
+ *     an O(n) scan each — O(n²);
+ * (2) the em-dash form's `[^*]*[—–]` first separator can retry at every dash
+ *     position with an O(n) scan after each — O(n²).
+ *
+ * Hardening under test (byte-identical on all legal inputs):
+ * - atomic ID via the `(?=(X))\1` lookahead emulation (group 1 unchanged);
+ * - em-dash first separator narrowed to `[^*—–]*[—–]` (FIRST dash, unique
+ *   split point).
+ *
+ * Repo rule: no wall-time asserts. Node's RegExp engine exposes no injectable
+ * step counter, so no honest deterministic op-count proxy exists (documented
+ * in 10-diagnosis.md); the pin is structural (lattice), differential (vs the
+ * frozen pre-hardening reference below), and correctness-at-scale.
+ */
+describe('parseDecisions hardening — regex lattice pins the mechanism (#4130 follow-up)', () => {
+  const SRC = path.resolve(__dirname, '../src/decisions.cts');
+
+  /** Extract a `const NAME = '<value>';` single-quoted string literal. */
+  function readStringConst(source, name) {
+    const m = source.match(new RegExp(`^const ${name} = '([^']*)';$`, 'm'));
+    assert.ok(m, `source must declare const ${name} as a plain string literal`);
+    return m[1];
+  }
+
+  /** Extract a `new RegExp(`...`)` template body and substitute ${CONSTS}. */
+  function readRegExpTemplate(source, varName, consts) {
+    const m = source.match(new RegExp(`^const ${varName} = new RegExp\\(\n  \`([^\`]+)\`,?\n?\);?`, 'm'));
+    assert.ok(m, `source must declare ${varName} as a template-literal RegExp`);
+    let out = m[1];
+    for (const [name, value] of Object.entries(consts)) {
+      out = out.split(`\${${name}}`).join(value);
+    }
+    assert.ok(!out.includes('\${'), `unsubstituted template placeholder in ${varName}`);
+    return out;
+  }
+
+  const source = fs.readFileSync(SRC, 'utf8');
+  const idSource = readStringConst(source, 'DECISION_ID_SOURCE');
+  const idAttempt = readStringConst(source, 'ID_ATTEMPT_SOURCE');
+  const consts = { DECISION_ID_SOURCE: idSource, ID_ATTEMPT_SOURCE: idAttempt };
+  const colonSrc = readRegExpTemplate(source, 'bulletColonRe', consts);
+  const emDashSrc = readRegExpTemplate(source, 'bulletEmDashRe', consts);
+  const titledSrc = readRegExpTemplate(source, 'bulletTitledColonRe', consts);
+
+  test('ROW-1 RED: the ID grammar constants are unchanged (the parity pin survives hardening)', () => {
+    assert.strictEqual(idSource, 'D[0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*');
+    assert.strictEqual(idAttempt, 'D(?:[0-9][A-Za-z0-9]*)?-');
+  });
+
+  test('ROW-1 RED: all three bullet grammars consume the ID atomically (no tail re-split)', () => {
+    // The (?=(X))\1 lookahead emulation is what makes the ID give-back
+    // impossible: lookarounds are atomic in ECMAScript, and the backreference
+    // must replay exactly what the lookahead captured. On the base the
+    // sources had `(D...-...)` bare — the quadratic driver #1.
+    const atomic = `(?=(${idSource}))\\1`;
+    for (const [name, src] of [['bulletColonRe', colonSrc], ['bulletEmDashRe', emDashSrc], ['bulletTitledColonRe', titledSrc]]) {
+      assert.ok(src.includes(atomic), `${name} must wrap the ID in the atomic (?=(X))\\1 emulation:\n${src}`);
+    }
+  });
+
+  test('ROW-1 RED: the em-dash first separator is narrowed to the FIRST dash (no dash re-split)', () => {
+    // `[^*]*[—–]` admits O(k) separator split points on a dash-laden title;
+    // `[^*—–]*[—–]` has exactly one. The narrowing is behavior-preserving
+    // because every candidate dash lies before the first `*` and the second
+    // `[^*]*` scan reaches that same first star from any candidate.
+    assert.ok(emDashSrc.includes('[^*—–]*[—–]'),
+      `bulletEmDashRe must use the narrowed first separator:\n${emDashSrc}`);
+    assert.ok(!emDashSrc.includes('[^*]*[—–]'),
+      `bulletEmDashRe must not retain the overlapping first separator:\n${emDashSrc}`);
+  });
+
+  test('lattice: no unbounded class quantifier is immediately followed by an atom its class accepts', () => {
+    // The adjacency that admitted both quadratic drivers: `C*` directly
+    // followed by an atom that can start with a char C also accepts lets the
+    // engine trade characters between the two — O(n) splits × O(n) rescans.
+    // After the hardening every unbounded bracketed class run in the three
+    // grammars is followed by a token disjoint from its class (or by a group
+    // boundary, whose overlap is excluded separately by the atomic-wrapper
+    // assert above).
+    const joined = `${colonSrc}\n${emDashSrc}\n${titledSrc}`;
+    const quantifiers = [...joined.matchAll(/\[((?:[^\]\\]|\\.)*)\](\*|\+)/g)];
+    assert.ok(quantifiers.length >= 6, 'expected the seam\'s class quantifiers to be found');
+
+    // First-set of the atom that follows a quantified class, as a membership
+    // predicate over candidate characters. `null` = boundary (group close,
+    // anchor, end) — not a direct adjacency; skip.
+    function nextAtomFirstSet(src, at) {
+      if (at >= src.length) return null;
+      const c = src[at];
+      if (c === ')' || c === '$' || c === '|') return null;
+      if (c === '\\') return (ch) => ch === src[at + 1];
+      if (c === '[') {
+        const close = src.indexOf(']', at);
+        const body = src.slice(at + 1, close);
+        const negated = body.startsWith('^');
+        const members = body.replace(/^\^/, '');
+        return negated ? (ch) => !members.includes(ch) : (ch) => members.includes(ch);
+      }
+      return (ch) => ch === c;
+    }
+
+    for (const m of quantifiers) {
+      const body = m[1];
+      const quant = m[2];
+      const negated = body.startsWith('^');
+      const members = body.replace(/^\^/, '').replace(/\\./g, (s) => s.slice(1));
+      const classAccepts = negated ? (ch) => !members.includes(ch) : (ch) => members.includes(ch);
+      const firstSet = nextAtomFirstSet(joined, m.index + m[0].length);
+      if (firstSet === null) continue;
+      // A witness char the class accepts that the following atom also accepts.
+      const ALPHABET = '*:-[]()Ds01_—–\\ \tn';
+      const witness = [...ALPHABET].find((ch) => classAccepts(ch) && firstSet(ch));
+      assert.ok(witness === undefined,
+        `unbounded quantifier [${body}]${quant} is followed by an atom accepting '${witness}' which its class also accepts — adjacency overlap:\n${joined.slice(m.index, m.index + m[0].length + 10)}`);
+    }
+  });
+
+  test('lattice: capture-group indices are preserved (id, tags, body)', () => {
+    // (?=(X))\1 keeps group 1 = the full id (the lookahead's capture IS group
+    // 1), so the handlers' match[1]/[2]/[3] reads stay untouched. Pin the
+    // count so a refactor cannot silently renumber the groups.
+    for (const [name, src] of [['bulletColonRe', colonSrc], ['bulletEmDashRe', emDashSrc], ['bulletTitledColonRe', titledSrc]]) {
+      const groups = (src.match(/\(/g) || []).length - (src.match(/\(\?:/g) || []).length - (src.match(/\(\?=/g) || []).length;
+      assert.strictEqual(groups, 3, `${name} must keep exactly 3 capturing groups (id/tags/body):\n${src}`);
+    }
+  });
+});
+
+describe('parseDecisions hardening — byte-identical vs the pre-hardening reference (#4130 follow-up)', () => {
+  /**
+   * FROZEN REFERENCE — the three bullet grammars exactly as they shipped on
+   * origin/next @ e6d047decc (PR #4357). The hardened module must agree with
+   * this reference on match/no-match AND all capture groups for every input
+   * the generator can produce. If the reference and the module ever disagree,
+   * behavior drifted — this is the "pure hardening" contract.
+   */
+  const REF_ID = 'D[0-9]*-[A-Za-z0-9][A-Za-z0-9_-]*';
+  const refColon = new RegExp(`^\\s*-\\s+\\*\\*(${REF_ID})(?:\\s*\\[([^\\]]+)\\])?[^:*]*:\\*\\*\\s*(.*)$`);
+  const refEmDash = new RegExp(`^\\s*-\\s+\\*\\*(${REF_ID})(?:\\s*\\[([^\\]]+)\\])?[^*]*[—–][^*]*\\*\\*\\s*(.*)$`);
+  const refTitled = new RegExp(`^\\s*-\\s+\\*\\*(${REF_ID})(?:\\s*\\[([^\\]]+)\\])?[^:*]*:[^:*]*\\*\\*\\s*(.*)$`);
+  const refGuard = /^\s*-\s+\*\*D(?:[0-9][A-Za-z0-9]*)?-/;
+  const refBoldLeadIn = /^\s*-\s+\*\*[A-Z]+[0-9]*-[A-Za-z0-9]/m;
+  const refToken = /\bD[0-9]*-[A-Za-z0-9]/m;
+
+  /**
+   * The expected single-bullet outcome, computed by the frozen reference:
+   * the three grammars in the module's precedence order, then the parse-miss
+   * guard, then the FIX A evidence detectors (bold-lead-in / bare token) —
+   * exactly the module's single-line block-path decision order.
+   */
+  function referenceOutcome(line) {
+    const m = refColon.exec(line) || refEmDash.exec(line) || refTitled.exec(line);
+    if (m) {
+      const tags = m[2] ? m[2].split(',').map((t) => t.trim().toLowerCase()).filter(Boolean) : [];
+      return {
+        outcome: 'parsed',
+        decisions: [{
+          id: m[1],
+          text: (m[3] || '').trim(),
+          category: '',
+          tags,
+          trackable: !tags.some((t) => ['informational', 'folded', 'deferred'].includes(t)),
+        }],
+      };
+    }
+    if (refGuard.test(line)) return { outcome: 'could-not-parse', decisions: [] };
+    if (refBoldLeadIn.test(line) || refToken.test(line)) return { outcome: 'could-not-parse', decisions: [] };
+    return { outcome: 'none-present', decisions: [] };
+  }
+
+  // Generator: adversarial single-line bullets around the seam's alphabet.
+  const idArb = fc.oneof(
+    fc.integer({ min: 1, max: 99 }).map((n) => `D-${String(n).padStart(2, '0')}`),
+    fc.tuple(fc.integer({ min: 1, max: 12 }), fc.integer({ min: 1, max: 99 }))
+      .map(([p, n]) => `D${p}-${String(n).padStart(2, '0')}`),
+    fc.constantFrom('D-INFRA-01', 'D-7', 'D-carry_2', 'D4x-01', 'DEC-01', 'D-notes'),
+  );
+  const fuzzArb = (maxWords) => fc.array(
+    fc.constantFrom('use', 'the:', 'a*', '**', '—', '–', '[x]', 'y]', 'ratio 3:1', '-', 'D4-01', 'x,', 'why', 'ok', '**D-99:', 'until'),
+    { maxLength: maxWords },
+  ).map((w) => w.join(' '));
+  const sepArb = fc.constantFrom(':', ' — ', ': ', ' —', ':** ', ' ');
+  const leadArb = fc.constantFrom('', '  ', '\t');
+
+  const lineArb = fc.tuple(leadArb, idArb, fc.constantFrom('', ' [informational]', ' [a, b]', ' [unterminated'), sepArb, fuzzArb(14), fuzzArb(10), fc.boolean())
+    .map(([lead, id, tags, sep, mid, tail, boldClose]) => {
+      const close = boldClose ? '**' : '';
+      return `${lead}- **${id}${tags}${sep}${mid}${close} ${tail}`;
+    });
+
+  test('property: hardened module === frozen pre-hardening reference on every generated bullet', () => {
+    fc.assert(fc.property(lineArb, (line) => {
+      const expected = referenceOutcome(line);
+      const got = extractDecisions(inBlock(line));
+      assert.strictEqual(got.outcome, expected.outcome,
+        `outcome drifted on ${JSON.stringify(line)}: got ${got.outcome}, want ${expected.outcome}`);
+      assert.deepStrictEqual(got.decisions, expected.decisions,
+        `decisions drifted on ${JSON.stringify(line)}:\ngot:  ${JSON.stringify(got.decisions)}\nwant: ${JSON.stringify(expected.decisions)}`);
+      return true;
+    }));
+  });
+
+  test('em-dash titles with MULTIPLE dashes capture identically to the reference (first-dash narrowing)', () => {
+    fc.assert(fc.property(
+      decisionIdArb,
+      fuzzArb(6),
+      fuzzArb(6),
+      (id, title, body) => {
+        const line = `- **${id} — ${title} — ${title}** ${body}`;
+        const expected = referenceOutcome(line);
+        const got = extractDecisions(inBlock(line));
+        assert.strictEqual(got.outcome, expected.outcome);
+        assert.deepStrictEqual(got.decisions, expected.decisions,
+          `multi-dash title drifted on ${JSON.stringify(line)}`);
+        return true;
+      },
+    ));
+  });
+
+  test('the #4130/#3939/#1639 fixture grammar round-trips byte-identically', () => {
+    const fixtures = [
+      ['- **D-01:** a short single-line decision.', 'D-01', 'a short single-line decision.'],
+      ['- **D4-01:** phase-prefixed.', 'D4-01', 'phase-prefixed.'],
+      ['- **D12-01:** two-digit phase.', 'D12-01', 'two-digit phase.'],
+      ['- **D-INFRA-01:** alnum tail.', 'D-INFRA-01', 'alnum tail.'],
+      ['- **D-01 [informational]:** tagged.', 'D-01', 'tagged.'],
+      ['- **D4-01 — title** body here', 'D4-01', 'body here'],
+      ['- **D-01 — a — b — c** body', 'D-01', 'body'],
+      ['- **D-01: Title.** body', 'D-01', 'body'],
+      ['- **D-01 pre-colon prose:** text', 'D-01', 'text'],
+    ];
+    for (const [line, wantId, wantText] of fixtures) {
+      const r = extractDecisions(inBlock(line));
+      assert.strictEqual(r.outcome, 'parsed', `fixture must still parse: ${JSON.stringify(line)}`);
+      assert.strictEqual(r.decisions[0].id, wantId, `id drifted on ${JSON.stringify(line)}`);
+      assert.strictEqual(r.decisions[0].text, wantText, `text drifted on ${JSON.stringify(line)}`);
+    }
+    // Typo'd prefix and prose labels keep their #4130 outcomes.
+    assert.strictEqual(extractDecisions(inBlock('- **D4x-01:** typo')).outcome, 'could-not-parse');
+    assert.strictEqual(extractDecisions(inBlock('- **Deferred-until-X:** prose')).outcome, 'none-present');
+  });
+});
+
+describe('parseDecisions hardening — pathological single bullets terminate correctly (#4130 follow-up)', () => {
+  // The #4357 cliff shapes at full scale. NO wall-time assert (repo rule):
+  // under the hardening these complete in well under a millisecond each; if
+  // the quadratic ambiguity is ever reintroduced these become CI timeouts,
+  // never false passes. What is asserted is the CORRECT outcome.
+  test('40k hyphen-laden ID tail (colon cliff shape) → could-not-parse via the guard', () => {
+    const bullet = '- **D-' + 'a-'.repeat(20000);
+    const r = extractDecisions(inBlock(bullet));
+    assert.strictEqual(r.outcome, 'could-not-parse',
+      'the malformed mega-bullet must fail loud (parse-miss guard), not hang or vanish');
+    assert.deepStrictEqual(r.decisions, []);
+  });
+
+  test('40k dash run after the separator (em-dash cliff shape) → could-not-parse via the guard', () => {
+    const bullet = '- **D-01 —' + '–'.repeat(40000 - 10);
+    const r = extractDecisions(inBlock(bullet));
+    assert.strictEqual(r.outcome, 'could-not-parse');
+    assert.deepStrictEqual(r.decisions, []);
+  });
+
+  test('40k colon run (titled-colon cliff shape) → could-not-parse via the guard', () => {
+    const bullet = '- **D-01: ' + 'x: '.repeat(13000);
+    const r = extractDecisions(inBlock(bullet));
+    assert.strictEqual(r.outcome, 'could-not-parse');
+  });
+
+  test('40k LEGAL single-line decision parses with its text byte-identical (no clamp)', () => {
+    const text = 'use the phase-scoped datastore '.repeat(1400).trim();
+    const bullet = `- **D4-01:** ${text}`;
+    const r = extractDecisions(inBlock(bullet));
+    assert.strictEqual(r.outcome, 'parsed', 'a legal mega-bullet must parse — no line-length clamp exists');
+    assert.strictEqual(r.decisions.length, 1);
+    assert.strictEqual(r.decisions[0].id, 'D4-01');
+    assert.strictEqual(r.decisions[0].text, text);
+  });
+
+  test('40k LEGAL wrapped-form decision still joins and parses (cliff shapes do not regress #3939)', () => {
+    const text = 'provision the datastore '.repeat(1500).trim();
+    const md = `<decisions>\n- **D4-01:** ${text}\n</decisions>\n`;
+    const r = extractDecisions(md);
+    assert.strictEqual(r.outcome, 'parsed');
+    assert.strictEqual(r.decisions[0].text, text);
+  });
+});
