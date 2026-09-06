@@ -548,15 +548,24 @@ function cmdLoopRenderHooks(
   // #2237 foreign-prefix guard `init.*` applies, rather than reopening that
   // bug for this new call site. A phase-scoped step/gate/contribution handler
   // gets the task-local phase instead of inferring it from STATE.current_phase
-  // or an ambient shell variable. Never accepts a caller-supplied directory —
-  // phaseDir is always the literal on-disk directory name findPhaseInternal
-  // matched, so there is no path string to validate. A missing or ambiguous
-  // phase degrades to "no context" plus a warning (mirroring cmdInitPhaseOp's
-  // #2237 handling of the identical found:false/ambiguous_matches shape)
-  // rather than a hard error.
+  // or an ambient shell variable. A missing or ambiguous phase degrades to "no
+  // context" plus a warning (mirroring cmdInitPhaseOp's #2237 handling of the
+  // identical found:false/ambiguous_matches shape) rather than a hard error.
+  //
+  // `--phase-dir` is accepted, but only ever as a CHECK against what the token
+  // resolved to — never as an independent path. The emitted phaseDir is always
+  // a directory the locator itself produced, so there is still no caller path
+  // to confine, and `--phase 05 --phase-dir <another in-project phase>` is
+  // rejected as incoherent rather than silently believed — a disagreement no
+  // containment check could catch, since both paths are inside the project.
   const phaseArg = typeof options['phase'] === 'string' ? options['phase'] : undefined;
   if (phaseArg === '') {
     coreError('--phase requires a <token> value (e.g. --phase 05)');
+    return;
+  }
+  const phaseDirArg = typeof options['phaseDir'] === 'string' ? options['phaseDir'] : undefined;
+  if (phaseDirArg === '') {
+    coreError('--phase-dir requires a <dir> value (e.g. --phase-dir .planning/phases/05-widgets)');
     return;
   }
   let phaseContext: { phase: string; phaseDir: string } | undefined;
@@ -573,8 +582,26 @@ function cmdLoopRenderHooks(
     };
     const phaseResult = guardedFindPhase(cwd, phaseArg, config['project_code']);
     if (phaseResult?.found) {
-      phaseContext = { phase: phaseResult.phase_number, phaseDir: phaseResult.directory };
+      // A supplied --phase-dir must AGREE with what the token resolved to.
+      // Confinement is not the interesting failure here: two in-project
+      // directories both pass any containment check, yet `--phase 05
+      // --phase-dir .planning/phases/07-other` is an incoherent pair no
+      // confinement can catch. Comparing against the derived value rejects it.
+      if (phaseDirArg !== undefined && phaseDirArg !== phaseResult.directory) {
+        phaseWarnings.push(
+          `--phase-dir ${JSON.stringify(phaseDirArg)} does not match the directory ` +
+          `--phase ${JSON.stringify(phaseArg)} resolves to (${JSON.stringify(phaseResult.directory)}); context omitted.`,
+        );
+      } else {
+        phaseContext = { phase: phaseResult.phase_number, phaseDir: phaseResult.directory };
+      }
     } else if (phaseResult?.ambiguous_matches?.length) {
+      // An ambiguous token yields no context even when --phase-dir names one of
+      // the candidates. Letting the directory pick a winner would make it an
+      // independent source of truth in exactly the case where the token has
+      // none to check it against, and `init.*` does not disambiguate here
+      // either (#2237) — a token matching two directories is a project to fix,
+      // not an argument to route around.
       phaseWarnings.push(
         `--phase ${JSON.stringify(phaseArg)} is ambiguous: ${phaseResult.ambiguous_matches.length} ` +
         `directories match (${phaseResult.ambiguous_matches.map((m) => `"${m}"`).join(', ')}); context omitted.`,
@@ -582,6 +609,12 @@ function cmdLoopRenderHooks(
     } else {
       phaseWarnings.push(`--phase ${JSON.stringify(phaseArg)} did not match a phase directory; context omitted.`);
     }
+  } else if (phaseDirArg !== undefined) {
+    // --phase-dir alone cannot be honoured: it is checked against the token's
+    // resolution, and with no token there is nothing to check it against.
+    // Accepting it here would make it the independent, unconfined caller path
+    // this design exists to avoid (see #4354 for that shape's failure mode).
+    phaseWarnings.push('--phase-dir requires --phase; it is verified against the token\'s resolution, never used alone. Context omitted.');
   }
 
   // ── ADR-1244 D2: load-failed capability gates FAIL OPEN with a loud warning ────

@@ -30,15 +30,21 @@ operating on, across `plan-phase.md`, `execute-phase.md`, `verify-work.md`,
 `code-review-fix.md`, and `gsd-core/references/loop-hook-dispatch.md` tells
 every `step` / `gate` dispatch how to project it onto the unit it invokes.
 
-**The resolver derives the directory; the caller never supplies one.**
-`--phase` takes only the bare token every workflow already holds (`"05"`,
-including decimal phases like `"07.5"`). `phaseDir` is whatever on-disk
-directory `guardedFindPhase` matched, so an incoherent phase/directory pair
-is unrepresentable rather than merely rejected, and path traversal,
-absolute-path substitution and symlink escape have no input to travel
-through. Resolution goes through the same `project_code` foreign-prefix
-guard `init.*` applies, so a token like `OTHER-05` does not resolve to this
-project's Phase 5.
+**The resolver derives the directory; a supplied one is only ever a check.**
+`--phase` takes the bare token every workflow already holds (`"05"`,
+including decimal phases like `"07.5"`), and `phaseDir` is whatever on-disk
+directory `guardedFindPhase` matched. Path traversal, absolute-path
+substitution and symlink escape therefore have no input to travel through.
+Resolution goes through the same `project_code` foreign-prefix guard `init.*`
+applies, so a token like `OTHER-05` does not resolve to this project's
+Phase 5.
+
+`--phase-dir <dir>` is accepted alongside `--phase` and compared against that
+resolution: agreeing values pass through, disagreeing ones omit `context` with
+a warning naming both, and `--phase-dir` on its own is refused. This catches
+the mismatch a containment check cannot — `--phase 05 --phase-dir
+.planning/phases/07-other` names two different phases that are *both* inside
+the project.
 
 **Known limits:**
 - Omitting `--phase` reproduces the previous envelope exactly — no

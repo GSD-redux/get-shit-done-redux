@@ -2772,11 +2772,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             // --phase <token> (#4030): task-local phase for the invocation.
             // Mirrors the --runtime dual-form parsing above.
             const loopPhase = readDualFormFlag(args, '--phase', 'Missing value for --phase (e.g. --phase 05)', error);
+            // --phase-dir <dir> (#4030): optional cross-check on --phase. The
+            // resolver compares it against the directory the token resolves to
+            // and never uses it as an independent path.
+            const loopPhaseDir = readDualFormFlag(args, '--phase-dir', 'Missing value for --phase-dir (e.g. --phase-dir .planning/phases/05-widgets)', error);
             loopResolver.cmdLoopRenderHooks(cwd, args[2], raw, {
               configDir: loopConfigDir ? path.resolve(loopConfigDir) : undefined,
               activeCap: loopActiveCap,
               runtime: loopRuntime,
               phase: loopPhase,
+              phaseDir: loopPhaseDir,
             });
           } else {
             error(

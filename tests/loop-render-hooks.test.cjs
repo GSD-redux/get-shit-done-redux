@@ -1634,6 +1634,73 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
       'no phase in means no context out — the handler must not receive an inferred one');
   });
 
+  // #4030: --phase-dir is accepted, but only as a check against what --phase
+  // resolved to. It is never an independent path, so nothing here needs
+  // confinement — the emitted phaseDir is always locator-produced.
+  test('[happy] --phase-dir agreeing with the resolved directory yields context', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', '.planning/phases/05-widgets', '--raw']);
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    assert.deepStrictEqual(
+      JSON.parse(result.stdout.trim()).context,
+      { phase: '05', phaseDir: '.planning/phases/05-widgets' },
+    );
+  });
+
+  test('[negative] an incoherent --phase / --phase-dir pair is rejected, though both are in-project', (t) => {
+    const dir = makePhaseProject('05-widgets', '07-other');
+    t.after(() => cleanup(dir));
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', '.planning/phases/07-other', '--raw']);
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    const envelope = JSON.parse(result.stdout.trim());
+    assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+      'a directory naming a different phase than the token must not produce context');
+    assert.match((envelope.warnings || []).join('\n'), /does not match the directory/);
+  });
+
+  test('[hostile] an out-of-project --phase-dir is rejected by disagreement, not by confinement', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    for (const outside of ['/tmp', '/etc', '../../etc', '.planning/phases/../../..']) {
+      const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', outside, '--raw']);
+      assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+      const envelope = JSON.parse(result.stdout.trim());
+      assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+        `${outside} must never produce context`);
+    }
+  });
+
+  test('[negative] --phase-dir without --phase is refused rather than trusted', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase-dir', '.planning/phases/05-widgets', '--raw']);
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    const envelope = JSON.parse(result.stdout.trim());
+    assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+      'a lone --phase-dir must never become the context source');
+    assert.match((envelope.warnings || []).join('\n'), /--phase-dir requires --phase/);
+  });
+
+  test('[negative] bare --phase-dir with no value exits non-zero', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir']);
+    assert.notStrictEqual(result.exitCode, 0);
+    assert.match(result.stderr, /Missing value for --phase-dir/);
+  });
+
+  test('[bva] an ambiguous token yields no context even when --phase-dir names a candidate', (t) => {
+    const dir = makePhaseProject('05-widgets', '05-gadgets');
+    t.after(() => cleanup(dir));
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', '.planning/phases/05-gadgets', '--raw']);
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    const envelope = JSON.parse(result.stdout.trim());
+    assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+      'the directory must not break an ambiguity tie — init.* does not either (#2237)');
+    assert.match((envelope.warnings || []).join('\n'), /is ambiguous/);
+  });
+
   test('[happy] context does not mutate STATE.md, and outranks STATE.current_phase', (t) => {
     const dir = makePhaseProject('02-beta');
     t.after(() => cleanup(dir));

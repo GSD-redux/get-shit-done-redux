@@ -22,8 +22,8 @@ convention for phase-resolving `gsd_run` calls, rather than one blanket rule:
 `verify-work.md` passes it (its `query init.verify-work` does), `execute-phase.md`
 does not (its `query init.execute-phase` does not).
 
-The resolver does not accept a caller-supplied directory. It resolves
-`phaseDir` itself by calling `guardedFindPhase(cwd, phase,
+The resolver never treats a caller-supplied directory as a source of truth. It
+resolves `phaseDir` itself by calling `guardedFindPhase(cwd, phase,
 config.project_code)` (`src/phase-locator.cts`) — the same function `init.*`
 uses, not the bare `findPhaseInternal` it wraps — and surfaces both as an
 additive `context: { phase, phaseDir }` field, where `phaseDir` is the
@@ -37,6 +37,17 @@ its `isForeignPrefixedPhaseQuery` check (`src/phase-id.cts`, the #2056/#2105
 guard): a `project_code`-scoped repo gets the identical #2237 foreign-prefix
 protection `init.*` already has, rather than reopening it for this new call
 site — confirmed with a hostile-token test (`tests/loop-render-hooks.test.cjs`).
+
+`--phase-dir <dir>` is accepted alongside `--phase`, as the issue's spec asks,
+but strictly as a **cross-check on the token's resolution** — never as an
+independent path. When it agrees with the resolved directory the envelope is
+unchanged; when it disagrees, `context` is omitted with a warning naming both.
+`--phase-dir` alone is refused, since there is then no resolution to check it
+against. Two consequences follow. An out-of-project value (`/etc`, `../..`)
+cannot reach `context`, so this surface needs no confinement logic of its own.
+And a *wrong-phase* value — `--phase 05 --phase-dir .planning/phases/07-other`,
+where both paths are inside the project and would survive any containment
+check — is rejected too, which confinement alone could never do.
 
 `guardedFindPhase` does not throw on a missing, ambiguous, or foreign-prefixed
 phase — it returns `null`/`found: false` (with `ambiguous_matches` when more
@@ -94,16 +105,26 @@ diverges from it whenever one phase plans/verifies while another executes.
   inference the issue rejects — and a non-Claude runtime adapter projecting
   the envelope onto a native hook payload has no prose to read from. A typed
   field is the only shape an adapter can project.
-- **Rejected: caller-supplied `phaseDir` alongside `phase`.** An earlier draft
-  of this ADR had the caller pass both `--phase` and `--phase-dir`,
-  independently validated with a hand-rolled path-confinement check. Dropped
-  because (a) it requires inventing new containment logic where
-  `guardedFindPhase` already exists and is exported, duplicating an
-  invariant this repo's own [ADR-3473](3473-enforcement-by-construction.md)
-  ("one owner per invariant") argues against, and (b) it trusts the caller
-  to supply a correlated pair with no cross-check, where deriving `phaseDir`
-  from `phase` makes an incoherent pair structurally impossible instead of
-  merely validated.
+- **Rejected: `phaseDir` as an INDEPENDENT caller input.** The issue's spec has
+  the caller pass both `--phase` and `--phase-dir`, each validated on its own
+  with a hand-rolled path-confinement check. `--phase-dir` is accepted (see
+  Decision), but never as its own source of truth, for two reasons that do not
+  expire when confinement is available:
+  - It would need new containment logic where `guardedFindPhase` already
+    resolves the same fact, duplicating an invariant this repo's own
+    [ADR-3473](3473-enforcement-by-construction.md) ("one owner per invariant")
+    argues against. Note the codebase's `resolvePath`
+    (`src/check-command-router.cts`) is a path *joiner*, not a confiner — it
+    returns an absolute input unchanged — so no reusable confinement helper
+    exists to lean on, exactly as #4030's triage observed.
+  - **Confinement would not be sufficient even once written.** `--phase 05
+    --phase-dir .planning/phases/07-other` names two different in-project
+    phases; both survive any containment check, and the pair is still
+    incoherent. Comparing the supplied directory against the token's own
+    resolution is what rejects it. #4354 hardens the callee for `check
+    predicate`, which is the correct fix there and complementary to this one —
+    it makes an out-of-project path safe, while this makes a *wrong-phase* path
+    detectable.
 - **Evidence.** This is a property gap verified in-tree (above), not a
   single external bug report — the originating issue cites one, but that
   report cannot on its own distinguish "wrong phase received" from "hook
