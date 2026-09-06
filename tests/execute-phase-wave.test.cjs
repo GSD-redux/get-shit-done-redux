@@ -1195,49 +1195,63 @@ describe('execute-phase workflow: #3684 review findings — join normalization',
 // this was headed "(Copilot and runtimes where Agent() may not return)", so the
 // rule that already said "applies to all runtimes" forty lines later read as
 // someone else's rule.
+//
+// The policy itself lives in a step fragment, not the host: execute-phase.md
+// sits 15 bytes under the frozen #1168 ceiling, and "extract, not bump" is the
+// repo's stated remedy for that.
 describe('execute-phase: completion reconciliation for an abnormally-ended child (#4217)', () => {
   const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+  const FRAGMENT_PATH = path.join(
+    __dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'completion-reconciliation.md');
+  const fragment = fs.existsSync(FRAGMENT_PATH) ? fs.readFileSync(FRAGMENT_PATH, 'utf-8') : '';
 
   test('the completion-signal fallback heading is runtime-neutral, not Copilot-scoped', () => {
-    // Bounded quantifier: the heading is one line, and an unbounded [^)]* over
-    // whole-file content is the catastrophic-backtracking shape the repo's
-    // no-unbounded-quantifier rule bans.
     assert.ok(
       /\*\*Completion signal fallback \(EVERY runtime[^)]{0,120}\):\*\*/.test(workflow),
       'the fallback heading must not scope itself to one runtime — that is how Codex read past it',
     );
   });
 
-  test('reconciliation is REQUIRED before any plan is classified as failed', () => {
-    assert.match(
-      workflow,
-      /An abnormally-ended child is not evidence of failure \(#4217\)/,
-      'the workflow must state that an abnormal end is not a failure verdict',
-    );
-    assert.match(
-      workflow,
-      /REQUIRED before any plan is classified as failed/,
-      'reconciliation must be ordered BEFORE classification, not offered as an alternative',
-    );
+  test('the host routes to the fragment BEFORE any plan is failed', () => {
+    assert.match(workflow, /Before failing ANY plan/,
+      'the host must state the ordering — reconcile first, classify second');
+    assert.match(workflow, /execute-phase\/steps\/completion-reconciliation\.md/,
+      'the host must point at the reconciliation fragment');
+    assert.match(workflow, /interrupted, closed or `turn_aborted` included/,
+      'the abnormal-end shapes must be named where the orchestrator decides, not only in the fragment');
+  });
+
+  test('the fragment exists and states reconciliation as REQUIRED before failure', () => {
+    assert.ok(fragment.length > 0, 'execute-phase/steps/completion-reconciliation.md must exist');
+    assert.match(fragment, /An abnormally-ended child is not evidence of failure/);
+    assert.match(fragment, /REQUIRED before any plan is classified as failed/,
+      'reconciliation must be ordered BEFORE classification, not offered as an alternative');
   });
 
   test('every abnormal termination shape is named, so none reads as out of scope', () => {
     // The Codex report is `turn_aborted`; naming only that would repeat the
     // heading mistake one runtime later.
     for (const shape of ['interrupted', 'aborted', 'closed', 'killed', 'timed out', 'turn_aborted']) {
-      assert.ok(
-        workflow.includes(shape),
-        `the abnormal-termination list must name "${shape}"`,
-      );
+      assert.ok(fragment.includes(shape), `the abnormal-termination list must name "${shape}"`);
     }
   });
 
   test('SUMMARY + matching commits resolve to complete, and forbid re-dispatch', () => {
-    const clause = workflow.slice(workflow.indexOf('An abnormally-ended child is not evidence of failure'));
-    assert.match(clause, /SUMMARY\.md present AND matching commits present/,
+    assert.match(fragment, /SUMMARY\.md present AND matching commits present/,
       'the complete-verdict predicate must be stated');
-    assert.match(clause, /do NOT re-dispatch/,
+    assert.match(fragment, /do \*\*NOT\*\* re-dispatch/,
       're-dispatching a plan whose commits already landed would redo the work on top of itself');
+    assert.match(fragment, /Reconcile the artifacts FIRST, classify SECOND/,
+      'the ordering rule must survive the extraction');
+  });
+
+  test('the fragment absorbed the sibling arm, so the policy is in one place', () => {
+    assert.match(fragment, /If SUMMARY\.md does NOT exist after a reasonable wait/,
+      'the incomplete arm moved here with the complete arm — one file owns the policy');
+    assert.ok(
+      !/If SUMMARY\.md does NOT exist after a reasonable wait/.test(workflow),
+      'the host must not keep a second copy of the arm',
+    );
   });
 
   test('Codex is named in the runtime-compatibility block', () => {
@@ -1248,14 +1262,16 @@ describe('execute-phase: completion reconciliation for an abnormally-ended child
     assert.ok(compat.length > 0, 'the runtime_compatibility block must exist');
     assert.match(compat, /\*\*Codex:\*\*/,
       'Codex must be named where Claude Code and Copilot are — its absence is what made the fallback read as not-my-runtime');
+    assert.match(compat, /reconcile, don't fail/,
+      "the Codex entry must carry the verdict, not just the runtime's name");
   });
 
-  test('the fallback rule holds however the session ended, including an orchestrator-initiated close', () => {
+  test('the fallback rule holds however the session ended, orchestrator interrupts included', () => {
     const compat = workflow.slice(
       workflow.indexOf('<runtime_compatibility>'),
       workflow.indexOf('</runtime_compatibility>'),
     );
-    assert.match(compat, /including when the\s{1,10}orchestrator itself interrupted or closed it/,
+    assert.match(compat, /however the session ended, the\s{1,10}orchestrator's own interrupt included/,
       'the orchestrator closing the child is the exact case #4217 reports — it must not be an exception');
   });
 });
