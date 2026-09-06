@@ -322,6 +322,31 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
     }
   });
 
+  // Self-found by the round's guard-shape census, not by the review: the case arm above
+  // FIXES A SET at author time (the statuses that count as auth-gated) while the domain it
+  // rules on — what a local dev server may answer — is owned by the server, so the set can
+  // fall behind without this code changing. 407 (proxy authentication required) and 511
+  // (network authentication required) each mean the server ANSWERED and demanded
+  // credentials; omitting them reports a PRESENT server as an absent one, which is the very
+  // defect #4176 names, one status family over.
+  // Read the case LABEL that governs the assignment, not the block text: `block.includes('407')`
+  // would be satisfied by the comment explaining it — the same substring defect as finding 1.
+  test('the whole auth-required status class is recorded as gated, not misreported as absent', () => {
+    const gatedArms = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
+    assert.ok(gatedArms.length > 0, 'expected a case arm recording an auth-gated server');
+    const labels = gatedArms
+      .map((l) => l.split(')')[0])
+      .map((lab) => lab.split('|').map((s) => s.trim()));
+    for (const status of ['401', '403', '407', '511']) {
+      assert.ok(
+        labels.some((lab) => lab.includes(status)),
+        `HTTP ${status} means authentication is required, so a server answering it is PRESENT and gated — not absent: case labels were ${JSON.stringify(labels)}`
+      );
+    }
+  });
+
   test('the resolved port — not a hard-coded 3000 — is what gets captured', () => {
     const captureLines = captureInvocations(screenshotApproachLines());
     assert.ok(captureLines.length > 0, 'expected at least one capture invocation');

@@ -125,10 +125,14 @@ for PORT in 3000 5173 8080; do
   PROBE=${PROBE:-000}
   case "$PROBE" in
     2??)     DEV_URL="http://localhost:$PORT"; break ;;
+    # The WHOLE auth-required class, not just its two common members: 407 (proxy)
+    # and 511 (captive portal) also mean a server ANSWERED and demanded credentials,
+    # so leaving them out reports a present server as an absent one — which is
+    # #4176's own defect, one status family over.
     # First gated port wins, matching the documented port PRECEDENCE below. An
     # unguarded assignment here reports whichever gated port was tried LAST, so
     # with 3000 and 8080 both auth-gated the reason would name 8080.
-    401|403) [ -n "$DEV_GATED" ] || DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
+    401|403|407|511) [ -n "$DEV_GATED" ] || DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
   esac
 done
 
