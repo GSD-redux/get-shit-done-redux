@@ -55,7 +55,6 @@ skipping all worktree guards. The sentinel captures the spawn-time toplevel and
 detects drift before every commit.
 
 ```bash
-if [ -f .git ]; then  # we are in a worktree
   WT_GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
   case "$WT_GIT_DIR" in
     *.git/worktrees/*)
@@ -72,7 +71,6 @@ if [ -f .git ]; then  # we are in a worktree
       fi
       ;;
   esac
-fi
 ```
 
 ---
@@ -102,21 +100,36 @@ worktree — never from `pwd` captured in the orchestrator context.
 
 ---
 
-## Pre-commit HEAD guard — step 0 (#2924)
+## Pre-commit HEAD safety assertion — step 0 (#2924, #3819, all modes)
 
-In a Claude Code worktree, assert HEAD is on a per-agent branch before staging
-or committing. Never self-recover by rewriting a protected ref.
+Assert HEAD is not protected before staging or committing. Never self-recover by
+rewriting a protected ref. The per-agent namespace check remains worktree-only.
 
 ```bash
-if [ -f .git ]; then
-  HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
-  ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  if [ "$HEAD_REF" = "DETACHED" ] || \
-     echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
-    echo "FATAL: refusing to commit — worktree HEAD is on '$ACTUAL_BRANCH' (expected per-agent branch)." >&2
-    echo "DO NOT use 'git update-ref' to rewind the protected branch — surface as blocker (#2924)." >&2
-    exit 1
+HEAD_REF=$(git symbolic-ref --quiet HEAD || echo "DETACHED")
+ACTUAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$HEAD_REF" = "DETACHED" ]; then
+  echo "FATAL: refusing to commit — HEAD is detached." >&2
+  exit 1
+fi
+# #3819: real default branch; override git.allow_default_branch_commits; else five-name fallback.
+IS_PROTECTED=$(gsd_run query git.base-branch --is-protected "$ACTUAL_BRANCH" 2>/dev/null) || IS_PROTECTED="__GSD_RUN_UNAVAILABLE__"
+if [ "$IS_PROTECTED" = "__GSD_RUN_UNAVAILABLE__" ] || [ -z "$IS_PROTECTED" ]; then
+  if echo "$ACTUAL_BRANCH" | grep -Eq '^(main|master|develop|trunk|release/.*)$'; then
+    IS_PROTECTED="true"
+  else
+    IS_PROTECTED="false"
   fi
+fi
+if [ "$IS_PROTECTED" != "false" ]; then
+  echo "FATAL: refusing to commit — HEAD is on '$ACTUAL_BRANCH' (protected/default branch)." >&2
+  echo "Re-home onto a phase/agent branch (#2924, #3819); override: git.allow_default_branch_commits:true in .planning/config.json." >&2
+  exit 1
+fi
+if [ -f .git ]; then  # worktree
+  # Positive allow-list: HEAD must be on a per-agent branch (`agent-<id>` or
+  # legacy `worktree-agent-<id>`). This catches feature/* and any other
+  # arbitrary branch that the deny-list would silently allow (#2924, #1995).
   if ! echo "$ACTUAL_BRANCH" | grep -Eq '^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$'; then
     echo "FATAL: refusing to commit — worktree HEAD '$ACTUAL_BRANCH' is not in the agent-* / worktree-agent-* / worktree-wf_* namespace." >&2
     echo "Agent commits must live on per-agent branches; surface as blocker (#2924)." >&2

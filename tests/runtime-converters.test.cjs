@@ -2508,6 +2508,7 @@ describe('#3706: the layout seam actually threads the variant', () => {
     fs.mkdirSync(commandsDir, { recursive: true });
     fs.mkdirSync(agentsDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, '.gsd-source'), commandsDir + '\n', 'utf8');
+    fs.writeFileSync(path.join(commandsDir, 'gsd-help.md'), '# complete marker provider\n', 'utf8');
     fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), agentContent, 'utf8');
     return configDir;
   }
@@ -2587,4 +2588,3 @@ describe('#3706: the layout seam actually threads the variant', () => {
     }
   });
 });
-

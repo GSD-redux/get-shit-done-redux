@@ -579,6 +579,68 @@ function mockPartialWriteThenThrow(fsModule, matches, bytesBeforeThrow, options 
 }
 
 /**
+ * Capture the bytes written to `captureFd` while `fn()` runs, WITHOUT ever
+ * fabricating a byte count for any fd (#4306).
+ *
+ * Every previous hand-rolled version of this idiom across the test suite
+ * mocked `fs.writeSync`, and on its "success" arm returned a fabricated byte
+ * count while pushing the bytes into a local array instead of ever calling
+ * the real `fs.writeSync` — the data reached nowhere but that array. That is
+ * unsafe: Node's `node:test` runner defaults to `--test-isolation=process`
+ * (Node >= 22), so each test file's own real stdout is what the PARENT
+ * runner reads to parse its child-to-parent result/TAP protocol. If the
+ * runner's own reporter write for an adjacent test lands on the mocked fd
+ * during this window, a mock that fabricates success without delivering the
+ * bytes silently swallows that write instead of letting it reach the real
+ * pipe — the parent then tries to parse a truncated stream, observed in CI
+ * as "Unable to deserialize cloned data" (Node's generic corrupted/truncated
+ * v8.deserialize error), not as a thrown exception.
+ *
+ * This helper always forwards every write, on every fd, to the real
+ * `fs.writeSync` first — so nothing is ever swallowed, regardless of what
+ * else shares the fd during the mocked window — and returns the REAL
+ * result. Only `captureFd`'s traffic is additionally recorded and returned
+ * to the caller as a joined UTF-8 string; every other fd's bytes still
+ * reach their real destination (e.g. a test's own stderr diagnostics still
+ * physically write to stderr, just outside the returned capture), they are
+ * simply not included in the returned string.
+ *
+ * Standalone — no node:test context required; save/restore in a `finally`
+ * so a thrown assertion still restores the real `fs.writeSync`.
+ *
+ * @param {number} captureFd - the fd to capture and return (1 for stdout, 2 for stderr).
+ * @param {() => void} fn - synchronous function to run while capturing.
+ * @returns {string} every byte actually written to `captureFd` during `fn()`.
+ */
+function captureFdSync(captureFd, fn) {
+  const chunks = [];
+  const orig = fs.writeSync;
+  fs.writeSync = (fd, data, ...rest) => {
+    const n = orig.call(fs, fd, data, ...rest);
+    if (fd === captureFd) {
+      // rest[0] is `offset` only for the buffer-form overload; the
+      // string-form overload's 2nd arg is `position`, which is irrelevant
+      // here since a string write has no byte offset into `data` itself.
+      const offset = Buffer.isBuffer(data) && typeof rest[0] === 'number' ? rest[0] : 0;
+      const buf = Buffer.isBuffer(data)
+        ? data.subarray(offset, offset + n)
+        : Buffer.from(String(data), 'utf8').subarray(0, n);
+      // Buffered, not decoded per-call: a real short write can split a
+      // multi-byte UTF-8 codepoint across two writeSync calls, and decoding
+      // each half separately would corrupt it. Decode once, after joining.
+      chunks.push(buf);
+}
+    return n;
+};
+  try {
+    fn();
+  } finally {
+    fs.writeSync = orig;
+}
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
  * Read a workflow .md file plus every .md file under its sibling
  * `<workflow-basename>/steps/` directory, concatenated in document order
  * (host file first, then step files sorted by filename).
@@ -1111,7 +1173,16 @@ function sandboxHome(t, dir) {
   });
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow };
+function writePackageSourceMarkerFixture(configDir) {
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, '.gsd-source'),
+    path.join(__dirname, '..', 'commands', 'gsd') + '\n',
+  );
+  return configDir;
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, writePackageSourceMarkerFixture, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow, captureFdSync };
 
 // Lazy, for the reason builtLib() is lazy: reading either of these is what
 // forces the built-lib require, so a test file that needs neither can still

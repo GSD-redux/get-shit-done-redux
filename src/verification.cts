@@ -29,6 +29,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { findProjectRoot } from './project-root.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import io = require('./io.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
@@ -147,8 +149,21 @@ function projectNextCommand(bare: string, runtime: string, tail = ''): string {
 interface FsLike {
   readdirSync(dir: string): string[];
   readFileSync(filePath: string, encoding: 'utf-8'): string;
-  statSync(filePath: string): { mtimeMs: number };
+  statSync(filePath: string): { mtimeMs: number; isFile(): boolean };
 }
+
+/**
+ * Real `node:fs`-backed default satisfying FsLike. Every method wraps a call
+ * to `fs.<method>` rather than capturing the function reference — existing
+ * tests mock individual `fs` methods in place (`t.mock.method(fs, 'statSync', …)`),
+ * and a captured reference taken at module-load time would be invisible to
+ * that late mock, silently un-mocking this seam's "default" path.
+ */
+const defaultFsImpl: FsLike = {
+  readdirSync: (dir: string) => fs.readdirSync(dir),
+  readFileSync: (filePath: string, encoding: 'utf-8') => fs.readFileSync(filePath, encoding),
+  statSync: (filePath: string) => fs.statSync(filePath),
+};
 
 /**
  * Outcome of a staleness check. `determined:false` means the check could NOT
@@ -175,6 +190,167 @@ type PhaseCleanCommitTimesFn = (phaseDir: string, files: string[]) => Map<string
 /** Normalize separators to posix (git emits `/`; callers may pass `\` on Windows). */
 function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
+}
+
+/**
+ * #4155: canonicalize a covered-input path before it becomes either a
+ * dedup/sort/hash key or a confinement-check subject. `path.posix.normalize`
+ * collapses `./`, redundant slashes, and internal `..` segments (`a/../../b`
+ * → `../b`) — without this, two spellings of the SAME file (`src/x.cts` vs
+ * `./src/x.cts`) hash as different covered inputs (spurious `stale`, or a
+ * file double-counted into the digest under two keys), and an escape
+ * disguised by an internal `..` segment slips past a check that only looks
+ * at the string's start.
+ */
+function normalizeRel(p: string): string {
+  return path.posix.normalize(toPosix(p));
+}
+
+/** Canonicalize a covered-files list: normalize, de-duplicate, sort — the SAME
+ *  transform computeCoveredDigest and cmdVerificationFingerprint both need
+ *  (the digest's own key order; the CLI's own `covered_files` JSON output). */
+function canonicalizeCoveredFiles(files: readonly string[]): string[] {
+  return Array.from(new Set(files.map(normalizeRel))).sort();
+}
+
+// ─── #4155: covered-input fingerprint ──────────────────────────────────────────
+
+/**
+ * Bump on any change to the digest's input shape (path list, hashing order,
+ * per-file hash algorithm) so an old stored digest can never collide with a
+ * differently-computed new one — a version mismatch is just a mismatch.
+ */
+const FINGERPRINT_VERSION = 1;
+
+/**
+ * #4155: recompute the deterministic content fingerprint over a verifier's
+ * declared covered-input set (phase PLAN/SUMMARY, mapped requirements,
+ * implementation files in the change set) and return the versioned digest
+ * string, or `null` if the set cannot be resolved.
+ *
+ * Determinism: paths are de-duplicated and SORTED before hashing (directory
+ * enumeration order is irrelevant), each path is resolved relative to
+ * `projectRoot` (the absolute checkout path never enters the digest), and
+ * file BYTES are hashed (mtime never enters the digest).
+ *
+ * NOT normalized: line endings. Unlike the report-frontmatter read (which
+ * runs every VERIFICATION.md through `normalizeLineEndings`), covered-file
+ * bytes are hashed exactly as they sit on disk. A covered text file checked
+ * out with CRLF line endings (e.g. a Windows checkout without a `.gitattributes
+ * eol=lf` rule pinning it to LF) hashes differently than the same file on an
+ * LF checkout — a real cross-platform digest mismatch, not a bug, since GSD
+ * installs into arbitrary user projects with no guaranteed line-ending policy.
+ *
+
+ * Fail closed: a covered path that is empty, absolute, escapes
+ * `projectRoot` (`..` traversal), or cannot be read (missing, unreadable,
+ * not a regular file) makes the WHOLE fingerprint unresolvable — returns
+ * `null` — rather than silently hashing a partial set. Callers treat `null`
+ * as stale (#4155), the same fail-closed shape #3057 B3 established for the
+ * legacy mtime staleness check.
+ *
+ * Always reads through the REAL `node:fs`, never a caller-injected `FsLike`
+ * seam — same reasoning as the root canonicalization below, extended to
+ * every covered file: `covered_files` is expected to span the whole
+ * `projectRoot` (implementation files under `src/`, not just `.planning/`
+ * artifacts), so a caller-scoped containment wrapper narrower than
+ * `projectRoot` (e.g. `planning-inspect.cts`'s `containmentEnforcingVerificationFs`,
+ * confined to `.planning/`) would reject every implementation-file read and
+ * report EVERY fingerprinted phase permanently `stale` regardless of actual
+ * drift — the bug this comment now documents against regressing. The
+ * `realRel`-vs-`realRoot` re-check a few lines below already does the real
+ * confinement work (against `projectRoot`, the correct boundary for this
+ * data), so no security property is lost by bypassing a narrower seam here.
+ */
+function computeCoveredDigest(projectRoot: string, coveredFiles: readonly string[]): string | null {
+  const uniqueSorted = canonicalizeCoveredFiles(coveredFiles);
+  if (uniqueSorted.length === 0) return null;
+
+  // Canonicalize the root ONCE — every candidate's realpath is checked against
+  // this, not the possibly-symlinked `projectRoot` argument itself. Always via
+  // the REAL fs, never fsImpl: `projectRoot` is a trusted anchor the CALLER
+  // derived (findProjectRoot), not attacker-influenced covered-input data —
+  // routing it through a caller-scoped containment seam (e.g. #4155's
+  // containmentEnforcingVerificationFs, confined to `.planning/`, a proper
+  // SUBSET of `projectRoot`) would reject the root itself and fail every
+  // lookup regardless of whether the covered files are legitimate.
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(projectRoot);
+  } catch {
+    return null;
+  }
+
+  const parts: string[] = [];
+  for (const rel of uniqueSorted) {
+    // `normalizeRel` (already applied by `canonicalizeCoveredFiles` above)
+    // collapses internal `..` segments before `rel` ever reaches here
+    // (`a/../../b` → `../b`), so this start-of-string check is already the
+    // full lexical confinement test — no separate post-`path.resolve`
+    // re-check can observe a different answer.
+    if (rel === '' || rel === '..' || rel.startsWith('../') || path.isAbsolute(rel)) return null;
+    const resolved = path.resolve(projectRoot, rel);
+    let bytes: Buffer;
+    try {
+      // A regular file INSIDE projectRoot can still be a symlink whose TARGET
+      // escapes it — statSync/readFileSync follow symlinks, so the lexical
+      // confinement check above is not enough. realpathSync resolves the
+      // actual target; re-confining against realRoot closes that gap.
+      const real = fs.realpathSync(resolved);
+      const realRel = path.relative(realRoot, real);
+      if (realRel === '' || realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+        return null;
+      }
+      const st = fs.statSync(real);
+      if (!st.isFile()) return null;
+      bytes = fs.readFileSync(real);
+    } catch {
+      return null;
+    }
+    const fileHash = crypto.createHash('sha256').update(bytes).digest('hex');
+    parts.push(`${rel}\n${fileHash}\n`);
+  }
+
+  const aggregate = crypto
+    .createHash('sha256')
+    .update(`v${FINGERPRINT_VERSION}\n${parts.join('')}`, 'utf-8')
+    .digest('hex');
+  return `v${FINGERPRINT_VERSION}:sha256:${aggregate}`;
+}
+
+/**
+ * #4155: the content fingerprint only recomputes digests for paths the
+ * verifier actually DECLARED in `covered_files` — it has no way to notice a
+ * plan or summary added to the phase directory AFTER verification if that
+ * new file was never declared. This closes that gap the same way the
+ * legacy mtime check always did: by re-scanning the LIVE directory (not the
+ * declared list) for every current `*-PLAN.md`/`*-SUMMARY.md` and checking
+ * each is represented in `coveredFiles` — matched by suffix (mirrors
+ * `matchRequestedFile`'s convention) since `coveredFiles` holds
+ * project-root-relative paths while the scan returns phase-relative
+ * filenames. Returns `true` if every current plan/summary is covered,
+ * `false` otherwise — callers only ever branch on this pass/fail, so no
+ * caller needs which artifact was uncovered.
+ *
+ * Fails CLOSED on an incomplete scan: `scanPhasePlans` never throws on a
+ * readdir failure — it reports it via `scope` (`SCOPE.UNREADABLE` for the
+ * phase dir itself, `SCOPE.TRUNCATED` for an unreadable nested `plans/`)
+ * with whatever files it DID manage to enumerate, per `SCOPE`'s own
+ * contract (`planning-scope.cts`): zero items under a non-`COMPLETE` scope
+ * is a NON-answer, never "this phase has no plans." Branching on `scope`
+ * here (rather than a try/catch, which this scan never triggers) is what
+ * makes an unreadable `plans/` dir report `false` instead of silently
+ * treating its invisible contents as vacuously covered — the same
+ * fail-open regression #3057 B3 fixed for the legacy path.
+ */
+function allCurrentArtifactsCovered(phaseDir: string, coveredFiles: readonly string[]): boolean {
+  const scan = scanPhasePlans(phaseDir);
+  if (scan.scope !== SCOPE.COMPLETE) return false;
+  const coveredPosix = canonicalizeCoveredFiles(coveredFiles);
+  return [...scan.allPlanFiles, ...scan.summaryFiles].every((artifact) => {
+    const artifactPosix = toPosix(artifact);
+    return coveredPosix.some((c) => c === artifactPosix || c.endsWith(`/${artifactPosix}`));
+  });
 }
 
 /**
@@ -526,7 +702,7 @@ interface VerificationStatusResult {
 
 function findStaleVerificationSummary(
   phaseDir: string,
-  fsImpl: FsLike = fs,
+  fsImpl: FsLike = defaultFsImpl,
   phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn = defaultPhaseCleanCommitTimesMs,
 ): StaleCheckResult {
   // FS errors (TOCTOU: a SUMMARY listed by scanPhasePlans then removed before statSync;
@@ -611,7 +787,7 @@ function readVerificationStatus(
   phaseDir: string,
   opts: ReadVerificationStatusOptions = {},
 ): VerificationStatusResult {
-  const fsImpl: FsLike = opts.fs ?? fs;
+  const fsImpl: FsLike = opts.fs ?? defaultFsImpl;
   const phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn =
     opts.phaseCleanCommitTimesMs ?? defaultPhaseCleanCommitTimesMs;
   const runtime = opts.runtime ?? 'claude';
@@ -652,6 +828,7 @@ function readVerificationStatus(
   // extractFrontmatter anchors at byte 0, so body `status:` lines are ignored.
   const filePath = path.join(phaseDir, verificationFile);
   let rawStatus: string | null = null;
+  let fm: ReturnType<typeof extractFrontmatter> = {};
   try {
     // #3707-CR follow-up MINOR 1: normalize line endings at this read
     // boundary — this function's own `readFileSync` is the equivalent seam
@@ -664,7 +841,7 @@ function readVerificationStatus(
     // verification as if the step never ran, the fail-safe direction but the
     // same root cause as the false-clean class fixed elsewhere in #3707-CR.
     const content = normalizeLineEndings(fsImpl.readFileSync(filePath, 'utf-8'));
-    const fm = extractFrontmatter(content, filePath);
+    fm = extractFrontmatter(content, filePath);
     const statusVal = fm['status'];
     // status is always a scalar string in a well-formed VERIFICATION.md frontmatter;
     // only accept string values — arrays and objects are not valid status values.
@@ -691,8 +868,53 @@ function readVerificationStatus(
     };
   }
 
-  const staleCheck = findStaleVerificationSummary(phaseDir, fsImpl, phaseCleanCommitTimesMs);
-  if (staleCheck.determined && staleCheck.stale) {
+  // #4155: a report that declares a covered-input fingerprint is checked by
+  // RECOMPUTING that fingerprint over current file content — strictly
+  // content-grounded, and it REPLACES (not supplements) the legacy
+  // SUMMARY-mtime check below for that report. A report with no fingerprint
+  // metadata (every report written before #4155) keeps the exact legacy
+  // mtime-based behavior, unchanged.
+  const coveredFilesVal = fm['covered_files'];
+  const coveredDigestVal = fm['covered_digest'];
+  // A report OPTS IN to the fingerprint check by declaring EITHER field —
+  // once opted in, an incomplete or malformed pair (one field present but
+  // not the other, an empty array, a non-array, a blank digest) fails closed
+  // to `stale` rather than silently downgrading to the weaker legacy
+  // mtime-only check, which would only ever notice a newer SUMMARY.
+  const declaresFingerprint = coveredFilesVal !== undefined || coveredDigestVal !== undefined;
+  const hasWellFormedFingerprint =
+    Array.isArray(coveredFilesVal) &&
+    coveredFilesVal.length > 0 &&
+    coveredFilesVal.every((f) => typeof f === 'string') &&
+    typeof coveredDigestVal === 'string' &&
+    coveredDigestVal.trim().length > 0;
+
+  let staleCheckIndeterminate = false;
+  let isStale: boolean;
+  if (declaresFingerprint) {
+    // Stated directly rather than relying on `null !== coveredDigestVal`
+    // being true whenever the pair is malformed: `!hasWellFormedFingerprint`
+    // fails closed explicitly, and its `||` short-circuit means
+    // computeCoveredDigest/allCurrentArtifactsCovered never run on a
+    // malformed (wrong-shaped) `coveredFilesVal`. The two `||`s after it
+    // short-circuit in turn: the live-directory re-scan (for a plan/summary
+    // added AFTER verification and never declared in covered_files) only
+    // runs once the digest itself has already matched.
+    isStale =
+      !hasWellFormedFingerprint ||
+      computeCoveredDigest(findProjectRoot(phaseDir), coveredFilesVal) !== coveredDigestVal ||
+      !allCurrentArtifactsCovered(phaseDir, coveredFilesVal);
+  } else {
+    const staleCheck = findStaleVerificationSummary(phaseDir, fsImpl, phaseCleanCommitTimesMs);
+    isStale = staleCheck.determined && staleCheck.stale;
+    // staleCheck is either {determined:true, stale:false} (checked; nothing
+    // stale) or {determined:false} (could not check — fs/scan/clock failure).
+    // Both fall through to normal routing below (the pre-existing no-throw
+    // fail-open contract is unchanged), but the indeterminate case is flagged
+    // on the returned result so a caller can tell the two apart (#3057 B3).
+    staleCheckIndeterminate = !staleCheck.determined;
+  }
+  if (isStale) {
     const entry = VERIFICATION_ROUTING_TABLE['stale'];
     return {
       status: entry.status,
@@ -700,12 +922,6 @@ function readVerificationStatus(
       next_command: projectNextCommand('verify-work', runtime, phaseArg),
     };
   }
-  // staleCheck is either {determined:true, stale:false} (checked; nothing
-  // stale) or {determined:false} (could not check — fs/scan/clock failure).
-  // Both fall through to normal routing below (the pre-existing no-throw
-  // fail-open contract is unchanged), but the indeterminate case is flagged
-  // on the returned result so a caller can tell the two apart (#3057 B3).
-  const staleCheckIndeterminate = !staleCheck.determined;
 
   // 3. Route — exclude internal sentinels from raw-file lookup (they are
   // constructed internally above, never written by the verifier).
@@ -783,7 +999,7 @@ function isPhaseComplete(
   phaseDir: string,
   deps: IsPhaseCompleteDeps = {},
 ): { value: PhaseCompletionValue; scope: Scope } {
-  const fsImpl: FsLike = deps.fs ?? fs;
+  const fsImpl: FsLike = deps.fs ?? defaultFsImpl;
   let readable = true;
   try {
     fsImpl.readdirSync(phaseDir);
@@ -865,6 +1081,60 @@ function cmdVerificationResolveFile(cwd: string, phaseDirArg: string | undefined
   output({ verification_file: verificationPath }, raw, verificationPath);
 }
 
+/**
+ * CLI command handler (#4155): compute the covered-input fingerprint the
+ * verifier embeds in VERIFICATION.md frontmatter (`covered_files`,
+ * `covered_digest`). The verifier is an LLM agent, not a hashing engine —
+ * this command does the deterministic math so the agent only has to name
+ * the covered paths and copy the result into frontmatter.
+ *
+ * Emits `{ covered_files: <sorted deduped paths>, covered_digest: <digest> }`
+ * on success. A covered path that is missing, unreadable, or escapes the
+ * project root fails the WHOLE command (fail closed — a partial fingerprint
+ * would be worse than none): `error()` is called and nothing is emitted.
+ *
+ * @param cwd         - Current working directory.
+ * @param phaseDirArg - Phase directory path (absolute or relative to cwd);
+ *                       its project root is the base covered paths resolve against.
+ * @param files       - Covered-input paths, relative to the project root.
+ * @param raw         - Whether to emit raw (non-JSON) output: just the
+ *                       `covered_digest` string, so `VAR=$(gsd_run query
+ *                       verification.fingerprint "$PHASE_DIR" ... --raw)` is
+ *                       directly assignable. `covered_files` is unambiguous
+ *                       from the caller's own input list in that mode, so
+ *                       only the computed digest needs a raw form.
+ */
+function cmdVerificationFingerprint(
+  cwd: string,
+  phaseDirArg: string | undefined,
+  files: string[],
+  raw: boolean,
+): void {
+  if (!phaseDirArg) {
+    error('phase directory required for verification.fingerprint');
+    return;
+  }
+  if (files.length === 0) {
+    error('at least one covered file required for verification.fingerprint');
+    return;
+  }
+  const phaseDir = path.resolve(cwd, phaseDirArg);
+  const projectRoot = findProjectRoot(phaseDir);
+  // canonicalizeCoveredFiles here is for the emitted `covered_files` field —
+  // computeCoveredDigest canonicalizes its own `coveredFiles` argument
+  // internally too (it must, for callers like readVerificationStatus that
+  // pass raw, un-canonicalized frontmatter values), so passing an
+  // already-canonical list keeps that internal pass a cheap no-op rather
+  // than a second meaningfully different canonicalization.
+  const uniqueSorted = canonicalizeCoveredFiles(files);
+  const digest = computeCoveredDigest(projectRoot, uniqueSorted);
+  if (digest === null) {
+    error('could not compute fingerprint — a covered file is missing, unreadable, or escapes the project root');
+    return;
+  }
+  output({ covered_files: uniqueSorted, covered_digest: digest }, raw, digest);
+}
+
 export = {
   VERIFIER_STATUSES,
   VERIFICATION_ROUTING_TABLE,
@@ -876,4 +1146,6 @@ export = {
   isPhaseComplete,
   cmdVerificationStatus,
   cmdVerificationResolveFile,
+  computeCoveredDigest,
+  cmdVerificationFingerprint,
 };

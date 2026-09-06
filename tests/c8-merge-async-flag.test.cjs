@@ -19,6 +19,22 @@
 // #4068's own new test file plus other suite growth pushed the un-flagged sync merge
 // over the 8192 MB heap ceiling (#4172).
 //
+// #4355: #4068's fix ALSO missed test:coverage:unit:raw, based on an incorrect
+// assumption (see the test this replaces, below) that `--reporter none` makes c8
+// skip the merge/report dispatch entirely. Verified false against
+// node_modules/c8/lib/report.js: Report.prototype.run() unconditionally awaits
+// `this.getCoverageMapFromAllCoverageFiles()` to build `context.coverageMap` BEFORE
+// it ever looks at `this.reporter` -- the reporter list only controls what happens
+// to that already-merged map in the loop AFTER, so `--reporter none` skips nothing
+// but the final text/json output. Without --merge-async this still runs the
+// synchronous `_getMergedProcessCov()`, which loads every raw per-process V8
+// coverage dump into memory at once -- the same #4068/#4172 OOM shape, confirmed
+// live on release.yml's finalize-test job (run 33997057100, shard 2/3: "# fail 0"
+// then a silent exit 1 ~21s later with no stack trace -- an external OOM-kill of
+// the wrapping c8 process). test:coverage:unit:raw is used by both test.yml's
+// sharded full-test lane and (since #4335) release.yml's rc-test/finalize-test
+// matrix jobs, so every shard of every CI run and release was exposed.
+//
 // IMPORTANT c8@11.0.0 gotcha (verified against node_modules/c8/lib/commands/
 // check-coverage.js and report.js directly): the `check-coverage` CLI subcommand's
 // handler does NOT forward `argv.mergeAsync` into the `Report(...)` constructor --
@@ -102,7 +118,7 @@ describe('coverage-merge-async-flag (#4068, #4172)', () => {
   });
 
   test('--merge-async lands in the c8 invocation, not after the node runner', () => {
-    for (const key of ['test:coverage:unit', 'test:coverage:report', 'test:coverage:scripts-floor']) {
+    for (const key of ['test:coverage:unit', 'test:coverage:report', 'test:coverage:scripts-floor', 'test:coverage:unit:raw']) {
       const script = scripts[key];
       const flagIndex = script.indexOf('--merge-async');
       const nodeIndex = script.indexOf(' node ');
@@ -131,19 +147,22 @@ describe('coverage-merge-async-flag (#4068, #4172)', () => {
     );
   });
 
-  test('test:coverage:unit:raw is intentionally unchanged (--reporter none skips the merge/report phase entirely)', () => {
+  test('test:coverage:unit:raw carries --merge-async (#4355)', () => {
+    assert.match(
+      scripts['test:coverage:unit:raw'],
+      /(?:^|\s)c8\s.*--merge-async/,
+      'test:coverage:unit:raw must pass --merge-async to c8 -- `--reporter none` does ' +
+        'NOT skip the merge phase (Report.run() computes it unconditionally before ' +
+        'ever consulting the reporter list, verified against ' +
+        'node_modules/c8/lib/report.js), so without this flag it still OOMs the same ' +
+        'way #4068/#4172 already fixed on the other three coverage scripts (#4355)'
+    );
     assert.match(
       scripts['test:coverage:unit:raw'],
       /--reporter none/,
-      'test:coverage:unit:raw must keep --reporter none -- this is what defers all ' +
-        'merging to the separate coverage-gate job (test:coverage:report)'
-    );
-    assert.doesNotMatch(
-      scripts['test:coverage:unit:raw'],
-      /--merge-async/,
-      '--merge-async on a --reporter none run is a no-op (Report.run() never ' +
-        'reaches the merge dispatch) and would misleadingly imply this script does ' +
-        'its own merging'
+      'test:coverage:unit:raw must keep --reporter none -- the merge still needs to ' +
+        'happen for c8 to write nothing misleading, but the actual report output is ' +
+        'deferred to the separate coverage-gate job (test:coverage:report)'
     );
   });
 });

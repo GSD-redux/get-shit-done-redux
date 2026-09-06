@@ -1,5 +1,0 @@
----
-type: Fixed
-pr: 3859
----
-**A scoped `commit --files` call whose named files are already committed and unmodified now reports `nothing_to_commit` instead of a failed commit carrying your pre-commit hook's rejection message.** The empty-diff case used to reach `git commit`, where a rejecting hook fires before git can report "nothing to commit" — so callers were handed `commit_failed` and a gate message that was true about the repository and irrelevant to the call. Genuine rejections still report `commit_failed` with the hook's message, and `--amend`, missing named paths, and merges or cherry-picks in progress are unchanged. A modified path under `git update-index --assume-unchanged` is still committed exactly as before: `git commit -- <path>` reads the working tree directly, so the guard compares that content against `HEAD` and stands aside rather than dropping content you named. One further outcome does change: naming a submodule whose work tree is dirty but whose recorded commit has not moved now reports `nothing_to_commit` rather than `commit_failed`, because nothing would have landed. (#3776)

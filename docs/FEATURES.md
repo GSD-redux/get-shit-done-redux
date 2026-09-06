@@ -25,6 +25,7 @@
   - [Freeform Routing](#12-freeform-routing)
   - [Note Capture](#13-note-capture)
   - [Auto-Advance (Next)](#14-auto-advance-next)
+  - [Review Dispositions Ledger](#3806-review-dispositions-ledger)
   - [Quick Batch Mode](#4015-quick-batch-mode)
 - [Quality Assurance Features](#quality-assurance-features)
   - [Nyquist Validation](#15-nyquist-validation)
@@ -606,6 +607,43 @@
 | Phase has plans but no SUMMARY.md | Run `/gsd-execute-phase` |
 | Phase executed but no VERIFICATION.md | Run `/gsd-verify-work` |
 | All phases complete | Suggest `/gsd-complete-milestone` |
+
+---
+
+### 3806. Review Dispositions Ledger
+
+**Purpose:** Reviews-mode planning (`/gsd-plan-phase {N} --reviews`) has required every current
+actionable REVIEWS.md finding to be incorporated into PLAN.md or explicitly deferred/rejected
+there since v1.5.0 (#724/#728). Nothing canonized *where* in PLAN.md, *what shape*, or how a
+REVIEWS.md line reference survives the next round rewriting the file wholesale. Two
+independently-invented, mutually incompatible disposition formats were observed across two
+consecutive rounds of the same phase, each written by a different planner subagent instance
+improvising from prose alone.
+
+**Behavior:** The existing return-payload tables from `references/planner-reviews.md` Step 4 —
+`### Review Feedback Addressed` / `### Review Feedback Deferred` — are now the canonical
+**Review Dispositions Ledger**, promoted verbatim in shape into the affected PLAN.md itself under
+a `## Review Dispositions Ledger` heading. Each reviews-mode round gets its own
+`### Round {N} — {REVIEWS_sha}` subsection, where `{REVIEWS_sha}` is the commit that wrote that
+round's REVIEWS.md snapshot (`workflows/review.md` already commits REVIEWS.md as its own commit).
+A REVIEWS.md line reference cites `L##@{REVIEWS_sha}`; a bare line number is non-conforming. The
+ledger is append-only — a later round adds a new row naming what it supersedes rather than editing
+or deleting an earlier round's tables.
+
+The contract is stated once, in `references/planner-reviews.md`; `workflows/plan-phase.md`'s
+`<review_incorporation_contract>` and `agents/gsd-plan-checker.md`'s Review Incorporation dimension
+both reference it by name rather than restating it, guarded by a parity test
+(`tests/plan-review-convergence.test.cjs`) that fails if the three drift apart.
+
+`{Concern}`/`{Reason}` stay free text — the reviewer roster is capability-owned and open to
+third-party additions, so no closed reviewer/severity enum is introduced.
+
+**Known limits:** No lint or check verb enforces this shape yet — a follow-up (tracked as part 2
+of #3806) will add deterministic enforcement once a migration story for the two pre-existing ad-hoc
+formats already in the wild is decided. Legacy PLAN.md content written before this convention is
+not migrated or flagged.
+
+**Reference:** [ADR-3806](adr/3806-review-dispositions-ledger.md) · [Cross-AI Peer Review](#42-cross-ai-peer-review)
 
 ---
 
@@ -2108,6 +2146,8 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 **Requirements:**
 - REQ-LANG-01: System MUST respect `response_language` setting across all phases and agents
 - REQ-LANG-02: Setting MUST propagate to all spawned agents for consistent language output
+- REQ-LANG-03: Every workflow MUST carry response-language coverage — through an exact inline directive, a shared `@`-referenced directive (`gsd-core/references/response-language-directive.md`), or inheritance from the parent workflow that dispatches it; enforced in CI by `scripts/lint-response-language-coverage.cjs` (#2529)
+- REQ-LANG-04: A covering directive MUST name inter-tool narration, not only the question/prompt surface. A directive names it by using the word "narration" or the phrase "between tool calls"; the class it denotes is the model's running commentary between tool calls, status updates, progress notes and findings included, and enumerating those items without naming the class does not satisfy the rule. A directive worded around questions and prompts alone leaves the model's running commentary in English beside translated answers, which is the defect #2529 reports; `scripts/lint-response-language-coverage.cjs` rejects it (#2529)
 
 **Config:**
 | Setting | Type | Default | Description |
@@ -2189,6 +2229,7 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `hooks.community` | boolean | `false` | Enable optional community hooks for commit validation, session state, and phase boundaries |
+| `hooks.commit_types` | array of strings | `[]` | Extra Conventional Commits types `gsd-validate-commit.sh` accepts, in addition to the built-in `feat, fix, docs, style, refactor, perf, test, build, ci, chore` — never replaces them. Each entry must match `^[a-z][a-z0-9-]*$` (lowercase letters, digits, hyphens); non-conforming or non-string entries are dropped. Example: `{ "hooks": { "community": true, "commit_types": ["enhance", "enh", "revert"] } }`. |
 
 
 ---

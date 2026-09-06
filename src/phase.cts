@@ -59,6 +59,12 @@ const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phas
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
+// #4129: the single owner of "count the ROADMAP's milestone Complete rows"
+// (pure computation, no I/O — no cycle on this path) for the intent-first
+// progress counters the phase-complete transaction passes downstream.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-lifecycle.cjs is an export= CommonJS module
+import phaseLifecycleMod = require('./phase-lifecycle.cjs');
+const { deriveProgressFromRoadmap: deriveProgressFromRoadmapForIntent, clampPercent: clampPercentForIntent } = phaseLifecycleMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -4182,16 +4188,35 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           // #1729: `(?:\s*\([^)\n]{0,200}\))?` after the number tolerates a pre-colon
           // ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE) so
           // `### Phase N (Cluster B): X` resolves. Captures are unchanged.
+          //
+          // #4078: the checkbox branch's separator is no longer colon-only. The
+          // canonical phase lookup has accepted the bullet-house dash grammar
+          // (`- [ ] **Phase N — Name**`, em/en-dash/hyphen/colon) since #2199
+          // (`BULLET_PHASE_LINE_PATTERN`, roadmap-parser.cjs), but this scan still
+          // required `:`, so on a roadmap whose original rows use the dash grammar
+          // the ONLY parseable row above N was typically a later phase.add-ingested
+          // colon-form phase — positionally last — and it won the numeric-minimum
+          // vote it should never have been alone in (observed: 18 of 18 selected,
+          // phases 2–17 skipped). The heading branch stays colon-only, mirroring
+          // `findRoadmapPhaseInContent`'s heading grammar exactly; only the
+          // checkbox branch widens, and only to the separators #2199 already
+          // accepts. The two branches keep separate capture groups, normalized
+          // just below the loop.
           const phasePattern = new RegExp(
-            `(?:#{2,4}|-\\s*\\[[ xX]\\])\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n*]+)`,
+            `(?:#{2,4}\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n*]+)` +
+            `|-\\s*\\[[ xX]\\]\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*[—–:\\-]\\s*([^\\n*]+))`,
             'gi'
           );
           let pm: RegExpExecArray | null;
           while ((pm = phasePattern.exec(roadmapForPhases)) !== null) {
+            // #4078: normalize the two alternation branches' captures (heading
+            // branch → groups 1/2, widened checkbox branch → groups 3/4).
+            const pmNum = pm[1] ?? pm[3];
+            const pmName = pm[2] ?? pm[4];
             // #2786: skip sentinel phase ids (999.x backlog, 0.x drafts) — stage 1
             // already skips sentinel dirs on disk via isSentinelPhaseId (#3185);
             // stage 2's heading scan must not advance into backlog headings either.
-            if (isSentinelPhaseId(pm[1])) continue;
+            if (isSentinelPhaseId(pmNum)) continue;
             // #3701 review: the numeric MINIMUM above N, not the first row above N in
             // DOCUMENT order. This scan walks raw roadmap text, and one global regex
             // sweeps both the `## Phases` checklist and the `## Phase Details`
@@ -4206,10 +4231,10 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             // Phase NUMBERS define sequence here, exactly as `comparePhaseNum` does for
             // the disk scan and for #2028's lowest-outstanding override; the roadmap
             // defines which phases EXIST and which milestone they belong to.
-            if (comparePhaseNum(pm[1], phaseNum) > 0
-              && (roadmapNextNum === null || comparePhaseNum(pm[1], roadmapNextNum) < 0)) {
-              roadmapNextNum = pm[1];
-              roadmapNextName = pm[2]
+            if (comparePhaseNum(pmNum, phaseNum) > 0
+              && (roadmapNextNum === null || comparePhaseNum(pmNum, roadmapNextNum) < 0)) {
+              roadmapNextNum = pmNum;
+              roadmapNextName = pmName
                 .replace(/\(INSERTED\)/i, '')
                 .trim()
                 .toLowerCase()
@@ -4271,8 +4296,13 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       if (roadmapContent !== null) {
         try {
           const milestoneScope = extractCurrentMilestone(roadmapContent, cwd);
+          // #4078: the separator class here mirrors stage 2's widened checkbox
+          // branch (and #2199's BULLET_PHASE_LINE_PATTERN): em/en-dash/hyphen/colon.
+          // Without it, this lowest-outstanding override was blind to dash-grammar
+          // rows and could not correct an out-of-order completion on the same
+          // mixed-grammar roadmaps that broke stage 2.
           const cbPattern = new RegExp(
-            `-\\s*\\[(x| )\\]\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n*]+)`,
+            `-\\s*\\[(x| )\\]\\s*(?:\\*\\*|__)?\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*[—–:\\-]\\s*([^\\n*]+)`,
             'gi'
           );
           let cbm: RegExpExecArray | null;
@@ -4371,14 +4401,57 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         const bodyHasPhaseField =
           stateExtractField(fmBody, 'Current Phase') != null ||
           stateExtractField(fmBody, 'Phase') != null;
-        const authoritativeFm: Record<string, string> | undefined = nextPhaseDisplayName
-          ? bodyHasPhaseField || !nextPhaseNum
-            ? { current_phase_name: nextPhaseDisplayName }
-            : {
-                current_phase: String(nextPhaseNum),
-                current_phase_name: nextPhaseDisplayName,
-              }
-          : undefined;
+        // #4129: the POST-completion progress counters, derived from the very
+        // ROADMAP this transaction just mutated (still in memory — it hits disk
+        // only at writePlanningFileSet, AFTER this content was assembled).
+        // buildStateFrontmatter's disk scan inside syncAndPreserveStateMd
+        // reads the PRE-completion ROADMAP (and any stale-dated sibling
+        // verification), so without this intent the persisted counter failed
+        // to increment on the completing phase's own transaction. Routed
+        // through the #2736 authoritativeFm seam's object direction: the
+        // pre-preservation merge makes it the derived truth the ratchet
+        // compares, and the post-preservation re-assert (completedOnlyRaise)
+        // is a floor no preservation branch can drop below. clampPercent is
+        // completePhaseCore's own percent formula (state-transition.cts),
+        // reused so the frontmatter and the body `Progress:` line agree.
+        const postCompletionRoadmapScope = roadmapContent !== null
+          ? extractCurrentMilestone(roadmapContent, cwd)
+          : null;
+        const postCompletionRoadmapProgress = postCompletionRoadmapScope !== null
+          ? deriveProgressFromRoadmapForIntent(postCompletionRoadmapScope)
+          : null;
+        const authoritativeProgress: Record<string, number> | undefined =
+          postCompletionRoadmapProgress && postCompletionRoadmapProgress.completedPhases !== null
+            ? postCompletionRoadmapProgress.totalPhases !== null && postCompletionRoadmapProgress.totalPhases > 0
+              ? {
+                  completed_phases: postCompletionRoadmapProgress.completedPhases,
+                  percent: clampPercentForIntent(
+                    postCompletionRoadmapProgress.completedPhases,
+                    postCompletionRoadmapProgress.totalPhases,
+                  ),
+                }
+              : { completed_phases: postCompletionRoadmapProgress.completedPhases }
+            : undefined;
+        const authoritativeFm: Record<string, unknown> | undefined = authoritativeProgress
+          ? {
+              ...(nextPhaseDisplayName
+                ? bodyHasPhaseField || !nextPhaseNum
+                  ? { current_phase_name: nextPhaseDisplayName }
+                  : {
+                      current_phase: String(nextPhaseNum),
+                      current_phase_name: nextPhaseDisplayName,
+                    }
+                : {}),
+              progress: authoritativeProgress,
+            }
+          : nextPhaseDisplayName
+            ? bodyHasPhaseField || !nextPhaseNum
+              ? { current_phase_name: nextPhaseDisplayName }
+              : {
+                  current_phase: String(nextPhaseNum),
+                  current_phase_name: nextPhaseDisplayName,
+                }
+            : undefined;
         // ADR-3408 §8.3 / #3469: this deliberately bypasses
         // readModifyWriteStateMd (STATE.md is committed atomically with
         // ROADMAP/REQUIREMENTS), so it calls the single write-seam

@@ -39,7 +39,11 @@ if [ \"$FALLOW_SCOPE\" = \"phase\" ]; then
   # same-numbered phases and tail -1 selected the oldest.
   FALLOW_PHASE_START=$(git log --format=\"%H\" --diff-filter=A -- \"${PHASE_DIR}\" 2>/dev/null | tail -1)
   if [ -n \"$FALLOW_PHASE_START\" ]; then
-    FALLOW_BASE=\"${FALLOW_PHASE_START}^\"
+    if git rev-parse \"${FALLOW_PHASE_START}^\" >/dev/null 2>&1; then
+      FALLOW_BASE=\"${FALLOW_PHASE_START}^\"
+    else
+      FALLOW_BASE=\"${FALLOW_PHASE_START}\"
+    fi
     FALLOW_SCOPE_ARGS=(--changed-since \"$FALLOW_BASE\")
   fi
 fi

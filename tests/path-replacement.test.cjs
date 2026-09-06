@@ -738,6 +738,13 @@ describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on til
     const walk = (dir) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
+        const rel = path.relative(rootDir, full);
+        const topLevel = rel.split(path.sep)[0];
+        // The durable Runtime Surface corpus is intentionally raw canonical
+        // input, not an emitted/runtime-rewritten spec tree. Its paths are
+        // validated when staged, so exclude only these two known corpus roots
+        // from this legacy emitted-content oracle.
+        if (topLevel === 'commands' || topLevel === 'agents') continue;
         if (entry.isDirectory()) walk(full);
         else if (entry.name.endsWith('.md')) {
           const content = fs.readFileSync(full, 'utf8');

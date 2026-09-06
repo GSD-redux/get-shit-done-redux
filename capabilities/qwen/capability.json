@@ -1,7 +1,7 @@
 {
   "id": "qwen",
   "role": "runtime",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "Qwen Code",
   "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
   "tier": "core",
@@ -136,6 +136,8 @@
     "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
     "modelConfigKey": null,
+    "effortConfigKey": null,
+    "defaultEffort": null,
     "handler": null
   },
   "config": {

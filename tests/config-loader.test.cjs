@@ -233,6 +233,17 @@ describe('loadConfig — unknown-key warning dedup', () => {
     assert.ok(warnings.length <= 1, `warning emitted more than once: ${warnings.length} times`);
   });
 
+  test('agent_tools is accepted without an unknown-key warning (#4032)', () => {
+    writeConfig(tmpDir, { agent_tools: { 'gsd-executor': ['WebFetch'] } });
+    const config = loadConfig(tmpDir);
+    assert.deepEqual(config.agent_tools, { 'gsd-executor': ['WebFetch'] });
+    assert.equal(
+      stderrLines.some((line) => line.includes('agent_tools')),
+      false,
+      'a documented agent_tools config must not be reported as unknown',
+    );
+  });
+
   // #2674: the two cases above only pass because each picks a key name no other
   // case reuses — so neither can observe whether the documented reset actually
   // runs. _resetRuntimeWarningCacheForTests is documented as resetting

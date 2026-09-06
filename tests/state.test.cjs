@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, captureFdSync } = require('./helpers.cjs');
 const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
 // ADR-3473 §8.7 (#3872): git-fixture spawns for the state_head rows (10/11)
 // go through the throw-preserving wrapper, never a raw execFileSync.
@@ -125,22 +125,7 @@ function bodyProgressPercent(stateMdContent) {
  * subprocess would not observe the parent process's mock).
  */
 function captureStdout(fn) {
-  const chunks = [];
-  const original = fs.writeSync;
-  fs.writeSync = (fd, data, offset, length) => {
-    if (fd !== 1) return original(fd, data, offset, length);
-    const chunk = Buffer.isBuffer(data)
-      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-      : String(data);
-    chunks.push(chunk);
-    return Buffer.byteLength(chunk, 'utf8');
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = original;
-  }
-  return chunks.join('');
+  return captureFdSync(1, fn);
 }
 
 function readShippedStateTemplateBody(replacements) {
@@ -857,7 +842,7 @@ describe('STATE.md frontmatter sync', () => {
 
     const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     assert.ok(content.startsWith('---\n'), 'should start with frontmatter delimiter');
-    assert.ok(content.includes('gsd_state_version: 1.0'), 'should have version field');
+    assert.ok(content.includes('gsd_state_version: "1.0"'), 'should have version field');
     assert.ok(content.includes('current_phase: 02'), 'frontmatter should have current phase');
     assert.ok(content.includes('**Current Phase:** 02'), 'body field should be preserved');
     assert.ok(content.includes('**Status:** Executing Plan 1'), 'updated field in body');
@@ -2111,6 +2096,156 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
       assert.ok(updated.includes('Plan: 2 of 3'), 'Plan counter should advance to 2 of 3');
     });
   });
+
+  describe('cmdStateAdvancePlan #4093 zero-labeled-fields recovery decline', () => {
+    // The reporter's exact shape: ## Current Position has drifted to pure
+    // narrative prose — zero matches for Phase:/Plan:/Current Plan:/Total
+    // Plans in Phase: anywhere in the file, bold or plain — while frontmatter
+    // still carries current_phase and the phase directory still holds the
+    // plan/summary set that IS the position. advance-plan must not strand the
+    // caller at a bare "cannot parse" error: the decline carries a
+    // machine-readable reason plus the disk-derived facts needed to repair.
+    const narrativeFixture = [
+      '---',
+      'status: Executing',
+      'current_phase: 01',
+      'current_phase_name: Implementation',
+      'last_activity: 2026-09-01',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      '**Phase 1 plan 2** (auth flow): EXECUTED — token round-trip verified end to end.',
+      "Follow-ups captured in plan 3's tasks.",
+      '',
+      '## Session',
+      '',
+      'Session ID: abc',
+      '',
+    ].join('\n');
+
+    const seedPhaseDir = (dir, planCount, summaryCount) => {
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', dir);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= planCount; i++) {
+        fs.writeFileSync(path.join(phaseDir, `01-0${i}-PLAN.md`), `# plan ${i}\n`);
+      }
+      for (let i = 1; i <= summaryCount; i++) {
+        fs.writeFileSync(path.join(phaseDir, `01-0${i}-SUMMARY.md`), `# summary ${i}\n`);
+      }
+      return phaseDir;
+    };
+
+    test('#4093 declines with disk-derived repair guidance when Current Position has zero labeled fields', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), narrativeFixture);
+      seedPhaseDir('01-impl', 2, 1);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.ok(typeof out.error === 'string' && /cannot read the plan position/i.test(out.error),
+        `error should still name the unreadable plan position; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.reason, 'plan_position_unreadable',
+        `reason should be plan_position_unreadable; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '01-impl',
+        `phase_dir should name the disk phase directory; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.disk.plan_count, 2,
+        `disk.plan_count should count the 2 plan files; got: ${JSON.stringify(out.disk)}`);
+      assert.strictEqual(out.disk.summarized_count, 1,
+        `disk.summarized_count should count the 1 summary; got: ${JSON.stringify(out.disk)}`);
+      assert.strictEqual(out.suggested.current_plan, 2,
+        `next plan after 1 summarized of 2 is 2; got: ${JSON.stringify(out.suggested)}`);
+      assert.strictEqual(out.suggested.total_plans, 2,
+        `suggested total is the on-disk plan count; got: ${JSON.stringify(out.suggested)}`);
+      assert.ok(out.suggested.lines.includes('Current Plan: 2') && out.suggested.lines.includes('Total Plans in Phase: 2'),
+        `suggested lines should name the legacy pair to re-insert; got: ${JSON.stringify(out.suggested)}`);
+
+      const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.strictEqual(after, narrativeFixture,
+        'a recovery decline must leave STATE.md byte-identical');
+    });
+
+    test('#4093 resolves the position phase from the Phase line when frontmatter has none', () => {
+      const noFm = [
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 2 — Build out',
+        '',
+        'All narrative from here; the labeled plan lines were displaced by executor notes.',
+        '',
+      ].join('\n') + '\n';
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), noFm);
+      const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-second');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= 3; i++) fs.writeFileSync(path.join(phaseDir, `02-0${i}-PLAN.md`), `# plan ${i}\n`);
+      fs.writeFileSync(path.join(phaseDir, '02-01-SUMMARY.md'), '# summary 1\n');
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '02-second',
+        `phase should resolve from the Phase: prose line; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.suggested.current_plan, 2, `got: ${JSON.stringify(out.suggested)}`);
+      assert.strictEqual(out.suggested.total_plans, 3, `got: ${JSON.stringify(out.suggested)}`);
+    });
+
+    test('#4093 names the reason even when no phase can be resolved from disk or frontmatter', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        '# Project State\n\n## Current Position\n\nPure narrative, no labeled lines anywhere.\n',
+      );
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.ok(/cannot read the plan position/i.test(out.error),
+        `the accepted-shape sentence must survive; got: ${out.error}`);
+      assert.strictEqual(out.phase_dir, undefined,
+        `no resolvable phase means no phase_dir; got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.disk, undefined, `no resolvable phase means no disk block`);
+    });
+
+    test('#4093 omits suggested values when the phase directory has no plan files', () => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), narrativeFixture);
+      seedPhaseDir('01-impl', 0, 0);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '01-impl', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.disk.plan_count, 0, `got: ${JSON.stringify(out.disk)}`);
+      assert.strictEqual(out.suggested, undefined,
+        `zero plans on disk means nothing to suggest; got: ${JSON.stringify(out)}`);
+    });
+
+    test('#4093 gives the same recovery decline for a present-but-unreadable plan field', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        narrativeFixture.replace("Follow-ups captured in plan 3's tasks.", 'Plan: TBD'),
+      );
+      seedPhaseDir('01-impl', 2, 1);
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+      const out = JSON.parse(result.output);
+      assert.strictEqual(out.reason, 'plan_position_unreadable', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.phase_dir, '01-impl', `got: ${JSON.stringify(out)}`);
+      assert.strictEqual(out.suggested.current_plan, 2, `got: ${JSON.stringify(out.suggested)}`);
+      assert.strictEqual(out.advanced, undefined, 'an unreadable position must never be advanced');
+    });
+  });
 });
 
 describe('cmdStateRecordMetric (state record-metric)', () => {
@@ -2869,6 +3004,106 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
     assert.strictEqual(output.percent, 0, 'v2.0-scoped plan fraction (1/1) is capped to 0 by the missing phase verification');
     assert.strictEqual(output.total, 1, 'total must be v2.0-scoped (phase 02 only) — Phase 03 must not leak in from the auto-derived scan');
     assert.strictEqual(output.completed, 1, 'completed must be v2.0-scoped (phase 02 only)');
+  });
+});
+
+describe('#4213: resyncing state verbs keep body Progress bar equal to frontmatter progress.percent', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
+    for (const num of ['01', '02', '03', '04']) {
+      const dir = path.join(tmpDir, '.planning', 'phases', num);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${num}-PLAN.md`), '# Plan\n');
+    }
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  function seedState(seededPercent = 50, withProgress = true) {
+    const progressLine = withProgress
+      ? `Progress: [█████░░░░░] ${seededPercent}% (2/4 plans done)`
+      : '**Status:** Executing';
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: "1.0"\nstatus: executing\nprogress:\n  total_phases: 4\n  completed_phases: ${seededPercent / 25}\n  total_plans: 4\n  completed_plans: ${seededPercent / 25}\n  percent: ${seededPercent}\n---\n\n# Project State\n\n${progressLine}\n`
+    );
+  }
+
+  function completePhasesOnDisk(count) {
+    for (const num of ['01', '02', '03', '04'].slice(0, count)) {
+      const dir = path.join(tmpDir, '.planning', 'phases', num);
+      fs.writeFileSync(path.join(dir, `${num}-PLAN-SUMMARY.md`), '# Summary\n');
+      writePassedVerification(tmpDir, num, num);
+    }
+  }
+  function assertProgress(expected, suffix = false) {
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(bodyProgressPercent(state), expected);
+    assert.strictEqual(Number(JSON.parse(runGsdTools('state json', tmpDir).output).progress.percent), expected);
+    if (suffix) assert.match(stateDocument.stateExtractField(state, 'Progress'), /\(2\/4 plans done\)/);
+  }
+  test('resyncing verbs repair drift-up and preserve the body suffix', () => {
+    for (const command of [['state', 'record-session', '--stopped-at', '2.3'], 'state sync']) {
+      seedState();
+      completePhasesOnDisk(3);
+      assert.ok(runGsdTools(command, tmpDir).success, `${command} failed`);
+      assertProgress(75, true);
+    }
+  });
+  test('a no-drift write keeps both surfaces at the existing percent', () => {
+    seedState(); completePhasesOnDisk(2);
+    assert.ok(runGsdTools(['state', 'record-session', '--stopped-at', '2.3'], tmpDir).success);
+    assertProgress(50);
+  });
+  test('resyncing verbs repair drift-down without inserting a missing bar', () => {
+    seedState();
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 01: A\n### Phase 02: B\n### Phase 03: C\n### Phase 04: D\n### Phase 05: E\n### Phase 06: F\n');
+    completePhasesOnDisk(2);
+    assert.ok(runGsdTools(['state', 'add-decision', '--phase', '3', '--summary', 's'], tmpDir).success);
+    assertProgress(33);
+    seedState(50, false);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
+    completePhasesOnDisk(3);
+    assert.ok(runGsdTools(['state', 'record-session', '--stopped-at', '2.3'], tmpDir).success);
+    const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(bodyProgressPercent(state), null);
+    assert.strictEqual(Number(JSON.parse(runGsdTools('state json', tmpDir).output).progress.percent), 75);
+  });
+  test('a free-text plain Progress: line above the status line cannot capture the rewrite, and an out-of-range percent clamps', () => {
+    // The #2177 bold-first priority restated for the shared helper (an earlier
+    // free-text line starting with `Progress:` must stay byte-identical while
+    // the bold status line is rewritten — a leftmost-match alternation got
+    // this wrong), and the clamp case: a hand-edited body percent (105%) with
+    // an unmeasured scan (no plans on disk, so the curated block stands)
+    // reaches the helper through applyPostSyncPreservation and must render the
+    // clamped 100% bar instead of throwing RangeError on repeat(-1).
+    const freeText = 'Progress: tracked in the weekly thread, do not edit this line by hand';
+    seedState(50);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: "1.0"\nstatus: executing\nprogress:\n  total_phases: 4\n  completed_phases: 2\n  total_plans: 4\n  completed_plans: 2\n  percent: 50\n---\n\n# Project State\n\n${freeText}\n\n**Progress:** [█████░░░░░] 50%\n`);
+    completePhasesOnDisk(3);
+    assert.ok(runGsdTools(['state', 'record-session', '--stopped-at', '2.3'], tmpDir).success);
+    let state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(state.includes(freeText), 'the free-text plain line must stay byte-identical');
+    assert.match(stateDocument.stateExtractField(state, 'Progress'), /^\[████████░░\] 75%$/, 'the bold status line is the one rewritten (extractor returns its value)');
+    assert.strictEqual(bodyProgressPercent(state), 75);
+    assert.strictEqual(Number(JSON.parse(runGsdTools('state json', tmpDir).output).progress.percent), 75);
+
+    seedState(50);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'),
+      '---\ngsd_state_version: "1.0"\nstatus: executing\nprogress:\n  total_phases: 0\n  completed_phases: 0\n  total_plans: 0\n  completed_plans: 0\n  percent: 105\n---\n\n# Project State\n\nProgress: [██████████░] 105% (2/4 plans done)\n');
+    for (let n = 1; n <= 4; n++) {
+      // eslint-disable-next-line local/no-raw-rmsync-in-tests -- removing fixture phase dirs beforeEach created; helpers.cleanup owns the tmp root itself
+      fs.rmSync(path.join(tmpDir, '.planning', 'phases', String(n).padStart(2, '0')), { recursive: true, force: true });
+    }
+    assert.ok(runGsdTools(['state', 'add-decision', '--phase', '3', '--summary', 's'], tmpDir).success);
+    state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(bodyProgressPercent(state), 100, 'bar renders the clamped 100%');
+    assert.match(stateDocument.stateExtractField(state, 'Progress'), /\(2\/4 plans done\)/, 'suffix survives');
   });
 });
 
@@ -7141,7 +7376,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       }), tmp);
 
       const expected = [
-        '---', 'gsd_state_version: 1.0', 'status: unknown', 'last_updated: "2023-11-14T22:13:20.000Z"',
+        '---', 'gsd_state_version: "1.0"', 'status: unknown', 'last_updated: "2023-11-14T22:13:20.000Z"',
         'stopped_at: Phase 5, curated stop', 'paused_at: Phase 5, curated pause',
         'current_phase: 5', 'current_phase_name: Curated Name', 'current_plan: 05-02-plan',
         'last_activity_desc: curated activity desc',
@@ -10914,21 +11149,20 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     // No ROADMAP.md at all + a stale "Total Phases: 2" body annotation drives
     // the #3573 roadmap-absent withhold path: totalPhases stays pinned at the
     // stale body-declared value (2) instead of being replaced by the live
-    // disk-scanned total, while completedPhases is UNCONDITIONALLY set from
-    // the disk scan (buildStateFrontmatter) regardless of that withhold — so
-    // completedPhases (4) ends up greater than totalPhases (2), making the
-    // guard's `completedPhases < totalPhases` conjunct false (verified by
-    // direct probe: status lands 'completed' with progress
-    // {total_phases:2, completed_phases:4}). Note this fixture necessarily
-    // also drives listMilestonePhaseDirs' own ROADMAP-absent scope to
-    // non-COMPLETE (same missing file, independent read), so it does not
-    // purely isolate the counter conjunct from `diskScope === SCOPE.COMPLETE`
-    // — src/state.cts's withhold-with-a-stale-numeric-total path is only
-    // reachable via ROADMAP absence, which always drags that second conjunct
-    // along with it; no fixture can decouple the two under the current
-    // implementation. Inconsistent counters deliberately fall through to
-    // normalizeStateStatus's answer rather than guessing which of the two
-    // disagreeing numbers is correct.
+    // disk-scanned total. #4094 extended that withhold to completedPhases too
+    // — it comes from the same phaseDirs walk and is equally untrustworthy
+    // here — so completed_phases is withheld (omitted) alongside any
+    // non-derivable counter, and the guard's `typeof completedPhases ===
+    // 'number'` conjunct fails, so it cannot fire. Pre-#4094 completedPhases
+    // was UNCONDITIONALLY set from the disk scan (4 > 2 made the
+    // `completedPhases < totalPhases` conjunct false) — the exact
+    // "completed_phases larger than a total_phases-consistent value" symptom
+    // #4094's issue reports. Either way the guard does not demote; the row
+    // still pins that conclusion. Note this fixture necessarily also drives
+    // listMilestonePhaseDirs' own ROADMAP-absent scope to non-COMPLETE (same
+    // missing file, independent read). Inconsistent/untrustworthy counters
+    // deliberately fall through to normalizeStateStatus's answer rather than
+    // guessing which of the two disagreeing numbers is correct.
     seed4PhaseDirsNoRoadmap(4);
     writeStateAtPhase(4, ['Total Phases: 2']);
 
@@ -10939,14 +11173,18 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     assert.strictEqual(
       frontmatterStatus(after),
       'completed',
-      `guard must not demote when completedPhases > totalPhases; got frontmatter:\n${after}`,
+      `guard must not demote when the counters are withheld as untrustworthy; got frontmatter:\n${after}`,
     );
 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
     const output = JSON.parse(jsonResult.output);
-    assert.strictEqual(Number(output.progress.completed_phases), 4, 'completed_phases must reflect disk truth (4)');
-    assert.strictEqual(Number(output.progress.total_phases), 2, 'total_phases must stay pinned at the stale declared value (2)');
+    assert.strictEqual(
+      output.progress && output.progress.completed_phases,
+      undefined,
+      'completed_phases must be withheld under the #4094 roadmap-absent withhold (no trustworthy scan, no stored value)',
+    );
+    assert.strictEqual(Number(output.progress && output.progress.total_phases), 2, 'total_phases must stay pinned at the stale declared value (2)');
   });
 
   test('untrustworthy counters (no ROADMAP.md, no derivable total) must not demote status', () => {
@@ -10973,12 +11211,19 @@ describe('#3578: complete-phase does not overwrite milestone status when phases 
     const jsonResult = runGsdTools('state json', tmpDir);
     assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
     const output = JSON.parse(jsonResult.output);
+    // #4094: the withhold now covers all four counters (same untrustworthy
+    // phaseDirs walk), and this fixture stores none of them in frontmatter —
+    // so the whole progress block may be absent, not just total_phases.
     assert.strictEqual(
-      output.progress.total_phases,
+      output.progress && output.progress.total_phases,
       undefined,
       'total_phases must be withheld (no ROADMAP to derive it from), proving the guard truly had no denominator to compare against',
     );
-    assert.strictEqual(Number(output.progress.completed_phases), 2, 'completed_phases is still disk truth even when total_phases is withheld');
+    assert.strictEqual(
+      output.progress && output.progress.completed_phases,
+      undefined,
+      'completed_phases is withheld too under #4094 (same untrustworthy scan, no stored value)',
+    );
   });
 
   test('#3578 AC4: gsd_invoke_command (MCP dispatch) yields the same non-completed status as the CLI route (2 of 4 case)', () => {
@@ -17919,6 +18164,237 @@ describe('#3871 / #3756: curated progress must survive a write on an archived mi
 });
 
 // ═════════════════════════════════════════════════════════════════════════
+// #4129: progress.completed_phases is recomputed to a WRONG value on every
+// resyncing state write, and hand-fixes never survive (.gsd/bug/
+// fix-4129-completed-phases-recompute/{10-diagnosis,50-test-matrix}.md).
+//
+// The repro shape (issue rows 1/4): a completed phase whose SUMMARY was
+// touched after its verification passed — a later reformat/re-run commit, or
+// any dirty working-tree edit — permanently stale-dates that phase's
+// verification under the #2348 clean-commit-time clock. isPhaseComplete
+// (#2957 disk-strict, correctly) refuses to count it, so
+// buildStateFrontmatter's disk numerator UNDER-counts vs the ROADMAP
+// Complete rows that `phase complete` itself maintains, and the resync arm
+// of applyPreserveAlways wholesale-replaces the stored block with the
+// under-count on every default-resync write (record-session / add-decision /
+// begin-phase / ...), clobbering any hand-corrected value.
+//
+// The fixture below is git-free: outside a repo the #2348 clock falls back
+// to filesystem mtimes, so a newer-mtime SUMMARY reproduces the exact stale
+// routing the real git clock produces (verified against the same
+// `verification status` CLI the reporter used).
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('#4129: completed_phases derives from the ROADMAP authority and survives resyncing writes', () => {
+  /**
+   * The #4129 STALE shape: milestone v1.0, 18 phases, phases 1-3 Complete in
+   * the ROADMAP (canonical 4-column Progress table + checklist), each with
+   * plans/summaries and a passing verification; phase 1's SUMMARY carries a
+   * NEWER mtime than its verification → `verification status` routes `stale`
+   * → disk numerator 2, ROADMAP truth 3. STATE.md starts at the truth (3).
+   * `includeStoredProgress: false` writes STATE.md with NO stored progress
+   * block, so the reported counters are exactly what the derivation computes
+   * (the read-path ratchet has no stored block to lean on).
+   */
+  function buildStaleVerificationFixture(cwd, initialCompleted = 3, includeStoredProgress = true) {
+    const planningDir = path.join(cwd, '.planning');
+    const phasesDir = path.join(planningDir, 'phases');
+    fs.mkdirSync(phasesDir, { recursive: true });
+    fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ project_code: 'REPRO' }));
+
+    const roadmapLines = [
+      '# Roadmap',
+      '',
+      '## Current Milestone: v1.0',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 1.    | 2/2            | Complete | 2026-01-01 |',
+      '| 2.    | 2/2            | Complete | 2026-01-02 |',
+      '| 3.    | 2/2            | Complete | 2026-01-03 |',
+    ];
+    for (let i = 4; i <= 18; i += 1) roadmapLines.push(`| ${i}.    | 0/2            | Not Started |  |`);
+    roadmapLines.push('', '- [x] Phase 1: Alpha (completed 2026-01-01)', '- [x] Phase 2: Beta (completed 2026-01-02)', '- [x] Phase 3: Gamma (completed 2026-01-03)');
+    for (let i = 4; i <= 18; i += 1) roadmapLines.push(`- [ ] Phase ${i}: P${i}`);
+    for (let i = 1; i <= 18; i += 1) {
+      roadmapLines.push('', `### Phase ${i}: P${i}`, '', '**Goal:** goal', '**Plans:** 2 plans', '');
+    }
+    fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmapLines.join('\n'));
+
+    const stateLines = [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.0',
+      'milestone_name: Programme',
+      'status: executing',
+      'current_phase: 4',
+      'last_updated: 2026-01-03T10:00:00.000Z',
+    ];
+    if (includeStoredProgress) {
+      stateLines.push(
+        'progress:',
+        '  total_phases: 18',
+        `  completed_phases: ${initialCompleted}`,
+        '  total_plans: 6',
+        '  completed_plans: 6',
+        '  percent: 17',
+      );
+    }
+    stateLines.push(
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 4 of 18 (P4) — EXECUTING',
+      'Plan: 1 of 2',
+      'Status: Executing Phase 4',
+      'Last activity: 2026-01-03',
+      '',
+      '## Progress',
+      '',
+      `Progress: [██░░░░░░░░] 17% (${initialCompleted}/18 phases complete)`,
+      '',
+      '## Session',
+      '',
+      'Last session: 2026-01-03T10:00:00.000Z',
+      'Stopped at: Finished phase 3',
+      'Resume file: None',
+      '',
+    );
+    fs.writeFileSync(path.join(planningDir, 'STATE.md'), stateLines.join('\n'));
+
+    for (const p of [1, 2, 3]) {
+      const pp = String(p).padStart(2, '0');
+      const dir = path.join(phasesDir, `${pp}-p${p}`);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const i of [1, 2]) {
+        fs.writeFileSync(path.join(dir, `${pp}-0${i}-PLAN.md`), '# Plan\n');
+        fs.writeFileSync(path.join(dir, `${pp}-0${i}-SUMMARY.md`), '# Summary\n');
+      }
+      writePassedVerification(cwd, `${pp}-p${p}`, pp);
+    }
+
+    // The drift: phase 1's summary edited AFTER the verification was written.
+    // No git repo → the #2348 clock compares mtimes; the newer summary mtime
+    // routes the phase-1 verification `stale` exactly as a later commit would.
+    const verificationPath = path.join(phasesDir, '01-p1', '01-VERIFICATION.md');
+    const driftedSummary = path.join(phasesDir, '01-p1', '01-01-SUMMARY.md');
+    const older = new Date('2026-01-01T00:00:00Z');
+    const newer = new Date('2026-03-01T00:00:00Z');
+    fs.utimesSync(verificationPath, older, older);
+    fs.utimesSync(driftedSummary, newer, newer);
+
+    return { planningDir, phasesDir };
+  }
+
+  function readProgress(cwd) {
+    const content = fs.readFileSync(path.join(cwd, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(content);
+    assert.ok(fm && fm.progress, 'STATE.md frontmatter must carry a progress block');
+    return { progress: fm.progress, content };
+  }
+
+  // Row 1 of the 50-test-matrix — the failing-first regression. On current
+  // `next` each of these verbs clobbers the stored 3 down to the
+  // stale-verification disk count 2 (percent 17 → 11), which is the issue's
+  // "any hand-correction is silently reverted by the next one".
+  test('handFixedCompletedPhasesSurvivesEveryResyncingWrite', (t) => {
+    const cwd = createTempDir('gsd-4129-handfix-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 3);
+
+    // Precondition — the drift is really in place: phase 1 routes stale, so
+    // the disk numerator is 2 while ROADMAP + stored say 3.
+    const staleCheck = runGsdTools(['verification', 'status', path.join('.planning', 'phases', '01-p1')], cwd);
+    assert.ok(staleCheck.success, `verification status failed: ${staleCheck.error}`);
+    assert.strictEqual(JSON.parse(staleCheck.output).status, 'stale', 'fixture precondition: phase 1 verification must route stale (newer summary)');
+
+    for (const [label, args] of [
+      ['state record-session', ['state', 'record-session', '--stopped-at', 'Finished phase 3 verification']],
+      ['state add-decision', ['state', 'add-decision', '--summary', 'Ship it']],
+      ['state begin-phase', ['state', 'begin-phase', '--phase', '4', '--name', 'P4']],
+    ]) {
+      const result = runGsdTools(args, cwd);
+      assert.ok(result.success, `${label} failed: ${result.error}`);
+      const { progress, content } = readProgress(cwd);
+      assert.strictEqual(
+        Number(progress.completed_phases),
+        3,
+        `#4129: ${label} must not clobber the ROADMAP-correct completed_phases 3 down to the stale-verification disk count (${progress.completed_phases})`,
+      );
+      assert.strictEqual(Number(progress.percent), 17, `#4129: ${label} — percent follows the surviving counters (3/18), not the discarded disk count`);
+      assert.strictEqual(bodyProgressPercent(content), 17, `#4129: ${label} — the body Progress bar must stay coherent with the persisted percent`);
+    }
+  });
+
+  // Row 2 — the DERIVED block itself must carry the ROADMAP-floored numerator.
+  // state json applies the read-path ratchet (shouldPreserveExistingProgress),
+  // which would mask a still-wrong derivation whenever a stored block exists —
+  // so this asserts on a STATE.md whose stored block is ABSENT: what json
+  // reports is then exactly what buildStateFrontmatter derived.
+  test('stateJsonDerivesCompletedPhasesFromRoadmapAuthority', (t) => {
+    const cwd = createTempDir('gsd-4129-jsonfloor-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 3, false);
+
+    const result = runGsdTools(['state', 'json'], cwd);
+    assert.ok(result.success, `state json failed: ${result.error}`);
+    const reported = JSON.parse(result.output).progress;
+    assert.strictEqual(
+      Number(reported.completed_phases),
+      3,
+      `#4129: the derived completed_phases must agree with the ROADMAP Complete rows (3), not the stale-verification disk count (${reported.completed_phases})`,
+    );
+    assert.strictEqual(Number(reported.percent), 17, '#4129: percent derives from the floored numerator');
+  });
+
+  // Row 3 — the flip side: a counter STUCK LOW (the issue's row-1 aftermath)
+  // must move UP to the ROADMAP truth on the next write, not stay pinned.
+  test('stuckLowCounterIncrementsToRoadmapTruthOnNextWrite', (t) => {
+    const cwd = createTempDir('gsd-4129-stucklow-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 2);
+
+    const result = runGsdTools(['state', 'record-session', '--stopped-at', 'x'], cwd);
+    assert.ok(result.success, `record-session failed: ${result.error}`);
+    const { progress } = readProgress(cwd);
+    assert.strictEqual(Number(progress.completed_phases), 3, '#4129: a stored 2 below the ROADMAP truth must rise to 3, not be re-derived as 2');
+    assert.strictEqual(Number(progress.percent), 17, '#4129: percent follows the corrected numerator');
+  });
+
+  // Row 5 — negative space: no canonical Progress table (checklist-only
+  // ROADMAP) → deriveProgressFromRoadmap resolves no table → the floor is
+  // inert and the disk-verification count stands. The floor must not invent
+  // a parser for checklist bullets (one-owner rule).
+  test('floorIsInertWithoutCanonicalProgressTable', (t) => {
+    const cwd = createTempDir('gsd-4129-notable-');
+    t.after(() => cleanup(cwd));
+    buildStaleVerificationFixture(cwd, 2, false);
+
+    // Rewrite the ROADMAP with the table stripped — checklist only.
+    // CRLF-tolerant line split (local/no-crlf-fragile-split).
+    const roadmapPath = path.join(cwd, '.planning', 'ROADMAP.md');
+    const withoutTable = fs
+      .readFileSync(roadmapPath, 'utf-8')
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith('|'))
+      .join('\n');
+    fs.writeFileSync(roadmapPath, withoutTable);
+
+    const result = runGsdTools(['state', 'json'], cwd);
+    assert.ok(result.success, `state json failed: ${result.error}`);
+    const reported = JSON.parse(result.output).progress;
+    assert.strictEqual(
+      Number(reported.completed_phases),
+      2,
+      '#4129 negative space: without a canonical Progress table the completed count stays the disk-verification count (the floor reuses deriveProgressFromRoadmap, which reads only the table)',
+    );
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
 // #3872 / ADR-3473 §8.7: what a command reports it wrote
 // (.gsd/phase/feat-3872-transaction-diff-reporting/{40-design,50-test-matrix}.md)
 //
@@ -19505,26 +19981,16 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
    * subprocess-based runGsdTools drops stderr on a clean exit.
    */
   function captureCliIO(fn) {
-    const originalWriteSync = fs.writeSync;
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
     let stdout = '';
     let stderr = '';
-    fs.writeSync = (fd, data, offset, length) => {
-      if (fd !== 1) return originalWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      stdout += chunk;
-      return Buffer.byteLength(chunk, 'utf8');
-    };
     process.stderr.write = (chunk) => {
       stderr += String(chunk);
       return true;
     };
     try {
-      fn();
+      stdout = captureFdSync(1, fn);
     } finally {
-      fs.writeSync = originalWriteSync;
       process.stderr.write = originalStderrWrite;
     }
     return { stdout, stderr };

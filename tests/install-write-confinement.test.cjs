@@ -3811,3 +3811,205 @@ describe('#3712 in-process home confinement', () => {
       `codex skills must NOT resolve inside the ambient home ${ambientHome}, got ${dest}`);
   });
 });
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4086 (Codex skills manifest keys never resolve)
+// Codex installs skills to the skills-kind `home` override (~/.agents/skills),
+// outside configDir (~/.codex). writeManifest() hashes skills from the real
+// location, but saveLocalPatches() resolved every manifest key against
+// configDir only — every skills/ key missed, so user modifications to Codex
+// skills were never hash-compared, never backed up, silently overwritten.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4086-codex-skills-manifest-paths', () => {
+'use strict';
+
+const { test, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const ROOT = path.join(__dirname, '..');
+const INSTALL = require(path.join(ROOT, 'bin', 'install.js'));
+const { cleanup, sandboxHome, scrubConfigLocationEnv } = require('./helpers.cjs');
+
+const MANIFEST_NAME = 'gsd-file-manifest.json';
+const PATCHES_DIR_NAME = 'gsd-local-patches';
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function writeManifestFile(configDir, files, extra = {}) {
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, MANIFEST_NAME),
+    JSON.stringify({ version: '1.12.0', timestamp: new Date().toISOString(), files, ...extra }, null, 2),
+  );
+}
+
+describe('Bug #4086: saveLocalPatches resolves skills/ manifest keys at the runtime skills root', () => {
+  let tmpDir;
+  let homeDir;
+  let configDir;
+  let skillsRoot;
+  let restoreConfigEnv;
+  let fakeSrcDir;
+
+  beforeEach((t) => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4086-'));
+    homeDir = path.join(tmpDir, 'home');
+    fs.mkdirSync(homeDir, { recursive: true });
+    sandboxHome(t, homeDir);
+    restoreConfigEnv = scrubConfigLocationEnv();
+    configDir = path.join(homeDir, '.codex');
+    // Same join the layout uses for codex's skills-kind home override
+    // (#3712 block above pins that this is $HOME/.agents/skills).
+    skillsRoot = path.join(homeDir, '.agents', 'skills');
+    fakeSrcDir = path.join(tmpDir, 'pkg-src');
+    fs.mkdirSync(fakeSrcDir, { recursive: true });
+    t.after(() => {
+      restoreConfigEnv();
+      cleanup(tmpDir);
+    });
+  });
+
+  test('saveLocalPatches backs up a modified Codex skill installed under ~/.agents/skills (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const modified = pristine + '<!-- user edit 4086: a substantial marker line -->\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), modified);
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) }, { runtime: 'codex', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(configDir, {
+      packageSrc: fakeSrcDir,
+      runtime: 'codex',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [relKey], 'the modified skill must be detected via the skills root');
+    const backup = path.join(configDir, PATCHES_DIR_NAME, relKey);
+    assert.ok(fs.existsSync(backup), `backup must exist at ${PATCHES_DIR_NAME}/${relKey}`);
+    assert.equal(fs.readFileSync(backup, 'utf8'), modified, 'backup must hold the user-modified bytes');
+    const meta = JSON.parse(fs.readFileSync(path.join(configDir, PATCHES_DIR_NAME, 'backup-meta.json'), 'utf8'));
+    assert.deepEqual(meta.files, [relKey]);
+  });
+
+  test('unmodified Codex skill under ~/.agents/skills produces no patch (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), pristine);
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) }, { runtime: 'codex', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(configDir, {
+      packageSrc: fakeSrcDir,
+      runtime: 'codex',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [], 'no false positive for an unmodified skill at the skills root');
+  });
+
+  test('config-dir-relative skills keep resolving against configDir first (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock claude skill body line\n---\nstock\n';
+    const modified = pristine + '<!-- user edit 4086: claude skill marker line -->\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    // claude has NO skills home override — skills live under configDir itself.
+    const claudeConfig = path.join(homeDir, '.claude');
+    fs.mkdirSync(path.join(claudeConfig, 'skills', 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(claudeConfig, 'skills', 'gsd-x', 'SKILL.md'), modified);
+    writeManifestFile(claudeConfig, { [relKey]: sha256(pristine) }, { runtime: 'claude', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(claudeConfig, {
+      packageSrc: fakeSrcDir,
+      runtime: 'claude',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [relKey], 'config-dir-relative skills are detected exactly as before');
+  });
+
+  test('configDir copy wins when both locations exist (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const configCopy = pristine + '<!-- user edit at configDir copy 4086 -->\n';
+    const rootCopy = pristine + '<!-- DIFFERENT user edit at skills root 4086 -->\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(configDir, 'skills', 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'skills', 'gsd-x', 'SKILL.md'), configCopy);
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), rootCopy);
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) }, { runtime: 'codex', scope: 'global' });
+
+    const modifiedList = INSTALL.saveLocalPatches(configDir, {
+      packageSrc: fakeSrcDir,
+      runtime: 'codex',
+      pathPrefix: '',
+      isGlobal: true,
+    });
+
+    assert.deepEqual(modifiedList, [relKey]);
+    const backup = path.join(configDir, PATCHES_DIR_NAME, relKey);
+    assert.equal(fs.readFileSync(backup, 'utf8'), configCopy, 'configDir copy must be hashed/backed up, not the skills-root copy');
+  });
+
+  test('legacy runtime-less manifest is tolerated (#4086)', () => {
+    const pristine = '---\nname: gsd-x\ndescription: stock skill body line for hashing\n---\nstock\n';
+    const relKey = 'skills/gsd-x/SKILL.md';
+    fs.mkdirSync(path.join(skillsRoot, 'gsd-x'), { recursive: true });
+    fs.writeFileSync(path.join(skillsRoot, 'gsd-x', 'SKILL.md'), pristine + 'user line\n');
+    // No runtime field, and the caller passes no pristineCtx.runtime either
+    // (legacy callers) — the redirect is impossible; behave as before (skip).
+    writeManifestFile(configDir, { [relKey]: sha256(pristine) });
+
+    let modifiedList;
+    assert.doesNotThrow(() => {
+      modifiedList = INSTALL.saveLocalPatches(configDir, {});
+    }, 'a runtime-less manifest must not crash saveLocalPatches');
+    assert.deepEqual(modifiedList, [], 'without a runtime the old skip behavior applies');
+  });
+
+  test('end-to-end codex reinstall backs up the modified skill (#4086)', { timeout: 120_000 }, () => {
+    const origLog = console.log;
+    const origWarn = console.warn;
+    console.log = () => {};
+    console.warn = () => {};
+    try {
+      INSTALL.install(true, 'codex');
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+    }
+    const manifest = JSON.parse(fs.readFileSync(path.join(configDir, MANIFEST_NAME), 'utf8'));
+    const skillKeys = Object.keys(manifest.files).filter((k) => k.startsWith('skills/'));
+    assert.ok(skillKeys.length > 0, 'codex global install must record skills/ manifest keys');
+    const skillAbs = skillKeys.map((k) => path.join(homeDir, '.agents', k));
+    assert.ok(
+      skillKeys.every((k, i) => !fs.existsSync(path.join(configDir, k)) && fs.existsSync(skillAbs[i])),
+      'installed skills must live under ~/.agents, not under configDir (the #4086 premise)',
+    );
+    // User modifies one installed skill, then reinstalls.
+    fs.appendFileSync(skillAbs[0], '\n<!-- user edit 4086 e2e marker line -->\n');
+    try {
+      console.log = () => {};
+      console.warn = () => {};
+      INSTALL.install(true, 'codex');
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+    }
+    const backup = path.join(configDir, PATCHES_DIR_NAME, skillKeys[0]);
+    assert.ok(fs.existsSync(backup), `reinstall must back the modified skill up at ${PATCHES_DIR_NAME}/${skillKeys[0]}`);
+    assert.match(fs.readFileSync(backup, 'utf8'), /user edit 4086 e2e marker line/);
+  });
+});
+  });
+}

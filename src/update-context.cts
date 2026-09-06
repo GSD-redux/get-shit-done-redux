@@ -89,13 +89,17 @@ export function inferPreferredRuntime({ fs, env, preferredConfigDir }: InferPref
     if (fs.exists(path.join(preferredConfigDir, 'opencode.json')) ||
         fs.exists(path.join(preferredConfigDir, 'opencode.jsonc'))) return 'opencode';
     if (fs.exists(path.join(preferredConfigDir, CODEX_CONFIG_MARKER))) return 'codex';
+    const resolved = path.resolve(preferredConfigDir);
+    const known = RUNTIME_DIRS.find(([, reldir]) =>
+      resolved.endsWith(path.sep + reldir.split('/').join(path.sep)));
+    if (known) return known[0];
   }
   if (env['CODEX_HOME']) return 'codex';
   if (env['ANTIGRAVITY_CONFIG_DIR']) return 'antigravity';
   if (env['KILO_CONFIG_DIR'] || env['KILO_CONFIG']) return 'kilo';
   if (env['OPENCODE_CONFIG_DIR'] || env['OPENCODE_CONFIG']) return 'opencode';
   if (env['CLAUDE_CONFIG_DIR']) return 'claude';
-  return 'claude';
+  return '';
 }
 
 export interface EnvRuntimeDirsOpts {
@@ -213,7 +217,7 @@ export function resolveUpdateContext({
   if (globalRuntime) {
     return { installedVersion: '0.0.0', scope: 'GLOBAL', runtime: globalRuntime, gsdDir: globalDir };
   }
-  return { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: 'claude', gsdDir: '' };
+  return { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: '', gsdDir: '' };
 }
 
 export interface LoadUpdateContextOpts {

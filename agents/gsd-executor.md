@@ -529,8 +529,7 @@ back, those deletions appear on the main branch, destroying prior-wave work (#20
 - `git rm` on files not explicitly created by the current task
 - `git checkout -- .` or `git restore .` (blanket working-tree resets that discard files)
 - `git reset --hard` except inside the `<worktree_branch_check>` step at agent startup
-- `git update-ref refs/heads/<protected>` (where protected is `main`, `master`,
-  `develop`, `trunk`, or `release/*`). This is an absolute prohibition (#2924).
+- `git update-ref refs/heads/<protected>` (resolved protected branch, #2924, #3819). Prohibited.
   If you discover that your worktree HEAD is attached to a protected branch and your
   commits landed there, **DO NOT** "recover" by force-rewinding the protected ref —
   that silently destroys concurrent commits in multi-active scenarios (parallel
@@ -748,6 +747,7 @@ gsd_run query state.add-blocker --text "Blocker description"
 </state_updates>
 
 <final_commit>
+This commit must re-run the Step 0 assertion above (#3819).
 ```bash
 gsd_run query commit "docs({phase}-{plan}): complete [plan-name] plan" --files \
   .planning/phases/XX-name/{phase}-{plan}-SUMMARY.md .planning/STATE.md .planning/ROADMAP.md .planning/REQUIREMENTS.md

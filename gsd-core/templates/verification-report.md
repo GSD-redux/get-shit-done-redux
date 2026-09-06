@@ -12,6 +12,11 @@ phase: XX-name
 verified: YYYY-MM-DDTHH:MM:SSZ
 status: passed | gaps_found | human_needed
 score: N/M must-haves verified
+covered_files: # #4155 — see agents/gsd-verifier.md's "Create VERIFICATION.md" step for what belongs here and how to compute it
+  - .planning/phases/XX-name/{phase_num}-{plan}-PLAN.md
+  - .planning/phases/XX-name/{phase_num}-{plan}-SUMMARY.md
+  - src/{changed-file}.cts
+covered_digest: "v1:sha256:{digest from verification.fingerprint}"
 behavior_unverified: 0 # Count of ⚠️ PRESENT_BEHAVIOR_UNVERIFIED truths (present + wired, behavior not exercised)
 behavior_unverified_items: # Only if behavior_unverified > 0 — the truths above as structured items; emitted regardless of overall status
   - truth: "Observable truth whose state transition or cancellation/cleanup/ordering invariant no test exercises"

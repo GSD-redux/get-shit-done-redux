@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 4359
+---
+**`progress.completed_phases` and `percent` are now derived from the ROADMAP's own milestone Complete rows and never move downward on a state write** — previously every default-resync verb (`state record-session`, `add-decision`, `begin-phase`, `phase complete` itself) recomputed the counter from a disk scan that drops any completed phase whose verification reads `stale` (a summary committed or edited after it) or is missing, so the stored value was silently reverted to the under-count on every write and hand-corrections never survived. The scan now floors the numerator at the milestone-scoped ROADMAP Complete-row count (same gate and scope as the denominator), the write path enforces the schema-declared `progress-ratchet` (totals correct both directions, completed counters up-only, percent recomputed from the surviving counters), and `phase complete` passes its post-completion ROADMAP-derived counters through the transition so the completing phase's own write increments. (#4129)

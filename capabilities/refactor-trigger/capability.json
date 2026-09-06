@@ -1,7 +1,7 @@
 {
   "id": "refactor-trigger",
   "role": "feature",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "Complexity-triggered refactor",
   "description": "Measures the complexity of the code a phase touched and, when a function crosses a configured threshold or jumps past its recorded anchor, surfaces a scoped refactor proposal at .planning/phases/<N>/<NN>-REFACTOR.md. Advisory by default — it never edits code and never blocks. Opt-in strict mode blocks /gsd-ship while a proposal is untriaged; a declined proposal is recorded in the broken-windows ledger when that capability is present. Operationalizes 'refactor early, refactor often' as continuous pressure instead of a thing you have to remember (issue #1953).",
   "tier": "full",
