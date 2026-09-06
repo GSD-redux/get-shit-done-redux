@@ -104,3 +104,52 @@ describe('parsePredicateFlags', () => {
     assert.deepEqual(parsePredicateFlags([]), {});
   });
 });
+
+// ─── #4130 follow-up: partitionPredicateArgs (flags + positionals, one parser) ─
+
+/**
+ * `partitionPredicateArgs` is the single pass behind `parsePredicateFlags`:
+ * it returns BOTH the --flag value map AND the non-consumed positional tokens
+ * under the exact same skip/consume/last-wins semantics. `check
+ * decision-coverage-plan --context <path>` uses it so the flag and the
+ * positional surface share one parser with `check predicate` — the two
+ * parsers cannot diverge because there is only one.
+ */
+describe('partitionPredicateArgs (#4130 follow-up)', () => {
+  const { partitionPredicateArgs } = require('../gsd-core/bin/lib/check-command-router.cjs');
+
+  test('splits --flag value pairs from positionals', () => {
+    const { flags, positionals } = partitionPredicateArgs(
+      ['check', 'decision-coverage-plan', '--context', '/tmp/CONTEXT.md', 'phases/01-init'],
+    );
+    assert.deepEqual(flags, { context: '/tmp/CONTEXT.md' });
+    assert.deepEqual(positionals, ['check', 'decision-coverage-plan', 'phases/01-init']);
+  });
+
+  test('parsePredicateFlags is exactly the flags half (one source of truth)', () => {
+    const vectors = [
+      ['check', 'predicate', '--predicate', '{"kind":"x"}', '--phase-number', '03', '--raw'],
+      ['--phase-number', '01', '--phase-number', '02'],
+      ['--predicate', '--phase-number'],
+      [],
+      ['--context'],
+      ['a', '--context', 'b', '--context', 'c', 'd'],
+    ];
+    for (const v of vectors) {
+      assert.deepEqual(partitionPredicateArgs(v).flags, parsePredicateFlags(v),
+        `flags half must equal parsePredicateFlags for ${JSON.stringify(v)}`);
+    }
+  });
+
+  test('value that starts with -- is not consumed: both stay flags, neither becomes positional', () => {
+    const { flags, positionals } = partitionPredicateArgs(['--context', '--other']);
+    assert.deepEqual(flags, {});
+    assert.deepEqual(positionals, ['--context', '--other']);
+  });
+
+  test('last write wins; flag values never leak into positionals', () => {
+    const { flags, positionals } = partitionPredicateArgs(['p1', '--context', 'a', 'p2', '--context', 'b', 'p3']);
+    assert.equal(flags.context, 'b');
+    assert.deepEqual(positionals, ['p1', 'p2', 'p3']);
+  });
+});

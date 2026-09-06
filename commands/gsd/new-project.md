@@ -5,6 +5,7 @@ argument-hint: "[--auto]"
 allowed-tools:
   - Read
   - Bash
+  - Grep
   - Write
   - Agent
   - AskUserQuestion

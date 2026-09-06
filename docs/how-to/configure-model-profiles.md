@@ -51,7 +51,9 @@ If a single agent needs a different tier without changing the whole profile, use
 }
 ```
 
-Valid values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model ID (e.g. `"openai/o3"`, `"google/gemini-2.5-pro"`).
+Valid values: `opus`, `sonnet`, `haiku`, `fable`, `inherit`, or any fully-qualified model ID (e.g. `"openai/o3"`, `"google/gemini-2.5-pro"`).
+
+On the Claude runtime, fully-qualified Claude model IDs act as explicit generation pins (#4192): an ID naming the current tier default (e.g. `"claude-sonnet-5"`) resolves to its tier alias — the same model in the form Claude Code's Agent tool always accepts — while any other ID (e.g. `"claude-opus-4-7"`) resolves verbatim, with a warn-once stderr note that setups accepting only tier aliases will not honor a full ID. `fable` is a Claude Code Agent-tool alias, not a GSD profile tier: valid here, but it has no column in the profile table. To pin a generation for a whole tier instead of one agent, use `model_profile_overrides` (see below).
 
 `model_overrides` can be set per-project in `.planning/config.json` or globally in `~/.gsd/defaults.json`. Per-project entries win on conflict; non-conflicting global entries are preserved.
 
@@ -303,8 +305,9 @@ When multiple layers apply, the resolver picks the highest-priority entry:
 1. model_overrides[<agent>]           — per-agent; full IDs; targeted exception
 2. dynamic_routing.tier_models[<tier>] — when enabled; escalates on soft failure
 3. models[<phase_type>]               — coarse phase-level tier
-4. model_profile (per-agent column)   — global tier strategy
-5. Runtime default                    — when nothing else applies
+4. model_profile_overrides.<runtime>.<tier> — per-tier model override (#4192: honored on the claude runtime too)
+5. model_profile (per-agent column)   — global tier strategy
+6. Runtime default                    — when nothing else applies
 ```
 
 ---
@@ -317,6 +320,7 @@ When multiple layers apply, the resolver picks the highest-priority entry:
 | Coarse phase-level tuning ("Opus for planning") | `models.<phase_type>` |
 | Per-agent precision ("force Haiku on the codebase mapper") | `model_overrides[<agent>]` |
 | A fully-qualified model ID for a specific agent | `model_overrides[<agent>]: "openai/gpt-5"` |
+| Pin a tier's generation on Claude Code (e.g. executor stays on Opus 4.7) | `model_profile_overrides.claude.<tier>: "claude-opus-4-7"` |
 | Start cheap, escalate only on failure | `dynamic_routing` |
 | All agents follow the session model (non-Anthropic provider) | `model_profile: "inherit"` |
 

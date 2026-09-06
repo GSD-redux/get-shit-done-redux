@@ -5032,7 +5032,27 @@ function cmdStateJson(cwd: string, raw: boolean): void {
  * and synchronizes frontmatter via writeStateMd.
  * Fixes: #1102 (plan counts), #1103 (status/last_activity), #1104 (body text).
  */
-function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName: string | null | undefined, planCount: number | null | undefined, raw: boolean): void {
+function cmdStateBeginPhase(cwd: string, phaseNumber: string | number | null | undefined, phaseName: string | null | undefined, planCount: number | null | undefined, raw: boolean): void {
+  // #4138: `--phase` is this verb's one required argument, and an invocation
+  // that names no phase must fail closed BEFORE any read-modify-write runs —
+  // previously the missing flag flowed through as null and the transition
+  // serialised `String(null)` into the body (`Phase: null — EXECUTING`,
+  // `Status: Executing Phase null`, `last_activity_desc: Phase null execution
+  // started`) while the post-sync frontmatter rebuild dropped current_phase /
+  // current_phase_name entirely, so a single argument-less call un-set the
+  // phase identity. The guard mirrors the sibling usage errors that already
+  // exit non-zero (`state update`'s "field and value required", the router's
+  // "unexpected positional argument" / "Invalid --plans value"), NOT
+  // `cmdStateMilestoneSwitch`'s `output({error})` form, which exits 0 — the
+  // issue's Expected is explicit: "Exit non-zero with a usage message and
+  // write nothing." Empty and whitespace-only values are the same missing
+  // argument (CONTRIBUTING.md CLI matrix); a flag-shaped `--phase --name x`
+  // resolves to null in parseNamedArgs and lands here too. Runs before the
+  // STATE.md existence check so argument validation always precedes I/O, and
+  // before claimMilestonePhase so no phase-"null" milestone claim is taken.
+  if (phaseNumber == null || String(phaseNumber).trim() === '') {
+    error('phase required (--phase <N>)');
+  }
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
     output({ error: 'STATE.md not found' }, raw, undefined);
@@ -5047,7 +5067,11 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   // #1230 post-sync preservation, and the no-op write guard.
   const intent: StateTransitionIntent = {
     kind: 'beginPhase',
-    phaseNumber,
+    // The guard above made this non-null/non-empty; `error` is never-returning
+    // at runtime but this module's destructured io binding does not narrow CFA,
+    // so the narrowed fact is restated once (cmdStateUpdate's `field as string`
+    // idiom, state.cts:782).
+    phaseNumber: phaseNumber as string | number,
     phaseName: phaseName ?? null,
     planCount: planCount ?? null,
   };

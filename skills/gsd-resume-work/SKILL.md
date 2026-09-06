@@ -4,6 +4,7 @@ description: "Resume work from previous session with full context restoration"
 allowed-tools:
   - Read
   - Bash
+  - Grep
   - Write
   - AskUserQuestion
   - SlashCommand

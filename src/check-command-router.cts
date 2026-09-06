@@ -289,9 +289,34 @@ function loadDecisionExtraction(contextPath: string): { trackable: Decision[]; o
   };
 }
 
+/**
+ * `check decision-coverage-plan` — blocking plan-phase decision-coverage gate
+ * (#2492, #1365 fail-loud, #2770 empty-arg fail-closed).
+ *
+ * Invocation (the context path may be supplied EITHER way; #4130 follow-up):
+ *   gsd_run check decision-coverage-plan <phase-dir> <context-path>   (positional, the workflow caller's form)
+ *   gsd_run check decision-coverage-plan --context <path> [<phase-dir>]
+ *
+ * `--context <path>` follows the sibling flag convention (`check predicate`,
+ * #2008): `--flag value` pairs parsed by the shared partitionPredicateArgs
+ * pass, the flag WINNING over a same-purpose positional when both appear,
+ * and a valueless `--context` counting as no context at all (it falls
+ * through to the #2770 caller-error branch, not to the "CONTEXT.md missing"
+ * green skip). The positional form keeps working unchanged — no sibling
+ * check verb deprecates positionals and the plan-phase workflow passes them.
+ */
 function cmdDecisionCoveragePlan(projectDir: string, args: string[], raw: boolean): void {
-  const phaseDir = args[2] ? resolvePath(args[2], projectDir) : '';
-  const contextArg = args[3];
+  // args[0]='check', args[1]=subcommand — partition the REST so flag tokens
+  // and their values never land in a positional slot.
+  const { flags, positionals } = partitionPredicateArgs(args.slice(2));
+  const phaseDir = positionals[0] ? resolvePath(positionals[0], projectDir) : '';
+  // A VALUELESS `--context` stays a bare token in the positionals (sibling
+  // parser semantics); it must not then be read as the context PATH — a
+  // `--`-prefixed "path" is a caller mistake, and #2770's law says a missing
+  // context argument fails CLOSED, never a silent "CONTEXT.md missing" green
+  // skip. So only a non-flag positional may serve as the context.
+  const positionalContext = positionals[1] && !positionals[1].startsWith('--') ? positionals[1] : '';
+  const contextArg = flags['context'] ?? positionalContext ?? '';
   const contextPath = contextArg ? resolvePath(contextArg, projectDir) : '';
 
   if (!gateEnabled(projectDir)) {
@@ -1268,21 +1293,41 @@ function buildPredicateDeps() {
   };
 }
 
-/** Parse `--flag value` pairs from an args array into a map (last write wins). */
-function parsePredicateFlags(args: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
+/**
+ * Split an args array into `--flag value` pairs and the leftover positional
+ * tokens, in ONE pass, with the semantics `check predicate` established
+ * (#2008): a `--flag` followed by a non-`--` token consumes it as the value
+ * (last write wins); a `--flag` with no value stays a bare token and moves to
+ * the positionals; everything else is positional. `parsePredicateFlags` is
+ * the flags half of this same pass — there is exactly one parser, so the
+ * flag-taking check verbs cannot drift apart (#4130 follow-up: `check
+ * decision-coverage-plan --context <path>` shares it).
+ */
+function partitionPredicateArgs(args: string[]): { flags: Record<string, string>; positionals: string[] } {
+  const flags: Record<string, string> = {};
+  const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (typeof a !== 'string') continue;
-    if (!a.startsWith('--')) continue;
+    if (!a.startsWith('--')) {
+      positionals.push(a);
+      continue;
+    }
     const key = a.slice(2);
     const next = args[i + 1];
     if (key.length > 0 && typeof next === 'string' && !next.startsWith('--')) {
-      out[key] = next;
+      flags[key] = next;
       i++;
+    } else {
+      positionals.push(a);
     }
   }
-  return out;
+  return { flags, positionals };
+}
+
+/** Parse `--flag value` pairs from an args array into a map (last write wins). */
+function parsePredicateFlags(args: string[]): Record<string, string> {
+  return partitionPredicateArgs(args).flags;
 }
 
 /**
@@ -1821,7 +1866,9 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     // this for any gate whose `check` carries a `predicate` (instead of a `query`),
     // passing the predicate object as --predicate '<json>'. NOTE: unlike the
     // `check.query` subcommands above (which take positional phase args), this
-    // subcommand parses --flag value pairs.
+    // subcommand is flag-driven. `decision-coverage-plan` above now ALSO accepts
+    // `--context <path>` (its positionals still work) — both share
+    // partitionPredicateArgs, the one flag parser.
     cmdCheckPredicate(cwd, args, raw);
     return;
   }
@@ -1850,6 +1897,7 @@ export = {
   cmdCheckPredicate,
   buildPredicateDeps,
   parsePredicateFlags,
+  partitionPredicateArgs,
   // Fail-closed phase-scope reader for the api-coverage gate — exported for
   // in-process failure-injection tests (#2365 review).
   readPhaseScope,

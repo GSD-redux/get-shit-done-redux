@@ -7,6 +7,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+  - Grep
 requires: [audit-milestone, discuss-phase, execute-phase, new-milestone, phase, plan-phase, stats, update]
 ---
 

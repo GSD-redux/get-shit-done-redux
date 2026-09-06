@@ -331,6 +331,19 @@ After roadmap creation, REQUIREMENTS.md gets updated with phase mappings:
 
 **CRITICAL: ROADMAP.md requires TWO phase representations. Both are mandatory.**
 
+### 0. Top-Level Title (H1)
+
+The H1 carries the PROJECT name only — never a version and never a milestone name:
+
+```markdown
+# Roadmap: [Project Name]
+```
+
+Milestone identity (version + name) lives in milestone headings (`## vX.Y — [Name]`) or
+`## Milestones` bullets (`🚧 **vX.Y [Name]**`), never in the H1. A trailing version in the
+H1 (`# Roadmap: [Project] — [Name] (vX.Y)`) corrupts milestone-name extraction (#4134).
+`~/.claude/gsd-core/templates/roadmap.md` is the canonical shape.
+
 ### 1. Summary Checklist (under `## Phases`)
 
 Use the form matching `phase_id_convention` from config.
