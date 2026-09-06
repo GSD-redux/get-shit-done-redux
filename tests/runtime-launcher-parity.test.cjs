@@ -65,6 +65,76 @@ function snippetEnv(overrides = {}) {
 }
 
 /**
+ * Windows shim forms of a bin name, for the PATH-isolation probes (#4205
+ * Windows leg, #4344).
+ *
+ * The resolver's PATH arm runs `command -v gsd_run` inside bash. On POSIX that
+ * resolves the extensionless executable. On Windows, Git Bash additionally
+ * resolves `gsd_run.exe` (bash auto-appends .exe during PATH lookup), and real
+ * installs are usually SHIMS: npm's cmd-shim writes `gsd_run.cmd` and
+ * `gsd_run.ps1` beside the extensionless form, and other shim generators write
+ * `.exe`. Probing the bare name alone is therefore extension-blind on Windows —
+ * a directory holding only the shim forms survives the filter and the #4205
+ * leak recurs there.
+ *
+ * The extension list is DERIVED from PATHEXT (same law as tests/helpers.cjs's
+ * #2665 derived env list: a hand-maintained list is what reopens these bugs),
+ * floored by the three forms npm/shim generators actually emit that PATHEXT
+ * does not always carry (.ps1 in particular). Pure — PATHEXT is a parameter so
+ * the derivation is testable on any platform.
+ */
+function windowsShimNames(base, pathExt) {
+  const extensions = new Set(['.cmd', '.ps1', '.exe']);
+  const declared = String(pathExt ?? '').trim();
+  if (declared !== '') {
+    for (const ext of declared.split(';')) {
+      const normalized = ext.trim().toLowerCase();
+      if (normalized.startsWith('.') && normalized.length > 1) extensions.add(normalized);
+    }
+  }
+  return [...extensions].map((ext) => base + ext);
+}
+
+/**
+ * Every file name a PATH-isolation filter must probe for `base` on the current
+ * platform (see windowsShimNames for the Windows rationale). POSIX behavior is
+ * unchanged: the bare name only.
+ */
+function launcherProbeNames(base = 'gsd_run') {
+  return process.platform === 'win32'
+    ? [base, ...windowsShimNames(base, process.env.PATHEXT)]
+    : [base];
+}
+
+/**
+ * True when `dir` holds any platform-resolvable form of `base` — the single
+ * probe predicate every PATH-isolation filter in this file uses (#4205).
+ * Deliberately OVER-inclusive on Windows (a directory that merely looks like
+ * an install location is dropped): isolation errs toward filtering.
+ */
+function hasExecutableNamed(dir, base) {
+  return launcherProbeNames(base).some((name) => {
+    try { fs.accessSync(path.join(dir, name), fs.constants.X_OK); return true; }
+    catch { return false; }
+  });
+}
+
+/**
+ * True when bash's own PATH lookup would resolve `base` from `dir` — the bare
+ * name, plus `.exe` on Windows (bash auto-appends .exe; it does NOT resolve
+ * .cmd/.ps1). Use this for KEEP-side probes like `node`, where over-inclusion
+ * would hide a genuinely unresolvable interpreter: a dir holding only
+ * node.cmd must not count as node for the fixtures' `#!/usr/bin/env node`.
+ */
+function bashResolves(dir, base) {
+  const names = process.platform === 'win32' ? [base, `${base}.exe`] : [base];
+  return names.some((name) => {
+    try { fs.accessSync(path.join(dir, name), fs.constants.X_OK); return true; }
+    catch { return false; }
+  });
+}
+
+/**
  * Run a bash script FILE via the process seam, preserving the throw-on-
  * nonzero-exit semantics of the execFileSync('bash', [path], ...) idiom
  * this replaces.
@@ -410,13 +480,11 @@ describe('runtime-launcher-parity (#373)', () => {
 
       // Build a PATH that has noToolsBin first (no gsd_run stub there) but retains
       // system paths needed for bash. Exclude any PATH entry that contains a gsd_run
-      // binary. See #4205 / buildIsolatedPath() below for why gsd_run.
+      // binary in any platform-resolvable form. See #4205 / buildIsolatedPath()
+      // below for why gsd_run (and launcherProbeNames() for the Windows forms).
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
-        .filter((p) => {
-          try { fs.accessSync(path.join(p, 'gsd_run'), fs.constants.X_OK); return false; }
-          catch { return true; }
-        });
+        .filter((p) => !hasExecutableNamed(p, 'gsd_run'));
       const isolatedPath = [noToolsBin, ...systemPaths].join(path.delimiter);
 
       const r = runHookSeam(scriptPath, [], {
@@ -603,19 +671,13 @@ describe('runtime-launcher-parity (#373)', () => {
       const scriptPath = path.join(fakeRuntime, 'test-codex-home-fb.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      const hasExecutable = (dir, name) => {
-        try {
-          fs.accessSync(path.join(dir, name), fs.constants.X_OK);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      // #4205: filter on gsd_run — see buildIsolatedPath() below for why.
+      // #4205: filter on gsd_run — see buildIsolatedPath() below for why
+      // (and launcherProbeNames() for why the probe is extension-aware on
+      // Windows, where `node` is `node.exe` for the same reason).
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
-        .filter((p) => !hasExecutable(p, 'gsd_run'));
-      if (!systemPaths.some((p) => hasExecutable(p, 'node'))) {
+        .filter((p) => !hasExecutableNamed(p, 'gsd_run'));
+      if (!systemPaths.some((p) => bashResolves(p, 'node'))) {
         const nodeShimDir = path.join(fakeRuntime, 'node-shim');
         fs.mkdirSync(nodeShimDir, { recursive: true });
         fs.symlinkSync(process.execPath, path.join(nodeShimDir, 'node'));
@@ -1010,30 +1072,21 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       fs.writeFileSync(scriptPath, scriptContent);
 
       // Build a PATH with no gsd_run binary to force the ~/.claude arm.
-      // Filter out directories that contain a gsd_run executable (#4205; see
-      // buildIsolatedPath() below for why). If node lives in the same directory
-      // as gsd_run, create a dedicated shim dir with a symlink to node only
-      // (no gsd_run there).
+      // Filter out directories that contain a gsd_run executable in any
+      // platform-resolvable form (#4205; see buildIsolatedPath() below for why,
+      // launcherProbeNames() for the Windows forms). If node lives in the same
+      // directory as gsd_run, create a dedicated shim dir with a symlink to
+      // node only (no gsd_run there).
       const nodeBinResult = runHookSeam('node', [], { interpreter: 'which' });
       throwIfFailed(nodeBinResult, 'which node');
       const nodeBin = nodeBinResult.stdout.trim();
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
-        .filter((p) => {
-          try {
-            fs.accessSync(path.join(p, 'gsd_run'), fs.constants.X_OK);
-            return false;
-          } catch {
-            return true;
-          }
-        });
+        .filter((p) => !hasExecutableNamed(p, 'gsd_run'));
       // If node's dir was filtered (it contained gsd_run), create a shim dir
       // with just a node symlink so the stub's shebang (#!/usr/bin/env node) resolves.
       const nodeShimDir = path.join(fakeRuntime, 'node-shim');
-      if (!systemPaths.some((p) => {
-        try { fs.accessSync(path.join(p, 'node'), fs.constants.X_OK); return true; }
-        catch { return false; }
-      })) {
+      if (!systemPaths.some((p) => bashResolves(p, 'node'))) {
         fs.mkdirSync(nodeShimDir, { recursive: true });
         fs.symlinkSync(nodeBin, path.join(nodeShimDir, 'node'));
         systemPaths.unshift(nodeShimDir);
@@ -1082,17 +1135,11 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
       const scriptPath = path.join(fakeRuntime, 'test-allfail.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      // #4205: filter on gsd_run — see buildIsolatedPath() below for why.
+      // #4205: filter on gsd_run in any platform-resolvable form — see
+      // buildIsolatedPath() below for why (launcherProbeNames() for Windows).
       const systemPaths = (process.env.PATH || '/usr/bin:/bin')
         .split(path.delimiter)
-        .filter((p) => {
-          try {
-            fs.accessSync(path.join(p, 'gsd_run'), fs.constants.X_OK);
-            return false;
-          } catch {
-            return true;
-          }
-        });
+        .filter((p) => !hasExecutableNamed(p, 'gsd_run'));
       const isolatedPath = [noToolsBin, ...systemPaths].join(path.delimiter);
 
       const r = runHookSeam(scriptPath, [], {
@@ -1140,10 +1187,17 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  * Asserts:
  * (A) Snippet contains all expected non-Claude runtime home probes (structural).
  * (B0) buildIsolatedPath() co-location invariant (see below).
+ * (P) launcherProbeNames derivation: PATHEXT-derived Windows shim forms plus
+ *     the npm floor — the #2665 derived-not-hand-maintained law, pinned.
+ * (B0w) Windows twin of (B0): node stays resolvable when node.exe co-locates
+ *     with the gsd_run shim forms; no shim form survives the filter.
  * (B) HERMES_HOME behavioral: when RUNTIME_DIR misses and gsd_run is NOT on
  *     PATH, the stub at ${HERMES_HOME}/gsd-core/bin/gsd-tools.cjs is invoked.
  *     On POSIX it also plants a leaked gsd_run on PATH first (#4205), which is
  *     what makes it fail on a clean machine as well as a leaking one.
+ * (Bw) Windows twin of (B): plants the leaked gsd_run shim forms (.cmd/.exe,
+ *     #4344) — the vector the extensionless probe never filtered — and asserts
+ *     the HERMES_HOME stub still wins.
  * (C) Default Hermes path behavioral: stub at $HOME/.hermes/gsd-core/bin/
  *     gsd-tools.cjs is invoked when HERMES_HOME is not set.
  * (D) Resolution order: non-Claude homes are probed BEFORE the hard error,
@@ -1270,15 +1324,25 @@ function extractShellBlocks(content) {
 /**
  * Build a PATH with no gsd_run binary so the PATH fallback branch is skipped,
  * while guaranteeing that a bare `node` lookup still resolves regardless of whether
- * the real node binary co-locates with a global gsd_run shim (e.g. fnm/nvm/Homebrew).
+ * the real node binary co-locates with a global gsd_run shim (e.g. fnm/nvm/Homebrew;
+ * on Windows, nvm-windows/volta co-locate node.exe with the shim forms).
  *
- * Strategy (POSIX only): create a temp dir containing only a `node` symlink →
- * process.execPath, prepend it to the gsd_run-filtered PATH.  The filtered
- * PATH excludes any directory that contains an executable `gsd_run`.
+ * Strategy (POSIX): create a temp dir containing only a `node` symlink →
+ * process.execPath, prepend it to the gsd_run-filtered PATH. The filtered PATH
+ * excludes any directory that contains an executable `gsd_run` in any form the
+ * resolver's `command -v gsd_run` can reach on the platform — on Windows that
+ * includes the shim extensions (see launcherProbeNames()), or the filter is a
+ * no-op there (#4344).
  *
- * On Windows the co-location bug does not apply (gsd_run resolves via .cmd/.ps1,
- * not the bare binary probed here), and symlinks may require elevated privileges,
- * so we skip the symlink step entirely on that platform.
+ * Strategy (Windows): the same extension-aware filter, and — BEFORE it can
+ * strand the interpreter — a node fallback created only when no surviving
+ * directory still resolves node. The fallback is an sh-script `node` wrapper
+ * exec'ing process.execPath (the same form npm's cmd-shims emit), not a
+ * symlink: symlinks may require elevation on Windows, and Git Bash executes
+ * the sh form fine, so the fixtures' `#!/usr/bin/env node` stub shebangs keep
+ * resolving. This ordering is load-bearing: broadening the filter without the
+ * fallback drops node.exe along with the shims whenever they co-locate — the
+ * (B0) bug reborn on Windows (pinned by (B0w) below).
  *
  * The caller is responsible for cleaning up `result.nodeBinDir` when non-null
  * (pass it to `cleanup()` in a `t.after` or `finally` block).
@@ -1288,18 +1352,34 @@ function extractShellBlocks(content) {
 function buildIsolatedPath() {
   // #4205: the resolver's PATH-fallback arm probes `command -v gsd_run` (not
   // `gsd-tools`) — filter on the actual probe target so a real installed
-  // gsd_run can't leak through and shadow the runtime-home fallback.
-  const filteredPath = (process.env.PATH || '/usr/bin:/bin')
+  // gsd_run can't leak through and shadow the runtime-home fallback. Probe
+  // every platform-resolvable form (launcherProbeNames): extensionless-only
+  // is blind to the Windows shims.
+  const keptDirs = (process.env.PATH || '/usr/bin:/bin')
     .split(path.delimiter)
-    .filter((p) => {
-      try { fs.accessSync(path.join(p, 'gsd_run'), fs.constants.X_OK); return false; }
-      catch { return true; }
-    })
-    .join(path.delimiter);
+    .filter((p) => p !== '' && !hasExecutableNamed(p, 'gsd_run'));
+  const filteredPath = keptDirs.join(path.delimiter);
 
-  // Windows: no symlink (see JSDoc above); callers must handle nodeBinDir === null.
   if (process.platform === 'win32') {
-    return { isolatedPath: filteredPath, nodeBinDir: null };
+    // #4344: node must stay resolvable after shim-bearing directories are
+    // filtered. Supply the sh-script fallback only when nothing else resolves
+    // node, so the common layout (node's own dir has no shims) is untouched.
+    // bashResolves, not hasExecutableNamed: a lone node.cmd is not node for
+    // bash, and must not suppress the fallback.
+    const nodeStillResolvable = keptDirs.some((p) => bashResolves(p, 'node'));
+    if (nodeStillResolvable) {
+      return { isolatedPath: filteredPath, nodeBinDir: null };
+    }
+    const nodeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-node-'));
+    try {
+      const nodeExe = process.execPath.replace(/\\/g, '/');
+      fs.writeFileSync(path.join(nodeBinDir, 'node'), `#!/bin/sh\nexec "${nodeExe}" "$@"\n`);
+      fs.chmodSync(path.join(nodeBinDir, 'node'), 0o755);
+    } catch (err) {
+      cleanup(nodeBinDir);
+      throw err;
+    }
+    return { isolatedPath: nodeBinDir + path.delimiter + filteredPath, nodeBinDir };
   }
 
   const nodeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-node-'));
@@ -1406,10 +1486,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       const returnedDirs = result.isolatedPath.split(path.delimiter);
 
       // (i) gsd_run must NOT be resolvable on the returned PATH
-      const gsdRunResolvable = returnedDirs.some((dir) => {
-        try { fs.accessSync(path.join(dir, 'gsd_run'), fs.constants.X_OK); return true; }
-        catch { return false; }
-      });
+      const gsdRunResolvable = returnedDirs.some((dir) => hasExecutableNamed(dir, 'gsd_run'));
       assert.equal(
         gsdRunResolvable,
         false,
@@ -1417,14 +1494,122 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       );
 
       // (ii) node must BE resolvable on the returned PATH (the new nodeBinDir makes it so)
-      const nodeResolvable = returnedDirs.some((dir) => {
-        try { fs.accessSync(path.join(dir, 'node'), fs.constants.X_OK); return true; }
-        catch { return false; }
-      });
+      const nodeResolvable = returnedDirs.some((dir) => hasExecutableNamed(dir, 'node'));
       assert.equal(
         nodeResolvable,
         true,
         'node must be resolvable on the isolated PATH (launcher runs: node "$GSD_TOOLS" "$@")',
+      );
+    },
+  );
+
+  // ── (P) launcherProbeNames derivation: the #2665 law, made executable ──────
+  //
+  // The Windows extension list must stay DERIVED from PATHEXT with the npm
+  // shim forms floored, never hand-maintained. Pure-function assertions, so
+  // they run (and regress) on every platform, not just Windows.
+  test('(P) launcherProbeNames: bare name on POSIX; PATHEXT-derived shims plus npm forms on Windows', () => {
+    // PATHEXT entries ride along, lowercased, deduped against the floor.
+    assert.deepStrictEqual(
+      windowsShimNames('gsd_run', '.COM;.EXE;.BAT;.CMD'),
+      ['gsd_run.cmd', 'gsd_run.ps1', 'gsd_run.exe', 'gsd_run.com', 'gsd_run.bat'],
+    );
+    // Without PATHEXT the npm/shim-generator floor still covers the forms
+    // `command -v` can reach on Windows (.exe) and installs actually write
+    // (.cmd/.ps1).
+    assert.deepStrictEqual(
+      windowsShimNames('gsd_run', ''),
+      ['gsd_run.cmd', 'gsd_run.ps1', 'gsd_run.exe'],
+    );
+    // Applies to any bin name (the node probe uses the same derivation).
+    assert.deepStrictEqual(
+      windowsShimNames('node', '.EXE'),
+      ['node.cmd', 'node.ps1', 'node.exe'],
+    );
+    // On POSIX nothing changes: the bare name only.
+    if (process.platform !== 'win32') {
+      assert.deepStrictEqual(launcherProbeNames(), ['gsd_run']);
+      assert.deepStrictEqual(launcherProbeNames('node'), ['node']);
+    }
+  });
+
+  // ── (B0w) Regression: Windows twin of (B0) — node stays resolvable when ────
+  //        node.exe co-locates with the gsd_run shim forms in one PATH dir.  ──
+  //
+  // Pure Node assertions (nothing is executed), so the shims are placeholder
+  // bytes. PATH is set to ONLY two controlled dirs; the real system PATH is
+  // NOT appended — machine-independent on any Windows host.
+  //
+  //   Extension-blind filter: fakeBinDir SURVIVES → (i) fails (#4344's core
+  //                           finding — the #4205 leak recurs via .cmd/.exe).
+  //   Broadened filter WITHOUT a node fallback: fakeBinDir is dropped and
+  //                           nothing supplies node → (ii) fails (the (B0)
+  //                           co-location bug reborn on Windows).
+  //   Only filter + fallback together pass both — pinning the review's
+  //   ordering requirement that the fallback exists before the broadening.
+  test(
+    '(B0w) buildIsolatedPath: node is resolvable and Windows gsd_run shims are not when they share a PATH dir',
+    { skip: process.platform !== 'win32' ? 'Windows-only shim co-location scenario' : false },
+    (t) => {
+      // One dir holding the npm cmd-shim forms plus node.exe — the
+      // nvm-windows/volta layout where global shims and the interpreter share
+      // the version directory. Deliberately NO extensionless gsd_run: a dir
+      // with only the Windows shim forms is the case the extension-blind
+      // filter missed.
+      const fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-colocated-w-'));
+      const emptyDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-empty-w-'));
+      t.after(() => cleanup(fakeBinDir));
+      t.after(() => cleanup(emptyDir));
+
+      for (const name of ['gsd_run.cmd', 'gsd_run.ps1', 'gsd_run.exe', 'node.exe']) {
+        fs.writeFileSync(path.join(fakeBinDir, name), 'placeholder\n');
+      }
+
+      const origPath = process.env.PATH;
+      process.env.PATH = fakeBinDir + path.delimiter + emptyDir;
+      let result;
+      try {
+        result = buildIsolatedPath();
+      } finally {
+        process.env.PATH = origPath;
+      }
+      // cleanup() no-ops on a non-string argument, so an undefined nodeBinDir is safe.
+      t.after(() => cleanup(result?.nodeBinDir));
+
+      const returnedDirs = result.isolatedPath.split(path.delimiter).filter((d) => d !== '');
+
+      // (i) no Windows-resolvable form of gsd_run may remain
+      assert.equal(
+        returnedDirs.some((dir) => hasExecutableNamed(dir, 'gsd_run')),
+        false,
+        'no Windows-resolvable form of gsd_run (bare/.cmd/.ps1/.exe/PATHEXT) may remain on the ' +
+          'isolated PATH (home-fallback would be bypassed — the #4205 leak via shims)',
+      );
+
+      // (ii) node must stay resolvable after the shim dir was filtered —
+      // supplied by the Windows sh-script fallback when node.exe was filtered.
+      assert.equal(
+        returnedDirs.some((dir) => bashResolves(dir, 'node')),
+        true,
+        'node must stay resolvable on the isolated PATH after shim-bearing dirs are filtered ' +
+          '(launcher runs: node "$GSD_TOOLS" "$@") — the Windows node fallback is required ' +
+          'BEFORE the filter may be extension-aware',
+      );
+
+      // (iii) bash itself must resolve node through the isolated PATH — the
+      // same lookup `#!/usr/bin/env node` performs — proving the sh-script
+      // fallback is found by bash, not merely present on disk.
+      const probe = runHookSeam('-c', ['command -v node'], {
+        interpreter: 'bash',
+        env: snippetEnv({ PATH: result.isolatedPath }),
+      });
+      throwIfFailed(probe, 'bash -c "command -v node"');
+      assert.notEqual(
+        probe.stdout.trim(),
+        '',
+        'bash must resolve node on the isolated PATH (command -v node came back empty) — ' +
+          'the Windows fallback must be executable-shaped for Git Bash, matching what ' +
+          'npm cmd-shims emit',
       );
     },
   );
@@ -1439,7 +1624,7 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
   // on any machine. The sentinel is POSIX-only (an extensionless sh script), so
   // it is skipped on Windows — where this test still covers the HERMES_HOME arm
   // itself, which is why it is not gated behind the platform check wholesale.
-  // Windows-native coverage of the leak is tracked in #4344.
+  // Windows-native coverage of the leak is (Bw) below (#4344).
   test('(B) buildIsolatedPath strips a leaked PATH gsd_run; the ${HERMES_HOME} stub wins', (t) => {
     const fakeHome       = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-home-b-'));
     const fakeHermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-hermes-'));
@@ -1508,6 +1693,93 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       `Expected stub output "HERMES_HOME_STUB:ping,test", got:\n${stdout.trim()}`,
     );
   });
+
+  // ── (Bw) Behavioral: Windows twin of (B) — the leak via shim extensions ───
+  //
+  // #4205 Windows leg / #4344: on win32 a real install is a set of shims —
+  // npm's cmd-shim writes gsd_run.cmd and gsd_run.ps1 beside the extensionless
+  // form, other shim generators write .exe — and Git Bash's `command -v
+  // gsd_run` resolves gsd_run.exe by auto-appending .exe during PATH lookup.
+  // A directory holding only the shim forms is therefore a live leak vector
+  // that the extensionless probe never filtered. Plant the Windows forms and
+  // assert the HERMES_HOME stub still wins (parity with POSIX (B)); the
+  // sentinel bytes are cmd-script content so any accidental invocation would
+  // also be observable as missing stub output.
+  test(
+    '(Bw) buildIsolatedPath strips a leaked Windows shim gsd_run (.cmd/.exe); the ${HERMES_HOME} stub wins',
+    { skip: process.platform !== 'win32' ? 'Windows-only shim-extension scenario' : false },
+    (t) => {
+      const fakeHome       = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-home-bw-'));
+      const fakeHermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-hermes-bw-'));
+      const fakeRuntime    = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-891-rt-bw-'));
+      const sentinelBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4205-sentinel-w-'));
+      t.after(() => cleanup(fakeHome));
+      t.after(() => cleanup(fakeHermesHome));
+      t.after(() => cleanup(fakeRuntime));
+      t.after(() => cleanup(sentinelBinDir));
+
+      // gsd_run.exe is the load-bearing vector (bash auto-appends .exe);
+      // gsd_run.cmd rides along because every real npm install writes it.
+      // Deliberately no extensionless gsd_run: shim-forms-only is the case
+      // the extension-blind filter missed.
+      for (const name of ['gsd_run.cmd', 'gsd_run.exe']) {
+        fs.writeFileSync(path.join(sentinelBinDir, name), '@echo off\necho SENTINEL_INVOKED:%*\n');
+      }
+      // Simulate the reported leak: the shims reachable on PATH.
+      const prevPath = process.env.PATH;
+      process.env.PATH = `${sentinelBinDir}${path.delimiter}${process.env.PATH}`;
+      t.after(() => { process.env.PATH = prevPath; });
+
+      const { isolatedPath, nodeBinDir } = buildIsolatedPath();
+      t.after(() => { if (nodeBinDir) cleanup(nodeBinDir); });
+
+      const hermesBinDir = path.join(fakeHermesHome, 'gsd-core', 'bin');
+      fs.mkdirSync(hermesBinDir, { recursive: true });
+
+      const stubPath = path.join(hermesBinDir, 'gsd-tools.cjs');
+      fs.writeFileSync(
+        stubPath,
+        '#!/usr/bin/env node\nconsole.log("HERMES_HOME_STUB:" + process.argv.slice(2).join(","));\n',
+      );
+      fs.chmodSync(stubPath, 0o755);
+
+      const snippet = fs.readFileSync(SNIPPET_FILE, 'utf8');
+      // HOME points at an isolated temp dir with no .claude install, so the
+      // $HOME/.claude arm misses and the HERMES_HOME arm is the one under test.
+      const scriptContent =
+        `unset GSD_TOOLS\n` +
+        `export HOME=${JSON.stringify(fakeHome)}\n` +
+        `export RUNTIME_DIR=${JSON.stringify(fakeRuntime)}\n` +
+        `export HERMES_HOME=${JSON.stringify(fakeHermesHome)}\n` +
+        snippet +
+        `\nprintf "GSD_TOOLS=%s\\n" "$GSD_TOOLS"\n` +
+        `gsd_run ping test\n`;
+
+      const scriptPath = path.join(fakeRuntime, 'test-hermes-home-win.sh');
+      fs.writeFileSync(scriptPath, scriptContent);
+
+      const stdout = runBashFile(scriptPath, {
+        env: { PATH: isolatedPath, HOME: fakeHome, HERMES_HOME: fakeHermesHome },
+      });
+
+      const normStdout = stdout.replace(/\\/g, '/');
+      assert.ok(
+        !normStdout.includes('SENTINEL_INVOKED'),
+        `Expected the leaked Windows shim gsd_run to never be invoked, got:\n${stdout.trim()}`,
+      );
+      // Assert the hermes dir itself: every arm of the resolver ends in
+      // gsd-core/bin/, so that substring alone cannot tell them apart.
+      assert.ok(
+        normStdout.includes(fakeHermesHome.replace(/\\/g, '/')),
+        `Expected GSD_TOOLS to resolve into ${fakeHermesHome}, got:\n${stdout.trim()}`,
+      );
+      assert.ok(
+        stdout.includes('HERMES_HOME_STUB:ping,test'),
+        `Expected stub output "HERMES_HOME_STUB:ping,test", got:\n${stdout.trim()}`,
+      );
+    },
+  );
+
 
   // ── (C) Behavioral: default .hermes path used when HERMES_HOME not set ────
   test('(C) gsd_run resolves $HOME/.hermes/gsd-core/bin/ stub when HERMES_HOME is unset', () => {
