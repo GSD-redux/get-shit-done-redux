@@ -1546,6 +1546,94 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
       'a symlinked phase dir must not become a resolved phaseDir');
   });
 
+  // #4030 acceptance criterion: the workflow-supplied phase must reach a
+  // SYNTHETIC THIRD-PARTY step handler unchanged, at every phase-scoped point.
+  // The tests above use the real registry; these register an overlay capability
+  // nobody ships, so what is asserted is the actual dispatch payload a
+  // third-party handler receives — its step entry and the phase side by side in
+  // one envelope — not merely that the resolver echoes a flag.
+  //
+  // GLOBAL scope (under GSD_HOME) is trusted without a consent record
+  // (ADR-1244 / #1459), which is what makes an overlay usable as a fixture here.
+  function makeThirdPartyStepFixture(points) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-phase-3p-home-'));
+    const capDir = path.join(home, '.gsd', 'capabilities', 'phase-probe');
+    fs.mkdirSync(capDir, { recursive: true });
+    fs.writeFileSync(path.join(capDir, 'capability.json'), JSON.stringify({
+      id: 'phase-probe',
+      title: 'Phase Probe',
+      version: '1.0.0',
+      role: 'feature',
+      tier: 'full',
+      description: 'Third-party capability declaring one step per phase-scoped point (#4030 fixture).',
+      engines: { gsd: '>=1.7.0' },
+      requires: [],
+      runtimeCompat: { supported: ['claude'], unsupported: [] },
+      skills: [],
+      agents: [],
+      config: {},
+      steps: points.map((point) => ({
+        point,
+        ref: { command: 'phase probe' },
+        produces: [],
+        consumes: [],
+        onError: 'skip',
+      })),
+      contributions: [],
+      gates: [],
+    }), 'utf8');
+
+    const project = makePhaseProject('05-widgets');
+    return { home, project };
+  }
+
+  const PHASE_SCOPED_POINTS = [
+    'plan:pre', 'plan:post',
+    'execute:wave:pre', 'execute:wave:post', 'execute:post',
+    'verify:pre', 'verify:post',
+  ];
+
+  for (const point of PHASE_SCOPED_POINTS) {
+    test(`[happy] ${point}: a third-party step hook and the caller's phase arrive in one envelope`, (t) => {
+      const fx = makeThirdPartyStepFixture(PHASE_SCOPED_POINTS);
+      t.after(() => { cleanup(fx.home); cleanup(fx.project); });
+
+      const result = runNode(
+        [GSD_TOOLS, 'loop', 'render-hooks', point, '--cwd', fx.project, '--raw', '--phase', '05'],
+        { cwd: ROOT, timeoutMs: 15000, env: { ...process.env, GSD_HOME: fx.home } },
+      );
+      assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+      const envelope = JSON.parse(result.stdout.trim());
+
+      const probe = (envelope.activeHooks || []).find((h) => h.capId === 'phase-probe');
+      assert.ok(probe, `the third-party step must be dispatched at ${point}; got ${JSON.stringify(envelope.activeHooks)}`);
+      assert.strictEqual(probe.kind, 'step');
+      assert.strictEqual(probe.ref.command, 'phase probe');
+
+      assert.deepStrictEqual(
+        envelope.context,
+        { phase: '05', phaseDir: '.planning/phases/05-widgets' },
+        `${point} must deliver the caller's phase unchanged alongside the third-party handler`,
+      );
+    });
+  }
+
+  test('[bva] a third-party handler sees no context when the caller passes no phase', (t) => {
+    const fx = makeThirdPartyStepFixture(['plan:pre']);
+    t.after(() => { cleanup(fx.home); cleanup(fx.project); });
+
+    const result = runNode(
+      [GSD_TOOLS, 'loop', 'render-hooks', 'plan:pre', '--cwd', fx.project, '--raw'],
+      { cwd: ROOT, timeoutMs: 15000, env: { ...process.env, GSD_HOME: fx.home } },
+    );
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    const envelope = JSON.parse(result.stdout.trim());
+    assert.ok((envelope.activeHooks || []).some((h) => h.capId === 'phase-probe'),
+      'the third-party step still dispatches without --phase');
+    assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+      'no phase in means no context out — the handler must not receive an inferred one');
+  });
+
   test('[happy] context does not mutate STATE.md, and outranks STATE.current_phase', (t) => {
     const dir = makePhaseProject('02-beta');
     t.after(() => cleanup(dir));
