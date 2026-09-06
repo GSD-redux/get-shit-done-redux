@@ -40,8 +40,14 @@ site — confirmed with a hostile-token test (`tests/loop-render-hooks.test.cjs`
 
 `--phase-dir <dir>` is accepted alongside `--phase`, as the issue's spec asks,
 but strictly as a **cross-check on the token's resolution** — never as an
-independent path. When it agrees with the resolved directory the envelope is
-unchanged; when it disagrees, `context` is omitted with a warning naming both.
+independent path. The comparison is string equality against the value the
+resolver emits, with no normalization: `.planning/phases/05-widgets` matches,
+while a trailing slash, a `./` prefix, an absolute form of the same directory,
+or a `..` segment that would normalize to it do **not**. That is deliberate —
+normalizing would mean interpreting a caller path, which is the step this
+design exists to avoid — and it is fail-closed, since a near-miss omits
+`context` and warns rather than guessing. When it matches, the envelope is
+unchanged; when it does not, `context` is omitted with a warning naming both.
 `--phase-dir` alone is refused, since there is then no resolution to check it
 against. Two consequences follow. An out-of-project value (`/etc`, `../..`)
 cannot reach `context`, so this surface needs no confinement logic of its own.

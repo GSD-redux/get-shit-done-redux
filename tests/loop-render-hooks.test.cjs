@@ -1671,6 +1671,40 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     }
   });
 
+  test('[bva] --phase-dir is matched exactly — no normalization admits an equivalent spelling', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    // Every one of these normalizes to the resolved directory, and every one is
+    // still a mismatch: matching them would mean interpreting a caller path.
+    for (const spelling of [
+      '.planning/phases/05-widgets/',
+      './.planning/phases/05-widgets',
+      '.planning//phases/05-widgets',
+      '.planning/phases/07/../05-widgets',
+      path.join(dir, '.planning', 'phases', '05-widgets'),
+    ]) {
+      const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', spelling, '--raw']);
+      assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+      const envelope = JSON.parse(result.stdout.trim());
+      assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'),
+        `${spelling} must not match by normalization`);
+    }
+  });
+
+  test('[happy] the emitted phaseDir is the locator\'s value, never the caller\'s string', (t) => {
+    const dir = makePhaseProject('05-widgets');
+    t.after(() => cleanup(dir));
+    const supplied = '.planning/phases/05-widgets';
+    const result = renderWithPhase(dir, 'plan:pre', ['--phase', '05', '--phase-dir', supplied, '--raw']);
+    assert.strictEqual(result.exitCode, 0, 'stderr: ' + result.stderr);
+    const { phaseDir } = JSON.parse(result.stdout.trim()).context;
+    // Same text, but it must come from guardedFindPhase — asserted by shape, since
+    // the caller can only ever supply a string the locator would itself produce.
+    assert.strictEqual(phaseDir, supplied);
+    assert.ok(!path.isAbsolute(phaseDir) && !phaseDir.includes('..'),
+      'the emitted phaseDir is always a project-relative locator result');
+  });
+
   test('[negative] --phase-dir without --phase is refused rather than trusted', (t) => {
     const dir = makePhaseProject('05-widgets');
     t.after(() => cleanup(dir));

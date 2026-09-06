@@ -4391,11 +4391,12 @@ applies, so a token like `OTHER-05` does not resolve to this project's
 Phase 5.
 
 `--phase-dir <dir>` is accepted alongside `--phase` and compared against that
-resolution: agreeing values pass through, disagreeing ones omit `context` with
-a warning naming both, and `--phase-dir` on its own is refused. This catches
-the mismatch a containment check cannot — `--phase 05 --phase-dir
-.planning/phases/07-other` names two different phases that are *both* inside
-the project.
+resolution by exact string match — no normalization, so a trailing slash or an
+absolute form of the same directory is a mismatch, not a match. A matching
+value passes through, anything else omits `context` with a warning naming both,
+and `--phase-dir` on its own is refused. This catches the mismatch a
+containment check cannot: `--phase 05 --phase-dir .planning/phases/07-other`
+names two different phases that are *both* inside the project.
 
 **Known limits:**
 - Omitting `--phase` reproduces the previous envelope exactly — no
