@@ -169,7 +169,9 @@ describe('/gsd-ui-review hands the key to the auditor', () => {
   test('orchestratorReadsTheKeyAndPassesItInTheConfigBlock', () => {
     const src = fs.readFileSync(UI_REVIEW_PATH, 'utf8');
     assert.ok(src.includes(`config-get ${KEY}`), 'ui-review.md must read the key through gsd_run');
-    assert.ok(src.includes('interaction_capture: {INTERACTION_CAPTURE}'),
+    // Lowercase placeholder, like the block's `{phase_dir}` / `{padded_phase}` siblings —
+    // the block is a prompt template the orchestrator fills, not a bash heredoc.
+    assert.ok(src.includes('interaction_capture: {interaction_capture}'),
       'the spawn prompt <config> block must carry interaction_capture');
     // Normalised to a literal true/false before it is handed down, so the
     // auditor's fence only ever compares against "true".
@@ -222,11 +224,11 @@ const HAS_BASH = (() => {
 
 /** Absolute paths of the coreutils the fence needs, so PATH can hold only the stubs. */
 function coreutilPaths() {
-  const r = spawnSync('bash', ['-c', 'for c in sed head mkdir rm; do command -v "$c" || exit 1; done'],
+  const r = spawnSync('bash', ['-c', 'for c in sed head mkdir rm tr; do command -v "$c" || exit 1; done'],
     { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
   assert.equal(r.status, 0, `coreutils must resolve: ${r.stderr}`);
-  const [sed, head, mkdir, rm] = r.stdout.trim().split(/\r?\n/);
-  return { sed, head, mkdir, rm };
+  const [sed, head, mkdir, rm, tr] = r.stdout.trim().split(/\r?\n/);
+  return { sed, head, mkdir, rm, tr };
 }
 
 const STUB_NPX = `#!/bin/sh
@@ -281,6 +283,7 @@ function runInteractionFence(t, opts = {}) {
     `head() { ${JSON.stringify(cu.head)} "$@"; }`,
     `mkdir() { ${JSON.stringify(cu.mkdir)} "$@"; }`,
     `rm() { ${JSON.stringify(cu.rm)} "$@"; }`,
+    `tr() { ${JSON.stringify(cu.tr)} "$@"; }`,
     ...screenshotApproachFences().interaction,
     'printf "FINAL_STATUS=%s\\n" "$INTERACTION_STATUS"',
     '',

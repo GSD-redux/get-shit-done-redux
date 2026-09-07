@@ -98,11 +98,11 @@ ${AGENT_SKILLS_UI_REVIEWER}
 <config>
 phase_dir: {phase_dir}
 padded_phase: {padded_phase}
-interaction_capture: {INTERACTION_CAPTURE}
+interaction_capture: {interaction_capture}
 </config>
 ```
 
-Omit null file paths. `interaction_capture` is always present — `true` only when
+Omit null file paths. `interaction_capture` is always present — the `$INTERACTION_CAPTURE` value read in step 0, `true` only when
 `workflow.ui_interaction_capture` is on; the auditor's `<screenshot_approach>` branches on it and
 falls back to its Playwright-only static capture when it is `false` or no Chrome binary resolves.
 

@@ -63,7 +63,7 @@ The other values it can hold are honest, not decorative:
 | `off` | The key is `false`. Nothing else changed. |
 | `skipped (no dev server reached)` | The static capture found no dev server; there was nothing to interact with. |
 | `skipped (no Chrome binary resolved)` | The key is on but no browser resolved. Set `CHROME_BIN`. |
-| `not captured (driver or capture failure)` | The daemon started but no state was captured — the audit output names the failing step. |
+| `not captured (driver or capture failure)` | The key was on and Chrome resolved, but no state landed on disk — `npx` could not fetch the driver, Chrome did not launch, the page never opened, or every capture failed. The audit output names the failing step. |
 
 An interaction state that does not appear in that directory is not reported as observed; the
 Experience Design pillar says when its findings are code-derived.

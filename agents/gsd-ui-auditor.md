@@ -176,8 +176,10 @@ fi
 # daemon socket: `start` restarts whatever daemon shares its session, and --isolated
 # isolates only the browser profile, so without a per-run id two concurrent audits
 # (or an audit beside an operator's own CLI daemon) would stop each other. Hex and
-# dashes only.
-CDT_SESSION="$(date +%s)-$$"
+# dashes only. BASHPID, not $$: a subshell inherits $$, so two audits forked from one
+# parent shell in the same second would share an id; BASHPID is the subshell's own,
+# and $RANDOM separates two forks of the same shell even then.
+CDT_SESSION="$(date +%s)-${BASHPID:-$$}-$RANDOM"
 CDT="npx -y -p chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION:-^1.8.0} chrome-devtools --sessionId $CDT_SESSION"
 
 if [ "$INTERACTION_CAPTURE" != "true" ]; then
@@ -219,7 +221,10 @@ else
     # the pageId every later command takes as its first argument. --timeout bounds the
     # navigation (ms); the CLI's other verbs carry no timeout, so a hung page is caught
     # here, before any of them run.
-    PAGE_ID=$($CDT new_page "$DEV_URL" --timeout 30000 2>/dev/null | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1)
+    # `tr -d '\r'` so a CRLF-emitting driver (Git Bash) still matches the `$` anchor; the
+    # trailing `|| true` keeps a failed new_page from aborting the block under `set -e
+    # -o pipefail` before the unconditional stop below runs.
+    PAGE_ID=$($CDT new_page "$DEV_URL" --timeout 30000 2>/dev/null | tr -d '\r' | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1 || true)
     if [ -n "$PAGE_ID" ]; then
       $CDT resize_page "$PAGE_ID" 1440 900 >/dev/null 2>&1
       # The snapshot lists every element with the uid that click/hover/fill/drag take.
@@ -227,6 +232,9 @@ else
       # A failed snapshot is a failed step — without uids the interactions below cannot
       # be driven — so it counts, rather than letting two clean screenshots read as 0 failed.
       if ! $CDT take_snapshot "$PAGE_ID" --filePath "$INTERACTION_DIR/snapshot.txt" >/dev/null 2>&1; then
+        # Remove whatever it left (or a stale file from a reused directory): uids read from
+        # a snapshot this run did not take would drive the interactions at the wrong elements.
+        rm -f "$INTERACTION_DIR/snapshot.txt"
         IFAILED=$((IFAILED + 1))
         echo "  interaction step FAILED: take_snapshot"
       fi
