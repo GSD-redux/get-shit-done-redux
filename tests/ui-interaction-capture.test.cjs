@@ -391,7 +391,9 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
     for (const f of ['baseline.png', 'focus-first.png', 'snapshot.txt', 'console.txt']) {
       assert.ok(fs.existsSync(path.join(idir, f)), `${f} must exist`);
     }
-    assert.equal(out.status, `captured (2 state(s), 0 failed) in ${idir}`);
+    // The fence joins with a literal `/` ("$SCREENSHOT_DIR/interaction"); path.join would
+    // put a backslash there on Windows and the strings would differ by separator alone.
+    assert.equal(out.status, `captured (2 state(s), 0 failed) in ${dir}/interaction`);
   });
 
   test('versionOverrideFlowsIntoTheNpxSpec', (t) => {
