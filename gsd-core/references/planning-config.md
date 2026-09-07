@@ -289,6 +289,7 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.ui_phase` | boolean | `true` | `true`, `false` | Generate UI-SPEC.md for frontend phases |
 | `workflow.ui_safety_gate` | boolean | `true` | `true`, `false` | Require safety gate approval for UI changes |
 | `workflow.text_mode` | boolean | `false` | `true`, `false` | Use plain-text numbered lists instead of AskUserQuestion menus |
+| `workflow.compact_content` | boolean | `false` | `true`, `false` | Compact content mode (#4139, ADR-4139) — per-project boolean selecting terser payloads; nothing branches on it yet |
 | `workflow.research_before_questions` | boolean | `false` | `true`, `false` | Run research before interactive questions in discuss phase (also honored on the `/gsd:quick` path, #3894). _Alias:_ `research_before_questions` is the flat-key form used in `CONFIG_DEFAULTS`; `workflow.research_before_questions` is the canonical namespaced form. |
 | `workflow.discuss_mode` | string | `"discuss"` | `"discuss"`, `"assumptions"` | Default mode for discuss-phase: `"discuss"` runs interactive questioning; `"assumptions"` analyzes codebase and surfaces assumptions instead |
 | `workflow.skip_discuss` | boolean | `false` | `true`, `false` | Skip discuss phase entirely |

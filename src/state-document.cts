@@ -553,7 +553,22 @@ export function stateReplaceField(content: string, fieldName: string, newValue: 
   // `(.*)` captured the following line and the rebuild discarded it — the #4010
   // data-loss. ADR-3180 §7.7 makes stateExtractField the same-line-confined owner;
   // this aligns the writer to it.
-  const boldPattern = new RegExp(`(\\*\\*${escaped}:\\*\\*[ \\t]*)(.*)`, 'i');
+  //
+  // #4243: the bold form is also ANCHORED to line start, with same-line leading
+  // whitespace only. The pre-fix pattern carried no `^` and no `m` flag, so a
+  // bold label quoted MID-SENTENCE inside prose — an Accumulated Context bullet
+  // mentioning `**Status:**` — captured the rewrite and destroyed the rest of
+  // its line, silently, whenever a whole-body caller fed this function every
+  // section (beginPhaseCore's tryField, advancePlanCore's Status/Current Plan
+  // writes). The plain branch below was always line-anchored; only the bold
+  // branch lagged. Anchoring reuses #4010's same-line confinement idiom (the
+  // leading class is `[ \t]*`, deliberately NOT the `\s*` the issue suggested —
+  // `^\s*\*\*` can consume the newlines before the label into the match and
+  // drop them on rebuild) and #4186's recognition-by-anchoring discipline: a
+  // write target must BE the whole declared line shape, never a substring
+  // guess inside prose. `$` is explicit-and-inert (`.` never crosses line
+  // terminators) and documents that the match ends at end-of-line.
+  const boldPattern = new RegExp(`^([ \\t]*\\*\\*${escaped}:\\*\\*[ \\t]*)(.*)$`, 'im');
   if (boldPattern.test(content)) {
     return content.replace(boldPattern, (_match, prefix: string) => joinFieldReplacement(prefix, newValue));
   }
@@ -611,31 +626,115 @@ export function stateReplaceFieldInSession(content: string, primary: string, fal
   return withSection(content, target, (sectionBody) => stateReplaceFieldWithFallback(sectionBody, primary, fallback, value));
 }
 
+/**
+ * #4186: the DECLARED raw-status vocabulary `normalizeStateStatus` recognizes.
+ * Keys are whole-field values, compared against the caller's input after
+ * lowercasing, trimming, and collapsing internal whitespace runs to single
+ * spaces — so case and whitespace variants the vocabulary documents
+ * (`EXECUTING PHASE 5`, `  Paused  `, `In   progress`) keep normalizing.
+ * Values are members of `STATUS_LIFECYCLE_ENUM` (`src/state-md-schema.cts`)
+ * — the set the normalizer maps recognized input ONTO.
+ *
+ * The mapping preserves the PRE-#4186 branch ORDER's observable artifacts for
+ * every value the old substring chain recognized: `Planning complete` →
+ * `planning` (the `planning` branch outranked `complete`) and
+ * `Phase complete — ready for verification` → `verifying` (`verif` outranked
+ * `complete`; pinned by tests/state.test.cjs's advance-plan case-5 comment).
+ *
+ * Everything else — prose that merely CONTAINS a status word — falls through
+ * to the caller's raw value (the recorded lenient fallback, #3873 phase-3
+ * row 26). A token guessed from a substring inside a sentence is worse than
+ * a visible paragraph: the paragraph is visibly prose, the wrong token is
+ * not (a `.planning/` path in Italian prose silently produced
+ * `status: planning`; `verificata` produced `verifying`; `completezza`
+ * produced `completed`).
+ */
+export const STATUS_EXACT_TOKENS: Readonly<Record<string, string>> = Object.freeze({
+  paused: 'paused',
+  stopped: 'paused',
+  executing: 'executing',
+  'in progress': 'executing',
+  'ready to execute': 'executing',
+  planning: 'planning',
+  'ready to plan': 'planning',
+  'planning complete': 'planning',
+  discussing: 'discussing',
+  verifying: 'verifying',
+  completed: 'completed',
+  done: 'completed',
+  complete: 'completed',
+  'phase complete': 'completed',
+  // advance-plan's phase-complete write (state-transition.cts:1812) — maps
+  // to `verifying`, preserving the pre-#4186 branch order where `verif`
+  // outranked `complete`.
+  'phase complete — ready for verification': 'verifying',
+  'all phases complete': 'completed',
+  // Legacy bare terminal form. ADR-2207/#2204 removed it from every WRITER
+  // (phase verbs write `All phases complete`; milestone close writes
+  // `<version> milestone complete`) — kept here as READER recognition so a
+  // legacy STATE.md still normalizes, exactly the way KNOWN_TEMPLATE_DEFAULTS
+  // keeps the other legacy Status strings.
+  'milestone complete': 'completed',
+  unknown: 'unknown',
+} as const);
+
+/**
+ * #4186: ANCHORED patterns for handler-written raw statuses whose text
+ * carries a variable component (a phase number, a milestone version, a
+ * #1070 completion glyph). Each pattern is matched against the same
+ * normalized key as `STATUS_EXACT_TOKENS` (lowercased, trimmed,
+ * whitespace-collapsed) and must match the WHOLE value — never a substring —
+ * mirroring how `KNOWN_STATUS_PATTERNS` anchors its template-default checks.
+ * `Executing Phase 5 — final stretch` (executor-appended prose) matches
+ * NOTHING and passes through verbatim, the same discipline #1070 applies to
+ * "Complete but needs manual QA".
+ */
+export const STATUS_ANCHORED_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
+  // begin-phase / planned transitions write `Executing Phase ${N}`.
+  [/^executing phase\s+\S+$/, 'executing'],
+  [/^planning phase\s+\S+$/, 'planning'],
+  [/^verifying phase\s+\S+$/, 'verifying'],
+  // phase-complete verbs write `Phase ${N} complete` (state.cts) — the exact
+  // shape the #3578 demote guard then re-checks against the disk counters.
+  [/^phase\s+\S+\s+complete$/, 'completed'],
+  // milestoneCompleteCore writes `${version} milestone complete` (terminal,
+  // ADR-2207); the version label is a single token (milestone.cts's charset
+  // validation admits letters, digits, '.', '-', '_').
+  [/^\S+\s+milestone complete$/, 'completed'],
+  // #1070: LLM executors may write "Complete ✓" or bare "Complete" when
+  // finishing a phase.
+  [/^complete\s*[✓✔✅☑]?$/, 'completed'],
+] as const);
+
+/**
+ * Normalize a raw `Status` body-field value to the canonical status token.
+ *
+ * #4186: recognition is ANCHORED — the whole field value (lowercased,
+ * trimmed, whitespace-collapsed) must be a member of the declared vocabulary
+ * (`STATUS_EXACT_TOKENS` / `STATUS_ANCHORED_PATTERNS` above). The pre-#4186
+ * implementation ran a first-match-wins chain of SUBSTRING tests over the
+ * free-prose field, so any prose merely CONTAINING a trigger word was
+ * silently rewritten to a credible wrong token: a `.planning/...` path
+ * mentioned in a non-English status line landed on `planning` (the trigger
+ * word lives in the directory name and outranked the `verif`/`complete`
+ * branches), Italian `verifica*` landed on `verifying`, `completezza` and
+ * `fasi complete` landed on `completed`. The lenient FALLBACK is unchanged
+ * and recorded (#3873 phase-3 row 26): an unrecognized value passes through
+ * verbatim — visible prose, never a guessed token.
+ *
+ * `pausedAt` keeps its documented force (issue #4186: intended behavior): a
+ * truthy value yields `paused` regardless of the prose.
+ */
 export function normalizeStateStatus(status: string | null | undefined, pausedAt: unknown): string {
-  let normalizedStatus = status || 'unknown';
-  const statusLower = (status || '').toLowerCase();
-  if (statusLower.includes('paused') || statusLower.includes('stopped') || pausedAt) {
-    normalizedStatus = 'paused';
+  if (pausedAt) return 'paused';
+  if (!status) return 'unknown';
+  const key = status.trim().toLowerCase().replace(/\s+/g, ' ');
+  const exact = STATUS_EXACT_TOKENS[key];
+  if (exact) return exact;
+  for (const [pattern, token] of STATUS_ANCHORED_PATTERNS) {
+    if (pattern.test(key)) return token;
   }
-  else if (statusLower.includes('executing') || statusLower.includes('in progress')) {
-    normalizedStatus = 'executing';
-  }
-  else if (statusLower.includes('planning') || statusLower.includes('ready to plan')) {
-    normalizedStatus = 'planning';
-  }
-  else if (statusLower.includes('discussing')) {
-    normalizedStatus = 'discussing';
-  }
-  else if (statusLower.includes('verif')) {
-    normalizedStatus = 'verifying';
-  }
-  else if (statusLower.includes('complete') || statusLower.includes('done')) {
-    normalizedStatus = 'completed';
-  }
-  else if (statusLower.includes('ready to execute')) {
-    normalizedStatus = 'executing';
-  }
-  return normalizedStatus;
+  return status;
 }
 
 /**

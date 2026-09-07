@@ -25,6 +25,9 @@ Orchestrator coordinates, not executes. Each subagent loads the full execute-pla
   instead of spawning parallel agents. Only attempt parallel spawning if the user
   explicitly requests it — and in that case, rely on the spot-check fallback in step 3
   to detect completion.
+- **Codex:** native subagent sessions can end abnormally (`turn_aborted`) after the plan
+  work is already committed. Completion is decided by the step-4 artifact reconciliation
+  (SUMMARY + matching recent commits), not by the session's terminal state (#4217).
 - **Other runtimes:** If `Agent`/`agent` tool is genuinely unavailable (e.g. a backgrounded
   Claude Code agent per #853, or a non-Claude runtime), use sequential inline execution as
   the fallback for executor parallelization only. If `Agent` IS available (top-level Claude
@@ -806,7 +809,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    > **Worktree recovery policy (#48 + #1292):** See `execute-phase/steps/worktree-recovery-policy.md` — FAIL-CLOSED rule for base/HEAD-namespace mismatches AND isolated-run fail-safe recovery.
 
-   > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above to spawn executor agent(s), stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+   > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above to spawn executor agent(s), stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available. While waiting, run the step-4 completion surveillance; if the child's session ends abnormally — including `turn_aborted` — reconcile artifacts per `execute-phase/steps/completion-reconciliation.md` before classifying the plan (#4217).
 
    **Orchestrator-managed worktree dispatch** (`ISOLATION=orchestrator-worktree`): read and execute `execute-phase/steps/executor-isolation-dispatch.md`. GSD creates each worktree (`worktree create`) and spawns the executor into it; the orchestrator performs every git operation. Merge-back and cleanup are the existing manifest-scoped gauntlet, unchanged.
 
@@ -848,28 +851,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    [checkpoint] phase {PHASE_NUMBER} wave {N}/{M} plan {plan_id} checkpoint ({P}/{Q} plans done)
    ```
 
-   **Completion signal fallback (Copilot and runtimes where Agent() may not return):**
+   **Completion reconciliation (EVERY runtime — any spawn whose terminal response may not arrive):**
 
-   If a spawned agent does not return a completion signal but appears to have finished
-   its work, do NOT block indefinitely. Instead, verify completion via spot-checks:
-
-   ```bash
-   # For each plan in this wave, check if the executor finished:
-   SUMMARY_EXISTS=$(test -f "{phase_dir}/{plan_number}-{plan_padded}-SUMMARY.md" && echo "true" || echo "false")
-   # #4003: anchored, zero-pad-tolerant scope (see safe_resume_gate); --since stays.
-   SPOT_PHASE_N=$((10#{phase_number}))
-   SPOT_PLAN_N=$((10#{plan_padded}))
-   COMMITS_FOUND=$(git log --oneline --all -E --grep="^[a-z]+\((0*${SPOT_PHASE_N})-(0*${SPOT_PLAN_N})\):" --since="1 hour ago" | head -1)
-   COMMITS_SINCE_DISPATCH=$(git log "${EXPECTED_BRANCH}" --since="${DISPATCH_TS}" --oneline | head -1)
-   ```
-
-   **If SUMMARY.md exists AND commits are found:** The agent completed successfully —
-   treat as done and proceed to step 5. Log: `"✓ {Plan ID} completed (verified via spot-check — completion signal not received)"`
-
-   **If SUMMARY.md does NOT exist after a reasonable wait:** The agent may still be
-   running or may have failed silently. Check `git log --oneline -5` for recent
-   activity. If commits are still appearing, wait longer. If no activity, report
-   the plan as failed and route to the failure handler in step 6.
+   If a spawned agent does not return a normal terminal completion response — or its session ends abnormally (interrupted, aborted, closed, killed, timed out, `turn_aborted`, including ends the orchestrator itself initiated) — do NOT block indefinitely and do NOT classify the plan as failed yet. Read and execute `gsd-core/workflows/execute-phase/steps/completion-reconciliation.md` — reconcile the plan artifacts FIRST, classify SECOND: SUMMARY present AND matching recent commits → complete (proceed to step 5, do NOT re-dispatch); no completion evidence → the failure handler. Verify, never wait.
 
    **Configurable stall surveillance (#3212):** Every `${EXECUTOR_STALL_INTERVAL_MINUTES}`
    minutes while waiting, inspect `git log "${EXPECTED_BRANCH}" --since="${DISPATCH_TS}"`
@@ -878,10 +862,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    ask for one recovery path: `continue waiting`, `kill and retry`, or
    `kill and switch to inline execution`.
 
-   If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
-
-   **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by
-   default: the completion signal may never arrive. Verify, never wait.
+   **A working executor is never steered (#4218).** The threshold measures time WITHOUT
+   PROGRESS, not total runtime. Before treating an executor as stalled — and before sending it
+   any message — read and execute `execute-phase/steps/executor-progress-policy.md`.
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
@@ -1115,6 +1098,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    if [ -n "$RETRY_AFTER" ]; then RETRY_HINT="  Provider hinted retry-after: ${RETRY_AFTER}s"; else RETRY_HINT=""; fi
    ```
    One classifier branch handles sentinels across Claude/Copilot/Codex/Gemini. Reference: `docs/research/provider-rate-limit-signals.md`.
+   **Abnormal ends reconcile first (#4217):** an abnormal session end (`turn_aborted`-class) routes through the step-4 artifact reconciliation BEFORE classifying the failure — artifacts decide.
    **Step 7.1 — `class == "quota-exceeded"`:** follow the quota-recovery fragment below.
    **Step 7.2 — `class == "classify-handoff-bug"`:**
    If error contains `classifyHandoffIfNeeded is not defined`, treat as Claude runtime bug. Run the same step-5 spot-checks; PASS => treat as success, FAIL => fall through.
@@ -1318,7 +1302,7 @@ ${VERIFIER_SKILLS}",
 )
 ```
 
-> **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+> **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available. If the session ends abnormally (`turn_aborted`), reconcile via the `verification.status` query below — the session's terminal state is not evidence of failure (#4217).
 
 Read status via the canonical query (scoped to frontmatter, covers missing/unknown cases):
 ```bash

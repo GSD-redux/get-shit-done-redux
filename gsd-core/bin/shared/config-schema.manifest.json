@@ -22,6 +22,7 @@
     "workflow.smart_zone_tokens",
     "workflow.human_verify_mode",
     "workflow.text_mode",
+    "workflow.compact_content",
     "workflow.research_before_questions",
     "workflow.discuss_mode",
     "workflow.skip_discuss",

@@ -193,6 +193,7 @@ const DOCS_GUARD_TESTS = {
   // (commit-files-pathspec.test.cjs:1618) — cannot be resolved to specific
   // files without re-deriving the scan's own file-discovery logic.
   'tests/commit-files-pathspec.test.cjs': ['*'],
+  'tests/compact-content-4139.test.cjs': ['docs/CONFIGURATION.md'],
   'tests/config-field-docs.test.cjs': ['docs/CONFIGURATION.md'],
   'tests/config.test.cjs': ['docs/CONFIGURATION.md'],
   'tests/context-index-sync.test.cjs': ['docs/CONTEXT-INDEX.json'],

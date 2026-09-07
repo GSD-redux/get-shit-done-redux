@@ -101,6 +101,7 @@ describe('config-field-docs', () => {
       ai_integration_phase: 'workflow.ai_integration_phase',
       api_coverage_gate: 'workflow.api_coverage_gate',
       text_mode: 'workflow.text_mode',
+      compact_content: 'workflow.compact_content',
       subagent_timeout: 'workflow.subagent_timeout',
       branching_strategy: 'git.branching_strategy',
       phase_branch_template: 'git.phase_branch_template',

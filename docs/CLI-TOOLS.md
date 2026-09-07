@@ -113,7 +113,7 @@ node gsd-tools.cjs state add-decision --summary-file path [--rationale-file path
 node gsd-tools.cjs state add-blocker --text "..."
 node gsd-tools.cjs state resolve-blocker --text "..."
 
-# Record session continuity
+# Record session continuity (at least one of --stopped-at / --resume-file is required)
 node gsd-tools.cjs state record-session --stopped-at "..." [--resume-file path]
 
 # Phase start — update STATE.md Status/Last activity for a new phase
@@ -433,6 +433,12 @@ node gsd-tools.cjs roadmap analyze
 # Update progress table row from disk
 node gsd-tools.cjs roadmap update-plan-progress <N>
 ```
+
+When the phase has no writable ROADMAP entry — no matching Progress-table row,
+no `### Phase N` detail section, and no checklist bullet this command can update
+(the checklist-only form) — the command declines with `updated: false` and a
+`missing_phase_details` reason instead of claiming success, and leaves
+`ROADMAP.md` byte-identical.
 
 ### Milestone window scope (`roadmap analyze`)
 

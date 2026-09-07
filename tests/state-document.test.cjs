@@ -221,6 +221,187 @@ describe('stateReplaceField — empty field preserves the following line (#4010)
   });
 });
 
+// #4243: the bold branch of stateReplaceField was UNANCHORED
+// (`(\*\*Field:\*\*[ \t]*)(.*)` with no ^ and no /m), so a bold label quoted
+// MID-SENTENCE inside prose — the issue's `**Status:**` inside an Accumulated
+// Context bullet — captured the rewrite and destroyed the rest of the line,
+// silently, while the real field went stale or was updated elsewhere. The fix
+// anchors the bold form to line start with same-line leading whitespace
+// (`^([ \t]*\*\*Field:\*\*[ \t]*)`, 'im'), reusing #4010's same-line
+// confinement idiom and #4186's recognition-by-anchoring discipline. These rows
+// pin the corruption shapes; rows further down pin the negative space
+// (legitimate line-start bold updates are byte-identical, branch order and
+// first-occurrence-wins unchanged).
+describe('stateReplaceField — anchored bold form leaves prose lookalikes untouched (#4243)', () => {
+  // The issue's verbatim prose line: a bold label quoted for documentation
+  // purposes inside a bullet, with the real field in the plain template form.
+  const ISSUE_PROSE_LINE =
+    '- [Phase 170]: archived files gained a `**Status:**Ready to execute` marker. Must not change.';
+
+  // ROW 1 — the failing-first regression from the issue. The lookalike must
+  // survive byte-identically and the REAL plain field must take the update.
+  test('issue repro: mid-sentence **Status:** lookalike survives, real plain field updates', () => {
+    const input = [
+      '## Current Position',
+      '',
+      'Phase: 5 of 9',
+      'Plan: 2 of 6',
+      'Status: Ready to execute',
+      'Last activity: 2026-08-01 — did a thing',
+      '',
+      '## Accumulated Context',
+      '',
+      '### Decisions',
+      '',
+      ISSUE_PROSE_LINE,
+      '',
+    ].join('\n');
+    const result = stateReplaceField(input, 'Status', 'Executing Phase 901');
+    assert.notEqual(result, null, 'the real plain field must still match');
+    assert.ok(
+      result.includes(ISSUE_PROSE_LINE),
+      `prose lookalike must survive byte-identically, got:\n${result}`,
+    );
+    assert.ok(
+      /^Status: Executing Phase 901$/m.test(result),
+      'the real plain Status line must take the update',
+    );
+    assert.ok(
+      !result.includes('Executing Phase 901` marker'),
+      'the rewrite must not bleed into the prose occurrence',
+    );
+  });
+
+  test('lookalike ordered BEFORE the real bold field: prose survives, bold field updates', () => {
+    const input = [
+      '## Accumulated Context',
+      '',
+      ISSUE_PROSE_LINE,
+      '',
+      '## Current Position',
+      '',
+      '**Status:** Ready to execute',
+      '',
+    ].join('\n');
+    const result = stateReplaceField(input, 'Status', 'Executing Phase 901');
+    assert.notEqual(result, null);
+    assert.ok(result.includes(ISSUE_PROSE_LINE), `prose lookalike must survive, got:\n${result}`);
+    assert.ok(
+      /^\*\*Status:\*\* Executing Phase 901$/m.test(result),
+      'the real line-start bold field must take the update',
+    );
+  });
+
+  test('mid-word lookalike with no real field: returns null (honest absence), never a rewrite', () => {
+    const input = 'Prose mentions text**Status:**tail mid-word and nothing else.';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 901'), null);
+  });
+
+  // A list-item bold label (`- **Status:** value`) is prose-shaped for the
+  // writer: no STATE.md writer emits body fields as list items, and treating
+  // a bullet as a field write target is exactly the #4243 corruption class.
+  // The read side's own vocabulary (bold anywhere) is untouched; the writer
+  // reports honest absence instead.
+  test('list-item bold label is not a write target: returns null, bullet untouched', () => {
+    const input = '- **Status:** resolved in the archived review';
+    assert.equal(stateReplaceField(input, 'Status', 'new'), null);
+  });
+
+  // Every field the regex serves: a document whose ONLY occurrence of the
+  // label is a mid-sentence lookalike must yield null — no served field may
+  // be rewritten from prose.
+  test('mid-sentence lookalike yields null for every served field', () => {
+    const servedFields = [
+      'Status', 'Phase', 'Plan', 'Current Plan', 'Current Phase', 'Current Phase Name',
+      'Last Activity', 'Last Activity Description', 'Total Phases', 'Total Plans in Phase',
+      'Progress', 'Completed Phases', 'Stopped At',
+    ];
+    for (const field of servedFields) {
+      const input = `Some prose sentence quoting a **${field}:** label mid-sentence, plus trailing words.`;
+      assert.equal(
+        stateReplaceField(input, field, 'NEW'),
+        null,
+        `mid-sentence **${field}:** lookalike must not match (got a rewrite)`,
+      );
+    }
+  });
+
+  test('lookalike plus real plain field: only the real plain line changes (representative fields)', () => {
+    const cases = [
+      { field: 'Status', plain: 'Status: Ready to execute' },
+      { field: 'Phase', plain: 'Phase: 5 of 9' },
+      { field: 'Last Activity', plain: 'Last Activity: 2026-08-01 — did a thing' },
+    ];
+    for (const { field, plain } of cases) {
+      const lookalike = `- notes: the **${field}:** label was archived here. Keep it.`;
+      const input = [plain, '', '## Accumulated Context', '', lookalike, ''].join('\n');
+      const result = stateReplaceField(input, field, 'NEW VALUE');
+      assert.notEqual(result, null, `${field}: real plain field must match`);
+      assert.ok(
+        result.includes(lookalike),
+        `${field}: lookalike line must survive byte-identically, got:\n${result}`,
+      );
+    }
+  });
+
+  // Negative space: an INDENTED line-start bold field is still a field (the
+  // doc's form ranking reads bold anywhere in the section; the writer keeps
+  // same-line indentation writable), and the indent is preserved.
+  test('indented line-start bold field still updates, indent preserved', () => {
+    const input = '  **Status:** old';
+    const result = stateReplaceField(input, 'Status', 'new');
+    assert.equal(result, '  **Status:** new');
+  });
+
+  // Negative space + fix-shape pin: leading blank lines before the label are
+  // NOT swallowed. The anchor's leading class is same-line whitespace only
+  // (`[ \t]*`, #4010's idiom); the issue's suggested `^\s*` variant would
+  // consume the newlines into the match and drop them on rebuild.
+  test('leading blank lines before a bold label survive byte-identically', () => {
+    const input = '\n\n**Status:** Ready';
+    const result = stateReplaceField(input, 'Status', 'Executing Phase 5');
+    assert.equal(result, '\n\n**Status:** Executing Phase 5');
+  });
+
+  test('CRLF document: lookalike survives with CRLF intact, real plain field updates', () => {
+    const input = [
+      'Status: Ready to execute',
+      '',
+      '## Accumulated Context',
+      '',
+      ISSUE_PROSE_LINE,
+      '',
+    ].join('\r\n');
+    const result = stateReplaceField(input, 'Status', 'Executing Phase 901');
+    assert.notEqual(result, null);
+    assert.ok(result.includes(ISSUE_PROSE_LINE), `prose lookalike must survive, got:\n${result}`);
+    assert.ok(result.includes('\r\n'), 'CRLF endings must be preserved');
+    assert.ok(/^Status: Executing Phase 901\r?$/m.test(result), 'real plain field must update');
+  });
+
+  // Negative space: branch ORDER is unchanged — a line-start bold field still
+  // beats the plain form, and only the first bold occurrence is replaced.
+  test('line-start bold still beats the plain form (branch order unchanged)', () => {
+    const input = '**Status:** old bold\nStatus: old plain';
+    const result = stateReplaceField(input, 'Status', 'new');
+    assert.equal(result, '**Status:** new\nStatus: old plain');
+  });
+
+  test('two line-start bold occurrences: only the first is replaced', () => {
+    const input = '**Status:** first\n**Status:** second';
+    const result = stateReplaceField(input, 'Status', 'new');
+    assert.equal(result, '**Status:** new\n**Status:** second');
+  });
+
+  // #4010 same-line adjacency under the anchor: an empty bold field's value
+  // lands on its own line and the following line survives.
+  test('anchored bold branch keeps the #4010 empty-field boundary', () => {
+    const input = '  **Status:**\n  **Current Plan:** 2 of 5';
+    const result = stateReplaceField(input, 'Status', 'Executing Phase 5');
+    assert.equal(result, '  **Status:** Executing Phase 5\n  **Current Plan:** 2 of 5');
+  });
+});
+
 describe('stateExtractField (#2880)', () => {
   test('extracts from a two-cell row', () => {
     const input = '| Current Phase | 3 |';
@@ -2234,5 +2415,149 @@ describe('#3642 — single-section leak controls and seam pins', () => {
     assert.strictEqual(roadmapParser.hasAnyMilestoneSection(flat), false, 'zero signal headings is flat');
     assert.strictEqual(roadmapParser.hasMilestoneSectioning(one), false, '>=2 predicate unchanged: one heading is NOT sectioning');
     assert.strictEqual(roadmapParser.hasMilestoneSectioning(two), true, '>=2 predicate unchanged: two headings is sectioning');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4186 — normalizeStateStatus must derive the `status` token by ANCHORED
+// matching against the declared status vocabulary (whole-field value,
+// case-insensitive, whitespace-collapsed), never by substring-scanning the
+// free-prose body Status field. Prose that merely MENTIONS a status word (a
+// `.planning/` path, Italian `verifica*`, `completezza`, `fasi complete`)
+// must pass through verbatim — the visible paragraph beats a valid, credible,
+// wrong token. The lenient fallback itself is a recorded contract
+// (state-md-schema.cts #3873 phase-3 row 26) and is preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4186: normalizeStateStatus anchored status vocabulary — substring traps', () => {
+  const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+
+  // Row 1 — the failing-first regression: a `.planning/` path inside Italian
+  // prose must NOT land on `planning` (the trigger word lives in the
+  // DIRECTORY NAME; the reporter measured this exact counter-pair).
+  test('row 1: a .planning/ path inside prose never yields `planning`', () => {
+    assert.strictEqual(
+      normalizeStateStatus('Lavoro sospeso, vedi .planning/STATE.md', null),
+      'Lavoro sospeso, vedi .planning/STATE.md',
+    );
+  });
+
+  test('rows 2-5: Italian prose mentioning paths/verification/completeness passes through verbatim', () => {
+    const prose = [
+      'Esecuzione in corso su .planning/',
+      'Fase 34 COMPLETA, VERIFICATA 8/8 e FUSA IN PRODUZIONE',
+      'Aggiornato .planning/STATE.md dopo la verifica di fase',
+      'Referto in .planning/phases/34, completezza ok',
+    ];
+    for (const p of prose) {
+      assert.strictEqual(normalizeStateStatus(p, null), p, `prose must pass through verbatim: ${p}`);
+    }
+  });
+
+  test('row 6: Italian verifica-family words do not match the `verif` trigger', () => {
+    for (const p of ['verifica', 'verificata', 'verifiche', 'ri-verifica']) {
+      assert.strictEqual(normalizeStateStatus(p, null), p);
+    }
+  });
+
+  test('rows 7-8: `completezza` and `fasi complete` do not yield `completed`', () => {
+    assert.strictEqual(normalizeStateStatus('riportata per completezza', null), 'riportata per completezza');
+    assert.strictEqual(normalizeStateStatus('fasi complete', null), 'fasi complete');
+  });
+
+  test('rows 9-10: control — prose with no trigger words was already verbatim and stays so', () => {
+    const control = [
+      'completata / completato / completo / completa / incompleta / completamente',
+      'Lavoro sospeso in attesa del CEO',
+    ];
+    for (const p of control) {
+      assert.strictEqual(normalizeStateStatus(p, null), p);
+    }
+  });
+
+  test('row 11: English status words embedded in prose sentences are not rewrites either', () => {
+    assert.strictEqual(normalizeStateStatus('Waiting on the planning department', null), 'Waiting on the planning department');
+    assert.strictEqual(normalizeStateStatus('Notes done, see log', null), 'Notes done, see log');
+    assert.strictEqual(
+      normalizeStateStatus('Discussed the verif steps with QA, paused decision', null),
+      'Discussed the verif steps with QA, paused decision',
+    );
+  });
+
+  test('row 12 (existing #3873 row-26 contract): unrecognized text passes through unchanged', () => {
+    assert.strictEqual(
+      normalizeStateStatus('totally-unrecognized-status-text', null),
+      'totally-unrecognized-status-text',
+    );
+  });
+});
+
+describe('#4186: normalizeStateStatus anchored status vocabulary — documented vocabulary still normalizes', () => {
+  const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+
+  test('rows 13-15: variable handler-written phase statuses (case/whitespace variants)', () => {
+    assert.strictEqual(normalizeStateStatus('Executing Phase 5', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('EXECUTING PHASE 5', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('executing phase 46', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('Planning Phase 3', null), 'planning');
+    assert.strictEqual(normalizeStateStatus('Verifying Phase 2', null), 'verifying');
+  });
+
+  test('row 16: `Phase N complete` still lands on `completed` (composes with the #3578 demote guard)', () => {
+    assert.strictEqual(normalizeStateStatus('Phase 12 complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Phase 3A complete', null), 'completed');
+  });
+
+  test('rows 17-18: ADR-2207 lifecycle terminal statuses (CONTEXT.md:94 recorded contract)', () => {
+    assert.strictEqual(normalizeStateStatus('All phases complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('ALL PHASES COMPLETE', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('v1.0 milestone complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('1.0 milestone complete', null), 'completed');
+  });
+
+  test('rows 19-25: fixed-form handler defaults, including case and whitespace variants', () => {
+    assert.strictEqual(normalizeStateStatus('Ready to plan', null), 'planning');
+    assert.strictEqual(normalizeStateStatus('Ready to execute', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('In progress', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('In   progress', null), 'executing');
+    assert.strictEqual(normalizeStateStatus('  Paused  ', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('Paused', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('Stopped', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('stopped', null), 'paused');
+    assert.strictEqual(normalizeStateStatus('Discussing', null), 'discussing');
+    assert.strictEqual(normalizeStateStatus('Verifying', null), 'verifying');
+    assert.strictEqual(normalizeStateStatus('Completed', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Done', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('done', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Complete', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Complete ✓', null), 'completed');
+    assert.strictEqual(normalizeStateStatus('Complete✔', null), 'completed');
+  });
+
+  test('rows 26-27: branch-order artifacts are preserved byte-for-behaviour', () => {
+    // `verif` outranks `complete` (pinned by tests/state.test.cjs's
+    // advance-plan case-5 comment); `planning` outranks `complete`.
+    assert.strictEqual(normalizeStateStatus('Phase complete — ready for verification', null), 'verifying');
+    assert.strictEqual(normalizeStateStatus('Planning complete', null), 'planning');
+  });
+
+  test('rows 29-30: unknown fallback and the pausedAt force are unchanged', () => {
+    assert.strictEqual(normalizeStateStatus(null, null), 'unknown');
+    assert.strictEqual(normalizeStateStatus('', null), 'unknown');
+    assert.strictEqual(normalizeStateStatus('Executing Phase 5', '2026-09-01'), 'paused');
+  });
+
+  test('row 31: statuses with no branch today stay verbatim', () => {
+    assert.strictEqual(normalizeStateStatus('Awaiting next milestone', null), 'Awaiting next milestone');
+    assert.strictEqual(normalizeStateStatus('Defining requirements', null), 'Defining requirements');
+    assert.strictEqual(normalizeStateStatus('Active', null), 'Active');
+  });
+
+  test('row 32: trailing prose after a vocabulary form is executor-authored and passes through', () => {
+    // Same discipline as #1070's KNOWN_STATUS_PATTERNS: "Complete but needs
+    // manual QA" is NOT a template default. The anchored vocabulary only
+    // recognizes the whole-field value.
+    assert.strictEqual(normalizeStateStatus('Executing Phase 5 — final stretch', null), 'Executing Phase 5 — final stretch');
+    assert.strictEqual(normalizeStateStatus('Complete but needs manual QA', null), 'Complete but needs manual QA');
   });
 });
