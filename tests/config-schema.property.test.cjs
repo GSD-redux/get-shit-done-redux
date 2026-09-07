@@ -158,6 +158,14 @@ describe('config-schema: isValidConfigKey properties', () => {
     );
   });
 
+  test('hooks.community is a valid config key (sibling of #4443)', () => {
+    assert.equal(
+      isValidConfigKey('hooks.community'),
+      true,
+      'hooks.community is the gsd-validate-commit.sh opt-in gate and must be settable via config-set'
+    );
+  });
+
   // Boundary: null/undefined/number return false (not throw, not true)
   test('null, undefined, number inputs return false', () => {
     assert.equal(isValidConfigKey(null), false);
