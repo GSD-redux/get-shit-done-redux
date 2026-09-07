@@ -30,6 +30,8 @@ const { runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS, GIT_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'code-review.md');
@@ -69,15 +71,20 @@ const foldShellContinuations = (src) => src.replace(
 );
 
 const GREP_SITE_RE = /^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm;
-const BASH_FENCE_RE = /^```(?:bash|sh)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
 
-const findGrepSites = (src) => Array.from(
-  src.matchAll(BASH_FENCE_RE),
-  (fence) => Array.from(
-    foldShellContinuations(fence[1]).matchAll(GREP_SITE_RE),
-    (match) => match[0],
-  ),
-).flat();
+const findGrepSites = (src) => {
+  const lines = splitLines(src);
+  return scanFencedBlocks(lines).flatMap((block) => {
+    if (block.closeLineIdx === -1) return [];
+    const language = block.infoString.trim().toLowerCase();
+    if (language !== 'bash' && language !== 'sh') return [];
+    const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+    return Array.from(
+      foldShellContinuations(body).matchAll(GREP_SITE_RE),
+      (match) => match[0],
+    );
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Pure-function implementation of the compute_file_scope Node script body.
