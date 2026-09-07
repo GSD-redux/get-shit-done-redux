@@ -627,19 +627,36 @@ function _unsetNestedValue(
  * Does not call `output()`, so can be used as one step in a command without triggering `exit(0)` in
  * the happy path. But note that `error()` will still `exit(1)` out of the process.
  */
+/**
+ * Loads `.planning/config.json` as a plain object, or `{}` if the file does
+ * not exist. A parse failure calls `error()` (process-exiting) rather than
+ * throwing, matching every caller's existing behavior.
+ *
+ * Single source for this load+parse step — `setConfigValue`,
+ * `unsetConfigValue`, `setConfigValues`, `previewConfigValue`, and
+ * `previewUnsetConfigValue` all delegate here instead of each repeating the
+ * same try/catch (CLAUDE.md's "Generative Fix Divergence" known-defect
+ * pattern: independently-guessed copies of the same logic can silently
+ * drift apart).
+ */
+function loadConfigJson(cwd: string): Record<string, unknown> {
+  const configPath = path.join(planningDir(cwd), 'config.json');
+  let config: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    }
+  } catch (err) {
+    error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
+  }
+  return config;
+}
+
 function unsetConfigValue(cwd: string, keyPath: string): UnsetConfigValueResult {
   const configPath = path.join(planningDir(cwd), 'config.json');
 
   return withPlanningLock(cwd, () => {
-    // Load existing config or start with empty object
-    let config: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      }
-    } catch (err) {
-      error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-    }
+    const config = loadConfigJson(cwd);
 
     const { previousValue, existed } = _unsetNestedValue(config, keyPath);
 
@@ -664,15 +681,7 @@ function setConfigValue(cwd: string, keyPath: string, parsedValue: unknown): Set
   const configPath = path.join(planningDir(cwd), 'config.json');
 
   return withPlanningLock(cwd, () => {
-    // Load existing config or start with empty object
-    let config: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      }
-    } catch (err) {
-      error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-    }
+    const config = loadConfigJson(cwd);
 
     const previousValue = _setNestedValue(config, keyPath, parsedValue);
 
@@ -696,15 +705,7 @@ function setConfigValue(cwd: string, keyPath: string, parsedValue: unknown): Set
  * from the real one.
  */
 function previewConfigValue(cwd: string, keyPath: string, parsedValue: unknown): { key: string; value: unknown; previousValue: unknown } {
-  const configPath = path.join(planningDir(cwd), 'config.json');
-  let config: Record<string, unknown> = {};
-  try {
-    if (fs.existsSync(configPath)) {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-    }
-  } catch (err) {
-    error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-  }
+  const config = loadConfigJson(cwd);
   const previousValue = _setNestedValue(config, keyPath, parsedValue);
   return { key: keyPath, value: parsedValue, previousValue };
 }
@@ -714,15 +715,7 @@ function previewConfigValue(cwd: string, keyPath: string, parsedValue: unknown):
  * as `previewConfigValue`, reusing `_unsetNestedValue` on a throwaway copy.
  */
 function previewUnsetConfigValue(cwd: string, keyPath: string): { key: string; value: null; previousValue: unknown; existed: boolean } {
-  const configPath = path.join(planningDir(cwd), 'config.json');
-  let config: Record<string, unknown> = {};
-  try {
-    if (fs.existsSync(configPath)) {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-    }
-  } catch (err) {
-    error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-  }
+  const config = loadConfigJson(cwd);
   const { previousValue, existed } = _unsetNestedValue(config, keyPath);
   return { key: keyPath, value: null, previousValue, existed };
 }
@@ -748,15 +741,7 @@ function setConfigValues(
   const configPath = path.join(planningDir(cwd), 'config.json');
 
   return withPlanningLock(cwd, () => {
-    // Load existing config or start with empty object
-    let config: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      }
-    } catch (err) {
-      error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-    }
+    const config = loadConfigJson(cwd);
 
     const results: SetConfigValueResult[] = [];
     for (const entry of entries) {
