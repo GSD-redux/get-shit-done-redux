@@ -4324,9 +4324,13 @@ describe('#4243 follow-up: update-progress leaves prose **Progress:** lookalikes
     assert.ok(content.includes(freeText), 'the free-text plain line must stay byte-identical');
     assert.ok(content.includes(PROSE_LINE), 'the prose lookalike must stay byte-identical');
     // Read-side extractor is bold-anywhere (see the C1 note above); the free-
-    // text plain line and the prose lookalike both precede nothing relevant —
-    // assert on the top-of-body region between the title and the first ##.
-    const beforeFirstSection = content.split(/\n## /)[0];
+    // text plain line and the bold status line live in the top-of-body region
+    // between the title and the first ## heading. Scope with splitLines
+    // (CRLF-safe per local/no-crlf-fragile-split), never a bare \n split.
+    const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+    const lines = splitLines(content);
+    const firstSectionIdx = lines.findIndex((l) => l.startsWith('## '));
+    const beforeFirstSection = lines.slice(0, firstSectionIdx === -1 ? lines.length : firstSectionIdx).join('\n');
     assert.match(
       beforeFirstSection,
       new RegExp(`^\\*\\*Progress:\\*\\* \\[${'░'.repeat(10)}\\] ${out.percent}%$`, 'm'),
