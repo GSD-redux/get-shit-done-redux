@@ -329,7 +329,11 @@ describe('W002 — STATE.md references a phase not declared on disk or ROADMAP',
         '',
         '## Ledger',
         '',
-        '- `- [ ] **Phase 40:** quoted from the beta roadmap',
+        // Closed code span (matching the A3 snapshot-level twin and the
+        // 50-test-matrix.md B2 row). An UNTERMINATED backtick run is literal
+        // text per CommonMark, so its content is prose and W002 SHOULD fire
+        // on it — not the fixture this row pins.
+        '- `- [ ] **Phase 40:** quoted from the beta roadmap`',
         '',
       ].join('\n'),
     );
