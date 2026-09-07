@@ -31,9 +31,18 @@ const {
   escapeSingleQuotedShellLiteral,
   retryRenameSync,
   contentChangedAfterNormalize,
+  shellSingleQuote,
 } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
 
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
+
+describe('shellSingleQuote', () => {
+  test('quotes arbitrary POSIX shell values without changing data', () => {
+    assert.equal(shellSingleQuote(''), "''");
+    assert.equal(shellSingleQuote("it's"), "'it'\\''s'");
+    assert.equal(shellSingleQuote('path with \\ and $HOME'), "'path with \\ and $HOME'");
+  });
+});
 
 // ─── execGit ─────────────────────────────────────────────────────────────────
 
