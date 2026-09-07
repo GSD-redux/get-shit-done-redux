@@ -76,6 +76,13 @@ therefore resolved against the project root and rejected if it escapes:
 The predicate's own `artifact` suffix is confined under the resolved phase
 directory separately, so neither the root nor the leaf can traverse out.
 
+Confinement is a PATH check only — it guarantees the resolved directory sits
+inside the project, not that its text is safe to hand to a shell. A confined
+value can still contain shell metacharacters (e.g. a not-yet-created leaf
+segment, which confinement accepts without touching the filesystem). The
+`command-exit-zero` kind's `${PHASE_DIR}` interpolation handles that
+separately — see **Interpolation** below.
+
 ## Built-in kinds
 
 ### `command-exit-zero`

@@ -245,6 +245,16 @@ describe('check predicate — --phase-dir project confinement (#4354)', () => {
     assertRejected(runPredicate(fx, link), 'in-project symlink to outside');
   });
 
+  test('[negative] a bare relative traversal string cannot escape the project (no absolute path or symlink involved)', (t) => {
+    const fx = makeFixture(t);
+    // The most textbook escape shape for #4354, per the maintainer review: a
+    // plain `../../..` string, never resolved through path.isAbsolute or a
+    // symlink. validatePath must reject it via the same startsWith(project)
+    // check the other confinement tests exercise, not a special-cased path.
+    const traversal = path.relative(fx.project, fx.outside);
+    assertRejected(runPredicate(fx, traversal), 'bare relative traversal');
+  });
+
   test('[negative] ${PHASE_DIR} interpolation cannot reach outside the project', (t) => {
     const fx = makeFixture(t);
     assertRejected(runPredicate(fx, fx.outside, COMMAND_PREDICATE), 'command-exit-zero interpolation');
