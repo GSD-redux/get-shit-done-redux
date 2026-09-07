@@ -202,14 +202,11 @@ function writeSentinel(target, payload) {
 }
 
 let input = '';
-// Timeout guard: if stdin doesn't close within 10s (e.g. pipe issues on
-// Windows/Git Bash, or slow Claude Code piping during large outputs),
-// exit silently instead of hanging until Claude Code kills the process
-// and reports "hook error". See #775, #1162.
-const stdinTimeout = setTimeout(() => allow(undefined), 10000);
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', () => {
+// Assigned by main(); the handler below clears it. Declared out here rather
+// than inside main() because the handler closes over it.
+let stdinTimeout = null;
+
+const handleStdinEnd = () => {
   clearTimeout(stdinTimeout);
   try {
     const data = JSON.parse(input);
@@ -537,4 +534,34 @@ process.stdin.on('end', () => {
     // exit(0) fail-open behavior exactly (#3911).
     crash(ON_CRASH, undefined);
   }
-});
+};
+
+// The stdin adapter is the only side-effecting statement in this file, so it is
+// the only thing that must not run on `require()`. Gating it lets a test import
+// `resolveThresholds` and drive it directly — the repo's own conclusion for a
+// seam like this (CONTEXT-INDEX, on the ROADMAP Requirements parser: a closure
+// reachable only by spawning the CLI is one "no fast-check property can do").
+// A spawn-per-case property test is not the same test: it would exercise the
+// resolver at whatever pairs survive to an observable severity, not over its
+// whole numeric domain.
+/* istanbul ignore next -- stdin adapter, exercised via spawnSync in tests */
+function main() {
+  // Timeout guard: if stdin doesn't close within 10s (e.g. pipe issues on
+  // Windows/Git Bash, or slow Claude Code piping during large outputs),
+  // exit silently instead of hanging until Claude Code kills the process
+  // and reports "hook error". See #775, #1162.
+  stdinTimeout = setTimeout(() => allow(undefined), 10000);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => input += chunk);
+  process.stdin.on('end', handleStdinEnd);
+}
+
+if (require.main === module) {
+  main();
+}
+
+// Exported for the #4285 property test only. The two constants ride along so a
+// test asserts the fallback pair against the SOURCE of truth rather than
+// re-hardcoding 35/25 — a test carrying its own copy of the defaults would stay
+// green if the constants were edited.
+module.exports = { resolveThresholds, WARNING_THRESHOLD, CRITICAL_THRESHOLD };

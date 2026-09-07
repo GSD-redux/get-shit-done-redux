@@ -2816,3 +2816,157 @@ describe('#4285 regression: context-monitor thresholds resolve from .planning/co
       'context_warnings:false must silence the hook even when a threshold would have fired');
   });
 });
+
+// ─── #4285: resolveThresholds domain invariants (property-based) ─────────────
+
+const fc = require('./helpers/fast-check-setup.cjs');
+const {
+  resolveThresholds,
+  WARNING_THRESHOLD,
+  CRITICAL_THRESHOLD,
+} = require(MONITOR_PATH);
+
+describe('#4285 properties: resolveThresholds holds its domain invariants for arbitrary input', () => {
+  // The spawn-based rows above pin that the RESOLVED pair reaches the two
+  // comparison sites. They cannot pin the resolver over its numeric domain:
+  // each case costs a subprocess, and only pairs that change an observable
+  // severity are visible at all. These properties cover the other half — the
+  // resolver as a total function — per ADR 456 (threshold/limit contracts get
+  // fast-check coverage) and the seam rule the repo already applies elsewhere
+  // (CONTEXT-INDEX, on the ROADMAP Requirements parser: a closure reachable
+  // only by spawning the CLI is one "no fast-check property can do", so it is
+  // exported and driven directly instead). No path literal here on purpose —
+  // the docs-guard lint reads a bare one as this file guarding a shipped doc.
+
+  const DEFAULTS = { warning: WARNING_THRESHOLD, critical: CRITICAL_THRESHOLD };
+
+  // Deliberately wider than the accepted domain: NaN/±Infinity (fc.double's
+  // default), out-of-range and negative reals, and non-numbers of every shape.
+  const anyThreshold = fc.oneof(
+    { weight: 6, arbitrary: fc.double() },
+    { weight: 3, arbitrary: fc.double({ min: -1000, max: 1000, noNaN: true }) },
+    { weight: 1, arbitrary: fc.anything() },
+  );
+
+  const isDefaults = (r) => r.warning === DEFAULTS.warning && r.critical === DEFAULTS.critical;
+
+  test('the defaults themselves satisfy the invariant they are the fallback for', () => {
+    // If this ever goes red the constants have drifted into the state the
+    // resolver rejects, and every fallback below would return a nonsense pair.
+    assert.ok(Number.isFinite(WARNING_THRESHOLD) && WARNING_THRESHOLD >= 0 && WARNING_THRESHOLD <= 100);
+    assert.ok(Number.isFinite(CRITICAL_THRESHOLD) && CRITICAL_THRESHOLD >= 0 && CRITICAL_THRESHOLD <= 100);
+    assert.ok(CRITICAL_THRESHOLD < WARNING_THRESHOLD);
+  });
+
+  test('totality: no input throws, and the pair is always two finite numbers in [0, 100]', () => {
+    fc.assert(
+      fc.property(anyThreshold, anyThreshold, (w, c) => {
+        const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
+        return (
+          Number.isFinite(r.warning) && r.warning >= 0 && r.warning <= 100 &&
+          Number.isFinite(r.critical) && r.critical >= 0 && r.critical <= 100
+        );
+      }),
+    );
+  });
+
+  test('ordering: the resolved pair always satisfies critical < warning', () => {
+    // The reason the pair falls back TOGETHER. A resolver that honoured one
+    // usable half of an inconsistent pair would fail here on the first
+    // generated pair with c >= w — which the table-driven rows sample at
+    // exactly one point (20/25).
+    fc.assert(
+      fc.property(anyThreshold, anyThreshold, (w, c) => {
+        const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
+        return r.critical < r.warning;
+      }),
+    );
+  });
+
+  test('exactness: each side is the configured value or that key\'s default — never a third number', () => {
+    // Rules out a resolver that "repairs" an out-of-domain or inconsistent
+    // input by clamping or nudging it: 150 must become 35, not 100.
+    //
+    // Stated per key rather than per pair, because a MIXED result is legal and
+    // is the documented per-key fallback — warning 150 with critical 0 resolves
+    // to {35, 0}, which is neither "the configured pair" nor "the defaults".
+    // (Found by this property on its first run, against a per-pair phrasing.)
+    fc.assert(
+      fc.property(anyThreshold, anyThreshold, (w, c) => {
+        const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
+        return (
+          (r.warning === w || r.warning === WARNING_THRESHOLD) &&
+          (r.critical === c || r.critical === CRITICAL_THRESHOLD)
+        );
+      }),
+    );
+  });
+
+  test('togetherness: an inconsistent RESOLVED pair reverts both sides, not the offending one', () => {
+    // The complement of the property above: mixing is legal only while the
+    // resulting pair stays ordered. Once it does not, the result is the exact
+    // defaults — no half-honoured pair survives.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        (a, b) => {
+          fc.pre(b >= a); // in-domain but inconsistent: critical >= warning
+          return isDefaults(resolveThresholds({
+            context_warning_threshold: a,
+            context_critical_threshold: b,
+          }));
+        },
+      ),
+    );
+  });
+
+  test('non-vacuity: every in-domain consistent pair is honoured verbatim', () => {
+    // Without this, `resolveThresholds = () => DEFAULTS` passes all three
+    // properties above. This is the one that makes them mean something.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        (a, b) => {
+          const warning = Math.max(a, b);
+          const critical = Math.min(a, b);
+          fc.pre(critical < warning);
+          const r = resolveThresholds({
+            context_warning_threshold: warning,
+            context_critical_threshold: critical,
+          });
+          return r.warning === warning && r.critical === critical;
+        },
+      ),
+    );
+  });
+
+  test('per-key fallback: one unusable key does not discard the other usable one', () => {
+    // Pins the per-key half of the contract the docs promise. warning is left
+    // at a value that stays consistent with the default critical (25), so a
+    // resolved pair survives and the honoured half is observable.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 26, max: 100, noNaN: true }),
+        fc.oneof(fc.string(), fc.boolean(), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant(Infinity), fc.double({ min: 100.001, max: 1e6, noNaN: true })),
+        (warning, junkCritical) => {
+          const r = resolveThresholds({
+            context_warning_threshold: warning,
+            context_critical_threshold: junkCritical,
+          });
+          return r.warning === warning && r.critical === CRITICAL_THRESHOLD;
+        },
+      ),
+    );
+  });
+
+  test('a non-object hooks argument of any shape yields the defaults', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constant(null), fc.constant(undefined), fc.string(), fc.double(), fc.boolean()),
+        (hooks) => isDefaults(resolveThresholds(hooks)),
+      ),
+    );
+  });
+});
