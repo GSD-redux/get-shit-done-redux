@@ -79,7 +79,6 @@ Today's date: {date}
 --paths {affected_paths joined by comma}
 
 Refresh STRUCTURE.md and ARCHITECTURE.md scoped to the listed paths only.
-Stamp last_mapped_commit in each document's frontmatter.
 ${AGENT_SKILLS_MAPPER}"
 )
 ```
@@ -90,8 +89,24 @@ If the spawn fails or the agent reports an error: log `Codebase drift
 auto-remap failed: {reason}` and continue to `verify_phase_goal`. The phase
 is NOT failed by a remap failure.
 
-If the remap succeeds: log `Codebase drift auto-remap completed for paths:
-{affected_paths}` and continue to `verify_phase_goal`.
+If the remap succeeds, stamp the new baseline into the two documents the
+mapper just refreshed:
+
+```bash
+gsd_run stamp-codebase-map --files STRUCTURE.md,ARCHITECTURE.md
+```
+
+The stamp is a shell step, not a line in the mapper's prompt. An agent that
+concludes its work is already done skips a prose instruction silently, and the
+stamp is the one marker no human reviewing the documents would notice missing
+(#3418). `--files` is scoped to what this step actually refreshed -- the other
+five documents were not remapped and must not claim currency at HEAD.
+
+Only stamp on success: stamping after a failed remap would record a baseline
+the map never reached.
+
+Then log `Codebase drift auto-remap completed for paths: {affected_paths}` and
+continue to `verify_phase_goal`.
 
 The two relevant config keys (continue on error / failure if either is invalid):
 - `workflow.drift_threshold` (integer, default 3) — minimum drift elements before action

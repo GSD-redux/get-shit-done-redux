@@ -1070,3 +1070,295 @@ describe('bug #619 — codebase-drift-gate resolves gsd-tools via the runtime sh
 });
   });
 }
+
+// ─── Regression #3418: the drift baseline is written by code, not by prose ───
+//
+// `writeMappedCommit` shipped correct and callerless: nothing in the tree
+// invoked it, so a full `/gsd:map-codebase` run wrote no `last_mapped_commit`.
+// `cmdVerifyCodebaseDrift` then read null and fell back to diffing HEAD against
+// the empty tree, so every tracked file read as newly added and the gate
+// reported maximum drift identically on every run. Two halves, tested here:
+// the `stamp-codebase-map` writer, and the reader's refusal to invent a
+// baseline it does not have.
+
+const CODEBASE_MAP_DOCS = [
+  'STACK.md', 'ARCHITECTURE.md', 'STRUCTURE.md', 'CONVENTIONS.md',
+  'TESTING.md', 'INTEGRATIONS.md', 'CONCERNS.md',
+];
+
+describe('stamp-codebase-map CLI (#3418)', () => {
+  let tmp;
+  let codebaseDir;
+
+  function writeMap(docs = CODEBASE_MAP_DOCS) {
+    for (const doc of docs) {
+      fs.writeFileSync(path.join(codebaseDir, doc), `# ${doc}\n\nBody.\n`);
+    }
+  }
+
+  beforeEach(() => {
+    tmp = createTempGitProject('gsd-stamp-3418-');
+    codebaseDir = path.join(tmp, '.planning', 'codebase');
+    fs.mkdirSync(codebaseDir, { recursive: true });
+  });
+  afterEach(() => cleanup(tmp));
+
+  test('stamps every codebase-map document with the HEAD sha (#3418)', () => {
+    writeMap();
+    const head = git(tmp, 'rev-parse', 'HEAD');
+
+    const r = runGsdTools(['stamp-codebase-map'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.skipped, false);
+    assert.strictEqual(data.commit, head);
+    assert.deepStrictEqual(data.failed, []);
+    assert.strictEqual(data.stamped.length, CODEBASE_MAP_DOCS.length);
+
+    for (const doc of CODEBASE_MAP_DOCS) {
+      assert.strictEqual(
+        readMappedCommit(path.join(codebaseDir, doc)), head,
+        `${doc} must carry the HEAD sha; null means the writer is callerless again (#3418)`,
+      );
+    }
+  });
+
+  test('stamps only documents that exist, never conjures the missing ones (#3418)', () => {
+    // The `--fast` map produces four of the seven. Creating the other three as
+    // frontmatter-only stubs would make them satisfy the seven-file
+    // completeness probe while carrying no analysis at all.
+    const fastDocs = ['STACK.md', 'INTEGRATIONS.md', 'ARCHITECTURE.md', 'STRUCTURE.md'];
+    writeMap(fastDocs);
+
+    const r = runGsdTools(['stamp-codebase-map'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+
+    assert.deepStrictEqual(data.stamped.sort(), [...fastDocs].sort());
+    for (const doc of CODEBASE_MAP_DOCS.filter((d) => !fastDocs.includes(d))) {
+      assert.strictEqual(
+        fs.existsSync(path.join(codebaseDir, doc)), false,
+        `${doc} was absent before the stamp and must stay absent after it`,
+      );
+    }
+  });
+
+  test('--files restricts the stamp to the named subset (#3418)', () => {
+    // The execute-phase auto-remap path refreshes STRUCTURE.md and
+    // ARCHITECTURE.md only. Stamping the other five at HEAD there would claim a
+    // currency they do not have.
+    writeMap();
+
+    const r = runGsdTools(
+      ['stamp-codebase-map', '--files', 'STRUCTURE.md,ARCHITECTURE.md'], tmp,
+    );
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+
+    assert.deepStrictEqual(data.stamped.sort(), ['ARCHITECTURE.md', 'STRUCTURE.md']);
+    assert.strictEqual(readMappedCommit(path.join(codebaseDir, 'CONCERNS.md')), null,
+      'a document outside --files must be left unstamped, not stamped at HEAD');
+  });
+
+  test('--files with an empty value stamps nothing rather than all seven (#4124 review)', () => {
+    writeMap();
+
+    const r = runGsdTools(['stamp-codebase-map', '--files', ''], tmp);
+    assert.strictEqual(r.success, true, 'must stay non-blocking');
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.reason, 'empty-codebase-map-file-filter');
+    assert.strictEqual(readMappedCommit(path.join(codebaseDir, 'STRUCTURE.md')), null,
+      'a caller narrowing the scope must not have it silently widened to the whole map');
+  });
+
+  test('a bare --files stamps nothing rather than all seven (#4124 review)', () => {
+    writeMap();
+
+    const r = runGsdTools(['stamp-codebase-map', '--files'], tmp);
+    assert.strictEqual(r.success, true, 'must stay non-blocking');
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.reason, 'empty-codebase-map-file-filter');
+    assert.strictEqual(readMappedCommit(path.join(codebaseDir, 'STRUCTURE.md')), null,
+      'an unquoted empty shell variable drops the token, and must not widen the scope');
+  });
+
+  test('--files with an unknown name stamps nothing and reports why (#3418)', () => {
+    writeMap();
+
+    const r = runGsdTools(['stamp-codebase-map', '--files', '../../etc/passwd'], tmp);
+    assert.strictEqual(r.success, true, 'must stay non-blocking');
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.skipped, true);
+    assert.match(data.reason, /^unknown-codebase-map-file:/);
+    assert.deepStrictEqual(data.stamped, []);
+    assert.strictEqual(readMappedCommit(path.join(codebaseDir, 'STRUCTURE.md')), null,
+      'a rejected --files value must not partially stamp the map');
+  });
+
+  test('skips without a git repo instead of failing the run (#3418)', () => {
+    const nonGit = createTempProject('gsd-stamp-nongit-');
+    try {
+      fs.mkdirSync(path.join(nonGit, '.planning', 'codebase'), { recursive: true });
+      fs.writeFileSync(
+        path.join(nonGit, '.planning', 'codebase', 'STRUCTURE.md'), '# STRUCTURE\n',
+      );
+      const r = runGsdTools(['stamp-codebase-map'], nonGit);
+      assert.strictEqual(r.success, true, 'must exit 0 outside a git repo');
+      const data = JSON.parse(r.output);
+      assert.strictEqual(data.skipped, true);
+      assert.strictEqual(data.reason, 'not-a-git-repo');
+    } finally {
+      cleanup(nonGit);
+    }
+  });
+
+  test('skips when no codebase map exists (#3418)', () => {
+    const r = runGsdTools(['stamp-codebase-map'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.reason, 'no-codebase-map');
+  });
+
+  test('a stamped map gives the drift gate a real base to diff against (#3418)', () => {
+    // The end-to-end loop the issue reported broken: map, stamp, commit, then
+    // ask the gate. Before the fix this reported every tracked file as drift.
+    writeMap();
+    const r1 = runGsdTools(['stamp-codebase-map'], tmp);
+    assert.strictEqual(r1.success, true, r1.error);
+    const stampedAt = JSON.parse(r1.output).commit;
+
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase');
+
+    const r2 = runGsdTools(['verify', 'codebase-drift'], tmp);
+    assert.strictEqual(r2.success, true, r2.error);
+    const data = JSON.parse(r2.output);
+
+    assert.strictEqual(data.skipped, false);
+    assert.strictEqual(data.last_mapped_commit, stampedAt);
+    assert.strictEqual(data.action_required, false);
+    assert.deepStrictEqual(data.elements, [],
+      'a freshly stamped map must report zero drift; a populated list means the empty-tree fallback is back (#3418)');
+  });
+
+  test('the map\'s own commit does not read as drift on the next run (#3418)', () => {
+    // The stamp is written before `.planning/codebase/*.md` is committed, so
+    // the commit carrying the baseline lands after it. Counting GSD's own
+    // planning artifacts as codebase structure would re-poison the gate with
+    // seven new directories -- over the default threshold of three -- on the
+    // first invocation after a clean map.
+    writeMap();
+    runGsdTools(['stamp-codebase-map'], tmp);
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase');
+
+    const data = JSON.parse(runGsdTools(['verify', 'codebase-drift'], tmp).output);
+    assert.strictEqual(data.action_required, false,
+      'the map documents are planning artifacts, not codebase structure');
+    assert.deepStrictEqual(data.affected_paths, []);
+  });
+
+  test('the stamp takes the planning lock around its read-modify-write (#4124 review)', () => {
+    // Seven frontmatter read-modify-writes with no lock lose an update when the
+    // full map run and the execute-phase auto-remap stamp at the same time.
+    // A dead holder's lock is stolen and released by withPlanningLock, so its
+    // disappearance is the proof the stamp went through the lock at all.
+    writeMap();
+    const lockPath = path.join(tmp, '.planning', '.lock');
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: 999999, cwd: tmp, acquired: new Date(0).toISOString(),
+    }));
+
+    const r = runGsdTools(['stamp-codebase-map'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    assert.strictEqual(JSON.parse(r.output).skipped, false);
+    assert.strictEqual(fs.existsSync(lockPath), false,
+      'the stale lock must be consumed and released; a surviving lock means the stamp never took it');
+  });
+
+  test('the planning-artifact filter holds when cwd is below the repo root (#4124 review)', () => {
+    // `git diff --name-status` prints repo-root-relative paths whatever the
+    // cwd, so a prefix computed against cwd would read `.planning/` while git
+    // prints `sub/.planning/` and the filter would silently match nothing.
+    const sub = path.join(tmp, 'packages', 'app');
+    const subCodebase = path.join(sub, '.planning', 'codebase');
+    fs.mkdirSync(subCodebase, { recursive: true });
+    for (const doc of CODEBASE_MAP_DOCS) {
+      fs.writeFileSync(path.join(subCodebase, doc), `# ${doc}\n\nBody.\n`);
+    }
+
+    const r1 = runGsdTools(['stamp-codebase-map'], sub);
+    assert.strictEqual(r1.success, true, r1.error);
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase from a subdirectory');
+
+    const data = JSON.parse(runGsdTools(['verify', 'codebase-drift'], sub).output);
+    assert.strictEqual(data.skipped, false);
+    assert.strictEqual(data.action_required, false,
+      'the map documents under sub/.planning are still planning artifacts');
+    assert.deepStrictEqual(data.elements, []);
+  });
+});
+
+describe('verify codebase-drift: an absent baseline is not total drift (#3418)', () => {
+  let tmp;
+  let structure;
+
+  beforeEach(() => {
+    tmp = createTempGitProject('gsd-drift-3418-');
+    fs.mkdirSync(path.join(tmp, '.planning', 'codebase'), { recursive: true });
+    structure = path.join(tmp, '.planning', 'codebase', 'STRUCTURE.md');
+
+    // Structural files that the empty-tree fallback would have reported as
+    // newly added. Without them the regression would pass for the wrong reason.
+    for (const pkg of ['alpha', 'beta', 'gamma', 'delta']) {
+      const dir = path.join(tmp, 'packages', pkg, 'src');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'index.ts'), 'export {};\n');
+    }
+    fs.writeFileSync(structure, '# Codebase Structure\n\n- `packages/`\n');
+    git(tmp, 'add', '-A');
+    git(tmp, 'commit', '-m', 'map codebase without a stamp');
+  });
+  afterEach(() => cleanup(tmp));
+
+  test('an unstamped STRUCTURE.md skips with no-mapped-commit (#3418)', () => {
+    const r = runGsdTools(['verify', 'codebase-drift'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.reason, 'no-mapped-commit');
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.block, false,
+      'block:true here is the reported bug: the whole repo diffed against the empty tree (#3418)');
+    assert.strictEqual(data.action_required, false);
+    assert.strictEqual(data.last_mapped_commit, null);
+    assert.deepStrictEqual(data.elements, [],
+      'no baseline means no comparison, so there is nothing to report as drift');
+  });
+
+  test('a stamp git cannot resolve skips with unresolvable-mapped-commit (#3418)', () => {
+    // A history rewrite, a GC, or a shallow clone leaves a stamp pointing at a
+    // commit this repository cannot see. That is a different operator problem
+    // from never having been mapped, and it also used to fall through to the
+    // empty tree.
+    writeMappedCommit(structure, 'deadbeef'.repeat(5), '2026-04-22');
+
+    const r = runGsdTools(['verify', 'codebase-drift'], tmp);
+    assert.strictEqual(r.success, true, r.error);
+    const data = JSON.parse(r.output);
+
+    assert.strictEqual(data.reason, 'unresolvable-mapped-commit');
+    assert.strictEqual(data.skipped, true);
+    assert.strictEqual(data.block, false);
+    assert.strictEqual(data.last_mapped_commit, 'deadbeef'.repeat(5));
+    assert.deepStrictEqual(data.elements, []);
+  });
+});

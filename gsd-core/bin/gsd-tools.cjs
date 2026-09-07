@@ -4187,6 +4187,21 @@ const HOST_COMMAND_ROUTERS = {
   // rather than a family — ADR-2346 promotes to a family only at >=3.
   'estimate-check': ({ args, cwd, raw }) => estimateCli.cmdEstimateCheck(cwd, args.slice(1), raw),
   'estimate-calibration': ({ args, cwd, raw }) => estimateCli.cmdEstimateCalibration(cwd, args.slice(1), raw),
+  // #3418: writes `last_mapped_commit` into every codebase-map document that
+  // exists, closing the loop drift.cjs was built for. A LEAF verb rather than a
+  // `verify` subcommand on purpose -- the verify family is read-only by
+  // contract and this one mutates; ADR-2346 promotes a leaf to a family only at
+  // >=3 verbs, and this is one.
+  'stamp-codebase-map': ({ args, cwd, raw, error }) => {
+    const { files } = parseNamedArgsOrExit(args, { valueFlags: ['files'], positionals: 1 }, error);
+    // A value flag with no value parses to `null`, same as an absent one, so
+    // presence is read off `args`: a bare `--files` (an unquoted empty shell
+    // variable) must hit the empty-filter refusal, not widen to all seven.
+    const only = args.includes('--files')
+      ? String(files ?? '').split(',').map((f) => f.trim()).filter(Boolean)
+      : undefined;
+    verify.cmdStampCodebaseMap(cwd, raw, only);
+  },
   'estimate-calibrate': ({ args, cwd, raw }) => estimateCli.cmdEstimateCalibrate(cwd, args.slice(1), raw),
   'config-new-project': routeConfigNewProject,
   'config-path': routeConfigPath,
@@ -4485,7 +4500,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, planning, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-batch, quick-tasks-append, quick-tasks-migrate, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-capacity, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
-  'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
+  'resolve-execution, review-lane, skill-manifest, skills-root, stamp-codebase-map, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
   '  --raw              Emit raw output without post-processing\n' +
