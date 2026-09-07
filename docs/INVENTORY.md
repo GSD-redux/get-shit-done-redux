@@ -388,7 +388,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
 | `verify-mvp-mode.md` | UAT framing rules for MVP-mode phases — user-flow-first ordering, deferred technical checks, user-story-format guard. |
 | `compact-content-gate.md` | Shared compact-content gate (ADR-4139 Decision 3/4) — the `workflow.compact_content` check and detail-file resolution rule every compact-split workflow spine references, stated once. |
-| `compact-content-protected-content.md` | Compact-content protected-content list (ADR-4139 Decision 5) — the five categories a workflow spine must never move to a `detail.md` part, and the `<!-- gsd:protected -->` sentinel syntax that marks them; drafted here for Phase 3 (#4403) to relocate unchanged. |
+| `compact-content-protected-content.md` | Compact-content protected-content list (ADR-4139 Decision 5) — the five categories a workflow spine must never move to a `detail/*.md` part, and the `<!-- gsd:protected -->` sentinel syntax that marks them; drafted here for Phase 3 (#4403) to relocate unchanged. |
 
 ### Sketch References
 

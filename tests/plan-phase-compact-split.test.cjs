@@ -23,16 +23,29 @@ const PARENT_SHA = 'e54d3aa159810b2308cd777047b9de9c04de418a';
 const SPINE_REL = 'gsd-core/workflows/plan-phase.md';
 const DETAIL_REL = 'gsd-core/workflows/plan-phase/detail/elaboration.md';
 
-/** Trivial lines (fences, rules, bare headings) are excluded from both the
- * completeness and disjointness checks — they are boilerplate that
+/** Trivial lines (fences, rules, bare headings, bare labels) are excluded from
+ * both the completeness and disjointness checks — they are boilerplate that
  * legitimately repeats throughout any markdown file with code blocks, not
- * content that could be silently lost or duplicated in a meaningful sense. */
+ * content that could be silently lost or duplicated in a meaningful sense.
+ * A blanket short-line length cutoff would swallow real content (e.g. the
+ * 14-char `<quality_gate>` sentinel), so short lines are trivial only when
+ * they match a specific boilerplate shape rather than by length alone. */
 function isTrivial(line) {
-  if (line.length <= 15) return true;
   if (/^`{3,}/.test(line)) return true;
   if (/^-{3,}$/.test(line)) return true;
   if (/^#+\s*$/.test(line)) return true;
+  if (/^[A-Za-z][A-Za-z ]*:$/.test(line)) return true;
   return false;
+}
+
+/** The canonical gsd_run launcher preamble (see gsd-core/workflows/_runtime-launcher.snippet.sh,
+ * tests/runtime-launcher-parity.test.cjs). runtime-launcher-parity mandates exactly one inlined
+ * copy in EVERY workflow/agent .md file that calls gsd_run — spine and detail both call gsd_run,
+ * so both are required to carry their own copy. That is sanctioned duplication by a different
+ * contract, not content this split lost or copy-pasted; exclude it from the disjointness check
+ * the same way trivial fences/headings are excluded. */
+function isCanonicalLauncherPreamble(line) {
+  return line.startsWith('_GSD_SHIM_NAME="gsd-tools.cjs";');
 }
 
 function normalizeNonTrivialLines(content) {
@@ -43,7 +56,12 @@ function normalizeNonTrivialLines(content) {
 }
 
 function readParentSpine() {
-  return execFileSync('git', ['show', `${PARENT_SHA}:${SPINE_REL}`], {
+  // -c safe.directory=<ROOT> (scoped to this one invocation, not global config):
+  // a sandboxed test runner can mount the repo under a UID that doesn't own the
+  // checkout, and git refuses every operation with "detected dubious ownership"
+  // until the directory is trusted. Passing it per-call avoids mutating shared
+  // git config for a check this test alone needs.
+  return execFileSync('git', ['-c', `safe.directory=${ROOT}`, 'show', `${PARENT_SHA}:${SPINE_REL}`], {
     cwd: ROOT,
     encoding: 'utf-8',
     timeout: GIT_TIMEOUT_MS,
@@ -73,7 +91,9 @@ describe('plan-phase compact-content spine/detail split (#4402, ADR-4139 Decisio
     const spineLines = normalizeNonTrivialLines(readCurrent(SPINE_REL));
     const detailLines = normalizeNonTrivialLines(readCurrent(DETAIL_REL));
     const spineSet = new Set(spineLines);
-    const duplicated = detailLines.filter((l) => spineSet.has(l));
+    const duplicated = detailLines
+      .filter((l) => spineSet.has(l))
+      .filter((l) => !isCanonicalLauncherPreamble(l));
     assert.deepStrictEqual(
       duplicated,
       [],
