@@ -633,9 +633,12 @@ elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
     --run-dir "$LANE_RUN_DIR" --explicit "$EXPLICIT_JOINED" \
     --cap-id code-review --point "$CODE_REVIEW_POINT" --raw 2>"$DISPATCH_JSON_STDERR") || {
     echo "Warning: external reviewer dispatch command failed ($(head -1 "$DISPATCH_JSON_STDERR")) — no lane ran (SAFE-07)." >&2
-    DISPATCH_JSON='{"ok":false,"reason":"dispatch_command_failed","results":[]}'
   }
   rm -f "$DISPATCH_JSON_STDERR"
+  # DISPATCH_JSON is empty/partial here on failure (the warning above already carries the real
+  # diagnostic) — no need to fabricate a JSON stub: the reducer below already falls back to
+  # reason unparseable_dispatch_output on anything JSON.parse can't read, so it still reports a
+  # rejection, just under that existing generic reason instead of a bespoke one.
 
   # Unwrap the @file: overflow protocol (io.cjs writes a payload over 50000 chars to a temp
   # file and returns its path instead) before parsing, exactly like the `INIT` handling above —
