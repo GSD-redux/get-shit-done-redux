@@ -312,7 +312,9 @@ function stripComment(line) {
     const c = line[i];
     const ctx = top();
     const wasWordStart = wordStart;
-    wordStart = stack.length === 0 && /[\t ]/.test(c);
+    // Unquoted whitespace OR an unquoted metacharacter ends the token, so the next
+    // character starts a word: `echo A;# fi` is a comment in bash. Found by the round review.
+    wordStart = stack.length === 0 && /[\t ;|&()<>]/.test(c);
     if (ctx === 'sq') { out += c; if (c === "'") stack.pop(); continue; }
     if (ctx === 'ansi') {                       // $'...' — backslash escapes ARE processed
       if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
@@ -1438,6 +1440,15 @@ describe('#4176 — bash reader, units', () => {
     assert.strictEqual(stripComment('echo a#b'), 'echo a#b');
     assert.strictEqual(stripComment('# whole line'), '');
     assert.strictEqual(stripComment('echo "a # b" # c'), 'echo "a # b"');
+    // Operators end a token too — `#` right after one is at a word start. Round review.
+    assert.strictEqual(stripComment('echo A;# fi'), 'echo A;');
+    assert.strictEqual(stripComment('echo A|#fi'), 'echo A|');
+    assert.strictEqual(stripComment('echo A &&# fi'), 'echo A &&');
+    assert.strictEqual(stripComment('(echo A)#x'), '(echo A)');
+    assert.strictEqual(stripComment('echo A >#x'), 'echo A >');
+    assert.strictEqual(stripComment('x=#y'), 'x=#y');
+    assert.strictEqual(stripComment('echo ${x}#y'), 'echo ${x}#y');
+    assert.strictEqual(stripComment('echo "a;" #b'), 'echo "a;"');
   });
 
   test('logicalLines joins only a backslash that is the LAST character of the line, in an odd run', () => {
@@ -1502,7 +1513,7 @@ const scriptGen = fc.letrec((tie) => ({
     // What surrounds the marker: a plain echo, a quoted string carrying control keywords
     // (the `echo "we do work"` false-fire class), a trailing comment that itself carries
     // keywords (the `fi # comment` desync class), or a continuation across two lines.
-    dress: fc.constantFrom('plain', 'dq-keywords', 'sq-keywords', 'comment', 'continued', 'hash-in-quotes', 'backslash-space', 'escaped-backslash'),
+    dress: fc.constantFrom('plain', 'dq-keywords', 'sq-keywords', 'comment', 'continued', 'hash-in-quotes', 'backslash-space', 'escaped-backslash', 'operator-comment'),
   }),
   ifBlock: fc.record({
     kind: fc.constant('if'),
@@ -1550,6 +1561,8 @@ function render(tree, opts) {
         case 'backslash-space': emit(depth, `echo "${m}" \\ `); break;
         // An escaped backslash at the end of a complete line.
         case 'escaped-backslash': emit(depth, `echo "${m}" \\\\`); break;
+        // A comment opened right after an operator, no space — bash ends the word at `;`.
+        case 'operator-comment': emit(depth, `echo "${m}";# fi done esac`); break;
         default: throw new Error(`unknown dress ${node.dress}`);
       }
       expect.push({ id, guards: guards.slice(), exec });
