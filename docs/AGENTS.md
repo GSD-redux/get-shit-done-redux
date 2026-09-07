@@ -397,7 +397,10 @@ auth-gated, a server that answered something other than 2xx, a port that
 accepted the connection but never answered, or capture failure). "No dev
 server" means nothing was listening on any port: a server that answered 404 or
 500, or that hung, is reported as present, with its port and status, because
-the auditor could not use it — never as absent. A failed capture never reports as a successful
+the auditor could not use it — never as absent. The probe is `node -e` with
+`fetch()`, so it needs **Node 18+ on the audited project's PATH** — the
+project's runtime, not gsd-core's; an older Node is reported as its own outcome
+("cannot probe"), not as a missing server. A failed capture never reports as a successful
 one, and takes its own artifacts with it: each viewport that fails has the
 partial or zero-byte file it may have written removed, so a partial capture
 leaves only the shots that actually succeeded, and a total failure removes the

@@ -845,6 +845,21 @@ describe('#4176 — the probe program, executed against real servers', () => {
     } finally { await close(server); }
   });
 
+  test('a node without fetch() says so, instead of reporting every port absent', async () => {
+    // The program is run on the SAME node with the global deleted first — a Node 16 is not
+    // on hand, and what matters is the branch the program takes when `fetch` is not a
+    // function, not which release lacks it. Without this branch the program throws, the
+    // shell reads "000", and a live dev server is reported absent by a road that has
+    // nothing to do with the server. The version is carried so the report can name it.
+    const program = `delete globalThis.fetch; ${probeProgram()}`;
+    const out = await new Promise((resolve) => {
+      execFile(process.execPath, ['-e', program, 'http://127.0.0.1:1/'], { timeout: 30000 },
+        (err, stdout) => resolve({ code: err && typeof err.code === 'number' ? err.code : 0, stdout: String(stdout) }));
+    });
+    assert.strictEqual(out.code, 0, 'the nofetch branch must not throw');
+    assert.strictEqual(out.stdout, `nofetch ${process.version}`);
+  });
+
   test('a server that answers something other than 2xx or an auth status still reports that status', async () => {
     for (const status of [404, 500, 503]) {
       const server = await listen((req, res) => { res.writeHead(status); res.end(); });
@@ -1226,6 +1241,20 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     assert.doesNotMatch(r.stdout, /No dev server/);
     assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 accepted the connection but did not answer within 5s/);
     assert.strictEqual(r.captureStatus, 'not captured (dev server accepted the connection, no answer in 5s)');
+    assert.deepStrictEqual(r.shotDirs, []);
+  });
+
+  test('a node without fetch() is reported as "cannot probe", naming the version, and nothing is captured', () => {
+    // The stub prints what the real program prints on an old Node. The block must stop at
+    // the first port — three "nofetch" answers are not three absent servers — and the
+    // status must say the probe could not run, since that is the one outcome that says
+    // nothing about the ports at all.
+    const r = ok(runFence({ PROBE_3000: 'nofetch v16.20.2', PROBE_5173: '200' }));
+    assert.doesNotMatch(r.stdout, /No dev server/);
+    assert.doesNotMatch(r.stdout, /Screenshots captured/, 'no port was classified, so none may be captured from');
+    assert.match(r.stdout, /Cannot probe for a dev server: node v16\.20\.2 has no fetch\(\)/);
+    assert.strictEqual(r.captureStatus, 'not captured (cannot probe: node v16.20.2 has no fetch(); Node 18+ required)');
+    assert.strictEqual(r.invocations.length, 0);
     assert.deepStrictEqual(r.shotDirs, []);
   });
 

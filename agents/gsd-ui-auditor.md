@@ -122,10 +122,18 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 # 503 (still compiling), or that accepted the connection and never answered,
 # is present. Reporting any of those as absent is #4176's own defect, one
 # status family over; the auditor cannot screenshot them, but it can say why.
+#
+# PRECONDITION: Node 18+, on the AUDITED project's PATH — this block runs on
+# whatever `node` that shell resolves, not on gsd-core's own runtime. fetch()
+# is global from 18; on an older Node the program below says so ("nofetch")
+# instead of throwing, because a thrown probe reads "000" on every port and
+# reports a present dev server as absent by yet another road. (`npx playwright`
+# below needs a current Node as well, so the bound is not new — only stated.)
 DEV_URL=""
 DEV_GATED=""
 DEV_OTHER=""
 DEV_TIMEOUT=""
+DEV_NOFETCH=""
 for PORT in 3000 5173 8080; do
   # process.stdout.write(String(...)), never console.log(r.status): console.log
   # CAN colorize a NUMBER — whenever node emits color, i.e. a TTY or FORCE_COLOR — so
@@ -137,10 +145,16 @@ for PORT in 3000 5173 8080; do
   # so an abort — TimeoutError on current Node, the older AbortError spelling on early
   # 18.x — can only be the 5s bound firing; every other rejection (refused, reset,
   # a redirect loop) still reads "000".
-  PROBE=$(node -e 'fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(e=>process.stdout.write(e&&(e.name==="TimeoutError"||e.name==="AbortError")?"timeout":"000"))' "http://localhost:$PORT" 2>/dev/null || echo "000")
+  # No process.exit() after the nofetch write: stdout to a pipe is asynchronous on
+  # Windows, and an exit right behind the write can drop it. The process ends on
+  # its own once the write drains.
+  PROBE=$(node -e 'typeof fetch==="function"?fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(e=>process.stdout.write(e&&(e.name==="TimeoutError"||e.name==="AbortError")?"timeout":"000")):process.stdout.write("nofetch "+process.version)' "http://localhost:$PORT" 2>/dev/null || echo "000")
   PROBE=${PROBE:-000}
   case "$PROBE" in
     2??)     DEV_URL="http://localhost:$PORT"; break ;;
+    # This node cannot probe at all, so no port can be classified: stop rather
+    # than record three "000"s and call the dev server absent.
+    nofetch*) DEV_NOFETCH="${PROBE#nofetch }"; break ;;
     # The WHOLE auth-required class, not just its two common members: 407 (proxy)
     # and 511 (captive portal) also mean a server ANSWERED and demanded credentials,
     # so leaving them out reports a present server as an absent one — which is
@@ -240,6 +254,11 @@ if [ -n "$DEV_URL" ]; then
       echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
     fi
   fi
+elif [ -n "$DEV_NOFETCH" ]; then
+  # Above the answer classes deliberately: with no working probe there IS no
+  # answer to rank, and this is the one outcome that says nothing about the ports.
+  CAPTURE_STATUS="not captured (cannot probe: node $DEV_NOFETCH has no fetch(); Node 18+ required)"
+  echo "Cannot probe for a dev server: node $DEV_NOFETCH has no fetch() — Node 18+ is required — code-only audit"
 elif [ -n "$DEV_GATED" ]; then
   CAPTURE_STATUS="not captured (dev server auth-gated)"
   echo "Dev server at $DEV_GATED is auth-gated — code-only audit"
