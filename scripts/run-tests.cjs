@@ -985,6 +985,43 @@ function computeSweepProtectSet(selectedFiles, runTempRoot, dirnameImpl = requir
   return protectSet;
 }
 
+/**
+ * #4031: decide whether a chunk's `node --test` child gets `--test-force-exit`.
+ *
+ * Pure so the truth table is testable in-process. Precedence, first match wins
+ * (a knob counts as set when non-empty — `''` is unset, `'0'` is set — the
+ * same truthiness the pre-#4031 `!process.env.RUN_TESTS_NO_FORCE_EXIT` had):
+ *   1. `RUN_TESTS_NO_FORCE_EXIT` → off everywhere (pre-existing escape hatch;
+ *      the harness regression test uses it to observe the pre-#1051 hang).
+ *   2. `RUN_TESTS_FORCE_EXIT`    → on everywhere the flag exists (opt-in for a
+ *      non-Windows lane that would rather eat a truncated count than a hang,
+ *      and for the harness test that proves the flag still works here).
+ *   3. default                   → on for win32 only.
+ * The flag needs Node >= 22; engines.node is >= 24, so the nodeMajor check is a
+ * floor-independent CLI-flag-availability guard, not a supported-version claim.
+ *
+ * @param {{ platform: string, nodeMajor: number, env: NodeJS.ProcessEnv }} input
+ * @returns {{ forceExit: boolean, forceExitReason: string }}
+ */
+function resolveForceExit({ platform, nodeMajor, env }) {
+  if (nodeMajor < 22) {
+    return { forceExit: false, forceExitReason: `unavailable before Node 22 (running ${nodeMajor})` };
+  }
+  if (env.RUN_TESTS_NO_FORCE_EXIT) {
+    return { forceExit: false, forceExitReason: 'RUN_TESTS_NO_FORCE_EXIT set' };
+  }
+  if (env.RUN_TESTS_FORCE_EXIT) {
+    return { forceExit: true, forceExitReason: 'RUN_TESTS_FORCE_EXIT set' };
+  }
+  if (platform === 'win32') {
+    return { forceExit: true, forceExitReason: 'win32 default — leaked-handle hang guard (#1051)' };
+  }
+  return {
+    forceExit: false,
+    forceExitReason: `${platform} default — off to keep reported counts exact (#4031); set RUN_TESTS_FORCE_EXIT=1 to enable`,
+  };
+}
+
 function main() {
   const args = process.argv.slice(2);
   const parsed = parseArgs(args);
@@ -1318,16 +1355,30 @@ function main() {
   // makes a chunk's `node --test` child hang ~150s on Windows AFTER its last test
   // prints; two such stalls push the windows full lane past its 20m cap and the
   // job is CANCELLED with no failed step — a false-negative gate (#1051, recurrence
-  // of #869). --test-force-exit (available since Node 22; engines.node now
-  // requires >=24.0.0, so it is always available here — the nodeMajor check
-  // below is kept as a floor-independent CLI-flag-availability guard, not a
-  // statement of this repo's supported version) exits the runner once all
-  // tests finish regardless of lingering handles. The leaking tests are also
-  // fixed at the source; this is the defensive backstop.
-  // RUN_TESTS_NO_FORCE_EXIT=1 disables it (used by the harness regression test to
-  // observe the pre-fix hang).
+  // of #869). --test-force-exit exits the runner once all tests finish regardless
+  // of lingering handles. The leaking tests are also fixed at the source; this is
+  // the defensive backstop.
+  //
+  // #4031: the flag is scoped to the platform that needs it. Under process
+  // isolation Node's force-exit path can drop a file's TAIL of already-executed,
+  // already-passing results before the parent reads them (nodejs/node#64833 —
+  // the child's reporter pipe is never flushed before `process.exit()`), so the
+  // reporter prints a SMALLER total at exit 0. At this runner's default
+  // concurrency that loss is near-certain on Linux/macOS, not a flake — every
+  // green count those lanes reported was a lower bound. The hang the flag
+  // defends against is Windows-specific, so Linux/macOS now run WITHOUT it and
+  // trade that exposure for the per-chunk timeout below, which turns a leaked
+  // handle into a loud kill (with #3889's in-flight file named) rather than a
+  // silent one. Windows keeps the flag: a 150s hang per leaked handle costs the
+  // lane more than a truncated count, and the count loss is bounded by the
+  // upstream fix. See resolveForceExit() for the env-var overrides.
   const nodeMajor = Number(process.versions.node.split('.')[0]);
-  const forceExit = nodeMajor >= 22 && !process.env.RUN_TESTS_NO_FORCE_EXIT;
+  const { forceExit, forceExitReason } = resolveForceExit({
+    platform: process.platform,
+    nodeMajor,
+    env: process.env,
+  });
+  console.error(`run-tests: --test-force-exit ${forceExit ? 'on' : 'off'} (${forceExitReason})`);
 
   // #3889: a second, machine-readable reporter runs ALONGSIDE the normal
   // human one so a chunk timeout can name the file that was in flight (see
@@ -1678,4 +1729,6 @@ module.exports = {
   // termination logic (Windows drive-root hang fix) without a real
   // Windows/POSIX runner.
   computeSweepProtectSet,
+  // #4031: pure decision for the --test-force-exit flag (platform × env truth table).
+  resolveForceExit,
 };

@@ -518,6 +518,8 @@ mis-ranked files badly enough that the slowest chunk ran ~3.9x the lightest.
 | `RUN_TESTS_MAX_CMDLINE_CHARS` | `28000` | argv ceiling per chunk, with headroom under the Windows 32,767 limit. |
 | `RUN_TESTS_TIMINGS_FILE` | `tests/test-timings.json` | Path to the timing table. Tests override it to inject a synthetic cost profile. |
 | `RUN_TESTS_CHUNK_TIMEOUT_MS` | `600000` | Per-chunk timeout. |
+| `RUN_TESTS_FORCE_EXIT` | unset | Any non-empty value passes `--test-force-exit` to every chunk on any platform. Off by default outside Windows since #4031 (below). |
+| `RUN_TESTS_NO_FORCE_EXIT` | unset | Any non-empty value never passes `--test-force-exit`, on any platform; wins over `RUN_TESTS_FORCE_EXIT`. The harness test uses it to observe the pre-#1051 hang. |
 
 The timing table is **advisory and deliberately un-gated**. There is no `--check`
 mode and no CI lint that fails on staleness, because timing data legitimately
@@ -526,6 +528,26 @@ weight, and a missing or unparseable table falls back to uniform weight — so
 drift costs chunk *balance*, never a red build. A count-based floor additionally
 guarantees the packer never produces fewer chunks than plain count-based packing
 would, so a badly stale table cannot collapse the suite into a few fat chunks.
+
+### `--test-force-exit` is Windows-only (#4031)
+
+Each chunk's `node --test` child used to get `--test-force-exit` on every
+platform — added by #1051 so a test that leaks an open handle (an un-terminated
+Worker, an un-killed child process, a ref'd timer) cannot hang the Windows lane
+~150s per chunk after its last test prints. Node's force-exit path has a defect
+under process isolation (nodejs/node#64833): the child's reporter pipe is not
+flushed before it exits, so a **tail of already-executed, already-passing
+results can vanish from the report** and the run prints a smaller `# tests`
+total at exit 0. At this runner's default concurrency that loss reproduced on
+every run on Linux — every green count was a lower bound.
+
+The runner now applies the flag on `win32` only, prints its decision on stderr
+(`run-tests: --test-force-exit on|off (<reason>)`), and exposes the two knobs
+above. On Linux/macOS a leaked handle therefore becomes a **per-chunk timeout
+kill** naming the in-flight file (#3889) instead of a silent hang — loud, which
+is the point. Windows keeps the flag because a hang costs that lane more than a
+truncated count; its exposure ends when the upstream Node fix ships and the
+engine floor moves onto it.
 
 ### CI job timeout budgets: report + near-cap warning (#4036)
 

@@ -871,10 +871,14 @@ test('noop', () => {});
         return; // skip — harness test options object not available here; just return
       }
       fs.writeFileSync(path.join(tmpDir, 'leaky.test.cjs'), LEAKY_BODY, 'utf8');
-      // force-exit is ON by default (RUN_TESTS_NO_FORCE_EXIT not set).
+      // #4031: force-exit is ON by default only on win32 now, so opt in
+      // explicitly — this test proves the flag still does its job wherever it
+      // is enabled, not that it is enabled here.
       // 30s timeout: if force-exit works the child exits promptly after the test
       // passes; if force-exit failed, the 30s timeout would fire and status ≠ 0.
       const r = runHarness(tmpDir, [], {
+        RUN_TESTS_FORCE_EXIT: '1',
+        RUN_TESTS_NO_FORCE_EXIT: '', // blank, not absent: an ambient opt-out would win
         RUN_TESTS_CHUNK_TIMEOUT_MS: '30000',
       });
       assert.strictEqual(
@@ -882,6 +886,171 @@ test('noop', () => {});
         0,
         `expected zero exit with force-exit enabled; got status=${r.status} signal=${r.signal}\nSTDERR:\n${r.stderr}`,
       );
+      assert.match(
+        r.stderr,
+        /run-tests: --test-force-exit on \(RUN_TESTS_FORCE_EXIT set\)/,
+        `expected the force-exit decision line; STDERR:\n${r.stderr}`,
+      );
+    });
+  });
+
+  describe('--test-force-exit is scoped to win32 so reported counts stay exact (#4031)', () => {
+    // Node's --test-force-exit can drop a file's TAIL of already-executed,
+    // already-passing results under process isolation (nodejs/node#64833):
+    // the reporter prints a smaller `# tests` total and the run exits 0. At
+    // this harness's default concurrency the loss reproduced on every run on
+    // Linux (worst observed 1644/2000). The fix keeps the flag only where the
+    // hang it guards against lives (win32) and exposes an explicit opt-in.
+    //
+    // The fixture mirrors the issue's minimal reproduction: FILE_COUNT files
+    // of TESTS_PER_FILE synchronous top-level tests each, the LAST of which
+    // writes a sentinel to disk — so "did the tail actually execute?" is
+    // answerable independently of the report the bug corrupts.
+    const FILE_COUNT = 10;
+    const TESTS_PER_FILE = 200;
+    // Same leaky fixture as the #1051 block above (a ref'd timer keeps the
+    // child's event loop alive after its only test passes).
+    const LEAKY_BODY = `const { test } = require('node:test');
+test('passes but leaks a ref-d timer', () => {});
+setInterval(() => {}, 1 << 30);
+`;
+    // Passed to every default-path run below: blank both knobs so the outer
+    // environment cannot select a branch on the harness's behalf.
+    const FORCE_EXIT_DEFAULTS = { RUN_TESTS_FORCE_EXIT: '', RUN_TESTS_NO_FORCE_EXIT: '' };
+    const NON_WIN32_ONLY = process.platform === 'win32'
+      ? 'win32 keeps --test-force-exit on by design (#1051 hang guard); the count exposure there is bounded by the upstream Node fix (nodejs/node#64833)'
+      : false;
+
+    function seedTailSentinelFiles(dir, sentinelDir) {
+      const names = [];
+      for (let f = 0; f < FILE_COUNT; f++) {
+        const tag = `f${String(f).padStart(2, '0')}`;
+        const lines = ["'use strict';", "const { test } = require('node:test');", "const fs = require('fs');"];
+        for (let i = 1; i < TESTS_PER_FILE; i++) {
+          lines.push(`test('${tag}_t${i}', () => {});`);
+        }
+        const sentinel = path.join(sentinelDir, tag);
+        lines.push(
+          `test('${tag}_zz_sentinel', () => { fs.writeFileSync(${JSON.stringify(sentinel)}, 'ran'); });`,
+        );
+        const name = `${tag}.test.cjs`;
+        fs.writeFileSync(path.join(dir, name), `${lines.join('\n')}\n`, 'utf8');
+        names.push(tag);
+      }
+      return names;
+    }
+
+    // Sum every TAP `# <field> N` summary line the harness's chunks printed —
+    // one per chunk, so summing is correct whether the fixture packs into one
+    // chunk or several.
+    function tapTotal(stdout, field) {
+      const re = new RegExp(`^# ${field} (\\d+)$`, 'gm');
+      let sum = 0;
+      let seen = 0;
+      for (const m of stdout.matchAll(re)) {
+        sum += Number(m[1]);
+        seen += 1;
+      }
+      return { sum, seen };
+    }
+
+    test('the default run reports every executed test — no tail truncation at the default concurrency', { skip: NON_WIN32_ONLY }, () => {
+      const sentinelDir = path.join(tmpDir, 'sentinels');
+      fs.mkdirSync(sentinelDir);
+      const tags = seedTailSentinelFiles(tmpDir, sentinelDir);
+      const expected = FILE_COUNT * TESTS_PER_FILE;
+
+      // Defaults only — the harness's own concurrency. Both knobs are passed as
+      // EMPTY strings (which the resolver treats as unset) rather than omitted,
+      // so an ambient RUN_TESTS_FORCE_EXIT / RUN_TESTS_NO_FORCE_EXIT in the
+      // outer CI environment cannot leak in through runHarness's process.env
+      // spread and turn this into a test of that environment.
+      const r = runHarness(tmpDir, [], FORCE_EXIT_DEFAULTS);
+
+      assert.strictEqual(r.status, 0, `expected a clean pass; STDERR:\n${r.stderr}`);
+      // Every file ran to its last test — execution is proven on disk, not
+      // inferred from the report under test.
+      assert.deepStrictEqual(
+        fs.readdirSync(sentinelDir).sort(),
+        tags,
+        'every fixture file must have executed its final (sentinel) test',
+      );
+      // ...and the report accounted for all of them. Pre-fix this read a
+      // smaller number at exit 0 on every run at this concurrency — this is
+      // the assertion that goes red against the old runner, so it stays
+      // ahead of the decision-line check below.
+      const tests = tapTotal(r.stdout, 'tests');
+      const pass = tapTotal(r.stdout, 'pass');
+      assert.ok(tests.seen >= 1, `expected at least one TAP "# tests N" summary line; STDOUT (tail):\n${r.stdout.split('\n').slice(-15).join('\n')}`);
+      assert.strictEqual(
+        tests.sum,
+        expected,
+        `reported total must equal the registered count (${expected}) — a smaller number at exit 0 is the #4031 truncation`,
+      );
+      assert.strictEqual(pass.sum, expected, `reported pass count must equal ${expected}`);
+      assert.match(
+        r.stderr,
+        /run-tests: --test-force-exit off \(/,
+        `expected the non-win32 default to run WITHOUT --test-force-exit; STDERR:\n${r.stderr}`,
+      );
+    });
+
+    test('the non-win32 default does not force-exit: a leaked handle is a loud per-chunk timeout, not a silent hang', { skip: NON_WIN32_ONLY }, () => {
+      // The other half of the trade: without the flag a leaked handle would
+      // hang the child, and the per-chunk timeout is what turns that into a
+      // diagnosed failure. Pin that the default path lands there, not in a
+      // clean exit that would mean the flag is still on.
+      fs.writeFileSync(path.join(tmpDir, 'leaky.test.cjs'), LEAKY_BODY, 'utf8');
+      const r = runHarness(tmpDir, [], { ...FORCE_EXIT_DEFAULTS, RUN_TESTS_CHUNK_TIMEOUT_MS: '2000' });
+      assert.notStrictEqual(r.status, 0, `expected the leaked handle to hit the timeout; got status=${r.status}\nSTDERR:\n${r.stderr}`);
+      assert.match(r.stderr, /run-tests: --test-force-exit off \(/, `STDERR:\n${r.stderr}`);
+      assert.match(r.stderr, /exceeded the per-chunk timeout/, `STDERR:\n${r.stderr}`);
+      // The fixture's only test must have REPORTED before the kill — that is
+      // what makes this a post-test hang (the #1051 shape) and not a slow
+      // start that happened to cross a 2s budget. The child streams its TAP
+      // result to the parent on completion; the ref'd timer only stops the
+      // exit, so the line is on stdout by the time the timeout fires.
+      assert.match(
+        r.stdout,
+        /^ok 1 - passes but leaks a ref-d timer$/m,
+        `the leaky fixture's test must have run and reported before the timeout; STDOUT:\n${r.stdout}`,
+      );
+    });
+
+    test('resolveForceExit truth table: opt-out wins, then opt-in, then win32-only default', () => {
+      const { resolveForceExit } = require('../scripts/run-tests.cjs');
+      const on = (r) => r.forceExit === true;
+      const off = (r) => r.forceExit === false;
+      const cases = [
+        // [platform, nodeMajor, env, expectOn, why]
+        ['win32', 24, {}, on, 'win32 default keeps the #1051 hang guard'],
+        ['linux', 24, {}, off, 'linux default is off (#4031)'],
+        ['darwin', 24, {}, off, 'darwin default is off (#4031)'],
+        ['linux', 24, { RUN_TESTS_FORCE_EXIT: '1' }, on, 'explicit opt-in enables it anywhere'],
+        ['win32', 24, { RUN_TESTS_NO_FORCE_EXIT: '1' }, off, 'existing opt-out still disables it on win32'],
+        ['win32', 24, { RUN_TESTS_NO_FORCE_EXIT: '1', RUN_TESTS_FORCE_EXIT: '1' }, off, 'opt-out beats opt-in'],
+        ['win32', 20, {}, off, 'flag does not exist before Node 22'],
+        ['linux', 20, { RUN_TESTS_FORCE_EXIT: '1' }, off, 'opt-in cannot enable a flag the engine lacks'],
+        // #4031 round 1: boundary coverage for the `nodeMajor < 22` gate, per CONTEXT.md
+        // RULESET.TESTS.boundary-coverage (limit-1 / limit / limit+1). Pinned to win32 with an
+        // EMPTY env deliberately: that is the combination where the version gate is the only
+        // thing that can produce `off`. A non-win32 row with an empty env is off under the
+        // correct predicate and under `< 21`, `<= 22` and `< 23` alike, so it discriminates
+        // nothing. (Setting RUN_TESTS_FORCE_EXIT would make a non-win32 row discriminate, since
+        // the opt-in arm sits below the version gate — but that pins the boundary against the
+        // opt-in path rather than against the default the flag actually ships with.)
+        ['win32', 21, {}, off, 'limit-1: the flag does not exist on Node 21'],
+        ['win32', 22, {}, on, 'limit: Node 22 is the first version carrying the flag, so the win32 default applies'],
+        ['win32', 23, {}, on, 'limit+1: the win32 default still applies above the floor'],
+        ['linux', 24, { RUN_TESTS_FORCE_EXIT: '' }, off, 'an empty opt-in reads as unset (any non-empty value sets it)'],
+        ['win32', 24, { RUN_TESTS_NO_FORCE_EXIT: '' }, on, 'an empty opt-out reads as unset'],
+      ];
+      for (const [platform, nodeMajor, env, expect, why] of cases) {
+        const r = resolveForceExit({ platform, nodeMajor, env });
+        assert.ok(expect(r), `${why}: ${platform}/node${nodeMajor}/${JSON.stringify(env)} → ${JSON.stringify(r)}`);
+        assert.strictEqual(typeof r.forceExitReason, 'string');
+        assert.ok(r.forceExitReason.length > 0, 'every decision names its reason for the stderr line');
+      }
     });
   });
 
