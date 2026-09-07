@@ -2,7 +2,7 @@
 
 /**
  * Issue #4402 (ADR-4139 Decision 5): verifies the plan-phase.md spine /
- * plan-phase/detail.md split is complete (nothing lost), disjoint (nothing
+ * plan-phase/detail/ split is complete (nothing lost), disjoint (nothing
  * duplicated), size-capped, and preserves the protected-content sentinels
  * this pilot draws from gsd-core/references/compact-content-protected-content.md.
  *
@@ -15,12 +15,13 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 // The commit immediately before this branch split plan-phase.md (PR #4441's merge to next).
 const PARENT_SHA = 'e54d3aa159810b2308cd777047b9de9c04de418a';
 const SPINE_REL = 'gsd-core/workflows/plan-phase.md';
-const DETAIL_REL = 'gsd-core/workflows/plan-phase/detail.md';
+const DETAIL_REL = 'gsd-core/workflows/plan-phase/detail/elaboration.md';
 
 /** Trivial lines (fences, rules, bare headings) are excluded from both the
  * completeness and disjointness checks — they are boilerplate that
@@ -45,7 +46,7 @@ function readParentSpine() {
   return execFileSync('git', ['show', `${PARENT_SHA}:${SPINE_REL}`], {
     cwd: ROOT,
     encoding: 'utf-8',
-    timeout: 10000,
+    timeout: GIT_TIMEOUT_MS,
   });
 }
 
@@ -82,7 +83,7 @@ describe('plan-phase compact-content spine/detail split (#4402, ADR-4139 Decisio
 
   test('detail.md is a new shipped file under the NEW_FILE_CAP (32768 bytes, tests/helpers/emitted-diff.cjs)', () => {
     const size = fs.statSync(path.join(ROOT, DETAIL_REL)).size;
-    assert.ok(size < 32768, `plan-phase/detail.md is ${size} bytes; NEW_FILE_CAP is 32768`);
+    assert.ok(size < 32768, `plan-phase/detail/elaboration.md is ${size} bytes; NEW_FILE_CAP is 32768`);
   });
 
   test('the spine is smaller than the parent commit\'s file (eager-window byte reduction is real)', () => {

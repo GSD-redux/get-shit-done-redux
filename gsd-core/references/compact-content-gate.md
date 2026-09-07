@@ -10,7 +10,7 @@ COMPACT_CONTENT=$(gsd_run query config-get workflow.compact_content --raw 2>/dev
 
 ## The resolution rule
 
-- **`COMPACT_CONTENT` is `"false"` (default):** Read this workflow's own `detail.md` (a sibling of this spine, e.g. `gsd-core/workflows/<name>/detail.md`) now, in full, before continuing past this point. Its content elaborates on the spine you are reading — treat everything it says as part of this document from here on.
+- **`COMPACT_CONTENT` is `"false"` (default):** Read every part under this workflow's own `detail/` directory (a sibling of this spine, e.g. `gsd-core/workflows/<name>/detail/*.md`) now, in full, before continuing past this point. Their content elaborates on the spine you are reading — treat everything they say as part of this document from here on.
 - **`COMPACT_CONTENT` is `"true"`:** Do not read the detail file. Continue directly with the spine's own content — per ADR-4139 Decision 3, it is complete enough to run this workflow correctly on its own.
 
 ## The fail-safe this exists to hold (ADR-4139 Decision 4)
