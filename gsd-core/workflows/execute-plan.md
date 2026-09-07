@@ -441,9 +441,9 @@ IS_WORKTREE=$([ -f .git ] && echo "true" || echo "false")
 # Skip in parallel mode — orchestrator handles STATE.md centrally
 if [ "$IS_WORKTREE" != "true" ]; then
   # Advance the plan counter, then READ the answer (#3830: it can REFUSE at exit 0).
-  # ALLOW-LIST: only the first arm owes the recording — a real advance, the last plan,
-  # or #4067's `plans_outstanding` (this plan done, siblings still writing). A refusal,
-  # an exit-0 {"error": ...}, a later reason, or an empty capture all stop.
+  # ALLOW-LIST: only the first arm records — a real advance, the last plan, or #4067's
+  # `plans_outstanding` (this plan done, siblings still writing). Everything else
+  # stops, including an exit-0 {"error": ...}.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
   ADVANCE_RC=$?
   case "${ADVANCE_OUT}" in
@@ -466,10 +466,9 @@ if [ "$IS_WORKTREE" != "true" ]; then
   esac
 fi
 ```
-**If the block above printed `STOP:`, halt this workflow here.** The counter did not move, so every
-later step would record against a wrong position. (The guard suppresses this step's own writes; it
-cannot stop the steps that follow.)
-
+**If the block above printed `STOP:`, halt this workflow here.** The counter did not move, so
+later steps would record a wrong position. (The guard suppresses this step's writes; it
+cannot stop later steps.)
 </step>
 
 <step name="extract_decisions_and_issues">
