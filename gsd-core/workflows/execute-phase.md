@@ -51,18 +51,18 @@ Read STATE.md before any operation to load project context.
 These are the valid GSD subagent types registered in .claude/agents/ (or equivalent for your runtime).
 Always use the exact name from this list — do not fall back to 'general-purpose' or other built-in types:
 
-- gsd-executor
-- gsd-verifier
-- gsd-planner
-- gsd-phase-researcher
-- gsd-plan-checker
-- gsd-debugger
-- gsd-codebase-mapper
-- gsd-integration-checker
-- gsd-nyquist-auditor
-- gsd-ui-researcher
-- gsd-ui-checker
-- gsd-ui-auditor
+- gsd-executor — Executes plan tasks, commits, creates SUMMARY.md
+- gsd-verifier — Verifies phase completion, checks quality gates
+- gsd-planner — Creates detailed plans from phase scope
+- gsd-phase-researcher — Researches technical approaches for a phase
+- gsd-plan-checker — Reviews plan quality before execution
+- gsd-debugger — Diagnoses and fixes issues
+- gsd-codebase-mapper — Maps project structure and dependencies
+- gsd-integration-checker — Checks cross-phase integration
+- gsd-nyquist-auditor — Validates verification coverage
+- gsd-ui-researcher — Researches UI/UX approaches
+- gsd-ui-checker — Reviews UI implementation quality
+- gsd-ui-auditor — Audits UI against design requirements
 </available_agent_types>
 
 <process>
@@ -600,7 +600,22 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
 1. **Intra-wave files_modified overlap check (BEFORE spawning):**
 
-   Before spawning any agents for this wave, inspect the `files_modified` list of all plans in the wave. Check each pair of plans in the wave — if any two plans share even one file in their `files_modified` lists, those plans have an implicit dependency and MUST NOT run in parallel.
+   Before spawning any agents for this wave, inspect the `files_modified` list of all plans
+   in the wave. Check every pair of plans in the wave — if any two plans share even one file
+   in their `files_modified` lists, those plans have an implicit dependency and MUST NOT run
+   in parallel.
+
+   **Detection algorithm (pseudocode):**
+   ```
+   seen_files = {}
+   overlapping_plans = []
+   for each plan in wave_plans:
+     for each file in plan.files_modified:
+       if file in seen_files:
+         overlapping_plans.add(plan, seen_files[file])  # both plans overlap on this file
+       else:
+         seen_files[file] = plan
+   ```
 
    **If overlap is detected:**
    - Warn the user:
@@ -609,8 +624,11 @@ increases monotonically across waves. `{status}` is `complete` (success),
        Plan {A} and Plan {B} both modify {file}
        Running these plans sequentially to avoid parallel worktree conflicts.
      ```
-   - Override `PARALLELIZATION` to `false` for this wave only — run all plans in the wave sequentially regardless of the global parallelization setting.
-   - Flag it as a planning defect so the user can replan the phase if desired.
+   - Override `PARALLELIZATION` to `false` for this wave only — run all plans in the wave
+     sequentially regardless of the global parallelization setting.
+   - This is a safety net for plans that were incorrectly assigned to the same wave.
+   - The planner should have caught this; flag it as a planning defect so the user can
+     replan the phase if desired.
 
    **If no overlap:** proceed normally (parallel if `PARALLELIZATION=true`).
 
@@ -636,6 +654,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    Spawning {count} agent(s)... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
    ---
    ```
+
+   - Bad: "Executing terrain generation plan"
+   - Good: "Procedural terrain generator using Perlin noise — creates height maps and biome zones. Required before vehicle physics."
 
 2.5. **Per-plan worktree decision (run for each plan in this wave BEFORE its dispatch):**
 
@@ -853,12 +874,6 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **A working executor is never steered (#4218).** The threshold measures time WITHOUT
    PROGRESS, not total runtime. Before treating an executor as stalled — and before sending it
    any message — read and execute `execute-phase/steps/executor-progress-policy.md`.
-   If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
-
-   If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
-
-   **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by
-   default: the completion signal may never arrive. Verify, never wait.
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
