@@ -515,6 +515,15 @@ interface ResolveVerificationFileOptions {
    * pick — the original pre-#3357 behavior — never to null.
    */
   phaseDirName?: string;
+  /**
+   * #612: the repo's resolved `phase_id_convention`, threaded verbatim into
+   * `scopeToPhase(candidates, phaseDirName, convention)` so the fallback
+   * scopes a bracket dir (`{CODE}.{MM}-{PP}-slug`) by its real phase token
+   * instead of the include-everything ambiguity fail-safe. Same ADR-2121
+   * additive shape as every other convention thread: omitted / null resolves
+   * to the unchanged legacy scoping.
+   */
+  convention?: string | null;
 }
 
 /**
@@ -610,7 +619,7 @@ function resolvePhaseArtifactFile(
     // filtered out, and if that leaves nothing the code falls through to
     // `allowBare`/`null` deliberately.
     const scoped = options.phaseDirName
-      ? scopeToPhase(candidates, options.phaseDirName)
+      ? scopeToPhase(candidates, options.phaseDirName, options.convention)
       : candidates;
     if (scoped.length > 0) return scoped[0];
   }
@@ -694,6 +703,15 @@ interface ReadVerificationStatusOptions {
    * this with `phaseDir` unresolved in some branches.
    */
   phaseNumber?: string;
+  /**
+   * #612: the repo's resolved `phase_id_convention`, threaded through to
+   * `resolveVerificationFile` (exact-pin token + fallback scoping) and
+   * `findStaleVerificationSummary` so a bracket phase dir resolves and
+   * scopes its report exactly like its legacy twin. Deliberately NOT used
+   * for the routed command argument — see the derivation comment in the
+   * body. Omitted / null: unchanged legacy behavior.
+   */
+  convention?: string | null;
 }
 
 interface VerificationStatusResult {
@@ -717,6 +735,7 @@ function findStaleVerificationSummary(
   phaseDir: string,
   fsImpl: FsLike = defaultFsImpl,
   phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn = defaultPhaseCleanCommitTimesMs,
+  convention?: string | null,
 ): StaleCheckResult {
   // FS errors (TOCTOU: a SUMMARY listed by scanPhasePlans then removed before statSync;
   // unreadable dir; broken symlink; file->dir swap) must degrade rather than throw
@@ -737,11 +756,15 @@ function findStaleVerificationSummary(
     // status reader sees, or a bare report could never read `stale` while its
     // dashed twin could (two answers from one verb).
     const phaseDirName = path.basename(phaseDir);
-    const phaseToken = extractPhaseToken(phaseDirName);
+    // #612: derive the token with the resolved convention so a bracket dir's
+    // own token is read behind its `{CODE}.{MM}-` prefix. #4187: keep the bare
+    // report tier aligned with the status reader.
+    const phaseToken = extractPhaseToken(phaseDirName, convention);
     const verificationFile = resolveVerificationFile(phaseFiles, {
       allowBare: true,
       phaseToken,
       phaseDirName,
+      convention,
     });
     if (!verificationFile) return { determined: true, stale: false };
 
@@ -814,7 +837,12 @@ function readVerificationStatus(
     opts.phaseCleanCommitTimesMs ?? defaultPhaseCleanCommitTimesMs;
   const runtime = opts.runtime ?? 'claude';
 
-  // Phase token for the gaps_found command
+  // Phase token for the gaps_found command — deliberately convention-LESS
+  // even when `opts.convention` is present: the token becomes a bare COMMAND
+  // ARGUMENT below, and a bare bracket phase number is milestone-ambiguous
+  // (`02` cannot tell GSD.01-02 from GSD.02-02), so the argument keeps its
+  // pre-#612 shape. The convention-aware token is derived separately for
+  // FILE RESOLUTION only (`resolutionToken`, at the readdir below).
   const baseName = path.basename(phaseDir);
   const phaseToken = extractPhaseToken(baseName);
   const derivedPhaseNumber = phaseToken.length > 0 ? phaseToken : baseName;
@@ -831,17 +859,21 @@ function readVerificationStatus(
   let verificationFile: string | null = null;
   try {
     const entries = fsImpl.readdirSync(phaseDir);
-    // #3492: pin selection to THIS phase's own token (already derived above
-    // for the routed command argument) so a stray cross-phase or
-    // sentinel-numbered canonically-shaped file cannot outrank this phase's
-    // own (possibly non-canonical) report. #3511: baseName also scopes the
-    // fallback path to this same phase (see resolveVerificationFile docs).
-    // #4187: allowBare — the status reader must recognize a bare
-    // `VERIFICATION.md` exactly like `verification.resolve-file`,
-    // `determinePhaseStatus`, and the init verification_path projectors
-    // already do; without it a verified phase reported `missing` and
-    // recommended re-running execute-phase.
-    verificationFile = resolveVerificationFile(entries, { allowBare: true, phaseToken, phaseDirName: baseName });
+    // #3492: pin selection to THIS phase's own token so a stray cross-phase
+    // or sentinel-numbered canonically-shaped file cannot outrank this phase's
+    // own report. #612: derive a separate convention-aware RESOLUTION token
+    // for bracket directories while the routed command argument above stays
+    // convention-less and milestone-unambiguous. #4187: keep the bare report
+    // tier aligned with every other verification reader.
+    const resolutionToken = opts.convention === 'bracket'
+      ? extractPhaseToken(baseName, opts.convention)
+      : phaseToken;
+    verificationFile = resolveVerificationFile(entries, {
+      allowBare: true,
+      phaseToken: resolutionToken,
+      phaseDirName: baseName,
+      convention: opts.convention,
+    });
   } catch {
     // Directory unreadable → treat as missing
     verificationFile = null;
@@ -932,7 +964,12 @@ function readVerificationStatus(
       computeCoveredDigest(findProjectRoot(phaseDir), coveredFilesVal) !== coveredDigestVal ||
       !allCurrentArtifactsCovered(phaseDir, coveredFilesVal);
   } else {
-    const staleCheck = findStaleVerificationSummary(phaseDir, fsImpl, phaseCleanCommitTimesMs);
+    const staleCheck = findStaleVerificationSummary(
+      phaseDir,
+      fsImpl,
+      phaseCleanCommitTimesMs,
+      opts.convention,
+    );
     isStale = staleCheck.determined && staleCheck.stale;
     // staleCheck is either {determined:true, stale:false} (checked; nothing
     // stale) or {determined:false} (could not check — fs/scan/clock failure).
@@ -986,6 +1023,12 @@ interface IsPhaseCompleteDeps {
   runtime?: string;
   /** Phase number appended to the routed command (#2617). */
   phaseNumber?: string;
+  /**
+   * #612: the repo's resolved `phase_id_convention`, threaded through to
+   * readVerificationStatus so a bracket phase dir resolves and scopes its
+   * report exactly like its legacy twin. Omitted / null: unchanged.
+   */
+  convention?: string | null;
 }
 
 interface PhaseCompletionValue {
@@ -1039,6 +1082,7 @@ function isPhaseComplete(
     phaseCleanCommitTimesMs: deps.phaseCleanCommitTimesMs,
     runtime: deps.runtime,
     phaseNumber: deps.phaseNumber,
+    convention: deps.convention,
   });
 
   return {

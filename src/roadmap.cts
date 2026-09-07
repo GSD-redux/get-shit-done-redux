@@ -133,7 +133,7 @@ function coerceTruthToString(t: unknown): string {
 
 // ─── countPhasePlansAndSummaries ──────────────────────────────────────────────
 
-function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
+function countPhasePlansAndSummaries(phaseDir: string, convention?: string | null): PhasePlansAndSummaries {
   const { planCount, summaryCount } = scanPhasePlans(phaseDir);
   // hasContext and hasResearch are not plan-scan concerns — read the directory
   // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
@@ -156,7 +156,9 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
   // summaryCount above stay on scanPhasePlans's own unscoped listing since a
   // PLAN/SUMMARY leading number is a plan sequence number, not a phase
   // number. Mirrors core-utils.cts's getPhaseFileStats.
-  const scopedFiles = scopeToPhase(phaseFiles, path.basename(phaseDir));
+  // #612: `convention` threaded from the one caller (which already threads it
+  // into matchPhaseDirs) so a bracket dir scopes by its real token.
+  const scopedFiles = scopeToPhase(phaseFiles, path.basename(phaseDir), convention);
   return {
     planCount,
     summaryCount,
@@ -542,7 +544,7 @@ function collectAnalyzePhases(
     const dirMatch = matchPhaseDirs(phaseDirNames, normalized, convention).matches[0];
 
     if (dirMatch) {
-      const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatch));
+      const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatch), convention);
       planCount = counts.planCount;
       summaryCount = counts.summaryCount;
       hasContext = counts.hasContext;
@@ -556,7 +558,10 @@ function collectAnalyzePhases(
       // NOT a precondition, so a zero-plan phase with a passing
       // `*-VERIFICATION.md` reports complete here too, not just via
       // `phase.complete`.
-      const completionResult = isPhaseComplete(path.join(phasesDir, dirMatch));
+      // #612: `convention` (a parameter of this function, same thread as
+      // matchPhaseDirs above) rides into completion so a bracket phase dir
+      // resolves and scopes its verification report like its legacy twin.
+      const completionResult = isPhaseComplete(path.join(phasesDir, dirMatch), { convention });
       if (completionResult.value.complete) diskStatus = 'complete';
       else if (summaryCount > 0) diskStatus = 'partial';
       else if (planCount > 0) diskStatus = 'planned';
@@ -993,7 +998,11 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   // the same phase (ADR-3180 §7.4's headline: one predicate for the read
   // path and the write path).
   const phaseDir = path.join(cwd, phaseInfo!.directory);
-  const completionResult = isPhaseComplete(phaseDir);
+  // ADR-3180 §7.4 read/write-path symmetry with the threaded site at ~583:
+  // thread convention here too, so this write path's completion reading
+  // agrees with the read path's under the bracket convention.
+  const convention = resolvePhaseIdConvention(cwd);
+  const completionResult = isPhaseComplete(phaseDir, { convention });
   const verificationResult = completionResult.value.verification;
   // #2648 precedent, applied at this write site (ADR-3180 §7.4 / #3186):
   // `isPhaseComplete` deliberately carries NO plan-count precondition — the

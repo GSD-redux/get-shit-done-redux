@@ -959,19 +959,42 @@ function extractPhaseToken(dirName: string, convention?: string | null): string 
  * cannot resolve a genuinely different phase's artifact (`02.1-...` still
  * fails every `01`-rooted candidate).
  *
- * BRACKET CONVENTION (review item 7): a letter-prefixed-decimal dir
- * (`P0.3-2-slug`) is string-INDISTINGUISHABLE from a bracket-dir token
- * (`extractPhaseToken` above, gated on `convention === 'bracket'`) without an
- * explicit convention signal — and this predicate is never given one: none
- * of its 9 call sites thread `convention`/config through today. Rather than
- * guess a reading it cannot know is active and risk excluding the phase's OWN
- * artifact (the exact defect class this rework exists to fix), this family
- * (`firstLetterPrefixed` dirs) falls into the same include-everything
- * fail-safe as the zero-segment case below — a documented, deliberate
- * widening (it also stops excluding a genuine stray from a DIFFERENT
- * letter-prefixed-decimal phase, narrowly) accepted in trade for never
- * dropping the phase's own report. Convention-aware scoping for this family
- * is deferred to whenever a call site actually threads `convention` through.
+ * BRACKET CONVENTION (review item 7; reworked by #612/#2761): a
+ * letter-prefixed-decimal dir (`P0.3-2-slug`) is string-INDISTINGUISHABLE
+ * from a bracket-dir token (`extractPhaseToken` above, gated on
+ * `convention === 'bracket'`) without an explicit convention signal. This
+ * predicate now takes the same optional trailing `convention` its sibling
+ * helpers do (ADR-2121 additive shape): when a call site threads
+ * `'bracket'` and the dir is a WELL-FORMED bracket dir
+ * (`BRACKET_DIR_TOKEN_RE` — the one grammar owner, shared with
+ * `extractPhaseToken`'s bracket branch), the dir's real phase token is
+ * readable and membership is scoped through the identical candidate
+ * comparison its legacy twin gets — so `GSD.02-02-two` reads exactly what
+ * `02-two` reads, which is PR-2's core invariant. Convention-less calls,
+ * bracket-MALFORMED names (1-digit milestone, letter-suffixed token — the
+ * shapes W005 reports), and legacy-shaped dirs inside a bracket repo all
+ * resolve to the unchanged body below.
+ *
+ * A filename carrying its own bracket-qualified stem is compared on the
+ * qualified key — see the branch body. An M-NN-stem artifact name
+ * (`02-01-VERIFICATION.md` in `GSD.02-01-one`) is excluded under the bracket
+ * convention, deliberately: that is exactly what the legacy twin does with
+ * the same file, twin-parity is this PR's contract, and migration-window
+ * artifact renaming belongs to the migrator slice per ADR-612 — the trade is
+ * pinned in tests/adr-612-bracket-phase-counting.test.cjs.
+ *
+ * For those unthreaded/unparseable cases the include-everything trade
+ * stands: rather than guess a reading it cannot know is active and risk
+ * excluding the phase's OWN artifact (the exact defect class this rework
+ * exists to fix), the ambiguous families widen to include-everything,
+ * accepted in trade for never dropping the phase's own report. Note the
+ * bracket family splits across BOTH fail-safes, not just one: a short
+ * digit-bearing project code (`A1.02-…`) lands in `firstLetterPrefixed`,
+ * but a 3+-letter code (`GSD.02-…`) derives ZERO token segments —
+ * `PROJECT_CODE_PREFIX_CAPTURE_RE_I` strips `{CODE}-`, not `{CODE}.` — so
+ * the zero-token fail-safe fires first. A fixer patching only the
+ * `firstLetterPrefixed` branch covers neither; the convention gate above
+ * covers both.
  *
  * FAIL-SAFE (#3511, unchanged): when dirName's own leading segment carries no
  * phase-number token at all (`derivePhaseTokenSegments` finds zero segments —
@@ -1008,7 +1031,44 @@ function extractPhaseToken(dirName: string, convention?: string | null): string 
  * the original pre-#3357 "alphabetically first of ALL dashed candidates"
  * behavior, exactly as it always did for that directory shape.
  */
-function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
+function isPhaseArtifact(fileName: string, phaseDirName: string, convention?: string | null): boolean {
+  // #612/#2761: the bracket branch — see "BRACKET CONVENTION" in the docblock.
+  // Gated on the same explicit signal AND the same grammar
+  // (`BRACKET_DIR_TOKEN_RE`) as `extractPhaseToken`'s bracket branch, so the
+  // two surfaces can never disagree about which names are bracket dirs. A
+  // name that fails the grammar falls through to the unchanged body below.
+  if (convention === 'bracket') {
+    const bracketDir = phaseDirName.match(BRACKET_DIR_TOKEN_RE);
+    if (bracketDir) {
+      // The convention must gate the FILENAME reading, not just the directory
+      // reading — a milestone-qualified artifact name (the layout the
+      // read-tolerance suite models) derives zero legacy token segments, so
+      // without this it enters FIX 2's token-less containment and any bracket
+      // dir admits it. Compared on the qualified key: the phase's own
+      // qualified artifact stays included — the exact key, and the dotted
+      // sub-phase continuation (`GSD.02-05.1-…` is `GSD.02-05`'s own file,
+      // the same dash-OR-dot rule matchesPhaseTokenCandidates applies; a
+      // dash-continuation never reaches this comparison, the phase group's
+      // `(?=-|$)` boundary already stopped the key before it) — while a
+      // WELL-FORMED qualified stem naming a different phase or milestone is
+      // excluded. A qualified-SHAPED but grammar-malformed stem (letter
+      // suffix, 1-digit milestone, 2-level dot — the W005 shapes) yields a
+      // null fileKey and keeps the module's documented include-everything
+      // fail-safe via FIX 2 below, same as every other undecidable name.
+      const fileKey = bracketQualifiedKey(fileName, convention);
+      if (fileKey !== null) {
+        const dirKey = bracketQualifiedKey(phaseDirName, convention);
+        if (dirKey !== null) return fileKey === dirKey || fileKey.startsWith(`${dirKey}.`);
+      }
+      // Reached when the filename carries no well-formed qualified stem (the
+      // common case — every unqualified name), or when the DIR's own key is
+      // null despite matching the dir grammar (an unsafe-integer milestone or
+      // phase — bracketQualifiedKey refuses both rather than collide).
+      // Either way the candidate path decides, deliberately.
+      return matchesPhaseTokenCandidates(fileName, [bracketDir[1]]);
+    }
+  }
+
   const { tokenSegments, firstLetterPrefixed } = derivePhaseTokenSegments(phaseDirName);
   if (tokenSegments.length === 0) return true;
 
@@ -1020,6 +1080,23 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
   const rawCandidates = [literalToken, strippedToken, leadingRunMatch?.[1]].filter(
     (t): t is string => Boolean(t),
   );
+  if (matchesPhaseTokenCandidates(fileName, rawCandidates)) return true;
+
+  // Bracket-convention ambiguity fail-safe — see docblock above.
+  if (firstLetterPrefixed) return true;
+
+  return false;
+}
+
+/**
+ * Candidate-comparison core shared by `isPhaseArtifact`'s two entry paths —
+ * the legacy segment-derived readings and the #612 bracket-dir token. One
+ * comparison rule, not two that agree today and drift tomorrow: the padded/
+ * de-padded expansion, the separator class, and FIX 2 apply identically
+ * whichever path produced the candidates, which is what makes a bracket dir
+ * read exactly what its legacy twin reads.
+ */
+function matchesPhaseTokenCandidates(fileName: string, rawCandidates: string[]): boolean {
   // Each reading is compared in BOTH its padded and de-padded form: files are
   // written padded by `normalizePhaseName` (`cmdScaffold`) while directories
   // are often not (`1-unpadded`), and legacy trees carry the reverse pairing.
@@ -1064,12 +1141,7 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
 
   // FIX 2: token-less filename (bare "VERIFICATION.md"/"UAT.md") — containment
   // in this phase's own directory listing is sufficient.
-  if (derivePhaseTokenSegments(fileName).tokenSegments.length === 0) return true;
-
-  // Bracket-convention ambiguity fail-safe — see docblock above.
-  if (firstLetterPrefixed) return true;
-
-  return false;
+  return derivePhaseTokenSegments(fileName).tokenSegments.length === 0;
 }
 
 /**
@@ -1119,9 +1191,19 @@ function isPhaseArtifact(fileName: string, phaseDirName: string): boolean {
  * re-derived per site (CLAUDE.md's Generative Fix Divergence class).
  * `isPhaseArtifact` stays exported for single-item membership questions and
  * its own unit tests.
+ *
+ * #612/#2761: both helpers take the same optional trailing `convention` their
+ * sibling primitives (`extractPhaseToken`, `phaseTokenMatches`) do — the
+ * ADR-2121 additive shape, so every existing two-argument call resolves to
+ * the unchanged legacy body. A call site that already holds the resolved
+ * convention threads it and bracket dirs scope exactly like their legacy
+ * twins; convention-less call sites keep the documented include-everything
+ * fail-safes and are the follow-up-slice work (they cannot scope a bracket
+ * dir until they can resolve the convention, and guessing is the one thing
+ * this predicate must never do).
  */
-function scopeToPhase(fileNames: string[], phaseDirName: string): string[] {
-  return fileNames.filter((f) => isPhaseArtifact(f, phaseDirName));
+function scopeToPhase(fileNames: string[], phaseDirName: string, convention?: string | null): string[] {
+  return fileNames.filter((f) => isPhaseArtifact(f, phaseDirName, convention));
 }
 
 /**

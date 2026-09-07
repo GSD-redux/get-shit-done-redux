@@ -93,17 +93,39 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
 }
 
 /**
- * Name each fixture's verification report for that phase's own padded token,
- * matching cmdScaffold. A hardcoded `01-VERIFICATION.md` turns every other
- * "complete" phase into a cross-phase stray once artifact scans are scoped.
- * Prefix stripping stays fixture-local because these cases intentionally model
- * the unqualified artifact layout; padding comes from the production owner.
+ * The verification filename cmdScaffold writes into `dir` when the phase is
+ * named by its unqualified token — `${normalizePhaseName(phase)}-VERIFICATION.md`
+ * (`src/commands.cts`): the PHASE'S OWN padded token.
+ *
+ * UPDATED at the origin/next merge (#3511): every complete dir used to get a
+ * hardcoded `01-VERIFICATION.md`, which was harmless while nothing scoped a
+ * phase directory's listing. Upstream #3511 made membership real — in any dir
+ * that is not phase 01 that hardcoded name is now (correctly, on BOTH
+ * conventions once #612 threads `convention` into the seam) a cross-phase
+ * stray, excluded from completion. These fixtures mean "a COMPLETE phase",
+ * not "a phase holding another phase's report", so they must write what the
+ * scaffolder writes. The stray shape is pinned deliberately, as its own
+ * regression block — see "#612 PR-2: a cross-phase stray in a bracket dir"
+ * below — so this rename cannot silently stand in for the seam fix.
+ *
+ * The padding comes from the production `normalizePhaseName` itself (single
+ * owner, no fixture drift). What stays fixture-local is the bracket-prefix
+ * strip below — deliberately: production does NOT strip `{CODE}.` prefixes
+ * (`normalizePhaseName('GSD.02-01')` returns it unchanged via the custom-id
+ * arm; scaffold echoes whatever `--phase` form it is given), so a repo's
+ * artifact layout is unqualified or qualified depending on how phases were
+ * scaffolded. This file's fixtures model the UNQUALIFIED layout; the
+ * QUALIFIED layout is modeled by tests/adr-612-bracket-read-tolerance.test.cjs
+ * and by the qualified-stem assertions in the stray-regression block below.
  */
 function verificationNameFor(dir) {
+  // Fixture-local unqualified-layout modeling (see docstring) — not a claim
+  // about scaffold, and not a second grammar owner: the seam's own tests
+  // assert the production regex.
   const rest = dir.replace(/^[A-Z][A-Z0-9_]*\.\d+-/i, '');
   const token = [];
-  for (const segment of rest.split('-')) {
-    if (/^\d+(?:\.\d+)*$/.test(segment)) token.push(segment);
+  for (const seg of rest.split('-')) {
+    if (/^\d+(?:\.\d+)*$/.test(seg)) token.push(seg);
     else break;
   }
   assert.ok(token.length > 0, `fixture dir ${dir} carries no phase token to name its verification`);
@@ -3217,5 +3239,180 @@ describe('#2761 round-11 BLOCKER: cmdStateUpdateProgress computes+writes a perce
     assert.strictEqual(parsed.updated, true);
     assert.strictEqual(parsed.completed, 1);
     assert.strictEqual(parsed.total, 2);
+  });
+});
+
+describe('#612 PR-2: a cross-phase stray in a bracket dir is excluded — the #3511 seam is convention-aware', () => {
+  // Pins the seam fix ITSELF, independently of the phase-matched fixture
+  // names verificationNameFor now writes. With phase-matched names
+  // everywhere, an inert (include-everything) bracket seam and a scoped one
+  // are indistinguishable — every earlier assertion in this file would pass
+  // under both. The genuine stray written here is the one shape that tells
+  // them apart, so the ALERT'd bracket-inertness (#3511's `isPhaseArtifact`
+  // fail-safes swallowing every bracket dir) cannot silently return.
+  const phaseIdMod = require('../gsd-core/bin/lib/phase-id.cjs');
+
+  beforeEach(() => { tmpDir = createTempProject('adr-612-stray-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const STRAY_ROADMAP_BRACKET = `# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+### [GSD.02] 03: Three
+**Goal:** c
+`;
+  const STRAY_ROADMAP_LEGACY = `# Roadmap
+
+## v2.0: Current
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+
+### Phase 03: Three
+**Goal:** c
+`;
+
+  function plantStray(dir) {
+    // Another phase's PASSING report, misfiled into the INCOMPLETE phase 03's
+    // directory — exactly the hardcoded shape the pre-merge fixture wrote by
+    // accident. An inert seam folds it into phase 03's completion
+    // (3/3 -> 100); the scoped seam excludes it (2/3 -> 67).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', dir, '01-VERIFICATION.md'),
+      '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
+  }
+
+  test('READ: a stray 01-VERIFICATION.md cannot complete bracket phase 03', () => {
+    writeProject(STRAY_ROADMAP_BRACKET, 'bracket',
+      ['GSD.02-01-one', 'GSD.02-02-two', ['GSD.02-03-three', false]]);
+    plantStray('GSD.02-03-three');
+    assert.deepEqual(readProgress(), [3, 2, 3, 2, 67],
+      'pinned [3,3,3,2,67] before #612 threaded convention into the seam — the stray '
+      + 'counted as phase 03\'s completion; percent is plan-derived, so percent alone '
+      + 'cannot catch this: the full vector is the assertion');
+  });
+
+  test('READ: the legacy twin of the stray shape reads identically', () => {
+    writeProject(STRAY_ROADMAP_BRACKET, 'bracket',
+      ['GSD.02-01-one', 'GSD.02-02-two', ['GSD.02-03-three', false]]);
+    plantStray('GSD.02-03-three');
+    const bracket = readProgress();
+    writeProject(STRAY_ROADMAP_LEGACY, undefined,
+      ['01-one', '02-two', ['03-three', false]]);
+    plantStray('03-three');
+    const legacy = readProgress();
+    assert.deepEqual(bracket, legacy,
+      'bracket must exclude the stray exactly as its legacy twin does');
+    assert.deepEqual(legacy, [3, 2, 3, 2, 67]);
+  });
+
+  test('WRITE: sync agrees — the stray moves neither derivation', () => {
+    writeProject(STRAY_ROADMAP_BRACKET, 'bracket',
+      ['GSD.02-01-one', 'GSD.02-02-two', ['GSD.02-03-three', false]]);
+    plantStray('GSD.02-03-three');
+    assert.equal(syncedPercent(), 67);
+    assert.deepEqual(syncedProgress(), [3, 2, 3, 2, 67],
+      'pinned [3,3,3,2,67] before this fix (completed_phases moved; the plan-derived percent did not)');
+    assert.deepEqual(readProgress(), syncedProgress());
+  });
+
+  test('SEAM (the ALERT repro): scopeToPhase scopes a 3+-letter-code bracket dir under convention', () => {
+    // 3+-letter codes (`GSD.02-…`) fell into the ZERO-TOKEN fail-safe —
+    // `PROJECT_CODE_PREFIX_CAPTURE_RE_I` strips `{CODE}-`, not `{CODE}.` —
+    // NOT the `firstLetterPrefixed` branch the pre-#612 docblock named for
+    // the bracket family. Both families are pinned here so a fixer patching
+    // one branch cannot green this by half.
+    const files = ['01-01-x-PLAN.md', '01-01-x-SUMMARY.md', '01-VERIFICATION.md'];
+    assert.deepEqual(phaseIdMod.scopeToPhase(files, '02-two'), [],
+      'legacy control: the twin scopes these to nothing');
+    assert.deepEqual(phaseIdMod.scopeToPhase(files, 'GSD.02-02-two', 'bracket'), [],
+      'pinned all-three-kept (scoping a structural no-op) before this fix');
+    assert.deepEqual(phaseIdMod.scopeToPhase(files, 'A1.02-02-two', 'bracket'), [],
+      'short digit-bearing codes hit the firstLetterPrefixed fail-safe pre-fix; same pin');
+  });
+
+  test('SEAM: a bracket dir keeps its own artifacts — dash, dot continuation, and token-less containment', () => {
+    const own = ['02-VERIFICATION.md', '02-01-PLAN.md', '02.1-CONTEXT.md', 'VERIFICATION.md'];
+    assert.deepEqual(phaseIdMod.scopeToPhase(own, 'GSD.02-02-two', 'bracket'), own,
+      'the scoped bracket dir must not drop its own files (over-exclusion is the defect class #3511 exists to fix)');
+    // Sub-phase dir: own dotted token matches exactly, its .10 sibling does not
+    // (mirror of the legacy 35.1/35.10 pin in tests/phase-id.test.cjs).
+    assert.equal(phaseIdMod.isPhaseArtifact('02.1-VERIFICATION.md', 'GSD.02-02.1-fix', 'bracket'), true);
+    assert.equal(phaseIdMod.isPhaseArtifact('02.10-VERIFICATION.md', 'GSD.02-02.1-fix', 'bracket'), false);
+    // Recognition is case-insensitive, like every bracket reader.
+    assert.equal(phaseIdMod.isPhaseArtifact('02-VERIFICATION.md', 'gsd.02-02-two', 'bracket'), true);
+  });
+
+  test('SEAM: exact legacy-twin equality across a spread of filenames', () => {
+    const spread = ['01-VERIFICATION.md', '02-VERIFICATION.md', '2-VERIFICATION.md',
+      '02-CORRECTION-VERIFICATION.md', '02.1-CONTEXT.md', '02_VERIFICATION.md',
+      '03-UAT.md', 'VERIFICATION.md', 'notes.md'];
+    for (const f of spread) {
+      assert.equal(
+        phaseIdMod.isPhaseArtifact(f, 'GSD.02-02-two', 'bracket'),
+        phaseIdMod.isPhaseArtifact(f, '02-two'),
+        `bracket and legacy twins must agree on ${f}`);
+    }
+  });
+
+  test('SEAM: everything outside the well-formed-bracket-plus-convention gate is byte-unchanged', () => {
+    // No convention signal -> the documented include-everything fail-safe
+    // stands, even for a perfectly-formed bracket dir.
+    assert.deepEqual(phaseIdMod.scopeToPhase(['01-VERIFICATION.md'], 'GSD.02-02-two'),
+      ['01-VERIFICATION.md'], 'convention-less callers keep pre-#612 behavior verbatim');
+    // Bracket-MALFORMED (1-digit milestone — the shape W005 reports) fails
+    // BRACKET_DIR_TOKEN_RE and degrades to the same fail-safe.
+    assert.deepEqual(phaseIdMod.scopeToPhase(['01-VERIFICATION.md'], 'GSD.2-02-two', 'bracket'),
+      ['01-VERIFICATION.md'], 'malformed bracket dirs keep the include-everything degrade');
+    // A legacy-shaped dir in a bracket repo scopes by the LEGACY rule — the
+    // additive-read guarantee (the "carrying LEGACY-shaped dirs" test above,
+    // at the seam level).
+    assert.equal(phaseIdMod.isPhaseArtifact('01-VERIFICATION.md', '02-two', 'bracket'), false);
+    assert.equal(phaseIdMod.isPhaseArtifact('02-VERIFICATION.md', '02-two', 'bracket'), true);
+    // The letter-prefixed-decimal ambiguity (`P0.3-2` could be a legacy dir
+    // in a mid-migration bracket repo; its milestone field is not canonical
+    // bracket spelling) keeps upstream's pinned include-everything trade even
+    // WITH the convention threaded.
+    assert.equal(phaseIdMod.isPhaseArtifact('99-VERIFICATION.md', 'P0.3-2-slug', 'bracket'), true);
+  });
+
+  test('SEAM: qualified-stem filenames compare on the qualified key; M-NN stems ratify the twin-equal exclusion', () => {
+    // Review Major 2: the convention gates the FILENAME reading too.
+    assert.equal(phaseIdMod.isPhaseArtifact('GSD.02-05-VERIFICATION.md', 'GSD.02-05-real', 'bracket'), true);
+    assert.equal(phaseIdMod.isPhaseArtifact('GSD.02-01-VERIFICATION.md', 'GSD.02-05-real', 'bracket'), false,
+      'pinned true (token-less containment admitted it) before this fix');
+    assert.equal(phaseIdMod.isPhaseArtifact('GSD.01-05-VERIFICATION.md', 'GSD.02-05-real', 'bracket'), false,
+      'same phase digits, different milestone — the qualified key separates what no bare token can');
+    // Round-2 verify blocker: the qualified-key comparison must keep the
+    // dash-OR-dot continuation rule — a qualified dotted SUB-PHASE artifact is
+    // the parent phase's own file (see the DOTTED SUB-PHASE CONTINUATION
+    // docblock), exactly as its legacy twin (05.1-… in 05-parent) is. A strict
+    // equality here silently excluded it: over-exclusion, the dangerous
+    // direction for these aggregate scans.
+    assert.equal(phaseIdMod.isPhaseArtifact('GSD.02-05.1-VERIFICATION.md', 'GSD.02-05-parent', 'bracket'), true,
+      'pinned false (strict key equality dropped the dot arm) before the round-2 fix');
+    assert.equal(phaseIdMod.isPhaseArtifact('05.1-VERIFICATION.md', '05-parent'), true,
+      'the legacy-twin control for the line above');
+    assert.equal(phaseIdMod.isPhaseArtifact('GSD.02-01.1-VERIFICATION.md', 'GSD.02-05-parent', 'bracket'), false,
+      'a DIFFERENT phase\'s dotted sub-phase artifact is still a stray');
+    assert.equal(phaseIdMod.isPhaseArtifact('GSD.02-01-VERIFICATION.md', 'GSD.02-05-real'), true,
+      'convention-less: the include-everything fail-safe stands, byte-identical to pre-#612');
+    // Review Major 1, RATIFIED as the twin-equal trade: an M-NN-stem report in a
+    // bracket dir is excluded exactly as its legacy twin excludes the same file;
+    // migration-window artifact renaming is the migrator slice's job (ADR-612).
+    assert.equal(phaseIdMod.isPhaseArtifact('02-01-VERIFICATION.md', 'GSD.02-01-one', 'bracket'), false,
+      'twin-parity: isPhaseArtifact("02-01-VERIFICATION.md","01-one") is false for the same reason');
+    assert.equal(phaseIdMod.isPhaseArtifact('02-01-VERIFICATION.md', '01-one'), false,
+      'the legacy-twin control for the line above');
   });
 });

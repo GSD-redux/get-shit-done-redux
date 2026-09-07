@@ -1411,6 +1411,40 @@ describe('#4187: status surface recognizes a bare VERIFICATION.md', () => {
   });
 });
 
+// ─── #4142: bracket convention reaches the legacy staleness seam ────────────
+//
+// readVerificationStatus resolves the report once to read its frontmatter and
+// findStaleVerificationSummary resolves it again for the legacy mtime check.
+// Both resolutions must receive the same convention or a bracket directory can
+// read status from its own report, then compute staleness from a cross-phase
+// stray in that same directory.
+describe('#4142: opts.convention threads through findStaleVerificationSummary', () => {
+  test('a bracket phase checks staleness against its own report, not a newer cross-phase stray', (t) => {
+    const dir = mkPhaseDir('bracket-stale-thread', 'GSD.02-03-three');
+    t.after(() => cleanup(path.dirname(dir)));
+
+    writeVerificationMd(dir, '03-VERIFICATION.md', 'passed');
+    writeVerificationMd(dir, '01-VERIFICATION.md', 'passed');
+    setMtime(path.join(dir, '03-VERIFICATION.md'), '2020-01-01T00:00:00Z');
+    setMtime(path.join(dir, '01-VERIFICATION.md'), '2022-01-01T00:00:00Z');
+    const summaryPath = path.join(dir, '03-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, '# summary\n');
+    setMtime(summaryPath, '2021-01-01T00:00:00Z');
+
+    const result = readVerificationStatus(dir, {
+      convention: 'bracket',
+      phaseCleanCommitTimesMs: () => new Map(),
+    });
+
+    assert.equal(
+      result.status,
+      'stale',
+      'opts.convention must reach the legacy staleness seam so phase 03 is compared to 03-VERIFICATION.md',
+    );
+    assert.equal(result.next_command, '/gsd-verify-work');
+  });
+});
+
 // ─── #4187 CLI parity: the two query verbs must agree on the same directory ───
 //
 // The issue's repro shape: run `query verification.resolve-file` and

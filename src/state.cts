@@ -2921,7 +2921,10 @@ function buildStateFrontmatter(
             // own comment on that field). Folding this consumer onto the raw
             // summaries-met flag was the exact "consolidate two of three and
             // leave the third" gap §7.4's forcing function rules out.
-            if (isPhaseComplete(phaseDir).value.complete) diskCompletedPhases++;
+            // #612: `phaseConvention` threaded so a bracket phase dir resolves
+            // and scopes its verification report like its legacy twin — the
+            // read-side half of the same thread cmdStateSync gets below.
+            if (isPhaseComplete(phaseDir, { convention: phaseConvention }).value.complete) diskCompletedPhases++;
           }
           // Count phase headings from ROADMAP — single source of truth for
           // total_phases (#549). #612 round-4: shared with cmdStateSync's
@@ -5809,9 +5812,13 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
         // ("verification passed" drift), not a false S007.
         const files = fs.readdirSync(phaseDirPath);
         const phaseDirBaseName = path.basename(phaseDirPath);
+        // #612: `validateConvention` threaded (already resolved above for
+        // `phaseKeyFromDir`) so the S006/S007 scan scopes bracket dirs by
+        // their real token instead of the include-everything fail-safe.
         const verificationFiles = scopeToPhase(
           files.filter(f => f.includes('VERIFICATION') && f.endsWith('.md')),
           phaseDirBaseName,
+          validateConvention,
         );
         for (const vf of verificationFiles) {
           try {
@@ -6036,7 +6043,10 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     // was a second, independent consumer of the same raw field the initial
     // migration missed — without it, `state sync` and `state json` disagreed
     // on completed_phases for the identical disk state.
-    if (isPhaseComplete(dirPath).value.complete) diskCompletedPhases++;
+    // #612: `syncConvention` threaded — the write-side half of
+    // buildStateFrontmatter's thread above, so `state sync` and `state json`
+    // keep agreeing on completed_phases under the bracket convention.
+    if (isPhaseComplete(dirPath, { convention: syncConvention }).value.complete) diskCompletedPhases++;
 
     // Track the highest phase with incomplete plans (or any plans)
     const phaseMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
