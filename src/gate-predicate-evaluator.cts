@@ -40,7 +40,7 @@ const COMMAND_MAX_LENGTH = 4096;
 /** Predicate kinds this evaluator recognises (extensible — add to KIND_TABLE). */
 const EVALUATOR_KINDS = Object.freeze(['command-exit-zero', 'artifact-frontmatter-equals']);
 
-/** Placeholders interpolated into a declared command, in addition to sh's own vars. */
+/** Env vars exported to the subprocess so `${VAR}` in a declared command resolves them. */
 const INTERPOLATION_VAR_NAMES = Object.freeze(['PHASE_NUMBER', 'PHASE_DIR', 'PHASE_REQ_IDS']);
 
 // ─── Types (internal; runtime API is the `export =` block) ────────────────────
@@ -62,7 +62,7 @@ interface BoundedShellResult {
 }
 
 interface PredicateDeps {
-  runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number }): BoundedShellResult;
+  runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number; env: Record<string, string> }): BoundedShellResult;
   findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null;
   readFrontmatter(filePath: string): Record<string, unknown>;
 }
@@ -75,16 +75,30 @@ interface PredicateResult {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const INTERPOLATION_RE = /\$\{(PHASE_NUMBER|PHASE_DIR|PHASE_REQ_IDS)\}/g;
-
-/** Replace the three known ${PHASE_*} placeholders with context values (undefined => ''). */
-function interpolate(command: string, ctx: PredicateContext): string {
-  return command.replace(INTERPOLATION_RE, (_whole, name: string): string => {
-    if (name === 'PHASE_NUMBER') return ctx.phaseNumber ?? '';
-    if (name === 'PHASE_DIR') return ctx.phaseDir ?? '';
-    if (name === 'PHASE_REQ_IDS') return ctx.phaseReqIds ?? '';
-    return '';
-  });
+/**
+ * Build the PHASE_* env passed to the `sh -c` subprocess so `${PHASE_DIR}` etc.
+ * in a declared command are resolved by sh's OWN parameter expansion — never by
+ * our own text substitution. A declared value (e.g. `ctx.phaseDir`, confined to
+ * the project by the CLI caller but otherwise arbitrary path text) can contain
+ * shell metacharacters (`$()`, backticks, `;`); pre-substituting it into the
+ * command STRING would hand those characters to sh for re-parsing — a shell
+ * injection distinct from (and worse than) #4354's path-confinement gap.
+ * Passing it as a real env var sidesteps that: sh's `${VAR}` expansion inserts
+ * the value as inert data — never re-parsed for `$()`/backtick/`;`/`|` — in an
+ * unquoted OR double-quoted command template. CAVEAT: sh suppresses ALL
+ * parameter expansion inside SINGLE quotes (POSIX, not specific to this
+ * mechanism); a capability author who single-quotes `'${PHASE_DIR}'` gets the
+ * literal placeholder text, not the value — same rule as any other `${VAR}`
+ * in a shell script. Author guidance: double-quote it, as every example in
+ * docs/reference/gate-predicates.md and docs/how-to/command-exit-zero-gate.md
+ * already does.
+ */
+function buildInterpolationEnv(ctx: PredicateContext): Record<string, string> {
+  return {
+    PHASE_NUMBER: ctx.phaseNumber ?? '',
+    PHASE_DIR: ctx.phaseDir ?? '',
+    PHASE_REQ_IDS: ctx.phaseReqIds ?? '',
+  };
 }
 
 /** Cap a string at COMMAND_MAX_OUTPUT_CHARS so gate messages stay context-bounded. */
@@ -120,13 +134,12 @@ function evaluateCommandExitZero(
     timeoutMs = Math.floor(rawTimeout * 1000);
   }
 
-  const interpolated = interpolate(command, ctx);
-  const res = deps.runBoundedShell({ command: interpolated, cwd: ctx.cwd, timeoutMs });
+  const res = deps.runBoundedShell({ command, cwd: ctx.cwd, timeoutMs, env: buildInterpolationEnv(ctx) });
 
   if (res.timedOut) {
     return {
       block: true,
-      message: trimToMax(`command timed out after ${Math.round(timeoutMs / 1000)}s: ${res.stderr || interpolated}`),
+      message: trimToMax(`command timed out after ${Math.round(timeoutMs / 1000)}s: ${res.stderr || command}`),
       details: { kind: 'command-exit-zero', timedOut: true, signal: res.signal },
     };
   }
@@ -258,7 +271,7 @@ function evaluatePredicate(predicate: unknown, context: unknown, deps: unknown):
 export = {
   evaluatePredicate,
   evaluateCommandExitZero,
-  interpolate,
+  buildInterpolationEnv,
   COMMAND_EXIT_ZERO_DEFAULT_TIMEOUT_MS,
   COMMAND_MAX_OUTPUT_CHARS,
   COMMAND_MAX_LENGTH,

@@ -74,9 +74,9 @@ A capability declares a `command-exit-zero` gate under the existing
 |---|---|---|
 | Interpreter | `sh -c` (via `shell-command-projection.execTool`) | Cross-platform with the runtime's existing bash dependency; one string, no argv array to author |
 | cwd | Project root (the runtime `cwd`) | Matches the user's working context; the same root existing `check.query` gates operate from |
-| Environment | Inherit process env | The command runs as the user, on the user's machine, in the project they are working on — no sandbox boundary is crossed vs. the user's own shell. Override via the command itself (`env VAR=x ...`) |
+| Environment | Inherit process env, plus `PHASE_NUMBER`/`PHASE_DIR`/`PHASE_REQ_IDS` | The command runs as the user, on the user's machine, in the project they are working on — no sandbox boundary is crossed vs. the user's own shell. Override via the command itself (`env VAR=x ...`) |
 | Timeout | Default 30s; overridable per-gate | Bounded execution is non-negotiable; an unbounded gate could hang the loop forever |
-| Interpolation | `${PHASE_NUMBER}`, `${PHASE_DIR}`, `${PHASE_REQ_IDS}` substituted from gate context; undefined → `''`; all other `${X}` left untouched for `sh` to interpret | Parity with the context existing `check.query` gates already receive |
+| Interpolation | `${PHASE_NUMBER}`, `${PHASE_DIR}`, `${PHASE_REQ_IDS}` exported as real env vars from gate context (undefined → `''`); resolved by `sh`'s own `${VAR}` expansion, never text-substituted by this evaluator; all other `${X}` left untouched for `sh` to interpret | Parity with the context existing `check.query` gates already receive, without re-exposing a confined-but-arbitrary path's content to `sh`'s parser (a text-substitution shell-injection vector found in adversarial review of #4414, fixed pre-merge) |
 | Result mapping | exit 0 → `block:false`; non-zero → `block:true`; timeout (SIGTERM) → `block:true` (`timed_out`); `sh` missing (ENOENT, exit 127) → `block:true` | Fail-closed: every non-zero outcome blocks. A blocking gate with `block:true` halts per the existing two-step gate contract |
 | Output cap | stderr/stdout tail embedded in `message` trimmed to 2000 chars | Keeps the `GATE_RESULT` payload context-bounded |
 

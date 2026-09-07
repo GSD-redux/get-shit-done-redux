@@ -273,6 +273,72 @@ describe('check predicate — --phase-dir project confinement (#4354)', () => {
     assert.strictEqual(JSON.parse(result.output).block, false);
   });
 
+  /**
+   * RESIDUAL FINDING (adversarial review of #4414, pre-merge): #4354 confined
+   * `--phase-dir` to the project root but did nothing about the CONTENT of a
+   * confined-but-attacker-influenced path. Because `command-exit-zero` used to
+   * splice `ctx.phaseDir` into the declared command's TEXT before handing it to
+   * `sh -c`, a phase-dir segment containing shell metacharacters would be
+   * re-parsed by sh — a shell-injection vector strictly worse than the
+   * `block:false` bypass #4354 fixed, and reachable through the exact same
+   * `${PHASE_DIR}` path. The fix (gate-predicate-evaluator.cts
+   * `buildInterpolationEnv`) exports PHASE_DIR as a real subprocess env var
+   * instead, so sh's own `${VAR}` expansion inserts it as inert data.
+   *
+   * This directory never needs to exist on disk — `validatePath`'s
+   * ancestor-walk fallback confines a not-yet-created leaf under an existing
+   * ancestor (`.planning/phases`), so the metacharacters are exercised purely
+   * as path TEXT, never as a real filename subject to OS filename rules.
+   */
+  test('[security] $() and backtick command substitution in --phase-dir cannot inject through the documented "${PHASE_DIR}" (double-quoted) pattern', (t) => {
+    const fx = makeFixture(t);
+    // Inside double quotes, sh still expands $()/backtick command substitution
+    // (only word-splitting and globbing are suppressed) — this is the exact
+    // vector #4414's adversarial review flagged, and the pattern every
+    // doc/fixture example authors are told to use.
+    const evilLeaf = '$(touch INJECTED_A)`touch INJECTED_B`';
+    const evilPhaseDir = path.join(fx.project, '.planning', 'phases', evilLeaf);
+    const predicate = JSON.stringify({ kind: 'command-exit-zero', command: 'test -d "${PHASE_DIR}"' });
+
+    const result = runPredicate(fx, evilPhaseDir, predicate);
+
+    for (const marker of ['INJECTED_A', 'INJECTED_B']) {
+      assert.strictEqual(
+        fs.existsSync(path.join(fx.project, marker)), false,
+        `--phase-dir metacharacters must never execute as code (found ${marker})`,
+      );
+    }
+    assert.strictEqual(result.success, true, `a confined-but-nonexistent phase dir must still run the check command; stderr: ${result.error}`);
+    assert.strictEqual(
+      JSON.parse(result.output).block, true,
+      'the literal metacharacter-laden path does not exist on disk, so the check fails closed',
+    );
+  });
+
+  test('[security] ;, |, $() and backtick in --phase-dir cannot inject even through an UNQUOTED ${PHASE_DIR}', (t) => {
+    const fx = makeFixture(t);
+    // Unquoted is the maximally permissive case: sh applies word-splitting and
+    // pathname expansion to the EXPANDED value, but — per POSIX — never
+    // re-scans it for `;`/`|`/quote/command-substitution syntax. A prior
+    // version of this test used a double-quoted template, under which `;` and
+    // `|` are already inert LITERAL characters regardless of the fix (they
+    // only become command separators when unquoted) — so it never actually
+    // exercised those two metacharacters. This unquoted template does.
+    const evilLeaf = '$(touch INJECTED_A)`touch INJECTED_B`;touch INJECTED_C|touch INJECTED_D';
+    const evilPhaseDir = path.join(fx.project, '.planning', 'phases', evilLeaf);
+    const predicate = JSON.stringify({ kind: 'command-exit-zero', command: 'test -e ${PHASE_DIR}' });
+
+    const result = runPredicate(fx, evilPhaseDir, predicate);
+
+    for (const marker of ['INJECTED_A', 'INJECTED_B', 'INJECTED_C', 'INJECTED_D']) {
+      assert.strictEqual(
+        fs.existsSync(path.join(fx.project, marker)), false,
+        `--phase-dir metacharacters must never execute as code (found ${marker})`,
+      );
+    }
+    assert.strictEqual(result.success, true, `a confined-but-nonexistent phase dir must still run the check command; stderr: ${result.error}`);
+  });
+
   test('[bva:empty] a blank --phase-dir stays the "no phase context" fallback, not an error', (t) => {
     const fx = makeFixture(t);
     // The evaluator treats a blank phaseDir as absent and falls back to the

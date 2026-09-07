@@ -33,7 +33,7 @@ the project root as its cwd and the inherited process environment.
 node "${GSD_CAP_DIR}/checks/pre-ship.js"
 ```
 
-You may interpolate three loop-context placeholders directly into the command:
+You may reference three loop-context placeholders directly in the command:
 
 | Placeholder | Meaning |
 |---|---|
@@ -41,8 +41,15 @@ You may interpolate three loop-context placeholders directly into the command:
 | `${PHASE_DIR}` | the active phase directory |
 | `${PHASE_REQ_IDS}` | the phase's requirement ids |
 
-Anything else (`${HOME}`, `$VAR`, etc.) is left for `sh` to interpret against
-the inherited env.
+These are exported as real environment variables on the subprocess, so `sh`
+resolves them the same way it resolves any other `${VAR}` — a value
+containing shell metacharacters is passed through as inert data, never
+re-parsed as command syntax. Anything else (`${HOME}`, `$VAR`, etc.) is left
+for `sh` to interpret against the inherited env.
+
+Always double-quote the placeholder, e.g. `"${PHASE_DIR}"` (see the example
+below) — single quotes suppress shell expansion entirely, so `'${PHASE_DIR}'`
+never resolves.
 
 ## Step 2 — declare the gate
 

@@ -13,7 +13,7 @@
  *
  * Per RULESET.TESTS.boundary-coverage: exit code boundary (0/1/2), timedOut
  * true/false, message-trim boundary (MAX / MAX+1), timeout pass-through.
- * Per RULESET.TESTS.property-based: interpolation bijection property (fast-check).
+ * Per RULESET.TESTS.property-based: command-identity / env-passthrough properties (fast-check).
  */
 
 const { describe, test } = require('node:test');
@@ -145,27 +145,34 @@ describe('evaluatePredicate — command-exit-zero timeout', () => {
 // ─── interpolation ────────────────────────────────────────────────────────────
 
 describe('evaluatePredicate — interpolation', () => {
-  test('${PHASE_DIR}, ${PHASE_NUMBER}, ${PHASE_REQ_IDS} are substituted', () => {
+  test('${PHASE_DIR}, ${PHASE_NUMBER}, ${PHASE_REQ_IDS} are exported as env vars, never text-substituted', () => {
     const shell = fakeShell({ exitCode: 0 });
     evaluatePredicate(
       { kind: 'command-exit-zero', command: 'check ${PHASE_DIR} ${PHASE_NUMBER} ${PHASE_REQ_IDS}' },
       baseCtx,
       { runBoundedShell: shell.run },
     );
-    assert.equal(
-      shell.calls[0].command,
-      'check /proj/.planning/phases/03-x 03 R-1',
-    );
+    // The command string reaches sh -c VERBATIM — sh's own ${VAR} expansion
+    // does the substitution, not our code, so a metacharacter-laden ctx value
+    // is passed as inert env data rather than re-parsed shell syntax (residual
+    // finding on #4414's review; #4354 only confined the path, not its content).
+    assert.equal(shell.calls[0].command, 'check ${PHASE_DIR} ${PHASE_NUMBER} ${PHASE_REQ_IDS}');
+    assert.deepEqual(shell.calls[0].env, {
+      PHASE_NUMBER: '03',
+      PHASE_DIR: '/proj/.planning/phases/03-x',
+      PHASE_REQ_IDS: 'R-1',
+    });
   });
 
-  test('undefined context var => empty string (no leftover placeholder)', () => {
+  test('undefined context var => empty string in env (no leftover placeholder)', () => {
     const shell = fakeShell({ exitCode: 0 });
     evaluatePredicate(
       { kind: 'command-exit-zero', command: 'check ${PHASE_REQ_IDS}' },
       { cwd: '/proj' },
       { runBoundedShell: shell.run },
     );
-    assert.equal(shell.calls[0].command, 'check ');
+    assert.equal(shell.calls[0].command, 'check ${PHASE_REQ_IDS}');
+    assert.equal(shell.calls[0].env.PHASE_REQ_IDS, '');
   });
 
   test('foreign ${HOME} placeholder left untouched (shell interprets)', () => {
@@ -176,6 +183,20 @@ describe('evaluatePredicate — interpolation', () => {
       { runBoundedShell: shell.run },
     );
     assert.equal(shell.calls[0].command, 'echo ${HOME}');
+  });
+
+  test('a phase-dir value containing shell metacharacters is never re-parsed as shell syntax', () => {
+    const shell = fakeShell({ exitCode: 0 });
+    const hostile = '$(touch /tmp/pwned); `id`; a|b';
+    evaluatePredicate(
+      { kind: 'command-exit-zero', command: 'test -d "${PHASE_DIR}"' },
+      { cwd: '/proj', phaseDir: hostile },
+      { runBoundedShell: shell.run },
+    );
+    // The hostile string must arrive as opaque env data, not spliced into the
+    // command text where sh -c would execute it.
+    assert.equal(shell.calls[0].command, 'test -d "${PHASE_DIR}"');
+    assert.equal(shell.calls[0].env.PHASE_DIR, hostile);
   });
 });
 
@@ -295,38 +316,41 @@ describe('evaluatePredicate — exported contract surface', () => {
   });
 });
 
-// ─── property-based: interpolation bijection on non-placeholder strings ───────
+// ─── property-based: command is never rewritten; ctx values pass through env verbatim ───
 
 describe('evaluatePredicate — interpolation property (fast-check)', () => {
-  test('strings without the 3 placeholders pass through unchanged', () => {
+  test('any command string reaches sh -c verbatim, regardless of ${PHASE_*} placeholders', () => {
     fc.assert(
       fc.property(
-        fc.string({ maxLength: 40 }).filter((s) => s.trim().length > 0 && !/\$\{(PHASE_NUMBER|PHASE_DIR|PHASE_REQ_IDS)\}/.test(s)),
+        fc.string({ maxLength: 40 }).filter((s) => s.trim().length > 0),
         (cmd) => {
-        const shell = fakeShell({ exitCode: 0 });
-        evaluatePredicate(
-          { kind: 'command-exit-zero', command: cmd },
-          baseCtx,
-          { runBoundedShell: shell.run },
-        );
-        // sh -c receives exactly the input; only the 3 known placeholders would have been rewritten.
-        assert.equal(shell.calls[0].command, cmd);
-      }),
+          const shell = fakeShell({ exitCode: 0 });
+          evaluatePredicate(
+            { kind: 'command-exit-zero', command: cmd },
+            baseCtx,
+            { runBoundedShell: shell.run },
+          );
+          // sh's own ${VAR} expansion resolves placeholders at runtime; this
+          // module never rewrites the command text, so it is always the identity.
+          assert.equal(shell.calls[0].command, cmd);
+        },
+      ),
       { numRuns: 100 },
     );
   });
 
-  test('every placeholder is fully replaced (no leftover ${PHASE_*})', () => {
+  test('any ctx.phaseDir/phaseNumber/phaseReqIds value — including shell metacharacters — lands in env byte-for-byte', () => {
     fc.assert(
-      fc.property(fc.string({ maxLength: 20 }), (noise) => {
-        const cmd = `${noise} ${noise}`;
+      fc.property(fc.string({ maxLength: 40 }), fc.string({ maxLength: 40 }), fc.string({ maxLength: 40 }), (a, b, c) => {
         const shell = fakeShell({ exitCode: 0 });
         evaluatePredicate(
-          { kind: 'command-exit-zero', command: `\${PHASE_DIR}${cmd}\${PHASE_NUMBER}` },
-          baseCtx,
+          { kind: 'command-exit-zero', command: 'x' },
+          { cwd: '/proj', phaseNumber: a, phaseDir: b, phaseReqIds: c },
           { runBoundedShell: shell.run },
         );
-        assert.doesNotMatch(shell.calls[0].command, /\$\{PHASE_(DIR|NUMBER|REQ_IDS)\}/);
+        // No escaping, no truncation, no reinterpretation — the value is inert
+        // subprocess-env data, never re-fed to a shell parser by this module.
+        assert.deepEqual(shell.calls[0].env, { PHASE_NUMBER: a, PHASE_DIR: b, PHASE_REQ_IDS: c });
       }),
       { numRuns: 100 },
     );

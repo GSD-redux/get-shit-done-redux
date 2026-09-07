@@ -1227,25 +1227,31 @@ interface RouteCheckCommandOptions {
 /**
  * Production subprocess binding for the gate-predicate evaluator. Wraps the
  * bounded `execTool` seam (shell-command-projection) as a `runBoundedShell`
- * the pure evaluator consumes. `sh -c` runs the interpolated command; the
- * subprocess inherits the process env and is killed (SIGTERM) on timeout.
+ * the pure evaluator consumes. `sh -c` runs the declared command VERBATIM
+ * (never textually pre-substituted — see `buildInterpolationEnv` in
+ * gate-predicate-evaluator.cts for why); `opts.env` carries PHASE_NUMBER/
+ * PHASE_DIR/PHASE_REQ_IDS so sh's own `${VAR}` expansion resolves any
+ * `${PHASE_*}` placeholders in the command as inert data. The subprocess
+ * otherwise inherits the process env and is killed (SIGTERM) on timeout.
  *
- * `timedOut` is derived from the kill signal: spawnSync sets `signal: 'SIGTERM'`
- * when the `timeout` fires, distinct from a normal non-zero exit code. A command
- * that self-terminates with SIGTERM is indistinguishable at this seam and is
- * reported as a timeout — either way the gate blocks (non-zero), so the outcome
- * is fail-closed and correct. See ADR-2008.
+ * `timedOut` is derived from `isSpawnTimeout` (shell-command-projection.cts),
+ * which checks `error.code === 'ETIMEDOUT'` — the flag Node sets on the
+ * `spawnSync` result specifically when ITS OWN `timeout` option fires, not
+ * from the kill signal. A command that self-terminates with SIGTERM (without
+ * Node's timeout ever firing) is therefore correctly reported as a plain
+ * non-zero/signal exit, not a timeout; either way the gate still blocks
+ * (non-zero), so the outcome is fail-closed and correct. See ADR-2008.
  */
 function buildPredicateDeps() {
   return {
-    runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number }): {
+    runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number; env: Record<string, string> }): {
       exitCode: number | null;
       stdout: string;
       stderr: string;
       signal: NodeJS.Signals | null;
       timedOut: boolean;
     } {
-      const r = execTool('sh', ['-c', opts.command], { cwd: opts.cwd, timeout: opts.timeoutMs });
+      const r = execTool('sh', ['-c', opts.command], { cwd: opts.cwd, timeout: opts.timeoutMs, env: opts.env });
       return {
         exitCode: r.exitCode,
         stdout: r.stdout,
@@ -1345,8 +1351,11 @@ function parsePredicateFlags(args: string[]): Record<string, string> {
  *     [--phase-dir <dir>] [--phase-number <n>] [--phase-req-ids <ids>] --raw
  *
  * The subprocess runs at the runtime project root (the `cwd` passed to this
- * router), inheriting the process env. Interpolation placeholders
- * ${PHASE_NUMBER}/${PHASE_DIR}/${PHASE_REQ_IDS} are substituted from the flags.
+ * router), inheriting the process env. `${PHASE_NUMBER}`/`${PHASE_DIR}`/
+ * `${PHASE_REQ_IDS}` in a `command-exit-zero` command are resolved from the
+ * flags as REAL env vars on that subprocess (see `buildInterpolationEnv` in
+ * gate-predicate-evaluator.cts) — never textually pre-substituted, so a flag
+ * value containing shell metacharacters cannot inject into the command.
  */
 function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): void {
   const flags = parsePredicateFlags(args);
@@ -1368,11 +1377,12 @@ function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): vo
   // SUFFIX under phaseDir but nothing confined phaseDir itself, so an
   // out-of-project directory (or an in-project symlink resolving out of it)
   // could source a BLOCKING gate's `block:false` verdict; the same value also
-  // interpolates into `${PHASE_DIR}` for the `command-exit-zero` kind. Confine
-  // it at this seam — cmdCheckPredicate is the ONLY caller of evaluatePredicate,
-  // so ctx.phaseDir cannot be produced anywhere else — and forward the
-  // realpath-canonical form so the shell interpolation resolves to the same
-  // verified path the check saw.
+  // reaches `${PHASE_DIR}` for the `command-exit-zero` kind (as a real env var,
+  // not a text substitution — see gate-predicate-evaluator.cts). Confine it at
+  // this seam — cmdCheckPredicate is the ONLY caller of evaluatePredicate, so
+  // ctx.phaseDir cannot be produced anywhere else — and forward the
+  // realpath-canonical form so the env var carries the same verified path the
+  // check saw.
   //
   // Blank is NOT an error: `--phase-dir "${PHASE_DIR}"` with PHASE_DIR unset is
   // the workflow's documented "no phase context" shape, which the evaluator

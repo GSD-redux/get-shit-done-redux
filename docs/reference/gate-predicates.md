@@ -90,8 +90,8 @@ contract.
 | `command` | string | yes | — | The shell command. Non-empty, ≤ 4096 chars |
 | `timeout` | number | no | `30` | Positive finite number, seconds |
 
-**Interpolation.** Before execution, three placeholders are substituted from
-the gate context; all others are left untouched for `sh` to interpret:
+**Interpolation.** Three placeholders resolve from the gate context; all
+others are left untouched for `sh` to interpret against its own env:
 
 | Placeholder | Source | Workflow flag |
 |---|---|---|
@@ -99,12 +99,22 @@ the gate context; all others are left untouched for `sh` to interpret:
 | `${PHASE_DIR}` | the active phase directory, confined to the project (see **Path confinement**) | `--phase-dir` |
 | `${PHASE_REQ_IDS}` | the phase's requirement ids | `--phase-req-ids` |
 
-An undefined placeholder interpolates to the empty string.
+These are exported as real environment variables on the `sh -c` subprocess —
+never textually substituted into the command string — so `sh`'s own `${VAR}`
+expansion resolves them as inert data. A value containing shell
+metacharacters (`$()`, backticks, `;`, `|`) therefore cannot inject into the
+command, even though `--phase-dir` is otherwise arbitrary path text. An
+undefined placeholder resolves to the empty string.
 
-**Sandbox.** cwd = project root; env = inherited from the GSD process; killed
-(SIGTERM) on timeout. The command runs as the user, on the user's machine —
-there is no sandbox boundary vs. the user's own shell. See ADR-2008 "Trust
-model".
+**Quote it with double quotes**, e.g. `"${PHASE_DIR}"` (every example above
+does). Single quotes suppress ALL shell parameter expansion (standard POSIX
+`sh` behavior, not specific to this evaluator) — `'${PHASE_DIR}'` stays the
+literal text `${PHASE_DIR}`, unexpanded.
+
+**Sandbox.** cwd = project root; env = inherited from the GSD process plus
+the three `PHASE_*` vars above; killed (SIGTERM) on timeout. The command runs
+as the user, on the user's machine — there is no sandbox boundary vs. the
+user's own shell. See ADR-2008 "Trust model".
 
 **Result mapping.**
 
