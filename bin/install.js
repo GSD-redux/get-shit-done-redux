@@ -12952,7 +12952,13 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     portableHooks: hasPortableHooks,
     runtime,
     configPath: settingsPath,
-    configuredEntrypoints: plan.hooksSurface === 'settings-json' ? settingsEntrypoints : undefined,
+    // #4249: track unconditionally. Gating on `plan.hooksSurface ===
+    // 'settings-json'` made tracking depend on an unasserted
+    // installSurface/hooksSurface coupling — a descriptor that broke it would
+    // silently drop this runtime out of validation. Everything recorded here
+    // lands in settings.json by construction, and the registered-command
+    // filter below already discards entries no hook actually references.
+    configuredEntrypoints: settingsEntrypoints,
   };
   // #2979: local-install hook commands also use a runner GUI/minimal-PATH
   // runtimes can resolve. Bare `node` fails when the host launches the
