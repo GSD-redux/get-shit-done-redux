@@ -144,6 +144,7 @@ const CONFIG_DEFAULTS = {
   firecrawl: _getConfigDefault('firecrawl'),
   exa_search: _getConfigDefault('exa_search'),
   text_mode: _getNestedConfigDefault('workflow', 'text_mode'),
+  compact_content: _getNestedConfigDefault('workflow', 'compact_content'),
   sub_repos: _getNestedConfigDefault('planning', 'sub_repos'),
   pr_strict: _getNestedConfigDefault('planning', 'pr_strict'),
   resolve_model_ids: _getConfigDefault('resolve_model_ids'),
