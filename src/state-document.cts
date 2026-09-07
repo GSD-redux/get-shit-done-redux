@@ -553,7 +553,22 @@ export function stateReplaceField(content: string, fieldName: string, newValue: 
   // `(.*)` captured the following line and the rebuild discarded it — the #4010
   // data-loss. ADR-3180 §7.7 makes stateExtractField the same-line-confined owner;
   // this aligns the writer to it.
-  const boldPattern = new RegExp(`(\\*\\*${escaped}:\\*\\*[ \\t]*)(.*)`, 'i');
+  //
+  // #4243: the bold form is also ANCHORED to line start, with same-line leading
+  // whitespace only. The pre-fix pattern carried no `^` and no `m` flag, so a
+  // bold label quoted MID-SENTENCE inside prose — an Accumulated Context bullet
+  // mentioning `**Status:**` — captured the rewrite and destroyed the rest of
+  // its line, silently, whenever a whole-body caller fed this function every
+  // section (beginPhaseCore's tryField, advancePlanCore's Status/Current Plan
+  // writes). The plain branch below was always line-anchored; only the bold
+  // branch lagged. Anchoring reuses #4010's same-line confinement idiom (the
+  // leading class is `[ \t]*`, deliberately NOT the `\s*` the issue suggested —
+  // `^\s*\*\*` can consume the newlines before the label into the match and
+  // drop them on rebuild) and #4186's recognition-by-anchoring discipline: a
+  // write target must BE the whole declared line shape, never a substring
+  // guess inside prose. `$` is explicit-and-inert (`.` never crosses line
+  // terminators) and documents that the match ends at end-of-line.
+  const boldPattern = new RegExp(`^([ \\t]*\\*\\*${escaped}:\\*\\*[ \\t]*)(.*)$`, 'im');
   if (boldPattern.test(content)) {
     return content.replace(boldPattern, (_match, prefix: string) => joinFieldReplacement(prefix, newValue));
   }
