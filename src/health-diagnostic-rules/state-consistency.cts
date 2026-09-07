@@ -175,6 +175,17 @@ const RULE_W002: Rule = {
     );
 
     const diagnostics: Diagnostic[] = [];
+    // #4257: the valid set above is WORKSTREAM-scoped by construction (every
+    // source field is read from `planningPaths(cwd)`'s base, which resolves
+    // under `.planning/workstreams/<active-ws>/`), and per-workstream phase
+    // numbering is deliberate — so under a workstream the message must NAME
+    // that scope rather than make an unqualified project-wide claim (a
+    // reference to a phase declared only in a SIBLING workstream reads as
+    // "undeclared" against this list; that is the scope speaking, not drift).
+    // Root scope (`workstream === null`, flat or root-planning projects)
+    // keeps the byte-identical message — no clause is appended when none
+    // applies.
+    const scopeClause = snapshot.workstream ? ` in workstream ${snapshot.workstream}` : '';
     for (const ref of snapshot.statePhaseTokens.value) {
       const dotIdx = ref.indexOf('.');
       const head = dotIdx === -1 ? ref : ref.slice(0, dotIdx);
@@ -184,7 +195,7 @@ const RULE_W002: Rule = {
       diagnostics.push({
         code: 'W002',
         severity: SEVERITY.WARNING,
-        message: `STATE.md references phase ${ref}, but only phases ${sortedValid.join(', ')} are declared`,
+        message: `STATE.md references phase ${ref}, but only phases ${sortedValid.join(', ')} are declared${scopeClause}`,
         remedy: adviseRemedy(
           'Review STATE.md manually before changing it; /gsd-health --repair will not overwrite an existing STATE.md for phase mismatches',
         ),
