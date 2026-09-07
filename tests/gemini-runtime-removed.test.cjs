@@ -275,7 +275,24 @@ function shellHomeEnvVars(text) {
   return out;
 }
 
+// Detect the exact structural debris #4347 exposed: two gsd_run definitions in
+// one resolver arm. Unlike shellHomeEnvVars(), this examines statements rather
+// than env tokens, so an orphaned duplicate cannot hide merely because it has
+// no `${VAR:-default}` expansion.
+function launcherStructureProblems(text) {
+  return Array.from(
+    text.matchAll(/gsd_run\(\)\s*\{[^{}]*\}\s*;\s*gsd_run\(\)\s*\{/g),
+    (match) => `duplicate gsd_run definitions at offset ${match.index}`,
+  );
+}
+
 describe('#4347 shell launcher / JS registry runtime-home parity', () => {
+  test('the structure guard rejects duplicate definitions without relying on env vars', () => {
+    const definition = 'gsd_run() { node "$GSD_TOOLS" "$@"; }';
+    assert.equal(launcherStructureProblems(`${definition}; ${definition}; elif true`).length, 1);
+    assert.deepEqual(launcherStructureProblems(`${definition}; elif true`), []);
+  });
+
   test('every env var the launcher snippet probes is a registry-recognized runtime home', () => {
     const recognized = registryHomeEnvVars();
     const probed = shellHomeEnvVars(fs.readFileSync(LAUNCHER_SNIPPET, 'utf8'));
@@ -309,7 +326,7 @@ describe('#4347 shell launcher / JS registry runtime-home parity', () => {
     ], 'a registry runtime home gained or lost a launcher arm — confirm that is intended');
   });
 
-  test('no propagated copy of the resolver carries an env var the snippet dropped', () => {
+  test('no propagated copy carries a dropped env var or malformed resolver structure', () => {
     // AC4 of the issue: propagated copies move WITH the source, never as a
     // hand-patched subset. `commands/` carries an older if/elif form that
     // sync-runtime-launcher.cjs does not regenerate, so it is swept here too.
@@ -328,6 +345,9 @@ describe('#4347 shell launcher / JS registry runtime-home parity', () => {
         // require.
         const text = fs.readFileSync(full, 'utf8');
         if (!text.includes('_GSD_SHIM_NAME')) continue;   // no resolver in this file
+        for (const problem of launcherStructureProblems(text)) {
+          offenders.push(`${path.relative(ROOT, full)}: ${problem}`);
+        }
         for (const name of shellHomeEnvVars(text)) {
           if (recognized.has(name) || LEGACY_SHELL_ONLY_HOME_VARS.has(name)) continue;
           offenders.push(`${path.relative(ROOT, full)}: ${name}`);
@@ -336,6 +356,6 @@ describe('#4347 shell launcher / JS registry runtime-home parity', () => {
     };
     for (const root of roots) walk(path.join(ROOT, root));
     assert.deepEqual(offenders.sort(), [],
-      'a propagated resolver copy probes an env var the registry does not recognize — re-run `npm run sync:launcher`');
+      'a propagated resolver copy is stale or structurally malformed — re-run the launcher/plugin generators');
   });
 });
