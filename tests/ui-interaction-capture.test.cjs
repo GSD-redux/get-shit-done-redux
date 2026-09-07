@@ -224,11 +224,11 @@ const HAS_BASH = (() => {
 
 /** Absolute paths of the coreutils the fence needs, so PATH can hold only the stubs. */
 function coreutilPaths() {
-  const r = spawnSync('bash', ['-c', 'for c in sed head mkdir rm tr; do command -v "$c" || exit 1; done'],
+  const r = spawnSync('bash', ['-c', 'for c in sed head mkdir rm tr date; do command -v "$c" || exit 1; done'],
     { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
   assert.equal(r.status, 0, `coreutils must resolve: ${r.stderr}`);
-  const [sed, head, mkdir, rm, tr] = r.stdout.trim().split(/\r?\n/);
-  return { sed, head, mkdir, rm, tr };
+  const [sed, head, mkdir, rm, tr, date] = r.stdout.trim().split(/\r?\n/);
+  return { sed, head, mkdir, rm, tr, date };
 }
 
 const STUB_NPX = `#!/bin/sh
@@ -244,7 +244,9 @@ case "$cmd" in
     exit 0 ;;
   new_page)
     if [ "\${STUB_FAIL_NEWPAGE:-0}" = 1 ]; then printf '## Pages\\n1: about:blank\\n'; exit 0; fi
-    printf '## Pages\\n1: about:blank\\n2: %s [selected]\\n' "$1"; exit 0 ;;
+    nl='\\n'; [ "\${STUB_CRLF:-0}" = 1 ] && nl='\\r\\n'
+    printf "## Pages\${nl}1: about:blank\${nl}2: %s [selected]\${nl}" "$1"
+    exit "\${STUB_NEWPAGE_RC:-0}" ;;
   press_key)
     [ "\${STUB_FAIL_PRESS:-0}" = 1 ] && exit 1
     exit 0 ;;
@@ -284,6 +286,10 @@ function runInteractionFence(t, opts = {}) {
     `mkdir() { ${JSON.stringify(cu.mkdir)} "$@"; }`,
     `rm() { ${JSON.stringify(cu.rm)} "$@"; }`,
     `tr() { ${JSON.stringify(cu.tr)} "$@"; }`,
+    `date() { ${JSON.stringify(cu.date)} "$@"; }`,
+    // Opt-in strict mode: an agent runner MAY execute the fence under errexit + pipefail,
+    // and the unconditional stop must still be reached on a failed navigation.
+    ...(opts.strict ? ['set -e -o pipefail'] : []),
     ...screenshotApproachFences().interaction,
     'printf "FINAL_STATUS=%s\\n" "$INTERACTION_STATUS"',
     '',
@@ -373,7 +379,8 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
     assert.ok(out.calls.some((c) => c.includes(' new_page http://localhost:3999/ --timeout 30000')), 'navigates to the resolved dev URL, time-bounded');
     const sessions = new Set(out.calls.map((c) => c.split(' ')[5]));
     assert.equal(sessions.size, 1, `every call must address one daemon session: ${[...sessions].join(',')}`);
-    assert.match([...sessions][0], /^[0-9a-f-]+$/, 'the CLI accepts hex and dashes only');
+    assert.match([...sessions][0], /^[0-9]+-[0-9]+-[0-9]+$/,
+      'epoch-BASHPID-RANDOM, every part present — the CLI accepts hex and dashes only');
     // Every later command addresses the page new_page marked [selected].
     for (const c of out.calls.filter((x) => / (resize_page|take_snapshot|take_screenshot|press_key|list_console_messages) /.test(x))) {
       assert.ok(/ (resize_page|take_snapshot|take_screenshot|press_key|list_console_messages) 2( |$)/.test(c), `pageId 2 expected: ${c}`);
@@ -413,13 +420,60 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
     assert.match(out.stdout, /interaction capture FAILED: baseline/);
   });
 
-  test('snapshotFailureCountsAsAFailedStep', (t) => {
+  test('snapshotFailureCountsAsAFailedStepAndRemovesAStaleSnapshot', (t) => {
+    const dir = shotsDir(t);
+    // A reused directory can hold a snapshot from an earlier run; its uids belong to a
+    // page this run never saw.
+    fs.mkdirSync(path.join(dir, 'interaction'));
+    fs.writeFileSync(path.join(dir, 'interaction', 'snapshot.txt'), 'uid=9_9 stale');
     const out = runInteractionFence(t, {
       chrome: true,
-      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_FAIL_SNAPSHOT: '1' },
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: dir, STUB_FAIL_SNAPSHOT: '1' },
     });
     assert.match(out.stdout, /interaction step FAILED: take_snapshot/);
+    assert.ok(!fs.existsSync(path.join(dir, 'interaction', 'snapshot.txt')), 'stale uids must not survive a failed snapshot');
     assert.match(out.status, /^captured \(2 state\(s\), 1 failed\)/, 'two clean screenshots must not read as 0 failed');
+  });
+
+  test('crlfDriverOutputStillYieldsThePageId', (t) => {
+    const out = runInteractionFence(t, {
+      chrome: true,
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_CRLF: '1' },
+    });
+    assert.ok(out.calls.some((c) => c.includes(' resize_page 2 1440 900')), `page id must parse from CRLF output: ${out.calls.join(' | ')}`);
+    assert.match(out.status, /^captured \(2 state\(s\), 0 failed\)/);
+  });
+
+  test('newPageThatPrintsAPageLineButExitsNonZeroIsAFailedNavigation', (t) => {
+    const out = runInteractionFence(t, {
+      chrome: true,
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_NEWPAGE_RC: '7' },
+    });
+    const verbs = out.calls.map((c) => c.split(' ')[6]);
+    assert.deepEqual(verbs, ['start', 'new_page', 'stop'], 'partial output must not be mistaken for a page id');
+    assert.match(out.stdout, /new_page FAILED/);
+    assert.equal(out.status, 'not captured (driver or capture failure)');
+  });
+
+  test('underErrexitAndPipefailAFailedNewPageStillReachesStop', (t) => {
+    const out = runInteractionFence(t, {
+      chrome: true,
+      strict: true,
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_NEWPAGE_RC: '7' },
+    });
+    assert.equal(out.r.status, 0, `the block must not abort: ${out.r.stderr}`);
+    const verbs = out.calls.map((c) => c.split(' ')[6]);
+    assert.deepEqual(verbs, ['start', 'new_page', 'stop']);
+  });
+
+  test('underErrexitAndPipefailTheHappyPathIsUnchanged', (t) => {
+    const out = runInteractionFence(t, {
+      chrome: true,
+      strict: true,
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t) },
+    });
+    assert.equal(out.r.status, 0, out.r.stderr);
+    assert.match(out.status, /^captured \(2 state\(s\), 0 failed\)/);
   });
 
   test('pressKeyFailureCountsAndSkipsTheFocusCapture', (t) => {

@@ -221,10 +221,15 @@ else
     # the pageId every later command takes as its first argument. --timeout bounds the
     # navigation (ms); the CLI's other verbs carry no timeout, so a hung page is caught
     # here, before any of them run.
-    # `tr -d '\r'` so a CRLF-emitting driver (Git Bash) still matches the `$` anchor; the
-    # trailing `|| true` keeps a failed new_page from aborting the block under `set -e
-    # -o pipefail` before the unconditional stop below runs.
-    PAGE_ID=$($CDT new_page "$DEV_URL" --timeout 30000 2>/dev/null | tr -d '\r' | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1 || true)
+    # The exit status is checked BEFORE the output is parsed: a navigation that prints a
+    # page line and then fails is a failed navigation, not a page id. The `if` also keeps a
+    # failed new_page from aborting the block under `set -e -o pipefail` before the
+    # unconditional stop below runs. `tr -d '\r'` so a CRLF-emitting driver (Git Bash)
+    # still matches the `$` anchor.
+    PAGE_ID=""
+    if NEW_PAGE_OUT=$($CDT new_page "$DEV_URL" --timeout 30000 2>/dev/null); then
+      PAGE_ID=$(printf '%s\n' "$NEW_PAGE_OUT" | tr -d '\r' | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1)
+    fi
     if [ -n "$PAGE_ID" ]; then
       $CDT resize_page "$PAGE_ID" 1440 900 >/dev/null 2>&1
       # The snapshot lists every element with the uid that click/hover/fill/drag take.
