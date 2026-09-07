@@ -1271,4 +1271,24 @@ describe('config-set: hooks.commit_types end-to-end (#4443)', () => {
     const written = JSON.parse(fs.readFileSync(path.join(dir, '.planning', 'config.json'), 'utf8'));
     assert.deepEqual(written.hooks.commit_types, ['enhance']);
   });
+
+  test('config-set hooks.community accepts a boolean and does not report Unknown config key', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4443-community-'));
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), '{}\n');
+
+    const gsdTools = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+    const result = spawnSync(
+      process.execPath,
+      [gsdTools, 'config-set', 'hooks.community', 'true'],
+      { cwd: dir, encoding: 'utf8', timeout: 15000 },
+    );
+
+    assert.equal(result.status, 0, `config-set failed: ${result.stderr || result.stdout}`);
+    assert.doesNotMatch(result.stdout + result.stderr, /Unknown config key/);
+
+    const written = JSON.parse(fs.readFileSync(path.join(dir, '.planning', 'config.json'), 'utf8'));
+    assert.equal(written.hooks.community, true);
+  });
 });
