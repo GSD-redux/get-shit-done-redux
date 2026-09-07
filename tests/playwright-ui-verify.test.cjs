@@ -829,17 +829,29 @@ describe('#4176 — the probe program, executed against real servers', () => {
       'a closed but valid port must probe as 000 through a real connection refusal');
   });
 
-  test('a port that accepts but never answers is time-bounded, not a hang', async () => {
+  test('a port that accepts but never answers is time-bounded, not a hang — and is named as a timeout', async () => {
     // The issue's own third case. Without AbortSignal.timeout this never returns and the
     // audit blocks forever; a presence check on the string "AbortSignal" cannot tell the
     // difference between a bound that fires and one that does not.
+    // AND IT IS NOT "000". A port that accepted the connection has something listening on
+    // it; printing the same token as a refused connection reported that server as absent
+    // — the defect this issue names, reached through the timeout instead of a status.
     const server = await listen(() => { /* accept, never respond */ });
     try {
       const started = Date.now();
-      assert.strictEqual(await runProbe(urlOf(server)), '000');
+      assert.strictEqual(await runProbe(urlOf(server)), 'timeout');
       assert.ok(Date.now() - started < 20000,
         'the probe must abort a non-answering port rather than hang');
     } finally { await close(server); }
+  });
+
+  test('a server that answers something other than 2xx or an auth status still reports that status', async () => {
+    for (const status of [404, 500, 503]) {
+      const server = await listen((req, res) => { res.writeHead(status); res.end(); });
+      try {
+        assert.strictEqual(await runProbe(urlOf(server)), String(status));
+      } finally { await close(server); }
+    }
   });
 });
 
@@ -1185,6 +1197,50 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       assert.ok(r.stdout.includes(`(HTTP ${status}) is auth-gated`),
         `HTTP ${status} means the server answered and demanded credentials; it must not read as absent — got: ${r.stdout.trim()}`);
     }
+  });
+
+  test('a server answering a status that is neither 2xx nor auth-gated is reported as PRESENT, with its port and status', () => {
+    // 404 from an API-only server, 500 from a dev server mid-crash, 503 while it compiles,
+    // 429 from a rate limiter: each ANSWERED. Before this fixture every one of them fell
+    // through the `case` and printed "No dev server", which is the claim #4176 exists to
+    // stop the auditor making about a server that is there.
+    for (const status of ['404', '429', '500', '503']) {
+      const r = ok(runFence({ PROBE_3000: status }));
+      assert.doesNotMatch(r.stdout, /No dev server/, `HTTP ${status} is an answer, not an absence`);
+      assert.match(r.stdout, new RegExp(`Dev server at http://localhost:3000 \\(HTTP ${status}\\) answered`));
+      assert.strictEqual(r.captureStatus, 'not captured (dev server answered, not 2xx)');
+      assert.deepStrictEqual(r.shotDirs, [], 'nothing to capture from a server that is not serving a page');
+    }
+  });
+
+  test('a later port holding a real dev server outranks an earlier port that answered non-2xx', () => {
+    // The loop must NOT stop at the first answer of any kind: an API on 3000 answering 404
+    // beside Vite on 5173 is the everyday shape, and the capture belongs to 5173.
+    const r = ok(runFence({ PROBE_3000: '404', PROBE_5173: '200' }));
+    assert.match(r.stdout, /Screenshots captured .* from http:\/\/localhost:5173/);
+    assert.strictEqual(r.captureStatus, 'captured');
+  });
+
+  test('a port that accepts the connection but never answers is reported as present and hung, not absent', () => {
+    const r = ok(runFence({ PROBE_3000: 'timeout' }));
+    assert.doesNotMatch(r.stdout, /No dev server/);
+    assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 accepted the connection but did not answer within 5s/);
+    assert.strictEqual(r.captureStatus, 'not captured (dev server accepted the connection, no answer in 5s)');
+    assert.deepStrictEqual(r.shotDirs, []);
+  });
+
+  test('among present-but-unusable answers the precedence is gated, then any other status, then a timeout', () => {
+    // Each class records its own FIRST port; across classes the more actionable answer is
+    // reported. Both orderings of the ports are driven so the precedence is shown to be
+    // by CLASS and not an accident of which port was probed first.
+    const gatedFirst = ok(runFence({ PROBE_3000: '401', PROBE_5173: '500', PROBE_8080: 'timeout' }));
+    assert.strictEqual(gatedFirst.captureStatus, 'not captured (dev server auth-gated)');
+    const gatedLast = ok(runFence({ PROBE_3000: 'timeout', PROBE_5173: '500', PROBE_8080: '403' }));
+    assert.strictEqual(gatedLast.captureStatus, 'not captured (dev server auth-gated)');
+    assert.match(gatedLast.stdout, /http:\/\/localhost:8080 \(HTTP 403\) is auth-gated/);
+    const otherOverTimeout = ok(runFence({ PROBE_3000: 'timeout', PROBE_8080: '503' }));
+    assert.strictEqual(otherOverTimeout.captureStatus, 'not captured (dev server answered, not 2xx)');
+    assert.match(otherOverTimeout.stdout, /http:\/\/localhost:8080 \(HTTP 503\) answered/);
   });
 
   test('every capture invocation passes a positive timeout as its own argument', () => {

@@ -111,12 +111,21 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 ```bash
 # Detect a running dev server across the documented ports. The probe follows
 # redirects, accepts any 2xx, and is time-bounded, so a root path that
-# redirects (Next.js middleware/i18n, trailing-slash normalization) or a port
-# that accepts but never answers is not misread as "no dev server". fetch()
-# rather than curl, for cross-platform parity with
-# gsd-core/references/checkpoints.md.
+# redirects (Next.js middleware/i18n, trailing-slash normalization) is not
+# misread as "no dev server", and a port that accepts but never answers is
+# reported as exactly that instead of hanging the audit. fetch() rather than
+# curl, for cross-platform parity with gsd-core/references/checkpoints.md.
+#
+# EVERY answer is recorded, not only the two the capture can use. "No dev
+# server" is a claim about the PORT — nothing listening — and a server that
+# answered 404 (an API-only server on 3000), 500 (a dev server mid-crash) or
+# 503 (still compiling), or that accepted the connection and never answered,
+# is present. Reporting any of those as absent is #4176's own defect, one
+# status family over; the auditor cannot screenshot them, but it can say why.
 DEV_URL=""
 DEV_GATED=""
+DEV_OTHER=""
+DEV_TIMEOUT=""
 for PORT in 3000 5173 8080; do
   # process.stdout.write(String(...)), never console.log(r.status): console.log
   # CAN colorize a NUMBER — whenever node emits color, i.e. a TTY or FORCE_COLOR — so
@@ -124,7 +133,11 @@ for PORT in 3000 5173 8080; do
   # no-dev-server branch. Measured: piped and uncoloured it prints "200\n"; with
   # FORCE_COLOR=1 it prints the escapes. Writing the string is unconditional, which is
   # why it is the fix rather than relying on the caller's colour state.
-  PROBE=$(node -e 'fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write("000"))' "http://localhost:$PORT" 2>/dev/null || echo "000")
+  # The timeout is named in the output. The program owns the ONLY AbortSignal in play,
+  # so an abort — TimeoutError on current Node, the older AbortError spelling on early
+  # 18.x — can only be the 5s bound firing; every other rejection (refused, reset,
+  # a redirect loop) still reads "000".
+  PROBE=$(node -e 'fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(e=>process.stdout.write(e&&(e.name==="TimeoutError"||e.name==="AbortError")?"timeout":"000"))' "http://localhost:$PORT" 2>/dev/null || echo "000")
   PROBE=${PROBE:-000}
   case "$PROBE" in
     2??)     DEV_URL="http://localhost:$PORT"; break ;;
@@ -136,6 +149,14 @@ for PORT in 3000 5173 8080; do
     # unguarded assignment here reports whichever gated port was tried LAST, so
     # with 3000 and 8080 both auth-gated the reason would name 8080.
     401|403|407|511) [ -n "$DEV_GATED" ] || DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
+    # Any other status is a server that ANSWERED. The loop keeps going, because a
+    # later port may hold the real dev server (an API on 3000 answering 404, Vite
+    # on 5173), and a 2xx there still wins via the `break` above. First-wins, as
+    # the gated arm is, so the reported port follows the documented precedence.
+    [1-9]??) [ -n "$DEV_OTHER" ] || DEV_OTHER="http://localhost:$PORT (HTTP $PROBE)" ;;
+    # Accepted the connection, never answered within the bound: hung, mid-start,
+    # or stopped at a debugger — present, whichever it is.
+    timeout) [ -n "$DEV_TIMEOUT" ] || DEV_TIMEOUT="http://localhost:$PORT" ;;
   esac
 done
 
@@ -222,6 +243,16 @@ if [ -n "$DEV_URL" ]; then
 elif [ -n "$DEV_GATED" ]; then
   CAPTURE_STATUS="not captured (dev server auth-gated)"
   echo "Dev server at $DEV_GATED is auth-gated — code-only audit"
+elif [ -n "$DEV_OTHER" ]; then
+  # Precedence among the present-but-unusable outcomes: gated, then any other
+  # answer, then a timeout. Each records its own FIRST port; across the three
+  # the more informative answer is reported, since "401" says what to do and
+  # "no answer in 5s" only says something is there.
+  CAPTURE_STATUS="not captured (dev server answered, not 2xx)"
+  echo "Dev server at $DEV_OTHER answered but is not serving a page — code-only audit"
+elif [ -n "$DEV_TIMEOUT" ]; then
+  CAPTURE_STATUS="not captured (dev server accepted the connection, no answer in 5s)"
+  echo "Dev server at $DEV_TIMEOUT accepted the connection but did not answer within 5s — code-only audit"
 else
   CAPTURE_STATUS="not captured (no dev server)"
   echo "No dev server on ports 3000, 5173 or 8080 — code-only audit"
