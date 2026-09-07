@@ -78,29 +78,104 @@ Parse the user's selection into COMMITS list.
 
 **MODE=phase:**
 
-Read `.planning/.phase-manifest.json` if it exists.
+Resolve the phase's own directory, then anchor the selection window on it. `find-phase`
+resolves through `planningDir`, so under an active workstream this is that workstream's
+phase directory — not the root's same-numbered one.
 
-If the file exists and `manifest.phases?.[TARGET_PHASE]?.commits` is a non-empty array:
-  - Use `manifest.phases[TARGET_PHASE].commits` entries as COMMITS (each entry is a commit hash)
+```bash
+PHASE_DIR=$(gsd_run query find-phase "${TARGET_PHASE}" --raw 2>/dev/null)
+```
 
-If the file does not exist, or `manifest.phases?.[TARGET_PHASE]` is missing:
-  - Display: "Manifest has no entry for phase ${TARGET_PHASE} (or file missing), falling back to git log search"
-  - Fallback: run git log and filter for the target phase scope:
-    ```bash
-    git log --oneline --no-merges --all | grep -E "\(0*${TARGET_PHASE}(-[0-9]+)?\):" | head -50
-    ```
-  - Use matching commits as COMMITS
+If `PHASE_DIR` is empty, the phase does not exist in the active scope:
+```
+Phase ${TARGET_PHASE} not found in the active planning scope. Nothing to revert.
+```
+Exit cleanly — do NOT fall back to an unbounded search.
+
+Derive the selection window from `PHASE_DIR` (the `#3995` anchor, shared with
+`code-review.md`): the base is the parent of the first commit that added anything under
+the phase's own directory, and the tip is `HEAD`.
+
+```bash
+PHASE_START=$(git log --format="%H" --diff-filter=A -- "${PHASE_DIR}" 2>/dev/null | tail -1)
+UNDO_RANGE=""
+if [ -n "$PHASE_START" ]; then
+  if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
+    UNDO_RANGE="${PHASE_START}^..HEAD"
+  else
+    UNDO_RANGE="${PHASE_START}..HEAD"
+  fi
+fi
+```
+
+**Fail closed when no anchor resolves.** If `UNDO_RANGE` is empty, stop:
+```
+Cannot determine a reliable commit window for phase ${TARGET_PHASE} (no commit adds ${PHASE_DIR}).
+Re-run with /gsd:undo --last N and select commits explicitly.
+```
+Exit cleanly. An unbounded repository-wide search is never the fallback — that is the
+defect this anchor replaces.
+
+Select within the window. **No `--all`:** only commits reachable from `HEAD` may be
+reverted, because reverting a commit that is not in the current branch's history stages a
+change the branch never received.
+
+```bash
+git log --oneline --no-merges "${UNDO_RANGE}" | grep -E "\(0*${TARGET_PHASE}(-[0-9]+)?\):"
+```
+
+Use matching commits as COMMITS.
+
+**Report truncation, never truncate silently.** If the selection exceeds 50 commits, show
+the count and stop rather than capping — a partial phase revert leaves a worse tree state
+than either reverting the phase or not:
+```
+Phase ${TARGET_PHASE} selects ${N} commits (>50). Refusing to revert a partial phase.
+Use /gsd:undo --plan NN-MM per plan, or /gsd:undo --last N.
+```
 
 ---
 
 **MODE=plan:**
 
-Run:
+Extract the phase number from `TARGET_PLAN` (the `NN` of `NN-MM`) and derive the same
+window from that phase's own directory — a plan number is unique within its phase, and a
+phase number only within its milestone and workstream.
+
 ```bash
-git log --oneline --no-merges --all | grep -E "\(${TARGET_PLAN}\)" | head -50
+PLAN_PHASE="${TARGET_PLAN%%-*}"
+PHASE_DIR=$(gsd_run query find-phase "${PLAN_PHASE}" --raw 2>/dev/null)
+PHASE_START=$(git log --format="%H" --diff-filter=A -- "${PHASE_DIR}" 2>/dev/null | tail -1)
+UNDO_RANGE=""
+if [ -n "$PHASE_START" ]; then
+  if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
+    UNDO_RANGE="${PHASE_START}^..HEAD"
+  else
+    UNDO_RANGE="${PHASE_START}..HEAD"
+  fi
+fi
+```
+
+Apply the same fail-closed rule as MODE=phase when `PHASE_DIR` or `UNDO_RANGE` is empty,
+then select within the window:
+
+```bash
+git log --oneline --no-merges "${UNDO_RANGE}" | grep -E "\(${TARGET_PLAN}\):"
 ```
 
 Use matching commits as COMMITS.
+
+---
+
+**Known residual — concurrent workstreams.** The window above is scoped to the target
+phase's own directory, which is workstream-correct, but the commit subjects it filters
+are not: the executor's scope contract is `type({phase}-{plan})` with no workstream
+token, so two workstreams running the same phase number concurrently emit
+indistinguishable subjects and both fall inside each other's window. Narrowing the window
+removes the previous-milestone and unreachable-branch classes entirely; this last class
+needs a discriminator that does not exist in a commit subject today (`#3995`: *"Message
+subjects demonstrably do not carry enough information to identify a phase"*). Until one
+exists, `confirm_revert` is the backstop for it.
 
 ---
 
@@ -118,11 +193,20 @@ Exit cleanly.
 
 Skip this step entirely for MODE=last.
 
+Resolve the active scope's planning root first — **both** modes below read from it. Under
+an active workstream the roadmap and phase directories describing the target are that
+workstream's, not the root's:
+
+```bash
+PLANNING_DIR=$(gsd_run query planning inspect --pick generated_from.planning_root --raw 2>/dev/null)
+[ -n "$PLANNING_DIR" ] || PLANNING_DIR=".planning"
+```
+
 ---
 
 **MODE=phase:**
 
-Read `.planning/ROADMAP.md` inline.
+Read `${PLANNING_DIR}/ROADMAP.md` inline.
 
 Search for phases that list a dependency on the target phase. Look for patterns like:
 - "Depends on: Phase ${TARGET_PHASE}"
@@ -130,7 +214,7 @@ Search for phases that list a dependency on the target phase. Look for patterns 
 - "depends_on: [${TARGET_PHASE}]"
 
 For each dependent phase N found:
-1. Check if `.planning/phases/${N}-*/` directory exists
+1. Check if `${PLANNING_DIR}/phases/${N}-*/` directory exists
 2. If directory exists, check for any PLAN.md or SUMMARY.md files inside it
 
 If any downstream phase has started work, collect warnings:
@@ -145,7 +229,8 @@ If any downstream phase has started work, collect warnings:
 
 Extract the phase number from TARGET_PLAN (the NN part of NN-MM). Extract the plan number (the MM part).
 
-Look for later plans in the same phase directory (`.planning/phases/${NN}-*/`). For each later plan (plans with number > MM):
+Look for later plans in the same phase directory (`${PLANNING_DIR}/phases/${NN}-*/`, the
+same workstream-resolved root). For each later plan (plans with number > MM):
 1. Read the later plan's PLAN.md
 2. Check if its `<files>` sections or `consumes` fields reference outputs from the target plan
 
@@ -300,8 +385,8 @@ Show next steps:
 
 <success_criteria>
 - [ ] Arguments parsed correctly for all three modes
-- [ ] --phase mode reads .planning/.phase-manifest.json using manifest.phases[TARGET_PHASE].commits
-- [ ] --phase mode falls back to git log if manifest entry missing
+- [ ] --phase mode anchors selection on the phase's own directory (find-phase -> PHASE_START), never a repository-wide commit-subject grep
+- [ ] --phase and --plan modes fail closed when no anchor resolves, never widening to an unbounded search
 - [ ] Dependency check warns when downstream phases have started (MODE=phase)
 - [ ] Dependency check warns when later plans reference target plan outputs (MODE=plan)
 - [ ] Dirty-tree guard aborts if working tree has uncommitted changes
