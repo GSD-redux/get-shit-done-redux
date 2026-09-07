@@ -67,24 +67,31 @@ export type FieldMergeStrategy = 'progress-ratchet';
 /**
  * The seven CANONICAL values `normalizeStateStatus` (`src/state-document.cts`)
  * maps recognized raw status prose TO — the function's default fallback plus
- * each branch's literal output, in the order the function tests them. This is
- * NOT the raw body prose vocabulary `CONTEXT.md`'s "STATE.md Status Lifecycle
- * (ADR-2207)" entry documents (`Ready to plan` → `All phases complete` →
- * `<version> milestone complete` → `Awaiting next milestone`, plus the
- * handler-authored strings in `KNOWN_TEMPLATE_DEFAULTS['Status']`) — that is
- * free-form prose `normalizeStateStatus` READS.
+ * each vocabulary entry's literal output. This is NOT the raw body prose
+ * vocabulary `CONTEXT.md`'s "STATE.md Status Lifecycle (ADR-2207)" entry
+ * documents (`Ready to plan` → `All phases complete` → `<version> milestone
+ * complete` → `Awaiting next milestone`, plus the handler-authored strings
+ * in `KNOWN_TEMPLATE_DEFAULTS['Status']`) — that is free-form prose
+ * `normalizeStateStatus` READS.
  *
  * CORRECTED (#3873 phase-3 test-matrix row 26 — verified by executing
  * `normalizeStateStatus`, not by reading this docstring's prior claim):
  * this is NOT a closed set the `status` frontmatter key is restricted to at
- * runtime. `normalizeStateStatus` is deliberately LENIENT: its fallback is
- * `normalizedStatus = status || 'unknown'`, and when none of its
- * substring-match branches recognize the raw input, that fallback — the
- * caller's raw, UNRECOGNIZED prose — is returned unchanged. A status value
- * outside this seven-member set is not rejected, coerced, or normalized; it
- * passes straight through into the frontmatter. `STATUS_LIFECYCLE_ENUM` is
- * therefore the set of values the normalizer maps recognized input ONTO, not
- * a runtime-enforced closed vocabulary for the field.
+ * runtime. `normalizeStateStatus` is deliberately LENIENT: its fallback
+ * returns the caller's raw, UNRECOGNIZED prose unchanged — when none of its
+ * vocabulary entries recognize the whole-field input, that raw value is what
+ * the function returns. A status value outside this seven-member set is not
+ * rejected, coerced, or normalized; it passes straight through into the
+ * frontmatter. `STATUS_LIFECYCLE_ENUM` is therefore the set of values the
+ * normalizer maps recognized input ONTO, not a runtime-enforced closed
+ * vocabulary for the field.
+ *
+ * #4186: recognition is ANCHORED (whole-field match against the declared
+ * `STATUS_EXACT_TOKENS` / `STATUS_ANCHORED_PATTERNS` tables in
+ * `src/state-document.cts`), never a substring scan of the prose — prose
+ * merely CONTAINING a status word (a `.planning/` path, `verifica*`,
+ * `completezza`) passes through verbatim instead of being rewritten to a
+ * credible wrong token.
  */
 export const STATUS_LIFECYCLE_ENUM = Object.freeze([
   'unknown',

@@ -22,6 +22,7 @@ const {
   getPreserveWhenUnchangedFields,
   STATE_MD_SECTIONS,
   sliceCurrentPositionSection,
+  stateReplaceProgressPercent,
 } = require('../gsd-core/bin/lib/state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
 const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
@@ -1879,7 +1880,7 @@ describe('ADR-1769 Phase 4: milestoneSwitch transition — milestone reset', () 
 
   test('gsd_state_version is preserved across the reset', () => {
     const result = transitionCore(milestoneBody(), { kind: 'milestoneSwitch', version: 'v2.0', name: 'New Milestone' }, deps);
-    assert.ok(/gsd_state_version:\s*1\.0/.test(result.content), 'gsd_state_version must be preserved');
+    assert.ok(/gsd_state_version:\s*"?1\.0"?/.test(result.content), 'gsd_state_version must be preserved');
   });
 
   test('Current Position section is reset to "Not started (defining requirements)"', () => {
@@ -4348,9 +4349,19 @@ describe('ADR-3473 §8.6 matrix rows 13-17 (+10/11 pinned): the measured-vs-unme
   });
 
   test('stringNonZeroTotalIsMeasured', () => {
+    // #4129 superseded the observable: a measured resyncing write no longer
+    // lets the derived block wholesale-replace the curated one — the
+    // declared progress-ratchet now merges (totals derived both directions,
+    // completed counters up-only, #2969). The measured/unmeasured BOUNDARY
+    // this row pins is unchanged and still observable here: the derived
+    // TOTALS stand (a wholesale curated restore would have written 5/32).
     const r = restoreWithDerivedTotals({ total_phases: '1', total_plans: '0', completed_phases: '0', completed_plans: '0' });
-    assert.strictEqual(r.mutated, false, 'a measured scan (total_phases:"1") must win — derived stands untouched');
-    assert.deepStrictEqual(r.postFm.progress, { total_phases: '1', total_plans: '0', completed_phases: '0', completed_plans: '0' });
+    assert.strictEqual(r.mutated, true, 'a measured scan (total_phases:"1") must not wholesale-restore the curated block — the #4129 ratchet merge runs');
+    assert.deepStrictEqual(
+      r.postFm.progress,
+      { total_phases: '1', total_plans: '0', completed_phases: 5, completed_plans: 32 },
+      'measured: totals take the derived value (#2440 both directions); completed counters keep curated ("0" < 5/#2969 up-only); derived carried no percent so none is invented',
+    );
   });
 
   test('absentTotalsAreUnmeasured', () => {
@@ -4379,15 +4390,18 @@ describe('ADR-3473 §8.6 matrix rows 13-17 (+10/11 pinned): the measured-vs-unme
 
   // Pinned mirror pair from the design's row 11/the existing matrix's row
   // 10 — grouped here so the boundary (only both-zero is unmeasured) reads
-  // legibly against the coercion cases above.
+  // legibly against the coercion cases above. #4129 superseded the observable
+  // to the ratchet merge (see stringNonZeroTotalIsMeasured above): "measured"
+  // is still decided by EITHER total being non-zero, and still observable
+  // because the derived TOTALS stand rather than a curated wholesale restore.
   test('oneNonZeroTotalCountsAsMeasuredEitherDirection', () => {
     const r1 = restoreWithDerivedTotals({ total_phases: 1, total_plans: 0, completed_phases: 0, completed_plans: 0 });
-    assert.strictEqual(r1.mutated, false, 'total_phases:1, total_plans:0 must count as measured');
-    assert.deepStrictEqual(r1.postFm.progress, { total_phases: 1, total_plans: 0, completed_phases: 0, completed_plans: 0 });
+    assert.strictEqual(r1.mutated, true, 'total_phases:1, total_plans:0 must count as measured (#4129 ratchet merge ran, not a curated restore)');
+    assert.deepStrictEqual(r1.postFm.progress, { total_phases: 1, total_plans: 0, completed_phases: 5, completed_plans: 32 });
 
     const r2 = restoreWithDerivedTotals({ total_phases: 0, total_plans: 1, completed_phases: 0, completed_plans: 0 });
-    assert.strictEqual(r2.mutated, false, 'total_phases:0, total_plans:1 must count as measured (the mirror) — only both-zero is unmeasured');
-    assert.deepStrictEqual(r2.postFm.progress, { total_phases: 0, total_plans: 1, completed_phases: 0, completed_plans: 0 });
+    assert.strictEqual(r2.mutated, true, 'total_phases:0, total_plans:1 must count as measured (the mirror) — only both-zero is unmeasured');
+    assert.deepStrictEqual(r2.postFm.progress, { total_phases: 0, total_plans: 1, completed_phases: 5, completed_plans: 32 });
   });
 });
 
@@ -4438,6 +4452,332 @@ describe('ADR-3473 §8.6 matrix row 36: property — preservation never drops a 
       // curated/derived/resync triple) is printed via the thrown Error
       // above on any failure.
       { seed: 3871, numRuns: 300 },
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4129: the resync arm of `applyPreserveAlways` (rows 8-14 of .gsd/bug/
+// fix-4129-completed-phases-recompute/50-test-matrix.md). A resyncing write
+// whose scan MEASURED something now runs the declared `progress-ratchet`
+// merge instead of wholesale-replacing the curated block — the write path
+// finally enforces the same monotonic property the read path
+// (`shouldPreserveExistingProgress`) always has. The #3756 unmeasured guard
+// and the #3242/#3871 explicit-progress contract are unchanged (pinned by the
+// blocks above and by tests/frontmatter.test.cjs).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4129: resyncing measured write ratchets the progress block', () => {
+  function resyncMerge(curatedProgress, derivedProgress, extra = {}) {
+    const tx = openStateTransaction({
+      snapshot: { progress: { ...curatedProgress } },
+      resync: true,
+      bodyDeltas: neutralBodyDeltasForMatrix(),
+      ...extra,
+    });
+    return applyStatePreservation({ transaction: tx, postFm: { progress: { ...derivedProgress } } });
+  }
+
+  test('resyncRatchetKeepsCuratedCompletedWhenDerivedUnderCounts', () => {
+    // The issue's exact shape: derived 2 (a stale-dated sibling verification)
+    // vs curated 3 (the ROADMAP truth a hand-fix or earlier correct write left).
+    const r = resyncMerge(
+      { total_phases: 18, completed_phases: 3, total_plans: 6, completed_plans: 6, percent: 17 },
+      { total_phases: 18, completed_phases: 2, total_plans: 6, completed_plans: 6, percent: 11 },
+    );
+    assert.deepStrictEqual(
+      r.postFm.progress,
+      { total_phases: 18, completed_phases: 3, total_plans: 6, completed_plans: 6, percent: 17 },
+      '#4129: a measured resync must never move completed counters DOWN — totals derived, completed curated, percent recomputed from the merged counters (3/18=17)',
+    );
+    assert.strictEqual(r.mutated, true, 'the merge actually changed the derived block');
+  });
+
+  test('resyncRatchetStillLetsCompletedMoveUp', () => {
+    // Genuine completion: derived ABOVE curated must ratchet up, and percent follows.
+    const r = resyncMerge(
+      { total_phases: 18, completed_phases: 2, total_plans: 6, completed_plans: 6, percent: 11 },
+      { total_phases: 18, completed_phases: 3, total_plans: 6, completed_plans: 6, percent: 17 },
+    );
+    assert.deepStrictEqual(
+      r.postFm.progress,
+      { total_phases: 18, completed_phases: 3, total_plans: 6, completed_plans: 6, percent: 17 },
+      '#4129: the ratchet is up-only, never a freeze — a genuine increment still lands',
+    );
+  });
+
+  test('resyncRatchetMixedSidesRecomputePercentFromMergedCounters', () => {
+    // Mixed: derived completed_plans ratchets up, curated completed_phases
+    // survives — percent must be recomputed from the MERGED counters
+    // (min(54/54 plans, 5/? phases capped by plan fraction), never either
+    // side's stale stored percent.
+    const r = resyncMerge(
+      { total_plans: 54, completed_plans: 50, completed_phases: 5, percent: 93 },
+      { total_plans: 54, completed_plans: 54, completed_phases: 1, percent: 50 },
+    );
+    assert.strictEqual(r.postFm.progress.completed_plans, 54, 'derived completed_plans (54 > 50) ratchets up');
+    assert.strictEqual(r.postFm.progress.completed_phases, 5, 'curated completed_phases (5 > 1) survives — never down');
+    // min(54/54, 5/5-with-no-total... completed_phases 5, total_phases absent) —
+    // computeProgressPercent with only plan data present: min(1.0, plan)=100? No:
+    // phase data absent → phaseFraction=1 → min(1, 1) = 100.
+    assert.strictEqual(r.postFm.progress.percent, 100, 'percent is recomputed from the merged counters through the completion-ratio kernel');
+  });
+
+  test('resyncRatchetCoercesStringScalarsThroughToFiniteNumber', () => {
+    // Frontmatter scalars arrive as STRINGS ("2", not 2) — the comparison
+    // must coerce (scanMeasuredSomething's own convention), never `typeof`.
+    const r = resyncMerge(
+      { total_phases: 18, completed_phases: 3, percent: 17 },
+      { total_phases: '18', total_plans: '6', completed_phases: '2', completed_plans: '6', percent: 11 },
+    );
+    assert.strictEqual(r.postFm.progress.completed_phases, 3, 'string "2" must compare numerically against curated 3 — curated survives');
+    assert.strictEqual(r.postFm.progress.total_phases, '18', 'string totals take the derived value verbatim (both directions)');
+    assert.strictEqual(r.postFm.progress.percent, 17, 'percent recomputed from merged counters (3/18)');
+  });
+
+  test('resyncRatchetIsANoOpWhenDerivedEqualsCurated', () => {
+    // The #4094 withheld shape arrives here: the scan fell back to the stored
+    // counters, so derived == curated and the merge must not report a
+    // mutation (the #948 no-op-write family).
+    const block = { total_phases: 18, completed_phases: 3, total_plans: 6, completed_plans: 6, percent: 17 };
+    const r = resyncMerge(block, { ...block });
+    assert.strictEqual(r.mutated, false, 'derived === curated → no mutation (withheld shape is untouched)');
+    assert.deepStrictEqual(r.postFm.progress, block);
+  });
+
+  test('resyncRatchetDoesNotResurrectAWithheldPercent', () => {
+    // Derived percent ABSENT (an upstream #1761/#3217 withhold nulled it) —
+    // the merge must not recompute one over counters it was withheld for.
+    // Percent follows the derived side (the deriveProgressKeys branch's own
+    // convention) and recomputation is gated on the derived block HAVING
+    // carried one — an absent percent stays absent, exactly as the
+    // pre-#4129 wholesale replace left it.
+    const r = resyncMerge(
+      { total_phases: 5, completed_phases: 5, percent: 100 },
+      { total_phases: 5, completed_phases: 2 },
+    );
+    assert.strictEqual(r.postFm.progress.completed_phases, 5, 'curated completed counter survives');
+    assert.ok(!('percent' in r.postFm.progress), 'no recomputed percent may appear when the derived block carried none');
+  });
+
+  test('explicitProgressFieldStillWholesaleReplacesOnMeasuredScan', () => {
+    // #3242/#3871 contract, unchanged by #4129: when the caller NAMED a
+    // progress field, the resync they asked for wins outright — the escape
+    // hatch for deliberate downward correction stays open.
+    const r = resyncMerge(
+      { total_phases: 18, completed_phases: 3, percent: 17 },
+      { total_phases: 18, completed_phases: 2, percent: 11 },
+      { explicitProgressField: true },
+    );
+    assert.strictEqual(r.mutated, false, 'explicit progress write: the derived block stands untouched');
+    assert.deepStrictEqual(r.postFm.progress, { total_phases: 18, completed_phases: 2, percent: 11 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4243 follow-up: stateReplaceProgressPercent's bold branch is anchored to
+// line start, exactly like stateReplaceField's #4453 fix. The pre-fix bold
+// pattern carried no ^ and no /m, so a bold percent-ish label quoted
+// MID-SENTENCE inside prose — an Accumulated Context bullet mentioning
+// `**Progress:**` — captured the machine-segment rewrite and destroyed the
+// rest of its line, silently, while the real Progress line stayed stale (the
+// callers — cmdStateUpdateProgress, syncCore's percent arm,
+// applyPostSyncPreservation — all feed the whole document). #2177's recorded
+// protections (frontmatter stripped, suffix preserved, plain-form fallback,
+// bold-beats-plain priority among LINE-START forms) are unchanged; per the
+// maintainer ruling (2026-09-07), #2177's incidental bold-anywhere matching
+// was not load-bearing.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('stateReplaceProgressPercent — anchored bold form leaves prose lookalikes untouched (#4243 follow-up)', () => {
+  // The corruption shape: a bold label quoted for documentation purposes
+  // inside a bullet, with the real status line in the plain template form.
+  // The value after the label has NO percent, so the pre-fix whole-value
+  // replacement destroyed the rest of the sentence.
+  const PROSE_LINE =
+    '- [2026-07-15] Progress dashboard: the **Progress:** field is machine-managed by state update-progress; do not hand-edit.';
+
+  const SEGMENT = (bars) => `[${'█'.repeat(bars)}${'░'.repeat(10 - bars)}]`;
+
+  // ROW 1 — the failing-first regression. The lookalike must survive
+  // byte-identically and the REAL plain line must take the update.
+  test('issue repro: mid-sentence **Progress:** lookalike survives, real plain line updates', () => {
+    const input = [
+      '## Current Position',
+      '',
+      'Phase: 1 of 1',
+      'Plan: 2 of 2',
+      'Status: Executing Phase 1',
+      '',
+      'Progress: [█████░░░░░] 50% (1/2 plans done)',
+      '',
+      '## Accumulated Context',
+      '',
+      '### Decisions',
+      '',
+      PROSE_LINE,
+      '',
+    ].join('\n');
+    const result = stateReplaceProgressPercent(input, 0);
+    assert.notEqual(result, null, 'the real plain Progress line must still match');
+    assert.ok(
+      result.includes(PROSE_LINE),
+      `prose lookalike must survive byte-identically, got:\n${result}`,
+    );
+    assert.ok(
+      result.includes(`Progress: ${SEGMENT(0)} 0% (1/2 plans done)`),
+      `the real plain line's machine segment must update with the suffix intact, got:\n${result}`,
+    );
+    assert.ok(
+      !result.includes('the **Progress:** ['),
+      'the rewrite must not bleed a machine segment into the prose occurrence',
+    );
+  });
+
+  test('lookalike ordered BEFORE the real bold line: prose survives, line-start bold line updates', () => {
+    const input = [
+      '## Accumulated Context',
+      '',
+      PROSE_LINE,
+      '',
+      '## Current Position',
+      '',
+      '**Progress:** [█████░░░░░] 50% (2/4 plans done; blocked on API keys)',
+      '',
+    ].join('\n');
+    const result = stateReplaceProgressPercent(input, 75);
+    assert.notEqual(result, null);
+    assert.ok(result.includes(PROSE_LINE), `prose lookalike must survive, got:\n${result}`);
+    assert.ok(
+      result.includes(`**Progress:** ${SEGMENT(8)} 75% (2/4 plans done; blocked on API keys)`),
+      `the real line-start bold line's machine segment must update with the suffix intact, got:\n${result}`,
+    );
+  });
+
+  test('lookalike whose value carries a percent: prose percent is not swapped, real plain line updates', () => {
+    const lookalike = '- The **Progress:** bar read 20% last week; see the archived thread.';
+    const input = [
+      'Progress: [█████░░░░░] 50% (1/2 plans done)',
+      '',
+      '## Accumulated Context',
+      '',
+      lookalike,
+      '',
+    ].join('\n');
+    const result = stateReplaceProgressPercent(input, 0);
+    assert.notEqual(result, null);
+    assert.ok(
+      result.includes(lookalike),
+      `the prose percent must not be swapped into a machine segment, got:\n${result}`,
+    );
+    assert.ok(
+      result.includes(`Progress: ${SEGMENT(0)} 0% (1/2 plans done)`),
+      'the real plain line must take the update',
+    );
+  });
+
+  test('mid-sentence lookalike with no real line: returns null (honest absence), never a rewrite', () => {
+    const input = `Some prose sentence quoting a **Progress:** label mid-sentence, plus trailing words.`;
+    assert.equal(stateReplaceProgressPercent(input, 40), null);
+  });
+
+  test('mid-word lookalike with no real line: returns null', () => {
+    const input = 'Prose mentions text**Progress:**tail mid-word and nothing else.';
+    assert.equal(stateReplaceProgressPercent(input, 40), null);
+  });
+
+  // Negative space: an INDENTED line-start bold line is still the status line
+  // (the leading class is same-line whitespace only, #4010's idiom), and the
+  // indent is preserved.
+  test('indented line-start bold line still updates, indent preserved', () => {
+    const input = '  **Progress:** [█████░░░░░] 50%';
+    const result = stateReplaceProgressPercent(input, 100);
+    assert.equal(result, `  **Progress:** ${SEGMENT(10)} 100%`);
+  });
+
+  // Negative space + fix-shape pin: leading blank lines before the label are
+  // NOT swallowed. The anchor's leading class is same-line whitespace only
+  // (`[ \t]*`); the naive `^\s*` variant would consume the newlines into the
+  // match and drop them on rebuild (#4010 hazard, rejected in #4453).
+  test('leading blank lines before a line-start bold label survive byte-identically', () => {
+    const input = '\n\n**Progress:** [█████░░░░░] 50%';
+    const result = stateReplaceProgressPercent(input, 40);
+    assert.equal(result, `\n\n**Progress:** ${SEGMENT(4)} 40%`);
+  });
+
+  // Negative space: #2177's priority is unchanged among LINE-START forms — a
+  // real bold status line still beats the plain form, so an earlier free-text
+  // plain `Progress:` line cannot capture the rewrite ahead of it.
+  test('line-start bold still beats the plain form; earlier free-text plain line untouched (#2177)', () => {
+    const freeText = 'Progress: tracked in the weekly thread, do not edit this line by hand';
+    const input = `${freeText}\n\n**Progress:** [█████░░░░░] 50%\n`;
+    const result = stateReplaceProgressPercent(input, 75);
+    assert.notEqual(result, null);
+    assert.ok(result.includes(freeText), 'the free-text plain line must stay byte-identical');
+    assert.ok(
+      result.includes(`**Progress:** ${SEGMENT(8)} 75%`),
+      'the line-start bold status line is the one rewritten',
+    );
+  });
+
+  // Negative space: first-occurrence-wins among line-start bold lines.
+  test('two line-start bold occurrences: only the first is replaced', () => {
+    const input = '**Progress:** [█████░░░░░] 50%\n**Progress:** [████░░░░░░] 40%';
+    const result = stateReplaceProgressPercent(input, 10);
+    assert.equal(result, `**Progress:** ${SEGMENT(1)} 10%\n**Progress:** [████░░░░░░] 40%`);
+  });
+
+  // Negative space: the plain-form fallback (#2177's plain path) is unchanged
+  // when no bold line exists at all — machine-segment-only swap, suffix kept.
+  test('plain-form fallback unchanged: no bold anywhere, plain line updates with suffix intact', () => {
+    const input = 'Progress: [██░░░░░░░░] 20% (1/2 plans done; next: verification)';
+    const result = stateReplaceProgressPercent(input, 50);
+    assert.notEqual(result, null);
+    assert.equal(result, `Progress: ${SEGMENT(5)} 50% (1/2 plans done; next: verification)`);
+  });
+
+  // Negative space: #2177's core — the YAML frontmatter `progress:` key is
+  // never a match target; the block survives byte-identically.
+  test('frontmatter progress: key never matched — block survives byte-identically (#2177)', () => {
+    const fm = [
+      '---',
+      'progress:',
+      '  total_plans: 2',
+      '  completed_plans: 1',
+      '  percent: 50',
+      '---',
+      '',
+    ].join('\n');
+    const input = `${fm}# Project State\n\nProgress: [█████░░░░░] 50% (1/2 plans done)\n\n## Accumulated Context\n\n${PROSE_LINE}\n`;
+    const result = stateReplaceProgressPercent(input, 0);
+    assert.notEqual(result, null);
+    assert.ok(
+      result.startsWith(fm),
+      `the frontmatter block must survive byte-identically, got:\n${result}`,
+    );
+    assert.ok(result.includes('  percent: 50'), 'the frontmatter percent line is untouched');
+    assert.ok(result.includes(PROSE_LINE), 'the prose lookalike survives');
+    assert.ok(
+      result.includes(`Progress: ${SEGMENT(0)} 0% (1/2 plans done)`),
+      'the real plain line takes the update',
+    );
+  });
+
+  test('CRLF document: lookalike survives with CRLF intact, real plain line updates', () => {
+    const input = [
+      'Progress: [█████░░░░░] 50% (1/2 plans done)',
+      '',
+      '## Accumulated Context',
+      '',
+      PROSE_LINE,
+      '',
+    ].join('\r\n');
+    const result = stateReplaceProgressPercent(input, 0);
+    assert.notEqual(result, null);
+    assert.ok(result.includes(PROSE_LINE), `prose lookalike must survive, got:\n${result}`);
+    assert.ok(result.includes('\r\n'), 'CRLF endings must be preserved');
+    assert.ok(
+      result.includes(`Progress: ${SEGMENT(0)} 0% (1/2 plans done)`),
+      'the real plain line must take the update',
     );
   });
 });

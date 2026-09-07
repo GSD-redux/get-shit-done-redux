@@ -174,6 +174,38 @@ Invariant categories to consider: round-trip, monotonicity, boundary containment
 
 **Enforcement:** Code review verifies that property tests exist for modules in scope. Stryker mutation score below 80 % blocks merge (see next section).
 
+### No ad hoc timeout literals
+
+Do not write a bare numeric `timeout`/`timeoutMs` option value at a test call site. Two independently-guessed copies of the same magic number can silently drift apart, or worse, collide exactly and produce a zero-margin race: `bin/check-latest-version.cjs`'s `timeout: 15_000` and this suite's independent `timeoutMs: 15000` could SIGKILL the whole process tree at the exact same instant, and it failed specifically on Windows CI (fixed in PR #4428).
+
+**Non-compliant:**
+
+```javascript
+const r = runHookSeam(WORKER_PATH, [], { timeoutMs: 15000 });
+```
+
+**Compliant — same class of subprocess as an existing class-norm:**
+
+```javascript
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+const r = runHookSeam(WORKER_PATH, [], { timeoutMs: GIT_TIMEOUT_MS });
+```
+
+**Compliant — a genuinely distinct class, declared locally with a margin over the thing it wraps** (the actual fix in PR #4428 — the worker's inner `npm view` call is bounded by its own named `NPM_VIEW_TIMEOUT_MS`, so the outer test imports it and adds explicit headroom instead of re-guessing a number):
+
+```javascript
+const { NPM_VIEW_TIMEOUT_MS } = require('../gsd-core/bin/check-latest-version.cjs');
+
+const WORKER_TEARDOWN_MARGIN_MS = 10_000; // real headroom beyond the inner timeout it wraps
+
+const r = runHookSeam(WORKER_PATH, [], { timeoutMs: NPM_VIEW_TIMEOUT_MS + WORKER_TEARDOWN_MARGIN_MS });
+```
+
+Import an existing class-norm constant from `tests/helpers/timeouts.cjs` (`PROBE_TIMEOUT_MS`, `GIT_TIMEOUT_MS`, `BUILD_TIMEOUT_MS`, `INSTALL_TIMEOUT_MS`) when the call is the same class of subprocess, or declare a local one with a comment justifying why it is a distinct class — see CONTRIBUTING.md's "Use Centralized Test Helpers" section.
+
+**Enforcement:** `local/no-adhoc-timeout-literal` (ESLint, `error`). A non-literal value (an `Identifier`, `MemberExpression`, or `CallExpression`) is trusted; only a resolvable numeric literal is flagged. There is no marker-comment escape — the fix is always to extract a named constant. `allowlist` (`eslint-rules/no-adhoc-timeout-literal.allowlist.json`) exempts pre-existing legacy violations and only ever ratchets down.
+
 ### Mutation testing — 80 % threshold
 
 Stryker runs in incremental mode (`--since origin/next`) on the `ubuntu-latest` / Node 24 CI leg as a PR-gating signal. The default threshold is **80 % mutation score** (killed / total mutants in the changed scope). PRs that drop below this threshold must either add tests that kill the surviving mutants or add the specific path to `stryker.config.mjs` with a documented reason.
@@ -210,6 +242,7 @@ Real multi-process race tests are deleted once the corresponding deterministic c
 | `local/no-source-grep` | `error` (promoted by #3313) | `readFileSync` on source files + text assertions; `assert.match`/`doesNotMatch` on raw stdout/stderr |
 | `local/no-magic-sleep-in-tests` | `error` | `setTimeout`/`sleep`/`delay` calls inside `test()`/`it()`/`describe()` bodies |
 | `local/no-elapsed-assertion` | `error` (promoted by #3331, precondition delivered by #3314) | Assertions on `Date.now()` delta, `process.hrtime()`, `performance.now()` comparisons |
+| `local/no-adhoc-timeout-literal` | `error` | Bare numeric `timeout`/`timeoutMs` option literal in `tests/**/*.cjs` (PR #4428) |
 | `no-only-tests/no-only-tests` | `error` | `test.only`/`describe.only`/`it.only` committed to non-scratch files |
 | `no-restricted-syntax` (ban 1) | `error` | Top-level `setTimeout` in `ExpressionStatement` |
 | `no-restricted-syntax` (ban 2) | `error` | `.only` member access on `test`/`it`/`describe` (belt-and-suspenders) |

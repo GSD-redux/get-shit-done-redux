@@ -681,11 +681,13 @@ describe('cmdWorktreeBaseCheck', () => {
     const chunks = [];
     const original = fs.writeSync;
     fs.writeSync = (fd, buf, offset, length) => {
+      const n = original.call(fs, fd, buf, offset, length);
       fds.push(fd);
+      // Chunk is derived from the REAL return count `n`, not the requested
+      // extent — a genuine short write must be reflected accurately (#4306).
       const start = offset ?? 0;
-      const end = length ?? (typeof buf === 'string' ? buf.length : buf.length);
-      chunks.push(typeof buf === 'string' ? buf.slice(start, end) : buf.toString('utf8', start, end));
-      return end - start;
+      chunks.push(typeof buf === 'string' ? buf.slice(start, start + n) : buf.toString('utf8', start, start + n));
+      return n;
     };
     t.after(() => { fs.writeSync = original; });
     const result = cmdWorktreeBaseCheck('/repo', [], {

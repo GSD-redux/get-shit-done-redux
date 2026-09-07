@@ -275,6 +275,22 @@ const PROVENANCE_RULES = [
     sources: (m) => [`gsd-core/${m[0]}`],
   },
   {
+    id: 'gsd-core-commands-corpus',
+    kind: 'rewrite',
+    roots: ['gsd-core'],
+    pattern: /^commands\/gsd\/(.+)$/,
+    sources: (m) => [`commands/gsd/${m[1]}`],
+    transforms: [INSTALL_ENGINE_SRC, INSTALLER_SRC],
+  },
+  {
+    id: 'gsd-core-agents-corpus',
+    kind: 'rewrite',
+    roots: ['gsd-core'],
+    pattern: /^agents\/(.+)$/,
+    sources: (m) => [`agents/${m[1]}`],
+    transforms: [INSTALL_ENGINE_SRC, INSTALLER_SRC],
+  },
+  {
     id: 'scripts-verbatim',
     kind: 'identity',
     roots: ['scripts'],

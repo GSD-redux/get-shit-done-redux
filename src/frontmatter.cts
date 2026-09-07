@@ -665,45 +665,136 @@ function countTopLevelKeyShapedLines(region: string): number {
  *   key its deduplication. Optional because this function has 50-odd call sites and several
  *   hold only an in-memory string; those dedup on a content digest instead.
  */
-function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
+/**
+ * The frontmatter REGION of a document: the text between the opening `---`
+ * fence at byte 0 and its closing fence.
+ *
+ * One fence parser, not two (#3850 review round 2, B1). `extractFrontmatter`
+ * and `frontmatterListEntries` need the identical answer to "where does the
+ * frontmatter start and stop" — same BOM tolerance (#2977), same byte-0-only
+ * fence rule, same CR handling before the closing fence — and differ only in
+ * what they do with the region text afterwards. A second copy of this logic is
+ * the `DEFECT.GENERATIVE-FIX` shape: it silently stops agreeing the first time
+ * either is taught something.
+ *
+ * `terminated: false` is the fence-opened-but-never-closed case. It is not an
+ * error here because the two callers disagree about it: `extractFrontmatter`
+ * runs the #1882 truncation probe over the region and may warn, while
+ * `frontmatterListEntries` has no array to return and gives up. So the shape
+ * is reported and the decision is left to them.
+ *
+ * `content` is returned alongside because it is the BOM-STRIPPED text, and a
+ * caller reporting on the document (the truncation diagnostic) must describe
+ * the same bytes the offsets were computed against.
+ */
+function frontmatterRegion(
+  content: string,
+): { region: string; terminated: boolean; content: string } | null {
   // #2977: tolerate a single leading UTF-8 BOM (U+FEFF), which Windows tooling
-  // (PowerShell `>`/`Out-File` on PS 5.1, several editors) writes by default. Without this
-  // strip, the byte-0 `startsWith('---')` fence check below fails on the BOM and the whole
-  // parse collapses to {} — every frontmatter field silently disappears, and the engine
-  // proceeds as though the file had no frontmatter at all. The BOM is a single codepoint;
-  // stripping it here restores byte-0 alignment so the rest of the function is unchanged.
-  // Scope: BOM only. Arbitrary non-BOM content before the fence (leading whitespace/blank
-  // line/comment) is a separate product-intent decision (tolerate vs diagnose) left to a
-  // future change — this fix does not broaden the byte-0 fence rule beyond the BOM.
-  if (content.charCodeAt(0) === 0xFEFF) {
-    content = content.slice(1);
-  }
-  // Match frontmatter only at byte 0 — a `---` block later in the document
-  // body (YAML examples, horizontal rules) must never be treated as frontmatter.
+  // (PowerShell `>`/`Out-File` on PS 5.1, several editors) writes by default.
+  // Without this strip, the byte-0 `startsWith('---')` fence check below fails
+  // on the BOM and the whole parse collapses — every frontmatter field silently
+  // disappears, and the engine proceeds as though the file had no frontmatter
+  // at all. The BOM is a single codepoint; stripping it here restores byte-0
+  // alignment. Scope: BOM only. Arbitrary non-BOM content before the fence
+  // (leading whitespace/blank line/comment) is a separate product-intent
+  // decision (tolerate vs diagnose) left to a future change.
+  if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+  // Match frontmatter only at byte 0 — a `---` block later in the document body
+  // (YAML examples, horizontal rules) must never be treated as frontmatter.
   const headerEnd = content.startsWith('---\r\n') ? 5 : content.startsWith('---\n') ? 4 : -1;
-  if (headerEnd === -1) return {};
+  if (headerEnd === -1) return null;
 
   const closingLineStart = content.indexOf('\n---', headerEnd);
   if (closingLineStart === -1) {
-    const region = content.slice(headerEnd);
-    const keyCount = countKeysBeforeTruncation(region);
-    if (keyCount >= UNTERMINATED_KEY_THRESHOLD && isFrontmatterShaped(region)) {
+    return { region: content.slice(headerEnd), terminated: false, content };
+  }
+  const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
+  return { region: content.slice(headerEnd, yamlEnd), terminated: true, content };
+}
+
+function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
+  // Fence location (BOM strip, byte-0 rule, CR handling) lives in
+  // `frontmatterRegion` so this and `frontmatterListEntries` cannot drift
+  // apart on where the frontmatter is.
+  const found = frontmatterRegion(content);
+  if (!found) return {};
+
+  if (!found.terminated) {
+    const keyCount = countKeysBeforeTruncation(found.region);
+    if (keyCount >= UNTERMINATED_KEY_THRESHOLD && isFrontmatterShaped(found.region)) {
       warnUnusableInput({
         reason: UNUSABLE_REASON.FRONTMATTER_UNTERMINATED,
         source: sourcePath,
-        content,
+        content: found.content,
       });
     }
     return {};
   }
 
-  const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
-  const region = content.slice(headerEnd, yamlEnd);
   try {
-    return parseGuardedYamlRegion(region);
+    return parseGuardedYamlRegion(found.region);
   } catch {
     return unparseableResult();
   }
+}
+
+/**
+ * The entries of a top-level frontmatter ARRAY key, VERBATIM — as the values
+ * YAML actually describes rather than the display-flattened strings
+ * `extractFrontmatter` returns (#3850).
+ *
+ * `extractFrontmatter` renders each object entry for HUMANS —
+ * `normalizeParsedValue` maps `{test, resolution}` to `"test: …, resolution: …"`
+ * via `flattenObjectListItem`. That is the right contract for a reader printing
+ * a list, and the wrong one for a reader that needs to branch on a specific
+ * field: `status`, `resolution` and `reason` are recoverable from that string
+ * only by re-parsing prose, which cannot distinguish a real `resolution:` field
+ * from the same text inside a quoted `truth:`.
+ *
+ * This returns the same entries BEFORE that display step, off the same
+ * `extractFrontmatter` parse path — same BOM strip (#2977), same byte-0 fence
+ * rule (shared via `frontmatterRegion`), same anchor/alias and sentinel guards,
+ * same ambiguous-colon repair. It is deliberately NOT a second parser: a
+ * hand-rolled fence regex or entry slicer re-loses whatever the real one
+ * learned, which is the `DEFECT.GENERATIVE-FIX` shape.
+ *
+ * EVERY element is returned, at its own index, whatever its type (#3850 review
+ * round 3, Blocker). An earlier revision filtered to objects, which compacted
+ * the array: a caller numbering entries by array position then numbered the
+ * SURVIVORS, so a list mixing object and non-object entries lost rows outright
+ * and mis-numbered the rest — the same silently-vanishing-row defect this whole
+ * issue exists to close, triggered by entry shape instead of file status.
+ * Deciding what a non-object entry MEANS is a caller's judgement (the two
+ * readers in `uat.cts` answer it differently and both are right for their own
+ * vocabulary); dropping it is nobody's.
+ *
+ * Returns `null` when the document has no frontmatter, the frontmatter is
+ * unterminated or unparseable, the key is absent, or the key is not an array —
+ * "nothing to iterate" cases the caller should not have to tell apart.
+ */
+function frontmatterListEntries(content: string, key: string): unknown[] | null {
+  const found = frontmatterRegion(content);
+  if (!found || !found.terminated) return null;
+
+  let raw: unknown;
+  try {
+    refuseAnchorsAndAliases(found.region);
+    refuseIfSentinelPresent(found.region);
+    raw = restoreNullBytesDeep(loadWithAmbiguousColonRepair(escapeNullBytesForParse(found.region)));
+  } catch {
+    // Same posture as `extractFrontmatter`: an unparseable region is "no
+    // frontmatter", never a throw into a caller that was only reading a field.
+    return null;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = (raw as Record<string, unknown>)[key];
+  // `Array.isArray` narrows an `unknown` to `any[]`, and returning that
+  // unchecked is how `any` escapes a guarded parser into every caller. The
+  // element type genuinely IS unknown here — that is the point of this
+  // function — so say so.
+  if (!Array.isArray(value)) return null;
+  return value as unknown[];
 }
 
 /**
@@ -822,6 +913,23 @@ function agentScalarNeedsDoubleQuoting(s: string): boolean {
   return false;
 }
 
+/**
+ * #4053 — Quote a numeric-looking scalar that is not all-digit (`22.10`,
+ * `1.0`, `1e3`, `0x1F`) so a spec YAML reader keeps it a string: bare `22.10`
+ * reloads as the float 22.1 and collides with `22.1`, a different phase.
+ *
+ * All-digit strings stay bare as a deliberate, scoped trade-off — not a
+ * safety guarantee. A leading-zero value (`02`, `017`) also mis-parses under
+ * a spec reader (to 2, 17). It is left unquoted because zero-padded ids
+ * (`plan: 01`, `phase: 02`) are the pervasive GSD convention, quoting them
+ * all is the blanket quoting #4053 asked to avoid, and the loss is padding
+ * rather than identity: `02` and `2` normalize to the same phase; `22.1` and
+ * `22.10` do not.
+ */
+function generalScalarNeedsNumericQuoting(s: string): boolean {
+  return YAML_NUMERIC_RE.test(s) && !/^\d+$/.test(s);
+}
+
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
   // #3257: read the full-line-comment channel (set by parseGuardedYamlRegion when comments
@@ -887,12 +995,12 @@ function reconstructFrontmatter(obj: Frontmatter): string {
         } else {
           // eslint-disable-next-line @typescript-eslint/no-base-to-string
           const sv = String(subval);
-          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
+          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) || generalScalarNeedsNumericQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
         }
       }
     } else {
       const sv = String(value);
-      if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv)) {
+      if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv) || generalScalarNeedsNumericQuoting(sv)) {
         lines.push(`${key}: "${escapeDoubleQuotedScalar(sv)}"`);
       } else {
         lines.push(`${key}: ${sv}`);
@@ -1468,6 +1576,13 @@ export = {
   stripFrontmatter,
   noOpObjectListSetError,
   parseMustHavesBlock,
+  // #3850: an array key's entries as parsed OBJECTS, for a caller that must
+  // branch on an entry's `status:`/`resolution:` rather than print it. Off the
+  // same parse path as `extractFrontmatter`, minus only the display flattening.
+  frontmatterListEntries,
+  // #3850: the display rendering itself, so a caller deriving a name from those
+  // objects produces the byte-identical string `extractFrontmatter` would have.
+  flattenObjectListItem,
   FRONTMATTER_SCHEMAS,
   cmdFrontmatterGet,
   cmdFrontmatterSet,

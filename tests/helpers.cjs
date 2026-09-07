@@ -579,6 +579,136 @@ function mockPartialWriteThenThrow(fsModule, matches, bytesBeforeThrow, options 
 }
 
 /**
+ * Capture the bytes written to `captureFd` while `fn()` runs, WITHOUT ever
+ * fabricating a byte count for any fd (#4306).
+ *
+ * Every previous hand-rolled version of this idiom across the test suite
+ * mocked `fs.writeSync`, and on its "success" arm returned a fabricated byte
+ * count while pushing the bytes into a local array instead of ever calling
+ * the real `fs.writeSync` — the data reached nowhere but that array. That is
+ * unsafe: Node's `node:test` runner defaults to `--test-isolation=process`
+ * (Node >= 22), so each test file's own real stdout is what the PARENT
+ * runner reads to parse its child-to-parent result/TAP protocol. If the
+ * runner's own reporter write for an adjacent test lands on the mocked fd
+ * during this window, a mock that fabricates success without delivering the
+ * bytes silently swallows that write instead of letting it reach the real
+ * pipe — the parent then tries to parse a truncated stream, observed in CI
+ * as "Unable to deserialize cloned data" (Node's generic corrupted/truncated
+ * v8.deserialize error), not as a thrown exception.
+ *
+ * This helper always forwards every write, on every fd, to the real
+ * `fs.writeSync` first — so nothing is ever swallowed, regardless of what
+ * else shares the fd during the mocked window — and returns the REAL
+ * result. Only `captureFd`'s traffic is additionally recorded and returned
+ * to the caller as a joined UTF-8 string; every other fd's bytes still
+ * reach their real destination (e.g. a test's own stderr diagnostics still
+ * physically write to stderr, just outside the returned capture), they are
+ * simply not included in the returned string.
+ *
+ * Standalone — no node:test context required; save/restore in a `finally`
+ * so a thrown assertion still restores the real `fs.writeSync`.
+ *
+ * @param {number} captureFd - the fd to capture and return (1 for stdout, 2 for stderr).
+ * @param {() => void} fn - synchronous function to run while capturing.
+ * @returns {string} every byte actually written to `captureFd` during `fn()`.
+ */
+function captureFdSync(captureFd, fn) {
+  const chunks = [];
+  const orig = fs.writeSync;
+  fs.writeSync = (fd, data, ...rest) => {
+    const n = orig.call(fs, fd, data, ...rest);
+    if (fd === captureFd) {
+      // rest[0] is `offset` only for the buffer-form overload; the
+      // string-form overload's 2nd arg is `position`, which is irrelevant
+      // here since a string write has no byte offset into `data` itself.
+      const offset = Buffer.isBuffer(data) && typeof rest[0] === 'number' ? rest[0] : 0;
+      const buf = Buffer.isBuffer(data)
+        ? data.subarray(offset, offset + n)
+        : Buffer.from(String(data), 'utf8').subarray(0, n);
+      // Buffered, not decoded per-call: a real short write can split a
+      // multi-byte UTF-8 codepoint across two writeSync calls, and decoding
+      // each half separately would corrupt it. Decode once, after joining.
+      chunks.push(buf);
+}
+    return n;
+};
+  try {
+    fn();
+  } finally {
+    fs.writeSync = orig;
+}
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * NARROW, deliberate exception to `captureFdSync`'s
+ * "never swallow" philosophy (#4306) — do NOT reach for this casually.
+ *
+ * Async twin of `captureFdSync` that awaits `fn()` before restoring the
+ * patch, so a deferred write that happens after a microtask/macrotask
+ * boundary is still safely observed. Its patched `fs.writeSync`
+ * does NOT forward `captureFd`'s writes to the real `fs.writeSync` at all.
+ * It only records the bytes into `chunks` and returns the byte length of
+ * `data` as if the real syscall had succeeded, so a caller that inspects the
+ * return value sees a normal success and not an error. Every OTHER fd's
+ * writes still forward to the real `fs.writeSync` exactly as
+ * `captureFdSync` does — only the `captureFd`-matching branch
+ * differs.
+ *
+ * This exists for #4448: `runMain()`/`io.output()`'s deferred `fs.writeSync(1,
+ * ...)` races Node's own `node:test` child-to-parent IPC, which also uses fd
+ * 1 under the default `--test-isolation=process` — corrupting the parent's
+ * message parsing ("Unable to deserialize cloned data"). An always-forward
+ * capture (the first fix attempted for this issue) does not
+ * fix that: the corrupting write still physically reaches fd 1. Use this
+ * ONLY for a window the caller has verified is narrow and fully controlled —
+ * i.e. nothing else legitimately needs to write to `captureFd` during `fn()`
+ * — such as a single `runMain(...)` call plus its promise-chain settling.
+ * Reaching for this in a window where something else might legitimately
+ * write to `captureFd` will silently swallow that other write.
+ *
+ * @param {number} captureFd - the fd whose writes are suppressed and recorded
+ *   (never delivered to the real fd) while `fn()` runs.
+ * @param {() => (Promise<void> | void)} fn - function to run (and await) while suppressing.
+ * @returns {Promise<string>} every byte that WOULD have been written to
+ *   `captureFd` during `fn()`, joined as UTF-8 — none of it actually reached
+ *   the real fd.
+ */
+async function suppressFdAsync(captureFd, fn) {
+  const chunks = [];
+  const orig = fs.writeSync;
+  fs.writeSync = (fd, data, ...rest) => {
+    if (fd === captureFd) {
+      const offset = Buffer.isBuffer(data) && typeof rest[0] === 'number' ? rest[0] : 0;
+      // No real syscall happens here (unlike captureFdSync, which slices to
+      // the real return value `n`), so the caller-requested `length` IS the
+      // count that must be recorded and returned — suppression always
+      // "succeeds" in full, so anything else silently drops or over-reports
+      // bytes.
+      const length = Buffer.isBuffer(data) && typeof rest[1] === 'number' ? rest[1] : undefined;
+      const buf = Buffer.isBuffer(data)
+        ? data.subarray(offset, length === undefined ? undefined : offset + length)
+        : Buffer.from(String(data), 'utf8');
+      // Buffered, not decoded per-call: see captureFdSync's identical note on
+      // why joined-then-decoded avoids splitting a multi-byte UTF-8 codepoint.
+      chunks.push(buf);
+      // No real fs.writeSync call for this fd — that is the entire point of
+      // this helper. Return the byte length as if the write succeeded, so a
+      // caller inspecting the return value (Node's own writeSync contract)
+      // sees ordinary success rather than an error.
+      return buf.length;
+}
+    return orig.call(fs, fd, data, ...rest);
+};
+  try {
+    await fn();
+  } finally {
+    fs.writeSync = orig;
+}
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
  * Read a workflow .md file plus every .md file under its sibling
  * `<workflow-basename>/steps/` directory, concatenated in document order
  * (host file first, then step files sorted by filename).
@@ -1111,7 +1241,16 @@ function sandboxHome(t, dir) {
   });
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow };
+function writePackageSourceMarkerFixture(configDir) {
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, '.gsd-source'),
+    path.join(__dirname, '..', 'commands', 'gsd') + '\n',
+  );
+  return configDir;
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, writePackageSourceMarkerFixture, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow, captureFdSync, suppressFdAsync };
 
 // Lazy, for the reason builtLib() is lazy: reading either of these is what
 // forces the built-lib require, so a test file that needs neither can still

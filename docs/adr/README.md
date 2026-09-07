@@ -80,6 +80,12 @@ If A declares either relation toward B, **B must record the reciprocal.** A one-
 
 Only an `Accepted` ADR is owed the back-link. A `Proposed` ADR's claim is **prospective**: it has not taken effect, so its target is not marked. On ratification, the check begins demanding the back-links.
 
+### 3a. Amendment is symmetric too — but not yet gated
+
+A same-file `## Amendment (YYYY-MM-DD): <topic>` section (see `docs/contributor-standards.md`'s "Amending an accepted ADR") needs no back-link — there is only one file. A **separate** ADR that amends another is the same relation as Supersedes/Subsumes and follows the same rule: if A declares `**Amends:** [ADR-B]`, B **must** carry the reciprocal `**Amended by:** [ADR-A]` in the same PR. [ADR-2782](2782-reviewer-lane-capability-surface.md)'s single `Amends` field names four targets — [ADR-857](857-capability-system.md), [ADR-894](894-capability-declaration-format.md), [ADR-1016](1016-runtime-capability-descriptor.md), [ADR-1244](1244-capability-ecosystem.md) — and all four carry the reciprocal `Amended by` back-link.
+
+Unlike `Supersedes`/`Subsumes`, this is not yet enforced by `scripts/gen-adr-index.cjs` — `relationSections()` only recognizes `## Supersedes` / `## Subsumes` headings, and the header-field parity check does not walk `Amends`. Get the back-link right by review until that gap closes.
+
 ### 4. The declared id matches the filename
 
 An H1 of `# ADR-0175: …` in a file named `218-*.md` is a rename that never finished. The id in the title must match the filename's prefix.
@@ -260,6 +266,7 @@ These govern the system as it stands. Cite these.
 | [ADR-3625](3625-vetted-spawn-library-evaluation.md) | The platform seam keeps its own Windows binary resolution rather than adopting a spawn library | Accepted | — |
 | [ADR-3626](3626-context-md-seam-claim-gate.md) | CONTEXT.md seam claims carry a checkable enforcement pointer | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |
+| [ADR-3806](3806-review-dispositions-ledger.md) | Review Dispositions Ledger canonizes where and how reviews-mode records incorporate/defer decisions in PLAN.md | Accepted | — |
 
 ### Proposed
 
@@ -279,6 +286,7 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-3646](3646-per-task-content-resolution-seam.md) | Per-task external-tracker content-resolution seam | Proposed | — |
 | [ADR-3889](3889-process-exit-contract.md) | One exit-code registry — 0 and 1 are free, everything else is allocated | Proposed | — |
 | [ADR-3942](3942-emitted-drift-ack-commit-trailer.md) | The emitted-drift acknowledgment is PR-lifetime data — it belongs in a commit trailer, not the working tree | Proposed | — |
+| [ADR-4139](4139-compact-content-seam.md) | The compact-content seam — shrink the eager window, never the guarantee | Proposed | — |
 
 ### Superseded, Retired, and Legacy
 

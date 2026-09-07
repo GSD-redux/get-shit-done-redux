@@ -135,6 +135,7 @@ let currentCwd = process.cwd();
 
 const TOOL_NAME_MAP = {
   read: "Read",
+  grep: "Grep",
   write: "Write",
   edit: "Edit",
   apply_patch: "MultiEdit",
@@ -172,6 +173,10 @@ function mapToolInput(args) {
 
   // Bash command
   if (args.command !== undefined) input.command = args.command;
+
+  // Grep file filter (OpenCode uses include; Claude uses glob)
+  const glob = args.glob ?? args.include;
+  if (glob !== undefined) input.glob = glob;
 
   // Web
   if (args.url !== undefined) input.url = args.url;
@@ -574,6 +579,13 @@ const GsdCorePlugin = async ({ directory } = {}) => {
       //    (covers Write/Edit/MultiEdit AND Bash force-add detection)
       if (isWriteLike || claudeTool === "Bash") {
         const r = runHook("gsd-workflow-guard.js", prePayload());
+        handleHookResult(r, output);
+      }
+
+      // 6. gsd-secret-read-guard.js — hard-block reads of .env / .env.<suffix> /
+      //    .secrets via Read (file_path), Grep (path or glob) and Bash (command)
+      if (["Read", "Grep", "Bash"].includes(claudeTool)) {
+        const r = runHook("gsd-secret-read-guard.js", prePayload());
         handleHookResult(r, output);
       }
     },

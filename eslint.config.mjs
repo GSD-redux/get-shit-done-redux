@@ -5,8 +5,10 @@ import pluginN from 'eslint-plugin-n';
 import noOnlyTests from 'eslint-plugin-no-only-tests';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 // Local plugin with custom AST rules
 import noSourceGrep from './eslint-rules/no-source-grep.cjs';
@@ -36,6 +38,9 @@ import noPrivateBinaryResolution from './eslint-rules/no-private-binary-resoluti
 import requireRegisteredExit from './eslint-rules/require-registered-exit.cjs';
 import noSwallowedPrecondition from './eslint-rules/no-swallowed-precondition.cjs';
 import noExactCaseEnvAccess from './eslint-rules/no-exact-case-env-access.cjs';
+import noAdhocTimeoutLiteral from './eslint-rules/no-adhoc-timeout-literal.cjs';
+
+const adhocTimeoutLiteralAllowlist = require('./eslint-rules/no-adhoc-timeout-literal.allowlist.json');
 
 const localPlugin = {
   rules: {
@@ -66,6 +71,7 @@ const localPlugin = {
     'require-registered-exit': requireRegisteredExit,
     'no-swallowed-precondition': noSwallowedPrecondition,
     'no-exact-case-env-access': noExactCaseEnvAccess,
+    'no-adhoc-timeout-literal': noAdhocTimeoutLiteral,
   },
 };
 
@@ -78,6 +84,11 @@ export default tseslint.config(
       '.worktrees/**',
       '.claude/**',
       'coverage/**',
+      // #4141: Stryker's sandbox (tempDirName in stryker.config.mjs, also gitignored
+      // and always-ignored by Stryker itself). A run that dies before cleanup leaves a
+      // copy of the tree here; linting it reports the path-scoped `local/*` rules as
+      // undefined, which reads as the plugin being broken rather than as scratch space.
+      '.stryker-tmp/**',
       '**/*.generated.cjs',
       // ADR-457: tsc-generated runtime artifact — lint the src/*.cts source, not the emitted .cjs.
       'gsd-core/bin/lib/claude-orchestration.cjs',
@@ -119,6 +130,10 @@ export default tseslint.config(
       'gsd-core/bin/lib/probe-core.cjs',
       'gsd-core/bin/lib/spec-section.cjs',
       'gsd-core/bin/lib/prohibition-enforcement.cjs',
+      // #3770: tsc-generated runtime artifact — lint the src/tdd-red-evidence.cts source.
+      'gsd-core/bin/lib/tdd-red-evidence.cjs',
+      // #4145: tsc-generated runtime artifact — lint the src/pristine-baseline.cts source.
+      'gsd-core/bin/lib/pristine-baseline.cjs',
       'gsd-core/bin/lib/ui-consideration-probe.cjs',
       'gsd-core/bin/lib/code-review-flags.cjs',
       'gsd-core/bin/lib/code-review-depth.cjs',
@@ -706,6 +721,11 @@ export default tseslint.config(
       // exemption surface. The only sanctioned escapes are an explicit `timeout` on
       // a raw spawn or the `// allow-spawn-timeout-ceiling: <reason>` marker.
       'local/no-unbounded-spawn': 'error',
+      // Ban a bare numeric `timeout`/`timeoutMs` literal in tests (DEFECT.AD-HOC-TIMEOUT-LITERAL,
+      // #4428): two independently-guessed copies of the same magic number can drift apart, or
+      // collide exactly into a zero-margin race. Allowlist starts empty; a pre-existing violation
+      // gets grandfathered in here as it's found, per eslint-rules/no-adhoc-timeout-literal.allowlist.json.
+      'local/no-adhoc-timeout-literal': ['error', { allowlist: adhocTimeoutLiteralAllowlist }],
       // Ban a consolidation-epic folded suite appearing twice in one host file (#3271).
       // A second copy runs the same tests twice on every lane and drifts silently.
       'local/no-duplicate-fold-marker': 'error',

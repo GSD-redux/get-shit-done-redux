@@ -288,12 +288,27 @@ const kiloAgentPermissionOrder = [
   'lsp',
 ];
 
+const kiloMcpPermissionPattern = /^mcp__([A-Za-z0-9_-]+)__((?:[A-Za-z0-9_-]+)|\*)$/;
+
+/**
+ * Derive Kilo's native `{server}_{tool}` MCP permission key (kilo.ai/docs —
+ * external, fixed format we don't control). Not injective: both capture
+ * groups allow `_`, so e.g. `mcp__a_b__c` and `mcp__a__b_c` derive the same
+ * key. `buildKiloAgentPermissionBlock`'s `Set` resolves any such collision
+ * deterministically to first-seen-wins — see its regression test. Changing
+ * the derivation to avoid the collision isn't an option: Kilo's own runtime
+ * only recognizes this exact key shape.
+ */
 function convertClaudeToKiloPermissionTool(claudeTool) {
-  return claudeToKiloAgentPermissions[claudeTool] || null;
+  const builtinPermission = claudeToKiloAgentPermissions[claudeTool];
+  if (builtinPermission) return builtinPermission;
+
+  const mcpPermission = kiloMcpPermissionPattern.exec(claudeTool);
+  return mcpPermission ? `${mcpPermission[1]}_${mcpPermission[2]}` : null;
 }
 
 function buildKiloAgentPermissionBlock(claudeTools) {
-  const allowedPermissions = new Set();
+  const allowedPermissions = new Set<string>();
 
   for (const tool of claudeTools) {
     const mapped = convertClaudeToKiloPermissionTool(tool);
@@ -305,6 +320,10 @@ function buildKiloAgentPermissionBlock(claudeTools) {
   const lines = ['permission:'];
   for (const permission of kiloAgentPermissionOrder) {
     lines.push(`  ${permission}: ${allowedPermissions.has(permission) ? 'allow' : 'deny'}`);
+  }
+  for (const permission of allowedPermissions) {
+    if (kiloAgentPermissionOrder.includes(permission)) continue;
+    lines.push(`  ${permission}: allow`);
   }
 
   return lines;
@@ -675,6 +694,122 @@ function convertClaudeCommandToKimiCodeSkill(content, skillName, _runtime = null
 
 const KIMI_CANONICAL_GSD_AGENT_RE = /^gsd-[a-z0-9-]+$/;
 
+/** Split a `tools:` comma list without tearing a quoted scalar that contains a literal comma. */
+function splitToolScalars(text: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (const ch of text) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === ',') {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
+}
+
+/** Normalize one complete frontmatter tool scalar through the shared YAML parser. */
+function decodeToolScalar(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value) return null;
+  if (value.startsWith('"') || value.startsWith("'")) {
+    try {
+      const decoded = frontmatterModule.parseFrontmatter('---\ntool: ' + value + '\n---\n').tool;
+      return typeof decoded === 'string' && decoded.trim() ? decoded.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+  // A bare (unquoted) scalar may carry a trailing `  # comment` (YAML requires
+  // whitespace before `#` to start a comment) — every caller here passes a
+  // single already-comma-split token, never the whole `tools:` line, so this
+  // is safe to strip unconditionally rather than pushing the concern onto
+  // each call site. Strip BEFORE the malformed-quote check below: a comment
+  // may itself contain a `"`/`'` (e.g. `Bash # note: "internal"`), which is
+  // not a real YAML quote delimiter and must not cause a false rejection.
+  const commentIndex = value.search(/[ \t]#/);
+  const stripped = commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
+  if (!stripped) return null;
+  if (stripped.endsWith('"') || stripped.endsWith("'")) return null;
+  return stripped;
+}
+
+/** Append validated canonical grants without reserializing unrelated frontmatter. */
+function appendAgentTools(content: string, grants: string[]): string {
+  if (grants.length === 0) return content;
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = content.split(eol);
+  if (lines[0] !== '---') return content;
+  const frontmatterEnd = lines.indexOf('---', 1);
+  if (frontmatterEnd === -1) return content;
+  const toolsIndex = lines.findIndex((line, index) => index < frontmatterEnd && /^tools:[ \t]*(.*)$/.test(line));
+  if (toolsIndex === -1) return content;
+
+  const toolsMatch = /^tools:[ \t]*(.*)$/.exec(lines[toolsIndex]);
+  if (!toolsMatch) return content;
+  // Plain (non-leading-quote) YAML scalars have no internal quoting — a `#`
+  // after whitespace is a real comment start regardless of nearby quote
+  // characters (verified: real YAML truncates `Read, "x #1"` at the space
+  // before `#` too), so this scan does not need to be quote-aware. The one
+  // case that DOES need protection — a value that IS a leading quoted scalar
+  // — is refused outright below rather than parsed past.
+  const commentIndex = toolsMatch[1].search(/[ \t]#/);
+  let inlineValue = commentIndex === -1 ? toolsMatch[1] : toolsMatch[1].slice(0, commentIndex);
+  let inlineComment = commentIndex === -1 ? '' : toolsMatch[1].slice(commentIndex);
+  // A header that is ONLY a comment (`tools: # note`) has no leading space in
+  // the captured group — the outer regex's `[ \t]*` already consumed it — so
+  // the `[ \t]#` scan above never fires. Reclassify as no inline value so the
+  // block-list scan below runs instead of swallowing the comment as content.
+  if (inlineValue.trim().startsWith('#')) {
+    inlineComment = toolsMatch[1];
+    inlineValue = '';
+  }
+  // A value that STARTS with a quote is a YAML quoted scalar occupying the
+  // whole node — nothing may follow it on the same line except a comment
+  // (`tools: "Bash"` is valid; `tools: "Bash", Read` is not, even before this
+  // function touches it). Appending in place would corrupt otherwise-valid
+  // frontmatter, so refuse rather than emit invalid YAML. A value that STARTS
+  // with `[` is a YAML flow sequence (`tools: [Bash, Read]`) — its own commas
+  // are node-internal, not scalar separators, and content cannot follow its
+  // closing `]` on the same line either, so the same refusal applies.
+  if (/^["'[]/.test(inlineValue.trim())) return content;
+  const existing: string[] = [];
+  let insertAt = toolsIndex + 1;
+  if (inlineValue.trim()) {
+    existing.push(...splitToolScalars(inlineValue).map(decodeToolScalar).filter((value): value is string => value !== null));
+  } else {
+    while (insertAt < frontmatterEnd) {
+      const item = /^([ \t]+)-[ \t]*(\S.*)$/.exec(lines[insertAt]);
+      if (!item) break;
+      const decoded = decodeToolScalar(item[2]);
+      if (decoded !== null) existing.push(decoded);
+      insertAt += 1;
+    }
+  }
+  const present = new Set(existing);
+  const additions = grants.filter((grant) => !present.has(grant) && (present.add(grant), true));
+  if (additions.length === 0) return content;
+
+  if (inlineValue.trim()) {
+    lines[toolsIndex] = `tools: ${inlineValue.trimEnd()}, ${additions.join(', ')}${inlineComment}`;
+  } else {
+    const firstItem = /^([ \t]+)-/.exec(lines[toolsIndex + 1]);
+    const indent = firstItem ? firstItem[1] : '  ';
+    lines.splice(insertAt, 0, ...additions.map((grant) => `${indent}- ${JSON.stringify(grant)}`));
+  }
+  return lines.join(eol);
+}
+
 function parseKimiAgentSource(source) {
   if (typeof source === 'string') {
     return {
@@ -703,7 +838,8 @@ function parseFrontmatterTools(frontmatter) {
 
     if (collecting) {
       if (trimmed.startsWith('- ')) {
-        tools.push(trimmed.slice(2).trim());
+        const tool = decodeToolScalar(trimmed.slice(2));
+        if (tool !== null) tools.push(tool);
         continue;
       }
       collecting = false;
@@ -716,10 +852,13 @@ function parseFrontmatterTools(frontmatter) {
 
     if (trimmed.startsWith('tools:') || trimmed.startsWith('allowed-tools:')) {
       const value = trimmed.slice(trimmed.indexOf(':') + 1).trim();
-      if (value) {
-        for (const tool of value.split(',')) {
-          const name = tool.trim();
-          if (name) tools.push(name);
+      // A comment-only value (`tools: # note`) has no real inline content —
+      // fall through to the block-list scan below instead of decoding the
+      // comment text as a bogus tool name and silently dropping the list.
+      if (value && !value.startsWith('#')) {
+        for (const tool of splitToolScalars(value)) {
+          const name = decodeToolScalar(tool);
+          if (name !== null) tools.push(name);
         }
       } else {
         collecting = true;
@@ -1745,26 +1884,37 @@ Execute mode fallback:
 ## C. Task() → spawn_agent Mapping
 GSD workflows use \`Task(...)\` (Claude Code syntax). Translate to Codex collaboration tools:
 
-**Schema detection (required first step):** Codex exposes two \`spawn_agent\` schemas:
-- **agent_type-capable schema** (e.g. \`multi_agent_v2\`): \`spawn_agent\` accepts \`agent_type\`, \`message\`, \`reasoning_effort\`, \`fork_context\`, etc. — typed GSD agent dispatch is available.
-- **Generic schema** (\`multi_agent_v1\`): \`spawn_agent\` accepts only \`message\`, \`items\`, \`fork_context\` — there is **no \`agent_type\` field**. Typed GSD agent dispatch is unavailable in this session.
+**Schema detection (required first step):** Before spawning, inspect the \`spawn_agent\`
+tool's visible parameter schema (via \`tool_search\` or the tool list). Use the presence
+of \`agent_type\` only to choose typed dispatch versus the generic-agent workaround.
+Detect optional fields independently: \`model\`, \`reasoning_effort\`, \`task_name\`,
+\`fork_turns\`, and \`fork_context\` may be added or removed without \`agent_type\` changing.
+Never infer one field from a schema/version label or from the presence of another field.
 
-Before spawning, inspect the \`spawn_agent\` tool's visible parameter schema (via \`tool_search\` or the tool list) to determine which form is active.
+- **agent_type-capable schema:** \`spawn_agent\` advertises \`agent_type\` — typed GSD agent dispatch is available.
+- **Generic schema:** \`spawn_agent\` does not advertise \`agent_type\` — typed GSD agent dispatch is unavailable in this session, even if other optional fields are present.
 
 Typed mapping (agent_type-capable schema only):
 - \`Task(subagent_type="X", prompt="Y")\` → \`spawn_agent(agent_type="X", message="Y")\`
 - \`Agent(subagent_type="X", prompt="Y")\` → \`spawn_agent(agent_type="X", message="Y")\`
-- \`Task(model="...")\` → omit. \`spawn_agent\` has no inline \`model\` parameter;
-  GSD embeds the resolved per-agent model directly into each agent's \`.toml\`
-  at install time so \`model_overrides\` from \`.planning/config.json\` and
-  \`~/.gsd/defaults.json\` are honored automatically by Codex's agent router.
-- Resolved \`reasoning_effort="low|medium|high|xhigh"\` (\`xhigh\` is a GSD/Codex tier, not a generic runtime enum) → pass \`reasoning_effort\`
-  to \`spawn_agent\` when the runtime/tool supports it. Omit missing, empty,
-  inherited, or unsupported values; do not invent one-off effort literals in
-  workflow prose.
+- \`Task(model="{resolved_model}")\` → pass \`model="{resolved_model}"\` when the
+  visible \`spawn_agent\` schema advertises \`model\` and the resolved value is explicit.
+  This is how \`model_profile\` tier routing, including \`adaptive\`, reaches the child agent.
+  Omit \`model\` only when the schema does not advertise \`model\`, or when the value is
+  missing, empty, or \`"inherit"\`; omission deliberately inherits the session/static agent
+  configuration. Explicit \`model_overrides\` may also be embedded in agent \`.toml\` files,
+  but ordinary profile-resolved models are not, so a TOML file is not a reason to discard
+  an available inline value.
+- Before each typed spawn, obtain the paired effort for its role with
+  \`gsd_run query resolve-model <subagent_type> --pick effort\` when the workflow has not
+  already exposed it. The resolver's unified \`effort\` field maps to the Codex spawn argument
+  \`reasoning_effort\`; do not look for a resolver field named \`reasoning_effort\`.
+  Pass it when the visible \`spawn_agent\` schema advertises \`reasoning_effort\`. Omit the
+  field when it is not advertised, or when the value is missing, empty, \`"inherit"\`, or
+  unsupported; do not invent one-off effort literals in workflow prose.
 - \`fork_context: false\` by default — GSD agents load their own context via \`<required_reading>\` blocks
-- \`task_name\` — required by the collaboration schema; provide a descriptive name for each spawned task
-- \`fork_turns\` — optional parameter controlling turn-forking depth; coexists with \`fork_context\` (not a replacement)
+- \`task_name\` — when advertised, provide a descriptive name for each spawned task
+- \`fork_turns\` — when advertised, controls turn-forking depth; coexists with \`fork_context\` (not a replacement)
 - \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
   but Codex declares \`dispatch.isolation: orchestrator-worktree\` (#2584). Codex
   \`spawn_agent\` still does not create or bind a git worktree; instead GSD itself
@@ -2100,7 +2250,8 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
 
     if (isAgent && inAgentTools) {
       if (trimmed.startsWith('- ')) {
-        agentTools.push(trimmed.substring(2).trim());
+        const tool = decodeToolScalar(trimmed.substring(2));
+        if (tool !== null) agentTools.push(tool);
         continue;
       }
       if (trimmed && !trimmed.startsWith('-')) {
@@ -2112,8 +2263,11 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
     if (trimmed.startsWith('tools:')) {
       if (isAgent) {
         const toolsValue = trimmed.substring(6).trim();
-        if (toolsValue) {
-          const tools = toolsValue.split(',').map(t => t.trim()).filter(t => t);
+        // A comment-only value (`tools: # note`) is not real inline content —
+        // fall through to the block-list scan (`inAgentTools`) instead of
+        // decoding the comment as a bogus tool name and dropping the list.
+        if (toolsValue && !toolsValue.startsWith('#')) {
+          const tools = splitToolScalars(toolsValue).map(decodeToolScalar).filter((tool): tool is string => tool !== null);
           agentTools.push(...tools);
         } else {
           inAgentTools = true;
@@ -2179,7 +2333,8 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
       if (trimmed.startsWith('- ')) {
         const tool = trimmed.substring(2).trim();
         if (isAgent) {
-          agentTools.push(tool);
+          const decoded = decodeToolScalar(tool);
+          if (decoded !== null) agentTools.push(decoded);
         } else {
           allowedTools.push(tool);
         }
@@ -2545,11 +2700,17 @@ function convertClaudeAgentToQwenAgent(content) {
  * Byte-identical for an agent with no `mcp__*` grants (the common case) and
  * for an agent with no frontmatter at all.
  */
+/** Fail-closed: an undecodable scalar is dropped, never kept (ZCode's contract is "never emit mcp__*"). */
+function zcodeKeepsGrant(rawTool: string): boolean {
+  const decoded = decodeToolScalar(rawTool);
+  return decoded !== null && !decoded.startsWith('mcp__');
+}
+
 function convertClaudeAgentToZcodeAgent(content) {
-  // Fast path: no MCP grant token anywhere means nothing to strip. (A body
-  // mention alone is not a grant — the line scan below finds no tools-line
-  // change and returns `content` unchanged anyway; this just skips the scan.)
-  if (!content.includes('mcp__')) return content;
+  // A double-quoted YAML scalar may encode the leading "m" in mcp__ as an
+  // escape, so only skip the shared scalar-decoder scan when neither form is
+  // present. The unchanged scan below still preserves byte-identical content.
+  if (!content.includes('mcp__') && !content.includes('\\')) return content;
 
   const lines = content.split('\n');
   if (lines[0] !== '---') return content;
@@ -2568,9 +2729,14 @@ function convertClaudeAgentToZcodeAgent(content) {
   while (i < fmEnd) {
     const line = lines[i];
     const inlineTools = /^tools:[ \t]*(.+)$/.exec(line);
-    if (inlineTools) {
-      const grants = inlineTools[1].split(',').map((tool) => tool.trim()).filter((tool) => tool !== '');
-      const kept = grants.filter((tool) => !tool.startsWith('mcp__'));
+    // A header that is ONLY a comment (`tools: # note`) is not real inline
+    // content — fall through to the block-list scan below instead of
+    // matching here, or a following block list's mcp__* items never get
+    // scanned and leak through unstripped.
+    const commentOnlyHeader = inlineTools !== null && inlineTools[1].trim().startsWith('#');
+    if (inlineTools && !commentOnlyHeader) {
+      const grants = splitToolScalars(inlineTools[1]).map((tool) => tool.trim()).filter((tool) => tool !== '');
+      const kept = grants.filter((tool) => zcodeKeepsGrant(tool));
       if (kept.length === grants.length) {
         out.push(line); // no mcp__* grants — keep the line byte-identical
       } else if (kept.length > 0) {
@@ -2582,7 +2748,7 @@ function convertClaudeAgentToZcodeAgent(content) {
       i++;
       continue;
     }
-    if (/^tools:[ \t]*$/.test(line)) {
+    if (/^tools:[ \t]*$/.test(line) || commentOnlyHeader) {
       // Block-list form: collect the following `- item` lines.
       const items = [];
       let j = i + 1;
@@ -2592,7 +2758,7 @@ function convertClaudeAgentToZcodeAgent(content) {
       }
       const kept = items.filter((item) => {
         const name = /^([ \t]*)-[ \t]*(\S.*)$/.exec(item)[2].trim();
-        return !name.startsWith('mcp__');
+        return zcodeKeepsGrant(name);
       });
       if (kept.length !== items.length) {
         changed = true;
@@ -3644,6 +3810,7 @@ function processAttribution(
 
 export = {
   processAttribution,
+  appendAgentTools,
   // #2103: public accessor for hostBehaviors.agentFileExtension, exported so
   // surface.cts's _syncGsdDir can derive the .agent.md rename from the SAME
   // descriptor read as install-engine.cts (folds a duplicated hardcoded
@@ -3700,6 +3867,8 @@ export = {
   // opencode/kilo command install through the engine instead of the bespoke path).
   convertClaudeToOpencodeFrontmatter,
   convertClaudeToKiloFrontmatter,
+  _decodeToolScalar: decodeToolScalar,
+  _splitToolScalars: splitToolScalars,
   readGsdCommandNames,
   transformContentToHyphen,
   // #1383: version resolver (exported for regression test of the Codex

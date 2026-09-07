@@ -19,7 +19,7 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const ROOT = path.join(__dirname, '..');
 const GSD_TOOLS = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 const { cleanup } = require('./helpers.cjs');
-const { resolveUpdateContext } = require(
+const { RUNTIME_DIRS, inferPreferredRuntime, resolveUpdateContext } = require(
   path.join(ROOT, 'gsd-core', 'bin', 'lib', 'update-context.cjs'),
 );
 
@@ -48,6 +48,21 @@ const CWD = '/work/proj';
 
 function ver(dir) { return `${dir}/gsd-core/VERSION`; }
 function marker(dir) { return `${dir}/gsd-core/workflows/update.md`; }
+
+test('unknown preferred config does not infer Claude', () => {
+  assert.equal(inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir: '/opt/unknown' }), '');
+});
+
+test('known runtime directories infer their table runtime without config markers', () => {
+  for (const [runtime, relativeDir] of RUNTIME_DIRS) {
+    const preferredConfigDir = path.resolve(HOME, relativeDir);
+    assert.equal(
+      inferPreferredRuntime({ fs: fakeFs({}), env: {}, preferredConfigDir }),
+      runtime,
+      preferredConfigDir,
+    );
+  }
+});
 
 describe('resolveUpdateContext: scope cascade', () => {
   test('GLOBAL claude install under $HOME/.claude', () => {
@@ -84,9 +99,29 @@ describe('resolveUpdateContext: scope cascade', () => {
     assert.equal(r.runtime, 'codex');
   });
 
-  test('no install anywhere -> UNKNOWN / claude / empty gsdDir', () => {
+  test('no install anywhere -> UNKNOWN / empty runtime / empty gsdDir', () => {
     const r = resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs: fakeFs({}) });
-    assert.deepEqual(r, { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: 'claude', gsdDir: '' });
+    assert.deepEqual(r, { installedVersion: '0.0.0', scope: 'UNKNOWN', runtime: '', gsdDir: '' });
+    assert.deepEqual(
+      resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs: fakeFs({}) }),
+      r,
+      'unresolved resolution must remain deterministic',
+    );
+  });
+
+  test('multiple installs honor an explicit preferred runtime', () => {
+    const claude = `${HOME}/.claude`;
+    const codex = `${HOME}/.codex`;
+    const fs = fakeFs({
+      [ver(claude)]: '1.40.0\n', [marker(claude)]: 'x',
+      [ver(codex)]: '1.41.0\n', [marker(codex)]: 'x',
+    });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: {}, fs, preferredRuntime: 'codex',
+    });
+    assert.equal(r.runtime, 'codex');
+    assert.equal(r.scope, 'GLOBAL');
+    assert.ok(sameDir(r.gsdDir, codex), `gsdDir was ${r.gsdDir}`);
   });
 });
 
@@ -119,6 +154,110 @@ describe('resolveUpdateContext: runtime probing + env overrides', () => {
     assert.equal(r.runtime, 'kilo');
     assert.ok(sameDir(r.gsdDir, custom), `gsdDir was ${r.gsdDir}`);
     assert.equal(r.installedVersion, '1.41.0');
+  });
+
+  test('preferredConfigDir fast-path: unknown dir with no preferredRuntime resolves runtime empty (#4153)', () => {
+    const custom = '/opt/custom-gsd';
+    const fs = fakeFs({ [ver(custom)]: '1.0.0\n', [marker(custom)]: 'x' });
+    const r = resolveUpdateContext({ home: HOME, cwd: CWD, env: {}, fs, preferredConfigDir: custom });
+    assert.equal(r.scope, 'GLOBAL');
+    assert.equal(r.runtime, '', 'a dir matching no RUNTIME_DIRS suffix, marker, or env must fail closed, not default to claude');
+  });
+});
+
+describe('resolveUpdateContext: preferredConfigDir fast-path dedup (#4197)', () => {
+  test('cwd === home does NOT misdetect as LOCAL on the preferredConfigDir fast path (dedup)', () => {
+    // #4197: the fast path derived scope from a cwd-relative match alone, so a
+    // global install probed with cwd === $HOME answered LOCAL. The cascade's
+    // same-path dedup (update.md: "local-over-global with same-path dedup (so
+    // CWD=$HOME does not misdetect as LOCAL)") must hold on the fast path too.
+    const fs = fakeFs({ [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x' });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: HOME, env: {}, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    });
+    assert.equal(r.scope, 'GLOBAL');
+  });
+
+  test('same global install resolves identically from home and elsewhere on the fast path', () => {
+    const fs = fakeFs({ [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x' });
+    const inputs = {
+      home: HOME, env: {}, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    };
+    const fromElsewhere = resolveUpdateContext({ ...inputs, cwd: CWD });
+    assert.equal(fromElsewhere.scope, 'GLOBAL');
+    assert.deepEqual(
+      resolveUpdateContext({ ...inputs, cwd: HOME }),
+      fromElsewhere,
+      'scope must not depend on which directory the shell is sitting in',
+    );
+  });
+
+  test('genuine project-local install stays LOCAL on the fast path', () => {
+    // Control: the dedup must not over-correct into GLOBAL-always. A preferred
+    // dir that is the cwd-relative install and NOT the selected global is LOCAL.
+    const fs = fakeFs({ [ver(`${CWD}/.claude`)]: '1.39.0\n', [marker(`${CWD}/.claude`)]: 'x' });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: {}, fs,
+      preferredConfigDir: `${CWD}/.claude`, preferredRuntime: 'claude',
+    });
+    assert.equal(r.scope, 'LOCAL');
+    assert.equal(r.installedVersion, '1.39.0');
+    assert.ok(sameDir(r.gsdDir, `${CWD}/.claude`), `gsdDir was ${r.gsdDir}`);
+  });
+
+  test('genuine project-local install stays LOCAL even with a global install also present', () => {
+    const fs = fakeFs({
+      [ver(`${CWD}/.claude`)]: '1.39.0\n', [marker(`${CWD}/.claude`)]: 'x',
+      [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x',
+    });
+    const r = resolveUpdateContext({
+      home: HOME, cwd: CWD, env: {}, fs,
+      preferredConfigDir: `${CWD}/.claude`, preferredRuntime: 'claude',
+    });
+    assert.equal(r.scope, 'LOCAL');
+    assert.equal(r.installedVersion, '1.39.0');
+  });
+
+  test('env-directed global elsewhere: $HOME/.claude is LOCAL and the fast path agrees with the cascade', () => {
+    // The dedup must compare against the SELECTED global candidate (env-ranked),
+    // not the $HOME pathname: with CLAUDE_CONFIG_DIR pointing the global at
+    // /opt/claude-global, $HOME/.claude probed from cwd === $HOME is a genuine
+    // cwd-local install, and the cascade already answers LOCAL for it.
+    const custom = '/opt/claude-global';
+    const fs = fakeFs({
+      [ver(`${HOME}/.claude`)]: '1.39.0\n', [marker(`${HOME}/.claude`)]: 'x',
+      [ver(custom)]: '1.40.0\n', [marker(custom)]: 'x',
+    });
+    const env = { CLAUDE_CONFIG_DIR: custom };
+    const cascade = resolveUpdateContext({ home: HOME, cwd: HOME, env, fs });
+    const fast = resolveUpdateContext({
+      home: HOME, cwd: HOME, env, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    });
+    assert.equal(cascade.scope, 'LOCAL');
+    assert.equal(fast.scope, cascade.scope);
+    assert.equal(fast.installedVersion, cascade.installedVersion);
+    assert.equal(fast.runtime, cascade.runtime);
+    assert.ok(sameDir(fast.gsdDir, cascade.gsdDir), `fast gsdDir ${fast.gsdDir} vs cascade ${cascade.gsdDir}`);
+  });
+
+  test('env candidate IS the preferred dir: fast path answers GLOBAL, matching the cascade', () => {
+    // A preferred dir that is also the env-directed global is the selected
+    // global — the cascade answers GLOBAL, and the fast path must agree.
+    const fs = fakeFs({ [ver(`${HOME}/.claude`)]: '1.40.0\n', [marker(`${HOME}/.claude`)]: 'x' });
+    const env = { CLAUDE_CONFIG_DIR: `${HOME}/.claude` };
+    const cascade = resolveUpdateContext({ home: HOME, cwd: HOME, env, fs });
+    const fast = resolveUpdateContext({
+      home: HOME, cwd: HOME, env, fs,
+      preferredConfigDir: `${HOME}/.claude`, preferredRuntime: 'claude',
+    });
+    assert.equal(cascade.scope, 'GLOBAL');
+    assert.equal(fast.scope, cascade.scope);
+    assert.equal(fast.installedVersion, cascade.installedVersion);
+    assert.equal(fast.runtime, cascade.runtime);
+    assert.ok(sameDir(fast.gsdDir, cascade.gsdDir), `fast gsdDir ${fast.gsdDir} vs cascade ${cascade.gsdDir}`);
   });
 });
 

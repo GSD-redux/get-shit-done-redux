@@ -22,7 +22,7 @@ import coreUtils = require('./core-utils.cjs');
 const { normalizeLineEndings } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, quickDirFrom } = planningWorkspace;
+const { planningDir, quickDirFrom, todosDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, spliceFrontmatter } = frontmatter;
@@ -711,9 +711,16 @@ function scanThreads(planDir: string): ScanOutcome<ThreadItem> {
  * Scan .planning/todos/pending/ for pending todos.
  * Returns array of { filename, priority, area, summary }.
  * Display limited to first 5 + count of remainder.
+ *
+ * #4256: takes the ROOT-scoped todos base (`todosDir(cwd)`), NOT the
+ * workstream-scoped planning dir the other scans use — todos are shared
+ * project state (the migrateToWorkstreams contract keeps them at
+ * .planning/todos/), so the close gate must read the root or it clears
+ * vacuously under a workstream. The requireSafePath boundary below moves
+ * with the base.
  */
-function scanTodos(planDir: string): ScanOutcome<TodoItem> {
-  const pendingDir = path.join(planDir, 'todos', 'pending');
+function scanTodos(todosBase: string): ScanOutcome<TodoItem> {
+  const pendingDir = path.join(todosBase, 'pending');
   if (!fs.existsSync(pendingDir)) return { items: [], acknowledged: 0 };
 
   let files: fs.Dirent[];
@@ -741,7 +748,7 @@ function scanTodos(planDir: string): ScanOutcome<TodoItem> {
 
     let safeFilePath: string;
     try {
-      safeFilePath = requireSafePath(filePath, planDir, 'todo file', { allowAbsolute: true });
+      safeFilePath = requireSafePath(filePath, todosBase, 'todo file', { allowAbsolute: true });
     } catch {
       continue;
     }
@@ -1314,7 +1321,12 @@ function auditOpenArtifacts(cwd: string): AuditResult {
   })();
 
   const todos = (() => {
-    try { return scanTodos(planDir); } catch { return { items: [{ scan_error: true, filename: '', priority: '', area: '', summary: '' }], acknowledged: 0 }; }
+    // #4256: the ONE root-scoped category — todos are shared project state,
+    // so the close gate reads todosDir(cwd) (the root), not the workstream-
+    // scoped planDir every other scan below receives. Reading planDir here
+    // made audit-open print "All artifact types clear. Safe to proceed."
+    // with pending todos on disk under a workstream.
+    try { return scanTodos(todosDir(cwd)); } catch { return { items: [{ scan_error: true, filename: '', priority: '', area: '', summary: '' }], acknowledged: 0 }; }
   })();
 
   const seeds = (() => {
@@ -1751,7 +1763,12 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
     currentValue = ((extractFrontmatter(content, safeFilePath).status as string) || 'dormant').toLowerCase();
   } else if (category === 'todos') {
     if (!filename) ioError('--filename is required for --category todos');
-    safeFilePath = requireSafePath(path.join(planDir, 'todos', 'pending', filename as string), planDir, 'audit acknowledge target', { allowAbsolute: true });
+    // #4256: todos are root-scoped shared state — derive the todos base and
+    // pass it as BOTH the path base and the requireSafePath boundary. The
+    // old workstream-scoped planDir boundary would refuse a root todos file
+    // outright, and even a path fix alone would have thrown here.
+    const rootTodos = todosDir(cwd);
+    safeFilePath = requireSafePath(path.join(rootTodos, 'pending', filename as string), rootTodos, 'audit acknowledge target', { allowAbsolute: true });
     if (!fs.existsSync(safeFilePath)) ioError(`file not found: todos/pending/${filename as string}`);
     currentValue = ''; // presence-only — see scanTodos
   } else if (category === 'quick_tasks') {

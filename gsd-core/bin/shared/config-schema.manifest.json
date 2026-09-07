@@ -22,6 +22,7 @@
     "workflow.smart_zone_tokens",
     "workflow.human_verify_mode",
     "workflow.text_mode",
+    "workflow.compact_content",
     "workflow.research_before_questions",
     "workflow.discuss_mode",
     "workflow.skip_discuss",
@@ -45,6 +46,7 @@
     "git.branching_strategy",
     "git.base_branch",
     "git.protected_branches",
+    "git.allow_default_branch_commits",
     "git.create_tag",
     "git.phase_branch_template",
     "git.milestone_branch_template",
@@ -53,6 +55,8 @@
     "planning.pr_strict",
     "planning.search_gitignored",
     "planning.sub_repos",
+    "planning.chunked_parallel",
+    "agent_tools",
     "review.default_reviewers",
     "review.max_prompt_tokens",
     "review.max_prompt_tokens_per_reviewer",
@@ -118,6 +122,11 @@
     "workflow._auto_chain_active"
   ],
   "dynamicKeyPatterns": [
+    {
+      "topLevel": "agent_tools",
+      "source": "^agent_tools\\.(\\*|[a-zA-Z0-9_-]+)$",
+      "description": "agent_tools.<selector>"
+    },
     {
       "topLevel": "agent_skills",
       "source": "^agent_skills\\.[a-zA-Z0-9_-]+$",

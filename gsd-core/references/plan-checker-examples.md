@@ -30,6 +30,7 @@ Files modified: 12
 issue:
   dimension: scope_sanity
   severity: blocker
+  required_property: "Each plan stays within the per-plan context budget"
   description: "Plan 01 has 5 tasks with 12 files - exceeds context budget"
   plan: "01"
   metrics:

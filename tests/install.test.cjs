@@ -2347,13 +2347,28 @@ describe('bug #2256 — OpenCode adapter embeds per-project override', () => {
 });
 
 describe('bug #2256 — Codex skill adapter header documents transport', () => {
-  test('Task(model=...) line no longer says "omit" without explanation', () => {
+  test('documents static model_overrides as a fallback transport', () => {
     const header = getCodexSkillAdapterHeader('gsd-plan-phase');
-    // Header must mention that per-agent model_overrides are embedded in agent
-    // TOML so spawn_agent picks them up automatically — the old text said
-    // "Codex uses per-role config, not inline model selection" which left
-    // users thinking their model_overrides were silently ignored.
     assert.match(header, /model_overrides/);
+  });
+});
+
+describe('bug #4270 — Codex adapter forwards resolved spawn routing', () => {
+  test('forwards model and reasoning_effort when spawn_agent advertises each field', () => {
+    const header = getCodexSkillAdapterHeader('gsd-plan-phase');
+
+    assert.match(header, /Task\(model="\{resolved_model\}"\).*pass `model="\{resolved_model\}"`/s);
+    assert.match(header, /This is how `model_profile`.*including `adaptive`.*reaches the child agent/s);
+    assert.match(header, /query resolve-model <subagent_type> --pick effort/);
+    assert.match(header, /unified `effort`.*spawn argument\s+`reasoning_effort`/s);
+  });
+
+  test('keeps inheritance fallback for absent fields and sentinel values', () => {
+    const header = getCodexSkillAdapterHeader('gsd-plan-phase');
+
+    assert.match(header, /Omit `model` only when.*does not advertise `model`.*empty.*`"inherit"`/s);
+    assert.match(header, /Detect optional fields independently/s);
+    assert.doesNotMatch(header, /spawn_agent` has no inline `model` parameter/);
   });
 });
   });
@@ -2405,39 +2420,46 @@ describe('Bug #3181: normalizeNodePath — exported as a function', () => {
 
 describe('Bug #3181: normalizeNodePath — Intel Homebrew Cellar paths → /usr/local/bin/node', () => {
   test('simple versioned Intel Cellar path', () => {
-    const result = normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node');
+    const result = normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node',
+      { existsSync: p => p === '/usr/local/bin/node' });
     assert.equal(result, '/usr/local/bin/node');
   });
 
   test('Intel Cellar path with long semver', () => {
-    const result = normalizeNodePath('/usr/local/Cellar/node/20.11.0/bin/node');
+    const result = normalizeNodePath('/usr/local/Cellar/node/20.11.0/bin/node',
+      { existsSync: p => p === '/usr/local/bin/node' });
     assert.equal(result, '/usr/local/bin/node');
   });
 
   test('Intel Cellar path with prerelease version segment', () => {
-    const result = normalizeNodePath('/usr/local/Cellar/node/22.0.0-rc.1/bin/node');
+    const result = normalizeNodePath('/usr/local/Cellar/node/22.0.0-rc.1/bin/node',
+      { existsSync: p => p === '/usr/local/bin/node' });
     assert.equal(result, '/usr/local/bin/node');
   });
 
   test('Intel versioned formula Cellar path (node@20) maps to stable symlink', () => {
-    const result = normalizeNodePath('/usr/local/Cellar/node@20/20.11.0/bin/node');
+    const result = normalizeNodePath('/usr/local/Cellar/node@20/20.11.0/bin/node',
+      { existsSync: p => p === '/usr/local/bin/node' });
     assert.equal(result, '/usr/local/bin/node');
   });
 });
 
 describe('Bug #3181: normalizeNodePath — Apple Silicon Homebrew Cellar paths → /opt/homebrew/bin/node', () => {
   test('simple versioned Apple Silicon Cellar path', () => {
-    const result = normalizeNodePath('/opt/homebrew/Cellar/node/25.8.1/bin/node');
+    const result = normalizeNodePath('/opt/homebrew/Cellar/node/25.8.1/bin/node',
+      { existsSync: p => p === '/opt/homebrew/bin/node' });
     assert.equal(result, '/opt/homebrew/bin/node');
   });
 
   test('Apple Silicon Cellar path with another version', () => {
-    const result = normalizeNodePath('/opt/homebrew/Cellar/node/18.20.4/bin/node');
+    const result = normalizeNodePath('/opt/homebrew/Cellar/node/18.20.4/bin/node',
+      { existsSync: p => p === '/opt/homebrew/bin/node' });
     assert.equal(result, '/opt/homebrew/bin/node');
   });
 
   test('Apple Silicon versioned formula Cellar path (node@18) maps to stable symlink', () => {
-    const result = normalizeNodePath('/opt/homebrew/Cellar/node@18/18.20.4/bin/node');
+    const result = normalizeNodePath('/opt/homebrew/Cellar/node@18/18.20.4/bin/node',
+      { existsSync: p => p === '/opt/homebrew/bin/node' });
     assert.equal(result, '/opt/homebrew/bin/node');
   });
 });
@@ -2446,23 +2468,131 @@ describe('Bug #3181: normalizeNodePath — Apple Silicon Homebrew Cellar paths �
 // from the path itself, so one branch covers every Homebrew layout.
 describe('Bug #2185: normalizeNodePath — Linuxbrew + custom-prefix Cellar paths → <prefix>/bin/node', () => {
   test('Linuxbrew Cellar path maps to the stable linuxbrew symlink', () => {
-    const result = normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node/26.0.0/bin/node');
+    const result = normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node/26.0.0/bin/node',
+      { existsSync: p => p === '/home/linuxbrew/.linuxbrew/bin/node' });
     assert.equal(result, '/home/linuxbrew/.linuxbrew/bin/node');
   });
 
   test('Linuxbrew Cellar path after a version bump (26.5.0) maps to stable symlink', () => {
-    const result = normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node/26.5.0/bin/node');
+    const result = normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node/26.5.0/bin/node',
+      { existsSync: p => p === '/home/linuxbrew/.linuxbrew/bin/node' });
     assert.equal(result, '/home/linuxbrew/.linuxbrew/bin/node');
   });
 
   test('Linuxbrew versioned formula Cellar path (node@22) maps to stable symlink', () => {
-    const result = normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node@22/22.11.0/bin/node');
+    const result = normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node@22/22.11.0/bin/node',
+      { existsSync: p => p === '/home/linuxbrew/.linuxbrew/bin/node' });
     assert.equal(result, '/home/linuxbrew/.linuxbrew/bin/node');
   });
 
   test('custom HOMEBREW_PREFIX Cellar path maps to its stable symlink', () => {
-    const result = normalizeNodePath('/custom/brew/Cellar/node/25.8.1/bin/node');
+    const result = normalizeNodePath('/custom/brew/Cellar/node/25.8.1/bin/node',
+      { existsSync: p => p === '/custom/brew/bin/node' });
     assert.equal(result, '/custom/brew/bin/node');
+  });
+});
+
+// ─── normalizeNodePath — Homebrew keg-only Cellar path keeps execPath (#4137) ──
+//
+// Bug #4137: every other runtime branch in normalizeNodePath (fnm shim, fnm
+// versioned, mise, volta) probes its rewrite candidate with the injected
+// existsSync and falls back to the raw execPath on a miss. The Homebrew branch
+// alone returned `<prefix>/bin/node` unconditionally — a path that does not
+// exist when the formula is keg-only/versioned and not `brew link`ed (e.g.
+// `node@24` resolving through `<prefix>/opt/node@24/bin/node`). Every managed
+// hook command then failed at invocation with exit 127,
+// `/bin/sh: <prefix>/bin/node: No such file or directory`.
+//
+// Fix: existsSync-guard the Homebrew rewrite exactly as mise and volta do; on a
+// miss fall through to the unmodified execPath. A rewrite must never convert a
+// working path into a broken one.
+//
+// Hermetic: every case injects existsSync and grants existence to exactly ONE
+// candidate — the one its layout would really have (the fnm #3704 stub rule).
+describe('Bug #4137: normalizeNodePath — keg-only Homebrew Cellar path falls back to raw execPath', () => {
+  const ARM_KEG = '/opt/homebrew/Cellar/node@24/24.11.0/bin/node';
+  const INTEL_KEG = '/usr/local/Cellar/node@20/20.11.0/bin/node';
+  const LINUXBREW_KEG = '/home/linuxbrew/.linuxbrew/Cellar/node@22/22.11.0/bin/node';
+  const CUSTOM_KEG = '/custom/brew/Cellar/node@18/18.20.4/bin/node';
+
+  test('keg-only versioned Cellar path (the reported bug) → raw execPath unchanged', () => {
+    // Apple Silicon, node@24 keg-only: <prefix>/bin/node is absent.
+    assert.equal(normalizeNodePath(ARM_KEG, { existsSync: () => false }), ARM_KEG);
+  });
+
+  test('Intel versioned keg-only Cellar path → raw execPath unchanged', () => {
+    assert.equal(normalizeNodePath(INTEL_KEG, { existsSync: () => false }), INTEL_KEG);
+  });
+
+  test('Linuxbrew versioned keg-only Cellar path → raw execPath unchanged', () => {
+    assert.equal(normalizeNodePath(LINUXBREW_KEG, { existsSync: () => false }), LINUXBREW_KEG);
+  });
+
+  test('unversioned keg-only Cellar path (brew unlink node) → raw execPath unchanged', () => {
+    const keg = '/opt/homebrew/Cellar/node/24.11.0/bin/node';
+    assert.equal(normalizeNodePath(keg, { existsSync: () => false }), keg);
+  });
+
+  test('custom HOMEBREW_PREFIX keg-only Cellar path → raw execPath unchanged', () => {
+    assert.equal(normalizeNodePath(CUSTOM_KEG, { existsSync: () => false }), CUSTOM_KEG);
+  });
+
+  test('Windows-spelled keg-only Cellar path → raw execPath unchanged, .exe intact', () => {
+    const keg = 'C:/Program Files/brew/Cellar/node@24/24.11.0/bin/node.exe';
+    assert.equal(normalizeNodePath(keg, { existsSync: () => false }), keg);
+  });
+
+  test('guard miss must not leak into the mise/volta branches', () => {
+    // The decoy shim belongs to a sibling branch's candidate space; a Cellar
+    // path can never claim it, and the fallback must be the raw execPath.
+    const decoyShim = '/opt/homebrew/shims/node';
+    assert.equal(
+      normalizeNodePath(ARM_KEG, { existsSync: p => p === decoyShim }),
+      ARM_KEG);
+  });
+});
+
+// Negative space: the guard must be a no-op when <prefix>/bin/node DOES exist
+// (linked formula) — the #2185/#3181 rewrite survives exactly as before.
+describe('Bug #4137: normalizeNodePath — linked Homebrew Cellar path still rewrites (guard is a no-op)', () => {
+  test('linked versioned formula keg + stable symlink present → stable symlink', () => {
+    assert.equal(
+      normalizeNodePath('/opt/homebrew/Cellar/node@24/24.11.0/bin/node',
+        { existsSync: p => p === '/opt/homebrew/bin/node' }),
+      '/opt/homebrew/bin/node');
+  });
+
+  test('linked unversioned formula keg + stable symlink present → stable symlink', () => {
+    assert.equal(
+      normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node',
+        { existsSync: p => p === '/usr/local/bin/node' }),
+      '/usr/local/bin/node');
+  });
+
+  test('Linuxbrew linked keg + stable symlink present → stable symlink', () => {
+    assert.equal(
+      normalizeNodePath('/home/linuxbrew/.linuxbrew/Cellar/node@22/22.11.0/bin/node',
+        { existsSync: p => p === '/home/linuxbrew/.linuxbrew/bin/node' }),
+      '/home/linuxbrew/.linuxbrew/bin/node');
+  });
+});
+
+// The seam callers bake into hook commands — the reported breakage surface.
+describe('Bug #4137: resolveNodeRunner — keg-only Cellar execPath stays raw when symlink absent', () => {
+  test('resolveNodeRunner keeps the keg path (quoted token) instead of the broken symlink', () => {
+    const keg = '/opt/homebrew/Cellar/node@24/24.11.0/bin/node';
+    assert.equal(
+      resolveNodeRunner({ execPath: keg, existsSync: () => false }),
+      JSON.stringify(keg));
+  });
+
+  test('resolveNodeRunner still maps a linked Cellar execPath to the stable symlink', () => {
+    assert.equal(
+      resolveNodeRunner({
+        execPath: '/opt/homebrew/Cellar/node@24/24.11.0/bin/node',
+        existsSync: p => p === '/opt/homebrew/bin/node',
+      }),
+      '"/opt/homebrew/bin/node"');
   });
 });
 
@@ -2508,7 +2638,7 @@ describe('Bug #3181: resolveNodeRunner — maps Cellar execPath to stable symlin
         value: '/usr/local/Cellar/node/25.8.1/bin/node',
         configurable: true,
       });
-      const runner = resolveNodeRunner();
+      const runner = resolveNodeRunner({ existsSync: p => p === '/usr/local/bin/node' });
       assert.equal(runner, '"/usr/local/bin/node"',
         `expected stable Intel symlink, got: ${runner}`);
     } finally {
@@ -2523,7 +2653,7 @@ describe('Bug #3181: resolveNodeRunner — maps Cellar execPath to stable symlin
         value: '/opt/homebrew/Cellar/node/25.8.1/bin/node',
         configurable: true,
       });
-      const runner = resolveNodeRunner();
+      const runner = resolveNodeRunner({ existsSync: p => p === '/opt/homebrew/bin/node' });
       assert.equal(runner, '"/opt/homebrew/bin/node"',
         `expected stable Apple Silicon symlink, got: ${runner}`);
     } finally {
@@ -2773,14 +2903,16 @@ describe('Bug #977: normalizeNodePath — non-fnm paths are unaffected (no regre
 
   test('Intel Homebrew Cellar path still maps to stable symlink', () => {
     assert.equal(
-      normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node'),
+      normalizeNodePath('/usr/local/Cellar/node/25.8.1/bin/node',
+        { existsSync: p => p === '/usr/local/bin/node' }),
       '/usr/local/bin/node',
     );
   });
 
   test('Apple Silicon Homebrew Cellar path still maps to stable symlink', () => {
     assert.equal(
-      normalizeNodePath('/opt/homebrew/Cellar/node/25.8.1/bin/node'),
+      normalizeNodePath('/opt/homebrew/Cellar/node/25.8.1/bin/node',
+        { existsSync: p => p === '/opt/homebrew/bin/node' }),
       '/opt/homebrew/bin/node',
     );
   });
@@ -3363,6 +3495,7 @@ describe('Bug #2979 (#3002 CR follow-up): no command:null hook entries survive s
     { event: 'PreToolUse',    matcher: 'Write|Edit',                                    label: 'gsd-read-guard.js' },
     { event: 'PostToolUse',   matcher: 'Read',                                          label: 'gsd-read-injection-scanner.js' },
     { event: 'PreToolUse',    matcher: 'Bash|Edit|Write|MultiEdit',                     label: 'gsd-workflow-guard.js' },
+    { event: 'PreToolUse',    matcher: 'Read|Grep|Bash',                                label: 'gsd-secret-read-guard.js' },
   ];
 
   for (const { event, matcher, label } of MANAGED_JS_HOOKS) {

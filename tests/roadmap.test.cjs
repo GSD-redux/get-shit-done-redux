@@ -10,7 +10,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, cleanup, captureFdSync } = require('./helpers.cjs');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 describe('roadmap get-phase command', () => {
@@ -1202,19 +1202,7 @@ describe('#3057 B3: roadmap update-plan-progress — verification staleness-chec
    * corrupts the captured payload into two concatenated JSON objects).
    */
   function captureUpdatePlanProgress(t, cwd, phaseNum) {
-    const chunks = [];
-    const origWriteSync = fs.writeSync.bind(fs);
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-      if (fd !== 1) return origWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      chunks.push(chunk);
-      return Buffer.byteLength(chunk, 'utf8');
-    });
-    roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false);
-    const captured = chunks.join('');
+    const captured = captureFdSync(1, () => roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false));
     assert.ok(captured.length > 0, 'cmdRoadmapUpdatePlanProgress produced no stdout output');
     return captured;
   }
@@ -1278,6 +1266,364 @@ describe('#3057 B3: roadmap update-plan-progress — verification staleness-chec
 
     assert.strictEqual(output.complete, true);
     assert.strictEqual(output.verification_stale_check_indeterminate, false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// regressions: #4247 — checklist-form ROADMAP.md must not produce a false
+// `updated:true` (untouched phase row) nor blank-line corruption elsewhere
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The checklist house style the bundled roadmapper emits for the summary
+ * checklist (`agents/gsd-roadmapper.md` §"Summary Checklist"): long
+ * `- [ ] **Phase N: Title** - description` entries with column-0 continuation
+ * sentences (the shape issue #4247 was filed against), plus a Progress table.
+ *
+ * `tableCell` controls the Progress table's Phase cell for the target phase.
+ */
+function buildChecklistRoadmap4247(tableCell) {
+  return [
+    '# Roadmap: Mango Tree',
+    '',
+    '## Phases',
+    '',
+    '- [ ] **Phase 65: Orchard Layout** - goal: design the canopy grid. Progress: 4/4 plans executed, verified 2026-08-30;',
+    'grid survey closed the two-centimeter tolerance, terracing passed inspection, and the irrigation',
+    'channels were flushed before the storm; soil probes re-zeroed afterwards.',
+    '- [ ] **Phase 68: Scheduler** - goal: ship the picking scheduler. Progress: 1/5 plans executed;',
+    '68-01 calendar model in review; 68-02 crew assignment summarized; 68-03 weather windows',
+    'not started; 68-04 crate logistics blocked on warehouse slot; 68-05 billing hook pending.',
+    '- [ ] **Phase 69: Packhouse** - goal: automate the line. Progress: 0/2 executed.',
+    '',
+    '## Execution Waves',
+    '',
+    '- Wave 1: Phases 65-66 — complete.',
+    '- Wave 2: Phase 68 — in flight.',
+    '',
+    '## Progress',
+    '',
+    '| Phase | Plans Complete | Status | Completed |',
+    '|-------|----------------|--------|-----------|',
+    '| 65 | 4/4 | Complete | 2026-08-30 |',
+    `| ${tableCell} | 0/5 | Planned | - |`,
+    '',
+  ].join('\n');
+}
+
+/** Phase 68 on disk: 5 plans, 1 summary → In Progress, 1/5. */
+function seedPhase68WithPlans(tmpDir, { roadmap } = {}) {
+  fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
+  const p68 = path.join(tmpDir, '.planning', 'phases', '68-scheduler');
+  fs.mkdirSync(p68, { recursive: true });
+  for (const n of ['01', '02', '03', '04', '05']) {
+    fs.writeFileSync(path.join(p68, `68-${n}-PLAN.md`), `# Plan ${n}\n`);
+  }
+  fs.writeFileSync(path.join(p68, '68-02-SUMMARY.md'), '# Summary\n');
+  return p68;
+}
+
+describe('#4247: roadmap update-plan-progress — checklist-form ROADMAP refuses instead of false-green', () => {
+  let tmpDir;
+  let roadmapPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4247-roadmap-');
+    roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Row 1 — the issue's exact repro shape. FAILING FIRST.
+  test('checklist form with non-matching table row and a stray plan row refuses with missing_phase_details and writes nothing', () => {
+    const roadmap = buildChecklistRoadmap4247('Phase 68').replace(
+      '- [ ] **Phase 69: Packhouse**',
+      '  - [ ] 68-01: calendar model\n  - [ ] 68-02: crew assignment\n- [ ] **Phase 69: Packhouse**',
+    );
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, false, 'a phase with no writable roadmap representation must not claim updated');
+    assert.strictEqual(output.reason, 'missing_phase_details', 'refusal carries the typed parse diagnostic');
+    assert.strictEqual(output.plan_count, 5, 'computed counts are still reported');
+    assert.strictEqual(output.summary_count, 1);
+
+    // The issue's round-trip requirement: the file must be byte-identical —
+    // no plan-checkbox marks, no blank lines splitting other phases' sentences.
+    const written = fs.readFileSync(roadmapPath, 'utf-8');
+    assert.strictEqual(written, roadmap, 'ROADMAP.md must be byte-identical on refusal');
+  });
+
+  // Row 2 — no table at all.
+  test('checklist form with no Progress table refuses with missing_phase_details and writes nothing', () => {
+    const roadmap = [
+      '# Roadmap: T',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 68: Scheduler** - goal: ship the picking scheduler.',
+      '',
+    ].join('\n');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, false);
+    assert.strictEqual(output.reason, 'missing_phase_details');
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      roadmap,
+      'ROADMAP.md must be byte-identical on refusal',
+    );
+  });
+
+  // Row 3 — isolates the non-matching cell (word-prefixed) from the plan-row trigger.
+  test('checklist form whose table row does not match the phase-cell grammar refuses without writing', () => {
+    const roadmap = buildChecklistRoadmap4247('Phase 68');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, false);
+    assert.strictEqual(output.reason, 'missing_phase_details');
+    assert.strictEqual(
+      fs.readFileSync(roadmapPath, 'utf-8'),
+      roadmap,
+      'ROADMAP.md must be byte-identical on refusal',
+    );
+  });
+
+  // Row 4 — table-form MUST keep updating exactly as today (full-file byte assertion).
+  test('table form with a bare-number cell still updates the row byte-exactly and touches nothing else', () => {
+    // Normal-form fixture (template spacing, single-line entries): the write
+    // seam's markdown normalization is a no-op here, so the byte-exact splice
+    // is observable.
+    const roadmap = [
+      '# Roadmap: Mango Tree',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 65: Orchard Layout** - goal: design the canopy grid. Progress: 4/4 plans executed, verified 2026-08-30.',
+      '',
+      '- [ ] **Phase 68: Scheduler** - goal: ship the picking scheduler. Progress: 1/5 plans executed.',
+      '',
+      '- [ ] **Phase 69: Packhouse** - goal: automate the line. Progress: 0/2 executed.',
+      '',
+      '## Progress',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 65 | 4/4 | Complete | 2026-08-30 |',
+      '| 68 | 0/5 | Planned | - |',
+      '',
+    ].join('\n');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, true, 'a matching table row is a writable target');
+
+    // Byte-exact expectation: only the Phase 68 row's three cells change
+    // (` 1/5 ` splice, ` In Progress` padEnd(11), Completed cleared to `  `),
+    // every other byte — including Phase 65/69 prose and the waves section —
+    // is untouched (no blank-line insertion anywhere outside the row).
+    const expected = roadmap.replace(
+      '| 68 | 0/5 | Planned | - |',
+      '| 68 | 1/5 | In Progress|  |',
+    );
+    assert.strictEqual(fs.readFileSync(roadmapPath, 'utf-8'), expected);
+  });
+
+  // Row 5 — 5-column milestone-grouped table, `68. [Scheduler]` cell form.
+  test('milestone-grouped table form with template cell still updates by column name', () => {
+    const roadmap = [
+      '# Roadmap: T',
+      '',
+      '## Progress',
+      '',
+      '| Phase | Milestone | Plans Complete | Status | Completed |',
+      '|-------|-----------|----------------|--------|-----------|',
+      '| 67. [Waves] | v1.0 | 0/2 | Planned | - |',
+      '| 68. [Scheduler] | v1.0 | 0/5 | Planned | - |',
+      '| 69. [Packhouse] | v1.0 | 0/2 | Planned | - |',
+      '',
+    ].join('\n');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, true);
+
+    const expected = roadmap.replace(
+      '| 68. [Scheduler] | v1.0 | 0/5 | Planned | - |',
+      '| 68. [Scheduler] | v1.0 | 1/5 | In Progress|  |',
+    );
+    assert.strictEqual(fs.readFileSync(roadmapPath, 'utf-8'), expected);
+  });
+
+  // Row 6/7 — heading-form targets keep every existing behavior.
+  test('heading-form detail section still updates counts, inserts rows, and marks checkboxes', () => {
+    const roadmap = [
+      '# Roadmap: T',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 68: Scheduler** - goal: ship scheduler.',
+      '',
+      '### Phase 68: Scheduler',
+      '**Goal**: ship it',
+      '**Plans**: 5 plans',
+      '',
+      'Plans:',
+      '- [ ] 68-02: crew assignment',
+      '',
+      '## Progress',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| Phase 68 | 0/5 | Planned | - |',
+      '',
+    ].join('\n');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, true, 'a heading target is writable — no refusal');
+
+    const written = fs.readFileSync(roadmapPath, 'utf-8');
+    assert.ok(written.includes('**Plans**: 1/5 plans executed'), 'count token rewritten');
+    assert.ok(written.includes('- [x] 68-02: crew assignment'), 'summarized plan checkbox marked');
+    assert.ok(written.includes('- [ ] 68-01-PLAN.md'), 'missing plan rows inserted');
+  });
+
+  // Row 9/10/11 — boundaries inside a table must not trip the refusal.
+  test('first and last table rows still update; adjacent rows stay untouched', () => {
+    for (const cell of ['68', 'Phase 68']) {
+      const roadmap = [
+        '# Roadmap: T',
+        '',
+        '## Progress',
+        '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 67 | 0/2 | Planned | - |',
+        `| ${cell === '68' ? '68' : 'Phase 68'} | 0/5 | Planned | - |`,
+        '| 69 | 0/2 | Planned | - |',
+        '',
+      ].join('\n');
+      seedPhase68WithPlans(tmpDir, { roadmap });
+
+      const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+      const written = fs.readFileSync(roadmapPath, 'utf-8');
+      assert.ok(written.includes('| 67 | 0/2 | Planned | - |'), 'adjacent row untouched');
+      assert.ok(written.includes('| 69 | 0/2 | Planned | - |'), 'adjacent row untouched');
+      if (cell === '68') {
+        assert.strictEqual(output.updated, true, 'bare cell 68 between siblings updates');
+        assert.ok(written.includes('| 68 | 1/5 |'), 'middle row updated');
+      } else {
+        assert.strictEqual(output.updated, false, 'word-prefixed cell is not a writable target');
+        assert.strictEqual(written, roadmap, 'nothing written on refusal');
+      }
+      cleanup(tmpDir);
+      tmpDir = createTempProject('gsd-4247-roadmap-');
+      roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    }
+  });
+
+  // Row 12 — phase exists only on disk; roadmap has no representation at all.
+  test('phase absent from the roadmap entirely refuses with missing_phase_details', () => {
+    const roadmap = [
+      '# Roadmap: T',
+      '',
+      '## Phases',
+      '',
+      '- [ ] **Phase 65: Layout** - goal design.',
+      '',
+      '## Progress',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 65 | 4/4 | Complete | 2026-08-30 |',
+      '',
+    ].join('\n');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, false);
+    assert.strictEqual(output.reason, 'missing_phase_details');
+    assert.strictEqual(fs.readFileSync(roadmapPath, 'utf-8'), roadmap);
+  });
+
+  // Row 13 — the #3957 honest no-op decline must survive for target-found reruns.
+  test('idempotent re-run on an up-to-date table row keeps the honest no-changes decline', () => {
+    const roadmap = [
+      '# Roadmap: T',
+      '',
+      '## Progress',
+      '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '|-------|----------------|--------|-----------|',
+      '| 68 | 1/5 | In Progress|  |',
+      '',
+    ].join('\n');
+    seedPhase68WithPlans(tmpDir, { roadmap });
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.updated, false);
+    assert.notStrictEqual(output.reason, 'missing_phase_details', 'target found — this is a genuine no-op');
+    assert.ok(String(output.reason).includes('no changes were needed'), 'preserves the #3957 decline vocabulary');
+    assert.strictEqual(fs.readFileSync(roadmapPath, 'utf-8'), roadmap);
+  });
+
+  // Row 8 — the completion arm: the checklist entry's own checkbox IS the
+  // writable phase row for a complete phase.
+  test('checklist form completing the phase still checks the phase bullet and marks its plan rows', () => {
+    const roadmap = buildChecklistRoadmap4247('Phase 68').replace(
+      '- [ ] **Phase 69: Packhouse**',
+      '  - [ ] 68-01: calendar model\n  - [ ] 68-02: crew assignment\n- [ ] **Phase 69: Packhouse**',
+    );
+    const p68 = seedPhase68WithPlans(tmpDir, { roadmap });
+    for (const n of ['01', '03', '04', '05']) {
+      fs.writeFileSync(path.join(p68, `68-${n}-SUMMARY.md`), '# Summary\n');
+    }
+    fs.writeFileSync(path.join(p68, '68-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
+
+    const result = runGsdTools('roadmap update-plan-progress 68', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.complete, true);
+    assert.strictEqual(output.updated, true, 'the phase bullet is a writable target when completing');
+
+    const written = fs.readFileSync(roadmapPath, 'utf-8');
+    assert.match(written, /- \[x\] \*\*Phase 68: Scheduler\*\* - goal: ship the picking scheduler\. Progress: 1\/5 plans executed; \(completed \d{4}-\d{2}-\d{2}\)/, 'phase bullet checked with completion date');
+    // Other phases' checklist bullets are not checked or annotated.
+    assert.match(written, /- \[ \] \*\*Phase 65: Orchard Layout\*\*/);
+    assert.match(written, /- \[ \] \*\*Phase 69: Packhouse\*\*/);
+    assert.ok(written.includes('- [x] 68-02: crew assignment'), 'summarized plan row marked');
   });
 });
 
@@ -4374,26 +4720,16 @@ describe('#3957 (epic #3473 B9): no-op decline reports the real condition', () =
 
   // Mirrors state.test.cjs's captureCliIO — see that file's doc comment.
   function captureCliIO(fn) {
-    const originalWriteSync = fs.writeSync;
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
-    let stdout = '';
     let stderr = '';
-    fs.writeSync = (fd, data, offset, length) => {
-      if (fd !== 1) return originalWriteSync(fd, data, offset, length);
-      const chunk = Buffer.isBuffer(data)
-        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-        : String(data);
-      stdout += chunk;
-      return Buffer.byteLength(chunk, 'utf8');
-    };
     process.stderr.write = (chunk) => {
       stderr += String(chunk);
       return true;
     };
+    let stdout;
     try {
-      fn();
+      stdout = captureFdSync(1, fn);
     } finally {
-      fs.writeSync = originalWriteSync;
       process.stderr.write = originalStderrWrite;
     }
     return { stdout, stderr };

@@ -49,7 +49,7 @@ import { parseCodexAgentToml, renderCodexAgentToml, stripModel, stripReasoningEf
 import hostIntegrationMod = require('./host-integration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, planningPaths } = planningWorkspace;
+const { planningDir, planningPaths, todosDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar } = frontmatter;
@@ -239,7 +239,10 @@ function cmdCurrentTimestamp(format: string | undefined, raw: boolean): void {
 }
 
 function cmdListTodos(cwd: string, area: string | undefined, raw: boolean): void {
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
+  // #4256: todos are root-scoped shared state — resolve via todosDir(cwd),
+  // never planningDir(cwd) (workstream-scoped), or the listing goes empty
+  // under a workstream.
+  const pendingDir = path.join(todosDir(cwd), 'pending');
 
   let count = 0;
   const todos: Array<{ file: string; created: string; title: string; area: string; path: string; severity?: string }> = [];
@@ -721,6 +724,11 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
  * applies here exactly as everywhere else: an unknown host, a missing axis, or the
  * `undocumented` sentinel all degrade to the safe floor rather than being trusted.
  * Never throws — a lookup failure yields `'none'`, which renders no argument.
+ *
+ * On the module's export surface for #4255: the reviewer-lane effort resolver renders a lane's own
+ * configured level through this same negotiation, so a lane can never emit an argument for a host
+ * whose negotiated surface does not accept one. One negotiation, both channels — a second copy in
+ * the lane path is exactly how the two would drift.
  */
 function effortSurfaceForHost(cwd: string, host: string): string {
   void cwd;
@@ -2773,7 +2781,8 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
 function cmdTodoMatchPhase(cwd: string, phase: string | undefined, raw: boolean): void {
   if (!phase) { error('phase required for todo match-phase'); }
 
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
+  // #4256: root-scoped todos read — see cmdListTodos.
+  const pendingDir = path.join(todosDir(cwd), 'pending');
   const todos: Array<{
     file: string;
     title: string;
@@ -2901,28 +2910,85 @@ function cmdTodoMatchPhase(cwd: string, phase: string | undefined, raw: boolean)
   output({ phase, matches, todo_count: todos.length }, raw, undefined);
 }
 
-function cmdTodoComplete(cwd: string, filename: string | undefined, raw: boolean): void {
+// #4096: upsert completion keys INSIDE the leading frontmatter block. Never a
+// bare prefix line above the opening `---` (that displaces the fence to line 2
+// and breaks every fence-locating reader). A file with no well-formed block
+// (absent, or an unterminated opening fence) gains a complete block.
+function upsertTodoCompletionFields(content: string, today: string): string {
+  const lines = content.split('\n');
+  const fields = [`completed: ${today}`, 'status: completed'];
+
+  const hasOpeningFence = lines[0] !== undefined && lines[0].trim() === '---';
+  const closeIdx = hasOpeningFence ? lines.findIndex((l, i) => i > 0 && l.trim() === '---') : -1;
+
+  if (!hasOpeningFence || closeIdx === -1) {
+    // No parseable frontmatter: wrap the whole content in a complete block
+    // rather than prefixing bare keys (#4096 fix 2).
+    return `---\n${fields.join('\n')}\n---\n\n${content}`;
+  }
+
+  const block = lines.slice(1, closeIdx);
+  for (const field of fields) {
+    const key = `${field.slice(0, field.indexOf(':'))}:`;
+    const idx = block.findIndex(l => l.startsWith(key));
+    if (idx === -1) {
+      block.push(field);
+    } else {
+      block[idx] = field;
+    }
+  }
+  return [...lines.slice(0, 1), ...block, ...lines.slice(closeIdx)].join('\n');
+}
+
+interface TodoCompleteOptions {
+  dryRun?: boolean;
+}
+
+function cmdTodoComplete(cwd: string, filename: string | undefined, options: TodoCompleteOptions, raw: boolean): void {
   if (!filename) {
     error('filename required for todo complete');
   }
 
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
-  const completedDir = path.join(planningDir(cwd), 'todos', 'completed');
+  // #4256: root-scoped todos read/write — see cmdListTodos. The pending and
+  // completed halves of the move must resolve from the SAME root or the
+  // completion would strand files where no reader looks.
+  const todosRoot = todosDir(cwd);
+  const pendingDir = path.join(todosRoot, 'pending');
+  const completedDir = path.join(todosRoot, 'completed');
   const sourcePath = path.join(pendingDir, filename as string);
 
   if (!fs.existsSync(sourcePath)) {
     error(`Todo not found: ${filename as string}`);
   }
 
-  // Ensure completed directory exists
+  const content = fs.readFileSync(sourcePath, 'utf-8');
+  const today = realClock.localToday();
+
+  // #4096: --dry-run mirrors `milestone complete --dry-run` (#2118) — every
+  // existence check above still runs, nothing below mutates, and the payload
+  // is preview-shaped (`dry_run`/`would_*`), never `completed: true`.
+  if (options.dryRun) {
+    output({
+      dry_run: true,
+      would_complete: true,
+      file: filename,
+      date: today,
+      would_move: {
+        source: path.relative(cwd, sourcePath).split(path.sep).join('/'),
+        target: path.relative(cwd, path.join(completedDir, filename as string)).split(path.sep).join('/'),
+      },
+      would_set: { completed: today, status: 'completed' },
+    }, raw);
+    return;
+  }
+
+  // Ensure completed directory exists (only on the real run — a dry run
+  // creates nothing).
   platformEnsureDir(completedDir);
 
-  // Read, add completion timestamp, move
-  let content = fs.readFileSync(sourcePath, 'utf-8');
-  const today = realClock.localToday();
-  content = `completed: ${today}\n` + content;
+  const completedContent = upsertTodoCompletionFields(content, today);
 
-  platformWriteSync(path.join(completedDir, filename as string), content);
+  platformWriteSync(path.join(completedDir, filename as string), completedContent);
   fs.unlinkSync(sourcePath);
 
   output({ completed: true, file: filename, date: today }, raw, 'completed');
@@ -3458,6 +3524,7 @@ function cmdCommitDocsGuardDisable(cwd: string, raw: boolean): void {
 }
 
 export = {
+  effortSurfaceForHost,
   groupFilesBySubrepo,
   determinePhaseStatus,
   foldPhaseStatus,

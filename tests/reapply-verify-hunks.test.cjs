@@ -210,6 +210,8 @@ describe('Bug #2969: deterministic Step 5 verification gate', () => {
     // this assertion, removing one breaks consumers that switch on the enum.
     // Bug #3657 added OK_PRISTINE_DRIFT_DETECTED.
     // Bug #934 added OK_NO_BASELINE.
+    // Bug #4136 added OK_UNVALIDATED_BASELINE (--classify refuses to confirm
+    // adoption on an on-disk snapshot with no recorded hash to validate it).
     assert.deepEqual(
       Object.keys(REASON).sort(),
       [
@@ -221,6 +223,7 @@ describe('Bug #2969: deterministic Step 5 verification gate', () => {
         'OK_NO_SIGNIFICANT_BACKUP_LINES',
         'OK_NO_USER_LINES_VS_PRISTINE',
         'OK_PRISTINE_DRIFT_DETECTED',
+        'OK_UNVALIDATED_BASELINE',
       ],
     );
   });
@@ -302,7 +305,8 @@ describe('Bug #2969: deterministic Step 5 verification gate', () => {
     // Bug #3657 (Finding 1): drifted + drifted_files are additive fields added to surface
     // pristine-drift skips distinctly from failures.  Shape-lock updated to include them.
     // Bug #934: no_baseline + no_baseline_files are additive fields for missing-pristine advisory.
-    assert.deepEqual(Object.keys(report).sort(), ['checked', 'drifted', 'drifted_files', 'failures', 'no_baseline', 'no_baseline_files', 'results']);
+    // Bug #4135: baseline_covered is the additive coverage aggregate (headline reporting).
+    assert.deepEqual(Object.keys(report).sort(), ['baseline_covered', 'checked', 'drifted', 'drifted_files', 'failures', 'no_baseline', 'no_baseline_files', 'results']);
     const r0 = report.results[0];
     assert.deepEqual(Object.keys(r0).sort(), ['file', 'missing', 'reason', 'status']);
     assert.equal(typeof r0.file, 'string');
@@ -702,6 +706,7 @@ describe('Bug #3657: pristine-drift does not produce false FAIL_USER_LINES_MISSI
    * REASON enum shape-lock: the #3657 fix adds OK_PRISTINE_DRIFT_DETECTED.
    * This assertion locks the updated documented set of stable codes.
    * Any further additions require updating this assertion.
+   * Bug #4136 added OK_UNVALIDATED_BASELINE (see the #2969 fold's lock note).
    */
   test('REASON enum includes OK_PRISTINE_DRIFT_DETECTED added by the #3657 fix', () => {
     assert.deepEqual(
@@ -715,6 +720,7 @@ describe('Bug #3657: pristine-drift does not produce false FAIL_USER_LINES_MISSI
         'OK_NO_SIGNIFICANT_BACKUP_LINES',
         'OK_NO_USER_LINES_VS_PRISTINE',
         'OK_PRISTINE_DRIFT_DETECTED',
+        'OK_UNVALIDATED_BASELINE',
       ],
     );
   });
@@ -1057,6 +1063,1433 @@ describe('Bug #934: OK_NO_BASELINE when recordedHash present but pristine file a
     assert.notEqual(r0.reason, REASON.OK_NO_BASELINE,
       `OK_NO_BASELINE must not fire when --pristine-dir is not provided`);
   });
+});
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4086 (verifier resolves skills/ entries at the
+// runtime's ACTUAL skills root). Codex installs skills to ~/.agents/skills;
+// verifyFile() joined every relPath against configDir only, so legacy
+// Codex skills/ patch entries reported fail_installed_missing even though
+// the file existed at its real location.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4086-verify-reapply-skills-root', () => {
+'use strict';
+
+const { test, describe, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { cleanup, scrubConfigLocationEnv } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON } = require(SCRIPT);
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let savedHome;
+let savedUserProfile;
+let restoreConfigEnv;
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function runVerifier() {
+  const r = runNode([
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir', configDir,
+    '--json',
+  ], { timeoutMs: 60_000 });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+beforeEach(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4086-vfy-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'home', '.codex');
+  fs.mkdirSync(patchesDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  // Sandbox HOME so the codex skills-kind home override resolves inside the
+  // fixture (~/.agents/skills), not the developer's real home.
+  const home = path.join(tmpRoot, 'home');
+  savedHome = process.env.HOME;
+  savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  restoreConfigEnv = scrubConfigLocationEnv();
+});
+
+afterEach(() => {
+  restoreConfigEnv();
+  process.env.HOME = savedHome;
+  if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = savedUserProfile;
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4086: verifyFile resolves skills entries at the runtime skills root', () => {
+  test('verifyFile resolves skills entries at the runtime\'s skills root (#4086)', () => {
+    const key = 'skills/gsd-x/SKILL.md';
+    writeFile(path.join(patchesDir, key), 'stock body line for the patch backup\nuser-added line that must survive merges\n');
+    writeFile(path.join(tmpRoot, 'home', '.agents', key), 'stock body line for the patch backup\nuser-added line that must survive merges\n');
+    // Manifest tells the verifier which runtime/scope owns this configDir.
+    writeFile(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.12.0', runtime: 'codex', scope: 'global', files: {},
+    }));
+
+    const { status, report } = runVerifier();
+    assert.equal(status, 0, `gate must pass; got report ${JSON.stringify(report)}`);
+    assert.equal(report.failures, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'ok');
+    assert.notEqual(r0.reason, REASON.FAIL_INSTALLED_MISSING);
+  });
+
+  test('verifyFile still fails when the skill file is genuinely missing (#4086)', () => {
+    const key = 'skills/gsd-gone/SKILL.md';
+    writeFile(path.join(patchesDir, key), 'stock body line for the patch backup\nuser-added line that must survive merges\n');
+    writeFile(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.12.0', runtime: 'codex', scope: 'global', files: {},
+    }));
+
+    const { status, report } = runVerifier();
+    assert.equal(status, 1);
+    const r0 = report.results[0];
+    assert.equal(r0.file.replace(/\\/g, '/'), key);
+    assert.equal(r0.status, 'fail');
+    assert.equal(r0.reason, REASON.FAIL_INSTALLED_MISSING);
+  });
+});
+  });
+}
+
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4145 (a hash-matching gsd-pristine/ baseline
+// stored without the gsd-core/ prefix is never resolved). verifyFile() joined
+// the manifest-keyed path strictly; when stat missed and a hash was recorded
+// it reported OK_NO_BASELINE even though byte-correct content sat elsewhere
+// under gsd-pristine/. The fix consults the recorded pristine_hashes — the
+// same authority the #3657 drift guard trusts — and adopts an exact-hash
+// match found anywhere in the tree.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4145-pristine-prefix-resolution', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON } = require(SCRIPT);
+const { findPristineByHash } = require(
+  path.join(ROOT, 'gsd-core', 'bin', 'lib', 'pristine-baseline.cjs'),
+);
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let pristineDir;
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function writeBackupMeta(pristine_hashes) {
+  writeFile(path.join(patchesDir, 'backup-meta.json'), JSON.stringify({ pristine_hashes }, null, 2));
+}
+
+function resetFixture() {
+  for (const dir of [patchesDir, configDir, pristineDir]) {
+    cleanup(dir);
+  }
+  fs.mkdirSync(patchesDir);
+  fs.mkdirSync(configDir);
+  fs.mkdirSync(pristineDir);
+}
+
+function runVerifier() {
+  const r = runNode([
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    '--pristine-dir', pristineDir,
+    '--json',
+  ], { timeoutMs: 30_000 });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+before(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'installed');
+  pristineDir = path.join(tmpRoot, 'pristine');
+  resetFixture();
+});
+
+after(() => {
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4145: hash-matching prefix-less pristine baseline is resolved', () => {
+  /**
+   * Core regression. The manifest key is `gsd-core/bin/lib/frontmatter.cjs`
+   * but the snapshot sits at `bin/lib/frontmatter.cjs` — one segment away
+   * from the joined path. Its SHA-256 equals the recorded pristine_hashes
+   * entry. The upstream release replaced the file wholesale and only the
+   * user's line survived the merge, so a verifier that recovered the
+   * baseline computes exactly one user-added line (present → exit 0,
+   * no_baseline 0), while the pre-fix run reported ok_no_baseline.
+   */
+  test('#4145: resolves a hash-matching prefix-less pristine baseline instead of reporting ok_no_baseline', () => {
+    resetFixture();
+    const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+    const OLD_PRISTINE =
+      'outgoing pristine stock line one with substantial content\n' +
+      'outgoing pristine stock line two also substantial content\n';
+    const USER_LINE = 'user customization line that must survive the reapply merge';
+    const backupContent = OLD_PRISTINE + USER_LINE + '\n';
+    const installedContent =
+      'incoming upstream replacement line with substantial content\n' + USER_LINE + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(OLD_PRISTINE) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), installedContent);
+    // The orphan: same bytes, stored WITHOUT the gsd-core/ prefix.
+    writeFile(path.join(pristineDir, 'bin', 'lib', 'frontmatter.cjs'), OLD_PRISTINE);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0, `expected exit 0; report=${JSON.stringify(report)}`);
+    assert.equal(report.no_baseline, 0, 'a hash-matching baseline was on disk — it must be resolved');
+    assert.deepEqual(report.no_baseline_files, []);
+    assert.equal(report.failures, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'ok');
+    assert.notEqual(r0.reason, REASON.OK_NO_BASELINE);
+  });
+
+  /** Negative space: nothing anywhere under gsd-pristine/ matches the record. */
+  test('#4145: still reports ok_no_baseline when the recorded hash matches nothing under gsd-pristine', () => {
+    resetFixture();
+    const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+    const backupContent =
+      'upstream line present in the backup of the outgoing release\n' +
+      'model: sonnet — the user customisation line in the backup file\n';
+    const installedContent =
+      'replacement upstream line in the newer release version\n' +
+      'model: sonnet — the user customisation line in the backup file\n';
+
+    writeBackupMeta({ [FILE]: 'deadbeef00000000000000000000000000000000000000000000000000000001' });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), installedContent);
+    // No pristine file anywhere.
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0, 'no-baseline is advisory, never a failure');
+    assert.equal(report.no_baseline, 1);
+    assert.equal(report.results[0].reason, REASON.OK_NO_BASELINE);
+  });
+
+  /**
+   * Negative space: an orphan whose bytes do NOT hash to the record is never
+   * adopted — only exact recorded-hash matches are accepted.
+   */
+  test('#4145: never adopts a hash-mismatching orphan — only exact recorded-hash matches', () => {
+    resetFixture();
+    const FILE = 'gsd-core/bin/lib/frontmatter.cjs';
+    const OLD_PRISTINE = 'outgoing pristine bytes that the record hashes\n';
+    const OTHER_CONTENT = 'some other release snapshot with different bytes\n';
+
+    writeBackupMeta({ [FILE]: sha256(OLD_PRISTINE) });
+    writeFile(path.join(patchesDir, FILE), 'outgoing pristine bytes that the record hashes\nuser line\n');
+    writeFile(path.join(configDir, FILE), 'user line\n');
+    // Orphan exists but hashes to something else.
+    writeFile(path.join(pristineDir, 'bin', 'lib', 'frontmatter.cjs'), OTHER_CONTENT);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.no_baseline, 1, 'a mismatching orphan is not a baseline');
+    assert.equal(report.results[0].reason, REASON.OK_NO_BASELINE);
+  });
+
+  /**
+   * Precedence lock: the canonical prefixed path still resolves exactly as
+   * today even when an identical-content orphan also exists — the strict join
+   * stays first, and the verifier (read-only) leaves the orphan untouched.
+   */
+  test('#4145: prefixed canonical baseline resolves exactly as today when an identical orphan also exists', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/execute-phase.md';
+    const pristineContent = 'stock workflow line long enough to pass the significance threshold\n';
+    const droppedLine = 'user workflow customisation that was lost in the merge operation';
+    const backupContent = pristineContent + droppedLine + '\n';
+    const installedContent = pristineContent; // user line dropped — real failure
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), installedContent);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+    const orphanPath = path.join(pristineDir, 'workflows', 'execute-phase.md');
+    writeFile(orphanPath, pristineContent);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 1, 'the dropped user line must still be caught via the canonical baseline');
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'fail');
+    assert.equal(r0.reason, REASON.FAIL_USER_LINES_MISSING);
+    assert.ok(r0.missing.includes(droppedLine));
+    // Read-only verifier: the orphan is never relocated or pruned by a verify run.
+    assert.equal(fs.existsSync(orphanPath), true, 'verifier must not mutate gsd-pristine/');
+  });
+
+  /**
+   * Drift-path lock: a hash-MISMATCHING canonical snapshot still reports
+   * OK_PRISTINE_DRIFT_DETECTED (#3657) — the recovery scan must not reach the
+   * drift case.
+   */
+  test('#4145: canonical-path drift still reports ok_pristine_drift_detected even when a hash-matching orphan exists', () => {
+    resetFixture();
+    const FILE = 'gsd-core/agents/gsd-executor.md';
+    const oldPristine = 'old pristine line that was present when backup was captured\n';
+    const newPristine = 'refreshed upstream line in the newer pristine snapshot\n';
+    const userLine = 'user customisation line that should be preserved across updates';
+
+    writeBackupMeta({ [FILE]: sha256(oldPristine) });
+    writeFile(path.join(patchesDir, FILE), oldPristine + userLine + '\n');
+    writeFile(path.join(configDir, FILE), newPristine + userLine + '\n');
+    writeFile(path.join(pristineDir, FILE), newPristine); // canonical drifted
+    // A hash-matching orphan exists elsewhere — drift must still win.
+    writeFile(path.join(pristineDir, 'agents', 'gsd-executor.md'), oldPristine);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.reason, REASON.OK_PRISTINE_DRIFT_DETECTED,
+      `expected the untouched #3657 drift posture; got ${r0.reason}`);
+    assert.equal(report.drifted, 1);
+  });
+
+  /** Module unit: deterministic sorted-first match, symlink skip, absent dir. */
+  test('#4145: findPristineByHash returns the sorted-first match, skips symlinks, and null on an absent dir', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-unit-'));
+    const symRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-sym-'));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4145-out-'));
+    try {
+      const contentA = 'identical bytes that two snapshots happen to share\n';
+      const hashA = sha256(contentA);
+      writeFile(path.join(root, 'zz-dir', 'late-match.md'), contentA);
+      writeFile(path.join(root, 'aa.txt'), contentA);
+
+      assert.equal(findPristineByHash(root, hashA), 'aa.txt',
+        'sorted-first match wins deterministically');
+      assert.equal(findPristineByHash(root, hashA, 'aa.txt'), 'zz-dir/late-match.md',
+        'skipRel is never returned');
+      assert.equal(findPristineByHash(root, hashA, new Set(['aa.txt', 'zz-dir/late-match.md'])), null,
+        'every member of a skip Set is excluded (canonical-path protection)');
+      assert.equal(findPristineByHash(root, sha256('no such content anywhere here\n')), null,
+        'no match resolves to null');
+      assert.equal(findPristineByHash(path.join(root, 'absent'), hashA), null,
+        'absent dir resolves to null');
+
+      // A symlink is never followed, even when its target would hash-match.
+      // The target lives OUTSIDE symRoot so the only hashable entry inside the
+      // scanned tree is the symlink itself.
+      const outsideTarget = path.join(outsideRoot, 'outside-target.md');
+      fs.writeFileSync(outsideTarget, contentA);
+      fs.symlinkSync(outsideTarget, path.join(symRoot, 'sym.md'));
+      assert.equal(findPristineByHash(symRoot, hashA), null,
+        'symlinked candidates are skipped, not followed');
+    } finally {
+      cleanup(root);
+      cleanup(symRoot);
+      cleanup(outsideRoot);
+    }
+  });
+});
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4136 (the documented "Incorporated" per-file
+// status was unreachable: a customization upstream had adopted was silently
+// re-grafted on every future cycle, forever). Adds a --classify pre-merge
+// mode to the deterministic verifier: with a hash-validated pristine
+// baseline, a file whose EVERY significant user-added line is already
+// present verbatim in the freshly installed version is classified
+// `incorporated` — the workflow then leaves it untouched (status
+// Incorporated, "Already in upstream v{version}") instead of re-grafting.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4136-reapply-incorporated-status', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+/**
+ * Bug #4136: reapply-patches.md Step 4 item 6 defines three per-file statuses
+ * (Merged / Conflict / Incorporated) but no code path computed Incorporated —
+ * the term existed only in workflow prose, so superseded customizations were
+ * re-grafted forever (the merged file's hash never re-converged with the
+ * shipped manifest hash, so saveLocalPatches re-flagged it every update).
+ *
+ * Fix: `--classify` mode on the deterministic verifier. Pre-merge, per file:
+ *   - hash-validated pristine + >=1 significant user-added line + every one of
+ *     those lines present verbatim in the fresh install  → incorporated
+ *   - hash-validated pristine + some user lines absent               → needs_merge
+ *   - anything else (no/mismatched/absent/unvalidated baseline, zero user
+ *     lines, structural failure)                                     → unknown
+ *
+ * Incorporated is NEVER produced without baseline confirmation — the issue's
+ * law that a false Incorporated is worse than none. Per CONTRIBUTING's typed-
+ * surface standard, assertions go against the frozen CLASSIFICATION enum and
+ * the structured --json report; zero text matching on human output.
+ */
+
+const { test, describe, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const os = require('node:os');
+const path = require('node:path');
+const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON, CLASSIFICATION } = require(SCRIPT);
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let pristineDir;
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function writeBackupMeta(pristine_hashes) {
+  writeFile(path.join(patchesDir, 'backup-meta.json'), JSON.stringify({ pristine_hashes }, null, 2));
+}
+
+function resetFixture() {
+  for (const dir of [patchesDir, configDir, pristineDir]) {
+    cleanup(dir);
+  }
+  fs.mkdirSync(patchesDir);
+  fs.mkdirSync(configDir);
+  fs.mkdirSync(pristineDir);
+}
+
+/** Runs the verifier in --classify mode with --json. Returns { status, report }. */
+function runClassifier({ includePristine = true } = {}) {
+  const args = [
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    ...(includePristine ? ['--pristine-dir', pristineDir] : []),
+    '--classify',
+    '--json',
+  ];
+  const r = runNode(args, { timeoutMs: VERIFIER_TIMEOUT_MS });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+/** Runs the verifier in default post-merge gate mode with --json. */
+function runGate({ includePristine = true } = {}) {
+  const args = [
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    ...(includePristine ? ['--pristine-dir', pristineDir] : []),
+    '--json',
+  ];
+  const r = runNode(args, { timeoutMs: VERIFIER_TIMEOUT_MS });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+before(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4136-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'installed');
+  pristineDir = path.join(tmpRoot, 'pristine');
+  resetFixture();
+});
+
+after(() => {
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4136: deterministic Incorporated classification (--classify)', () => {
+  test('CLASSIFICATION enum exposes the documented set of stable codes', () => {
+    assert.deepEqual(
+      Object.keys(CLASSIFICATION).sort(),
+      ['INCORPORATED', 'NEEDS_MERGE', 'UNKNOWN'],
+    );
+  });
+
+  test('Row 1 (RED regression): all user-added lines already upstream → incorporated', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/execute-phase.md';
+    const pristineContent = [
+      'stock line one that is long enough to be significant',
+      'stock line two that is long enough to be significant',
+    ].join('\n') + '\n';
+    const userLine = 'user custom verification gate that upstream adopted verbatim';
+    const backupContent = pristineContent + userLine + '\n';
+    // Fresh install: upstream shipped the user's line PLUS its own new line.
+    const freshInstall = pristineContent + userLine + '\n' +
+      'brand-new unrelated upstream line shipped in this release\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0, `classify must exit 0; report=${JSON.stringify(report)}`);
+    assert.equal(report.incorporated, 1);
+    assert.equal(report.incorporated_files.length, 1);
+    assert.equal(report.incorporated_files[0].replace(/\\/g, '/'), FILE);
+    const r0 = report.results[0];
+    assert.equal(r0.file.replace(/\\/g, '/'), FILE);
+    assert.equal(r0.classification, CLASSIFICATION.INCORPORATED);
+    assert.deepEqual(r0.missing, []);
+  });
+
+  test('Row 2: user line absent from fresh install → needs_merge; gate still catches drops', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/plan-phase.md';
+    const pristineContent = 'stock baseline line long enough to be significant here\n';
+    const userLine = 'user custom instruction that upstream did NOT adopt yet';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + 'unrelated upstream line shipped in the release\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const cls = runClassifier();
+    assert.equal(cls.status, 0, 'classify is informational — needs_merge is not an error');
+    assert.equal(cls.report.incorporated, 0);
+    assert.deepEqual(cls.report.incorporated_files, []);
+    const c0 = cls.report.results[0];
+    assert.equal(c0.classification, CLASSIFICATION.NEEDS_MERGE);
+    assert.ok(c0.missing.includes(userLine), `missing must name the absent line; got ${JSON.stringify(c0.missing)}`);
+
+    // Negative proof: the post-merge gate is NOT weakened — a merge that
+    // drops the user line still fails the default (#2969) run.
+    const gate = runGate();
+    assert.equal(gate.status, 1);
+    assert.equal(gate.report.failures, 1);
+    const g0 = gate.report.results[0];
+    assert.equal(g0.status, 'fail');
+    assert.equal(g0.reason, REASON.FAIL_USER_LINES_MISSING);
+  });
+
+  test('Row 3 (boundary): partially-superseded is needs_merge, not Incorporated', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/ship.md';
+    const pristineContent = 'stock line that is long enough to be significant\n';
+    const adoptedLine = 'user line number one that upstream did adopt upstream';
+    const unadoptedLine = 'user line number two that upstream has NOT adopted';
+    const backupContent = pristineContent + adoptedLine + '\n' + unadoptedLine + '\n';
+    const freshInstall = pristineContent + adoptedLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'partial adoption must not classify Incorporated');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.NEEDS_MERGE);
+    assert.deepEqual(r0.missing, [unadoptedLine], 'only the un-adopted line is missing');
+  });
+
+  test('Row 4a: pristine drift (#3657 shape) → unknown, never Incorporated', () => {
+    resetFixture();
+    const FILE = 'agents/gsd-executor.md';
+    const oldPristine = 'old pristine line present when the backup was captured\n';
+    const newPristine = 'refreshed upstream snapshot line in the newer GSD release\n';
+    const userLine = 'user customisation line that upstream adopted in the release';
+    const backupContent = oldPristine + userLine + '\n';
+    const freshInstall = newPristine + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(oldPristine) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), newPristine); // hash mismatch → drift
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'a drifted baseline confirms nothing');
+    assert.deepEqual(report.incorporated_files, []);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_PRISTINE_DRIFT_DETECTED);
+  });
+
+  test('Row 4b: recorded hash but pristine absent (#934 shape) → unknown', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/debug.md';
+    const pristineContent = 'stock line that is long enough to be significant x\n';
+    const userLine = 'user custom line upstream adopted, but baseline is missing';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    // No pristine file on disk at all.
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'absent baseline confirms nothing even when all lines are present');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_NO_BASELINE);
+  });
+
+  test('Row 4c: no --pristine-dir (two-way fallback) → unknown', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/scan.md';
+    const pristineContent = 'stock line that is long enough to be significant y\n';
+    const userLine = 'user custom line upstream adopted, but no baseline was passed';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier({ includePristine: false });
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+  });
+
+  test('Row 4d: on-disk pristine but no recorded hash → unknown (unvalidated baseline)', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/undo.md';
+    const pristineContent = 'stock line that is long enough to be significant z\n';
+    const userLine = 'user custom line upstream adopted, but hash was never recorded';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    // Older installer: no pristine_hashes entry at all.
+    writeBackupMeta({});
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'an unvalidated snapshot cannot confirm adoption');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_UNVALIDATED_BASELINE);
+  });
+
+  test('Row 4d-2: a #4145-recovered (hash-matched orphan) baseline can confirm adoption', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/import.md';
+    const pristineContent = 'stock line that is long enough to be significant s\n';
+    const userLine = 'user custom line upstream adopted, baseline stored unprefixed';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    // The pristine snapshot sits WITHOUT the gsd-core/ prefix (an earlier
+    // release's writer dropped it) — only the #4145 hash scan can find it.
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, 'workflows', 'import.md'), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    // A recovered baseline is hash-confirmed by construction, so it VALIDATES
+    // and may confirm adoption — the #4136 classifier composes with the
+    // #4145 recovery instead of treating it as unknown.
+    assert.equal(report.incorporated, 1);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.INCORPORATED);
+    assert.deepEqual(r0.missing, []);
+  });
+
+  test('Row 4e: signature-looking short/fence lines do not drive the classification', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/health.md';
+    const pristineContent = 'stock line that is long enough to be significant w\n';
+    // The user hunk: a short heading (under the 12-char significance floor),
+    // a code fence, and ONE significant line.
+    const shortHeading = '## My Gate';
+    const fence = '```bash';
+    const significant = 'the substantive customization body line that matters';
+    const backupContent = pristineContent + shortHeading + '\n' + fence + '\n' + significant + '\n';
+    // Fresh install happens to contain the short heading (renamed section)
+    // and plenty of fences — but NOT the significant body line.
+    const freshInstall = pristineContent + '## My Gate\n' + '```bash\nls -la\n```\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0, 'trivial-line presence must not fabricate adoption');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.NEEDS_MERGE);
+    assert.ok(r0.missing.includes(significant));
+    assert.ok(!r0.missing.includes(shortHeading), 'insufficiently-significant lines are excluded');
+    assert.ok(!r0.missing.includes(fence), 'structural lines are excluded');
+  });
+
+  test('Row 5: backup with zero significant delta vs validated pristine → unknown, never a skip', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/note.md';
+    const pristineContent = 'stock line that is long enough to be significant v\n';
+    const backupContent = pristineContent; // degenerate: backed up but identical
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), pristineContent);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0);
+    assert.equal(report.incorporated, 0);
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.OK_NO_USER_LINES_VS_PRISTINE);
+  });
+
+  test('Row 6: structural failures classify unknown; classify still exits 0', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/stats.md';
+    const pristineContent = 'stock line that is long enough to be significant u\n';
+    const userLine = 'user custom line that upstream adopted in this release';
+    const backupContent = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+    // Installed file deliberately absent.
+
+    const { status, report } = runClassifier();
+    assert.equal(status, 0, 'classify is informational; the post-merge gate enforces structure');
+    const r0 = report.results[0];
+    assert.equal(r0.classification, CLASSIFICATION.UNKNOWN);
+    assert.equal(r0.reason, REASON.FAIL_INSTALLED_MISSING);
+  });
+
+  test('Row 7: classify --json report shape is { checked, incorporated, incorporated_files, results }', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/help.md';
+    const pristineContent = 'stock line that is long enough to be significant t\n';
+    const userLine = 'user custom line that upstream adopted in this release';
+    const backupContent = pristineContent + userLine + '\n';
+    const freshInstall = pristineContent + userLine + '\n';
+
+    writeBackupMeta({ [FILE]: sha256(pristineContent) });
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(configDir, FILE), freshInstall);
+    writeFile(path.join(pristineDir, FILE), pristineContent);
+
+    const { report } = runClassifier();
+    assert.deepEqual(Object.keys(report).sort(), ['checked', 'incorporated', 'incorporated_files', 'results']);
+    const r0 = report.results[0];
+    assert.deepEqual(Object.keys(r0).sort(), ['classification', 'file', 'missing', 'reason']);
+    assert.equal(typeof r0.file, 'string');
+    assert.equal(typeof r0.classification, 'string');
+    assert.ok(Array.isArray(r0.missing));
+  });
+
+  test('Row 8: Incorporated ends the re-graft cycle — the file drops out of the next backup', () => {
+    resetFixture();
+    const FILE = 'gsd-core/workflows/inbox.md';
+    const pristineV1 = 'stock v1 line that is long enough to be significant\n';
+    const userLine = 'user custom loop guard that upstream adopted in v2';
+    const backupContent = pristineV1 + userLine + '\n';
+    // v2 ships the user's line verbatim plus an unrelated upstream change.
+    const freshV2 = pristineV1 + userLine + '\n' + 'unrelated upstream improvement line in v2\n';
+
+    // Update #1: installer backs up the modified file + records the pristine.
+    writeFile(path.join(patchesDir, FILE), backupContent);
+    writeFile(path.join(pristineDir, FILE), pristineV1);
+    writeBackupMeta({ [FILE]: sha256(pristineV1) });
+    // The update wipes and installs v2; manifest now hashes v2's shipped bytes.
+    writeFile(path.join(configDir, FILE), freshV2);
+    const manifestV2 = { version: '2.0.0', files: { [FILE]: sha256(freshV2) } };
+    writeFile(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify(manifestV2, null, 2));
+
+    // Pre-flight classification: incorporated → the workflow leaves the file untouched.
+    const cls = runClassifier();
+    assert.equal(cls.status, 0);
+    assert.equal(cls.report.results[0].classification, CLASSIFICATION.INCORPORATED);
+    assert.equal(
+      fs.readFileSync(path.join(configDir, FILE), 'utf8'),
+      freshV2,
+      'incorporated files are NOT re-grafted — installed bytes stay as shipped',
+    );
+
+    // Post-merge gate passes on the untouched install (all user lines present).
+    const gate = runGate();
+    assert.equal(gate.status, 0, `gate must pass the untouched install; report=${JSON.stringify(gate.report)}`);
+    assert.equal(gate.report.failures, 0);
+
+    // Next update cycle: saveLocalPatches detection (manifest hash comparison)
+    // no longer flags the file — the forever loop is broken.
+    const stillModified = Object.entries(manifestV2.files)
+      .filter(([rel, hash]) => sha256(fs.readFileSync(path.join(configDir, rel), 'utf8')) !== hash)
+      .map(([rel]) => rel);
+    assert.deepEqual(stillModified, [], 'an incorporated file must drop out of the backup cycle');
+
+    // Counter-case (the pre-fix behavior): a re-grafted file WOULD be flagged again.
+    writeFile(path.join(configDir, FILE), freshV2 + userLine + '\n');
+    const reGraftedModified = Object.entries(manifestV2.files)
+      .filter(([rel, hash]) => sha256(fs.readFileSync(path.join(configDir, rel), 'utf8')) !== hash)
+      .map(([rel]) => rel);
+    assert.deepEqual(reGraftedModified, [FILE], 'a re-grafted file stays in the backup cycle forever');
+  });
+});
+
+describe('Bug #4136: workflow consumes the classifier (contract rows)', () => {
+  const WORKFLOW = path.join(ROOT, 'gsd-core', 'workflows', 'reapply-patches.md');
+
+  test('Step 4 runs the classifier before merging and gates it on PRISTINE_DIR', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    // reapply-patches.md is the installed runtime workflow — its text IS the
+    // deployed behavioral contract for --reapply, so structural assertions
+    // against the shipped text are the correct test form here.
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const classifyIdx = md.indexOf('--classify');
+    assert.ok(classifyIdx > 0, 'Step 4 must invoke the verifier with --classify');
+    const mergeRulesIdx = md.indexOf('### Three-way merge (when baseline is available)');
+    assert.ok(mergeRulesIdx > 0);
+    assert.ok(
+      classifyIdx < mergeRulesIdx,
+      'the classify invocation must precede the Step 4 merge rules (classify before merging)',
+    );
+    // Both invocations must be the runtime-installed path (locked separately
+    // by the #2994 fold); here we lock that the classify block is bounded by
+    // the same GSD_HOME-anchored script reference as the Step 5a gate.
+    const gateIdx = md.indexOf('verify-reapply-patches.cjs', classifyIdx);
+    assert.ok(gateIdx > classifyIdx, 'the Step 5a gate invocation must still follow the classify block');
+  });
+
+  test('Incorporated files are instructed NOT to be re-grafted', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const step4Idx = md.indexOf('## Step 4: Merge each file');
+    const step5Idx = md.indexOf('## Step 5: Hunk Verification Gate');
+    assert.ok(step4Idx > 0 && step5Idx > step4Idx);
+    const step4 = md.slice(step4Idx, step5Idx);
+    assert.ok(
+      step4.includes('INCORPORATED_FILES'),
+      'Step 4 must consume the classifier\'s incorporated_files list',
+    );
+    assert.ok(
+      /do NOT re-apply/i.test(step4),
+      'Step 4 must instruct that incorporated files are not re-grafted',
+    );
+    assert.ok(
+      step4.includes('Already in upstream'),
+      'the documented Step 7 Incorporated phrasing must be wired to the classifier output',
+    );
+  });
+
+  test('three-way merge rules include the already-present-verbatim rule', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const rulesIdx = md.indexOf('**Merge rules:**');
+    assert.ok(rulesIdx > 0);
+    const rulesBlock = md.slice(rulesIdx, md.indexOf('### Two-way merge'));
+    assert.ok(
+      rulesBlock.includes('already present verbatim'),
+      'the merge rule set must cover user content upstream already contains',
+    );
+  });
+
+  test('success_criteria covers the Incorporated / not-re-grafted contract', () => {
+    // allow-test-rule: source-text-is-the-product (#4136)
+    const md = fs.readFileSync(WORKFLOW, 'utf8');
+    const start = md.indexOf('<success_criteria>');
+    const end = md.indexOf('</success_criteria>');
+    assert.ok(start > 0 && end > start);
+    const block = md.slice(start, end);
+    assert.ok(
+      block.includes('Incorporated'),
+      'success_criteria must name the Incorporated disposition',
+    );
+    assert.ok(
+      /not re-grafted/i.test(block),
+      'success_criteria must require that superseded customizations are not re-grafted',
+    );
+  });
+});
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Folded regression block — #4135 (gsd-pristine/ regeneration yields
+// near-zero coverage on a multi-version update). The #3407 promotion rule
+// only keeps regeneration candidates byte-identical across the WHOLE
+// version span, so the surviving baseline set is precisely the files
+// upstream did NOT change — and no reporting surface (verifier summary,
+// --json, workflow Step 5a) distinguishes a 12-of-13 unbaselined green run
+// from a fully-verified one. The fix reports baseline coverage as a
+// headline, adds an opt-in strict coverage gate, and widens resolution
+// with a git-history tier anchored by the same pristine_hashes authority.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe('folded:bug-4135-pristine-regen-coverage', () => {
+'use strict';
+
+process.env.GSD_TEST_MODE = '1';
+
+const { test, describe, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
+const { REASON } = require(SCRIPT);
+const { findPristineInGit } = require(
+  path.join(ROOT, 'gsd-core', 'bin', 'lib', 'pristine-baseline.cjs'),
+);
+const WORKFLOW_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'reapply-patches.md');
+
+// 30000ms: same class as the folded blocks above — one deterministic
+// verifier pass (plus, for the git tier rows, the in-process git log/show
+// walk the verifier performs) over a small mkdtemp fixture tree.
+const VERIFIER_TIMEOUT_MS = 30_000;
+
+let tmpRoot;
+let patchesDir;
+let configDir;
+let pristineDir;
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function writeFile(absPath, content) {
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function writeBackupMeta(pristine_hashes) {
+  writeFile(path.join(patchesDir, 'backup-meta.json'), JSON.stringify({ pristine_hashes }, null, 2));
+}
+
+function resetFixture() {
+  for (const dir of [patchesDir, configDir, pristineDir]) {
+    cleanup(dir);
+  }
+  fs.mkdirSync(patchesDir);
+  fs.mkdirSync(configDir);
+  fs.mkdirSync(pristineDir);
+}
+
+/** Runs the verifier with --json plus any extra argv (strict-gate flags). */
+function runVerifier(extraArgs = []) {
+  const r = runNode([
+    SCRIPT,
+    '--patches-dir', patchesDir,
+    '--config-dir',  configDir,
+    '--pristine-dir', pristineDir,
+    '--json',
+    ...extraArgs,
+  ], { timeoutMs: VERIFIER_TIMEOUT_MS });
+  return {
+    status: r.exitCode,
+    report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
+  };
+}
+
+/** git fixture plumbing that must abort loudly when setup breaks. */
+function gitIn(dir, args) {
+  gitOrThrow(args, { cwd: dir });
+}
+function gitCommitAll(dir, message) {
+  gitIn(dir, ['add', '-A']);
+  gitIn(dir, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', message]);
+}
+
+before(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4135-'));
+  patchesDir = path.join(tmpRoot, 'patches');
+  configDir = path.join(tmpRoot, 'installed');
+  pristineDir = path.join(tmpRoot, 'pristine');
+  resetFixture();
+});
+
+after(() => {
+  cleanup(tmpRoot);
+});
+
+describe('Bug #4135: baseline coverage is reported, gateable, and widened from git history', () => {
+  /**
+   * Core regression (headline): the issue's exact scenario — 13 backed-up
+   * customised files on a multi-version update, 12 changed upstream, 1
+   * byte-identical. gsd-pristine/ holds only the byte-identical survivor.
+   * The green exit must CARRY a countable coverage aggregate instead of
+   * presenting like a fully-verified run.
+   */
+  test('#4135: report aggregates baseline_covered so a 12-of-13 unbaselined run is countable', () => {
+    resetFixture();
+    const pristineHashes = {};
+    for (let i = 1; i <= 13; i++) {
+      const rel = `gsd-core/workflows/flow-${String(i).padStart(2, '0')}.md`;
+      const pristine =
+        `# Flow ${i}\nStock content of the outgoing release for file ${i}.\n` +
+        `Line two of outgoing stock content ${i} with plenty of substance.\n`;
+      const userLine = `## User customisation ${i}\nA custom section the user added for file ${i}.\n`;
+      const upstream =
+        `# Flow ${i} (rewritten)\nUpstream rewrote file ${i} across the multi-version span.\n` +
+        `New stock structure with several new lines for file ${i}.\n`;
+      pristineHashes[rel] = sha256(pristine);
+      writeFile(path.join(patchesDir, rel), pristine + userLine);
+      writeFile(path.join(configDir, rel), upstream + userLine);
+      if (i === 7) {
+        // The single byte-identical-across-the-span survivor.
+        writeFile(path.join(pristineDir, rel), pristine);
+      }
+    }
+    writeBackupMeta(pristineHashes);
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0, 'no-baseline files stay advisory — the default gate must stay green');
+    assert.equal(report.checked, 13);
+    assert.equal(report.no_baseline, 12);
+    assert.equal(report.failures, 0);
+    assert.equal(report.baseline_covered, 1,
+      `coverage collapse must be countable; got ${JSON.stringify(report.baseline_covered)}`);
+  });
+
+  /** Human-mode headline renderer: exact-contract unit on the typed helper. */
+  test('#4135: human summary headlines baseline coverage N-of-M', () => {
+    const script = require(SCRIPT);
+    assert.equal(typeof script.coverageHeadline, 'function',
+      'the human summary headline must be rendered by an exported typed helper');
+    assert.equal(
+      script.coverageHeadline(1, 13),
+      'Baseline coverage: 1 of 13 file(s) verified against a pristine baseline (12 unverified)',
+      'partial coverage renders N-of-M plus the unverified count');
+    assert.equal(
+      script.coverageHeadline(13, 13),
+      'Baseline coverage: 13 of 13 file(s) verified against a pristine baseline',
+      'full coverage renders without an unverified tail');
+  });
+
+  /**
+   * Core regression (strict gate): the same collapsed fixture under
+   * `--min-baseline-coverage 0.9` must FAIL LOUDLY (new opt-in exit code 3)
+   * while still emitting the parseable JSON report.
+   */
+  test('#4135: opt-in --min-baseline-coverage exits 3 below threshold', () => {
+    resetFixture();
+    const pristineHashes = {};
+    for (let i = 1; i <= 13; i++) {
+      const rel = `gsd-core/workflows/flow-${String(i).padStart(2, '0')}.md`;
+      const pristine = `# Flow ${i}\nOutgoing stock line with substantial content ${i}.\n`;
+      const userLine = `User customisation line that survived the merge for file ${i}.\n`;
+      const upstream = `# Flow ${i} new\nIncoming release rewrote this file upstream ${i}.\n`;
+      pristineHashes[rel] = sha256(pristine);
+      writeFile(path.join(patchesDir, rel), pristine + userLine);
+      writeFile(path.join(configDir, rel), upstream + userLine);
+    }
+    writeBackupMeta(pristineHashes);
+
+    const { status, report } = runVerifier(['--min-baseline-coverage', '0.9']);
+
+    assert.equal(status, 3, 'a 1-of-13 run under a 0.9 threshold must exit non-zero (coverage gate)');
+    assert.ok(report, 'the JSON report must still be emitted for scripting consumers');
+    assert.equal(report.failures, 0, 'the failure here is coverage, not content');
+    assert.equal(report.baseline_covered, 0);
+  });
+
+  /** Precedence: a real content failure outranks the coverage failure. */
+  test('#4135: strict gate yields to exit 1 when real content failed', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/one.md';
+    const pristine = 'outgoing stock line with substantial content here\n';
+    const userLine = 'user customisation line that was dropped by the merge\n';
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + userLine);
+    writeFile(path.join(configDir, rel), pristine); // user line dropped
+    writeFile(path.join(pristineDir, rel), pristine);
+
+    const { status, report } = runVerifier(['--min-baseline-coverage', '1']);
+
+    assert.equal(status, 1, 'content failure is the louder, more specific signal');
+    assert.equal(report.failures, 1);
+    assert.equal(report.results[0].reason, REASON.FAIL_USER_LINES_MISSING);
+  });
+
+  /** Ratio boundary: at exactly the threshold the gate passes (>= semantics). */
+  test('#4135: strict coverage gate passes at exactly the threshold', () => {
+    resetFixture();
+    seedTwoFilesOneCovered();
+    const { status } = runVerifier(['--min-baseline-coverage', '0.5']);
+    assert.equal(status, 0, '1 of 2 covered satisfies a 0.5 threshold (>= passes)');
+  });
+
+  /** Ratio boundary: just below the threshold the gate fails. */
+  test('#4135: strict coverage gate fails just below the threshold', () => {
+    resetFixture();
+    seedTwoFilesOneCovered();
+    const { status } = runVerifier(['--min-baseline-coverage', '0.51']);
+    assert.equal(status, 3, '1 of 2 covered does not satisfy a 0.51 threshold');
+  });
+
+  /** Vacuous input: nothing checked cannot be under-covered. */
+  test('#4135: strict coverage gate is vacuously satisfied when nothing is checked', () => {
+    resetFixture();
+    const { status, report } = runVerifier(['--min-baseline-coverage', '1']);
+    assert.equal(status, 0);
+    assert.equal(report.checked, 0);
+  });
+
+  /** Arg validation: malformed thresholds are usage errors (exit 2). */
+  test('#4135: malformed --min-baseline-coverage values are usage errors', () => {
+    resetFixture();
+    for (const bad of ['1.5', '-1', 'notanumber']) {
+      const r = runNode([
+        SCRIPT,
+        '--patches-dir', patchesDir,
+        '--config-dir', configDir,
+        '--pristine-dir', pristineDir,
+        '--json',
+        '--min-baseline-coverage', bad,
+      ], { timeoutMs: VERIFIER_TIMEOUT_MS });
+      assert.equal(r.exitCode, 2, `threshold "${bad}" must be a usage error, not silently clamped`);
+    }
+  });
+
+  /**
+   * Core regression (widening): multi-version collapse — no baseline under
+   * gsd-pristine/, but the config dir is a git repository whose history
+   * holds the outgoing bytes (recorded pristine_hashes match). The
+   * recovered baseline must produce a REAL diff: the dropped user line is
+   * caught as fail_user_lines_missing, not skipped as ok_no_baseline.
+   */
+  test('#4135: resolves the baseline from git history by recorded hash and catches a dropped user line', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-01.md';
+    const pristine =
+      '# Flow 1\nOutgoing release stock line one with substance.\n' +
+      'Outgoing release stock line two also with substance.\n';
+    const userLine = 'user customisation line that the merge dropped for flow one';
+    const backup = pristine + userLine + '\n';
+    const upstreamRewrite =
+      '# Flow 1 (rewritten)\nIncoming release replaced the stock body upstream.\n';
+
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), backup);
+    // Config dir IS a git repo: outgoing pristine state, then the merged state.
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), pristine);
+    gitCommitAll(configDir, 'gsd install of the outgoing release');
+    writeFile(path.join(configDir, rel), upstreamRewrite); // user line dropped
+    gitCommitAll(configDir, 'post-update merged state');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 1, 'the git-recovered baseline must catch the dropped line');
+    assert.equal(report.no_baseline, 0, 'the baseline was recoverable — no skip');
+    assert.equal(report.baseline_covered, 1);
+    const r0 = report.results[0];
+    assert.equal(r0.status, 'fail');
+    assert.equal(r0.reason, REASON.FAIL_USER_LINES_MISSING);
+    assert.deepEqual(r0.missing, [userLine],
+      'the diff ran against the RECOVERED baseline — upstream-removed lines are not "missing"');
+  });
+
+  /**
+   * Net observable: same recovery, user line PRESENT — the file is verified
+   * (exit 0, covered) instead of silently skipped.
+   */
+  test('#4135: git-recovered baseline verifies surviving user lines instead of skipping', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-02.md';
+    const pristine = '# Flow 2\nOutgoing stock line with substantial content.\n';
+    const userLine = 'user customisation line that survived the merge for flow two';
+    const upstreamRewrite = '# Flow 2 (rewritten)\nIncoming release rewrote the stock body.\n';
+
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + userLine + '\n');
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), pristine);
+    gitCommitAll(configDir, 'gsd install of the outgoing release');
+    writeFile(path.join(configDir, rel), upstreamRewrite + userLine + '\n');
+    gitCommitAll(configDir, 'post-update merged state');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.no_baseline, 0);
+    assert.equal(report.baseline_covered, 1);
+    assert.equal(report.results[0].status, 'ok');
+    assert.notEqual(report.results[0].reason, REASON.OK_NO_BASELINE);
+  });
+
+  /**
+   * Version-hop boundary (N−1 / multi-commit span): history holds TWO
+   * upstream versions; the recorded hash is the OLDER one, so the walk must
+   * pass the newer (mismatching) commit and match deeper history — the
+   * single-hop shape of the same recovery.
+   */
+  test('#4135: single-version hop also recovers the baseline from git history', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-03.md';
+    const vA = '# Flow 3\nVersion A stock line with substantial content.\n';
+    const vB = '# Flow 3\nVersion B stock line with substantial content.\n';
+    const userLine = 'user customisation line present in the merged output';
+    writeBackupMeta({ [rel]: sha256(vA) }); // outgoing = the OLDER commit's bytes
+    writeFile(path.join(patchesDir, rel), vA + userLine + '\n');
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), vA);
+    gitCommitAll(configDir, 'gsd install vA');
+    writeFile(path.join(configDir, rel), vB);
+    gitCommitAll(configDir, 'gsd update to vB');
+    writeFile(path.join(configDir, rel), vB + userLine + '\n');
+    gitCommitAll(configDir, 'post-update merged state');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.no_baseline, 0, 'the walk must reach the older vA commit');
+    assert.equal(report.baseline_covered, 1);
+  });
+
+  /** Negative space: no git, no pristine — the #934 advisory posture is unchanged. */
+  test('#4135: non-git config dirs keep the ok_no_baseline advisory posture', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-04.md';
+    const pristine = '# Flow 4\nOutgoing stock line with substantial content.\n';
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + 'user line that survived the merge here\n');
+    writeFile(path.join(configDir, rel), 'incoming rewrite\nuser line that survived the merge here\n');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.no_baseline, 1);
+    assert.equal(report.results[0].reason, REASON.OK_NO_BASELINE);
+    assert.equal(report.baseline_covered, 0);
+  });
+
+  /** Negative space: git present but no blob matches the recorded hash. */
+  test('#4135: git tier adopts nothing when no blob matches the recorded hash', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-05.md';
+    const pristine = '# Flow 5\nOutgoing stock line with substantial content.\n';
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + 'user line that survived the merge here\n');
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), 'history only ever held user-modified bytes\n');
+    gitCommitAll(configDir, 'only user state was ever committed');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.no_baseline, 1, 'hash equality is the authority — nothing else is trusted');
+    assert.equal(report.results[0].reason, REASON.OK_NO_BASELINE);
+  });
+
+  /** Drift-path lock: #3657 is never bypassed by the git tier. */
+  test('#4135: canonical drift is never rescued by the git-history tier', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-06.md';
+    const pristine = '# Flow 6\nOutgoing stock line with substantial content.\n';
+    const drifted = '# Flow 6\nRefreshed newer-release stock line with substance.\n';
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + 'user line that survived the merge here\n');
+    writeFile(path.join(configDir, rel), drifted + 'user line that survived the merge here\n');
+    writeFile(path.join(pristineDir, rel), drifted); // canonical present, hash-mismatched
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), pristine);
+    gitCommitAll(configDir, 'history holds the recorded-hash bytes');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 0);
+    assert.equal(report.results[0].reason, REASON.OK_PRISTINE_DRIFT_DETECTED,
+      'a present-but-drifted canonical stays drift — no rescue');
+    assert.equal(report.drifted, 1);
+  });
+
+  /** Precedence lock: a matching canonical pristine beats the git tier. */
+  test('#4135: canonical pristine keeps precedence over the git-history tier', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-07.md';
+    const pristine = '# Flow 7\nOutgoing stock line with substantial content.\n';
+    const droppedLine = 'user customisation line that the merge dropped for flow seven';
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + droppedLine + '\n');
+    writeFile(path.join(configDir, rel), pristine); // dropped — caught via canonical
+    writeFile(path.join(pristineDir, rel), pristine); // canonical, hash-matching
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), pristine);
+    gitCommitAll(configDir, 'history also holds the bytes');
+
+    const { status, report } = runVerifier();
+
+    assert.equal(status, 1);
+    assert.equal(report.results[0].reason, REASON.FAIL_USER_LINES_MISSING);
+    assert.ok(report.results[0].missing.includes(droppedLine));
+  });
+
+  /** Invocation-shape lock: no --pristine-dir → over-broad fallback, no git tier. */
+  test('#4135: no git-history resolution when --pristine-dir is not provided', () => {
+    resetFixture();
+    const rel = 'gsd-core/workflows/flow-08.md';
+    const pristine = '# Flow 8\nOutgoing stock line with substantial content.\n';
+    const userLine = 'user customisation line that survived the merge for flow eight';
+    writeBackupMeta({ [rel]: sha256(pristine) });
+    writeFile(path.join(patchesDir, rel), pristine + userLine + '\n');
+    gitIn(configDir, ['init', '-q', '-b', 'main']);
+    writeFile(path.join(configDir, rel), pristine);
+    gitCommitAll(configDir, 'history holds the recorded-hash bytes');
+    // Merge kept everything — over-broad mode passes on this shape.
+    writeFile(path.join(configDir, rel), pristine + userLine + '\n');
+
+    const r = runNode([
+      SCRIPT, '--patches-dir', patchesDir, '--config-dir', configDir, '--json',
+    ], { timeoutMs: VERIFIER_TIMEOUT_MS });
+    const report = r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null;
+
+    assert.equal(r.exitCode, 0, 'all backup lines present — over-broad fallback passes');
+    assert.equal(report.results[0].reason, null,
+      'without --pristine-dir the baseline logic (incl. git tier) must not run');
+    assert.equal(report.baseline_covered, 0,
+      'an over-broad run verifies nothing against a pristine baseline — coverage stays 0');
+  });
+
+  /** Module unit: findPristineInGit contract on a real fixture repo. */
+  test('#4135: findPristineInGit unit — match, no-match, non-repo', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4135-git-unit-'));
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4135-plain-'));
+    try {
+      const rel = 'gsd-core/workflows/unit.md';
+      const content = '# Unit\noutgoing pristine bytes for the git walk unit test\n';
+      gitIn(root, ['init', '-q', '-b', 'main']);
+      writeFile(path.join(root, rel), content);
+      gitCommitAll(root, 'seed');
+      writeFile(path.join(root, rel), 'later user-modified bytes committed on top\n');
+      gitCommitAll(root, 'user state');
+
+      assert.equal(findPristineInGit(root, rel, sha256(content)), content,
+        'an exact recorded-hash blob in history is returned verbatim');
+      assert.equal(findPristineInGit(root, rel, sha256('bytes that never existed anywhere\n')), null,
+        'no matching blob resolves to null');
+      assert.equal(findPristineInGit(plain, rel, sha256(content)), null,
+        'a non-repo directory resolves to null without throwing');
+    } finally {
+      cleanup(root);
+      cleanup(plain);
+    }
+  });
+
+  /**
+   * Workflow contract row (source-text-is-the-product): Step 5a must make
+   * coverage a headline and document the opt-in strict gate.
+   */
+  test('#4135: Step 5a headlines baseline coverage and documents the opt-in strict gate', () => {
+    // allow-test-rule: source-text-is-the-product — Step 5a contract text (see #4135)
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    assert.ok(content.includes('Baseline coverage:'),
+      'Step 5a must print a Baseline coverage headline, not bury no_baseline in parseable fields');
+    assert.ok(content.includes('--min-baseline-coverage'),
+      'the opt-in strict coverage gate must be documented for operators');
+  });
+
+  /**
+   * Fixture: 2 files, exactly 1 baseline-covered — the minimal exact-ratio
+   * fixture for the threshold boundary rows.
+   */
+  function seedTwoFilesOneCovered() {
+    const specs = [
+      { rel: 'gsd-core/workflows/a.md', covered: true },
+      { rel: 'gsd-core/workflows/b.md', covered: false },
+    ];
+    const pristineHashes = {};
+    for (const { rel, covered } of specs) {
+      const pristine = `outgoing stock line with substantial content for ${rel}\n`;
+      const userLine = `user customisation line that survived the merge for ${rel}\n`;
+      pristineHashes[rel] = sha256(pristine);
+      writeFile(path.join(patchesDir, rel), pristine + userLine);
+      writeFile(path.join(configDir, rel), `incoming rewrite for ${rel}\n` + userLine);
+      if (covered) writeFile(path.join(pristineDir, rel), pristine);
+    }
+    writeBackupMeta(pristineHashes);
+  }
 });
   });
 }

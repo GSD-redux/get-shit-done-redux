@@ -4,6 +4,7 @@ description: "Display project statistics — phases, plans, requirements, git me
 allowed-tools:
   - Read
   - Bash
+  - Grep
 ---
 
 <objective>

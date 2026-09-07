@@ -1,7 +1,7 @@
 {
   "id": "codex",
   "role": "runtime",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "title": "OpenAI Codex CLI",
   "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
   "tier": "core",
@@ -109,7 +109,11 @@
       "tomlConfigInstall": true,
       "cleanupSkillSidecars": true,
       "agentTomlFiles": true,
-      "frontmatterDialect": "codex"
+      "frontmatterDialect": "codex",
+      "unsupportedFeatures": [
+        "context-warnings",
+        "phase-lifecycle-display"
+      ]
     }
   },
   "reviewer": {
@@ -147,6 +151,8 @@
     "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
     "modelConfigKey": "review.models.codex",
+    "effortConfigKey": "review.effort.codex",
+    "defaultEffort": "high",
     "handler": null
   },
   "config": {
@@ -164,6 +170,11 @@
       "type": "number",
       "default": -1,
       "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+    },
+    "review.effort.codex": {
+      "type": "string",
+      "default": "",
+      "description": "Reasoning effort for the Codex reviewer lane: minimal, low, medium, high, xhigh, max, or inherit. Unset falls back to the lane's declared review default (high); inherit emits no effort argument so the CLI's own configuration decides. An unrecognized value falls back to the lane default rather than being forwarded."
     }
   }
 }

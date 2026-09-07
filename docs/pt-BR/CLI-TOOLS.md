@@ -398,7 +398,7 @@ node gsd-tools.cjs progress [json|table|bar]
 node gsd-tools.cjs progress --json
 
 # Conclui uma tarefa
-node gsd-tools.cjs todo complete <filename>
+node gsd-tools.cjs todo complete <filename> [--dry-run]
 
 # Auditoria UAT — verifica todas as fases em busca de itens não resolvidos
 node gsd-tools.cjs audit-uat

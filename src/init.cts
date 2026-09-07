@@ -12,6 +12,7 @@ import os from 'node:os';
 import { execGit, platformWriteSync, platformReadSync, toNativePath, posixNormalize } from './shell-command-projection.cjs';
 import { realClock } from './clock.cjs';
 import { escapeRegex } from './pattern.cjs';
+import { collectSection } from './markdown-sectionizer.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import io = require('./io.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
@@ -103,6 +104,7 @@ const {
   planningPaths,
   planningDir,
   planningRoot,
+  todosDir,
   listAvailableWorkstreams,
   peekActiveWorkstream,
   diagnoseUnresolvedActiveWorkstream,
@@ -908,8 +910,6 @@ function cmdInitExecutePhase(
     : null;
   const phase_req_ids = reqExtracted && reqExtracted !== 'TBD' ? reqExtracted : null;
 
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
-
   // #3188: these paths are null when the file is absent, matching the contract
   // the conditional sibling fields (context_path, patterns_path, ...) already
   // honour and that ultraplan-phase.md / execute-phase.md gate on. Hoisted so
@@ -922,7 +922,7 @@ function cmdInitExecutePhase(
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
 
-    tdd_mode: options['tdd'] || Boolean(wf['tdd_mode']) || false,
+    tdd_mode: options['tdd'] || Boolean(config.tdd_mode) || false,
     commit_docs: config.commit_docs,
     sub_repos: config.sub_repos,
     parallelization: config.parallelization,
@@ -1088,8 +1088,6 @@ function cmdInitPlanPhase(
   assertValidGranularityOverride(granularityOverride, error);
   const granularity = resolveGranularityInternal(cwd, 'planning', granularityOverride || undefined);
 
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
-
   // #3188: see cmdInitExecutePhase — null when absent, parity with the
   // conditional sibling fields in this same result object.
   const statePath = path.join(planningDir(cwd), 'STATE.md');
@@ -1101,11 +1099,11 @@ function cmdInitPlanPhase(
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
     checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
 
-    tdd_mode: options['tdd'] || Boolean(wf['tdd_mode']) || false,
+    tdd_mode: options['tdd'] || Boolean(config.tdd_mode) || false,
     granularity,
-    research_enabled: wf['research'],
+    research_enabled: config.research,
     plan_checker_enabled: config.plan_checker,
-    nyquist_validation_enabled: wf['nyquist_validation'],
+    nyquist_validation_enabled: config.nyquist_validation,
     commit_docs: config.commit_docs,
     text_mode: config.text_mode,
     auto_advance: !!(config.auto_advance),
@@ -1303,6 +1301,36 @@ function cmdInitPlanPhase(
   output(withProjectRoot(cwd, result), raw);
 }
 
+// #4040: shared partial-init discriminator for the init.progress / init.resume /
+// init.new-project payloads. A bootstrap interrupted before the core quartet
+// (PROJECT.md / REQUIREMENTS.md / ROADMAP.md / STATE.md) all landed is a
+// DISTINCT routing state from "new project" and from "between milestones";
+// pre-#4040 the payloads could not express it, so progress.md mis-routed it to
+// Route F and resume-project.md offered STATE.md reconstruction.
+//
+// Negative-space guard: `milestone.complete` archives ROADMAP.md (and
+// REQUIREMENTS.md) but always leaves MILESTONES.md behind — so MILESTONES.md
+// present proves missing core files are archival (between-milestones), never an
+// unfinished bootstrap. REQUIREMENTS.md is written by new-project BEFORE
+// ROADMAP/STATE, so its absence also proves init never finished.
+function buildInitCompletenessFields(cwd: string): Record<string, boolean> {
+  const dir = planningDir(cwd);
+  const planningExists = fs.existsSync(dir);
+  const requirementsExists = fs.existsSync(path.join(dir, 'REQUIREMENTS.md'));
+  const milestonesExists = fs.existsSync(path.join(dir, 'MILESTONES.md'));
+  const coreComplete =
+    fs.existsSync(path.join(dir, 'PROJECT.md')) &&
+    requirementsExists &&
+    fs.existsSync(path.join(dir, 'ROADMAP.md')) &&
+    fs.existsSync(path.join(dir, 'STATE.md'));
+  return {
+    planning_exists: planningExists,
+    requirements_exists: requirementsExists,
+    milestones_exists: milestonesExists,
+    init_incomplete: planningExists && !coreComplete && !milestonesExists,
+  };
+}
+
 function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
 
@@ -1328,6 +1356,12 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
     roadmapper_model: resolveModelInternal(cwd, 'gsd-roadmapper'),
 
     commit_docs: config.commit_docs,
+
+    // #4040: partial-init discriminator (see buildInitCompletenessFields).
+    // Spread BEFORE this literal's own planning_exists so the existing
+    // root-scoped (`pathExistsInternal(cwd, '.planning')`) semantics for that
+    // one key stay byte-identical for existing consumers.
+    ...buildInitCompletenessFields(cwd),
 
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     has_codebase_map: hasCodebaseMap,
@@ -1376,15 +1410,13 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
   // window filter (which also never excluded sentinels, unlike the owner).
   const phaseDirCount = listMilestonePhaseDirs(phasesDir, { cwd }).value.length;
 
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
-
   const result: Record<string, unknown> = {
     researcher_model: resolveModelInternal(cwd, 'gsd-project-researcher'),
     synthesizer_model: resolveModelInternal(cwd, 'gsd-research-synthesizer'),
     roadmapper_model: resolveModelInternal(cwd, 'gsd-roadmapper'),
 
     commit_docs: config.commit_docs,
-    research_enabled: wf['research'],
+    research_enabled: config.research,
 
     // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
     // the key with an explicit `null` rather than letting JSON.stringify drop
@@ -1610,12 +1642,11 @@ function cmdInitOnboard(
   options: Record<string, unknown> = {},
 ): void {
   const config = loadConfig(cwd);
-  const workflowConfig = (config.workflow ?? {}) as Record<string, unknown>;
   const result = {
     ...buildOnboardProjection(cwd, {
       commitDocs: !!config.commit_docs,
       fast: options['fast'] === true,
-      textMode: options['text'] === true || !!config.text_mode || !!workflowConfig['text_mode'],
+      textMode: options['text'] === true || !!config.text_mode,
     }),
     ...getInitGitState(cwd),
   };
@@ -1633,6 +1664,12 @@ function cmdInitResume(cwd: string, raw: boolean): void {
   if (agentIdRaw !== null) interruptedAgentId = agentIdRaw.trim();
 
   const result: Record<string, unknown> = {
+    // #4040: partial-init discriminator (see buildInitCompletenessFields).
+    // Spread FIRST so this literal's own root-scoped planning_exists
+    // (planningRoot) keeps its existing semantics; init_incomplete itself
+    // keys off the artifact dir (planningDir) where the core docs live.
+    ...buildInitCompletenessFields(cwd),
+
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
@@ -2198,15 +2235,154 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
   output(withProjectRoot(cwd, result), raw);
 }
 
+// #2618: bullet-cap and title-floor for renderPendingTodosMarkdown below.
+// 240 matches the bound already vetted by maintainer review on the prior
+// attempt at this issue (PR #2662) — re-deriving a different number would be
+// pure bikeshedding, not a correctness improvement. See
+// .gsd/phase/feat-2618-compact-todo-pointers/40-design.md.
+const PENDING_TODO_BULLET_MAX_CHARS = 240;
+const PENDING_TODO_TITLE_FLOOR = 15;
+const PENDING_TODO_AREA_FLOOR = 3;
+
+function sanitizePendingTodoInline(value: string): string {
+  // Defensive: the regex captures that populate title/area/needs can only
+  // ever match a single line, so this is belt-and-suspenders against any
+  // future non-regex-sourced input, not a reachable case today.
+  return value.replace(/[\r\n]+/g, ' ').trim();
+}
+
+function truncatePendingTodoText(value: string, maxLen: number): string {
+  if (value.length <= maxLen) return value;
+  if (maxLen <= 1) return value.slice(0, Math.max(0, maxLen));
+  return `${value.slice(0, maxLen - 1)}…`;
+}
+
+/**
+ * #2618: pure renderer for STATE.md's "### Pending Todos" section BODY (not
+ * the heading). One bullet per todo, each capped at
+ * PENDING_TODO_BULLET_MAX_CHARS. `gsd-core/workflows/add-todo.md` and
+ * `check-todos.md` splice this string in verbatim instead of free-hand
+ * editing STATE.md — see the design doc for why this is real, unit-tested
+ * code rather than a prose algorithm (DEFECT.GENERATIVE-FIX: a prose
+ * algorithm duplicated as a test oracle is exactly the divergence class
+ * this avoids).
+ *
+ * #4384 regression fix: the optional `projectRoot` makes the bullet's
+ * `[todo file](…)` link repo-relative (see pendingTodoLinkTarget) so the cap
+ * is deterministic w.r.t. where the repo is checked out. Omitting it keeps
+ * the legacy absolute-link behavior for existing direct callers.
+ */
+function renderPendingTodosMarkdown(todos: Record<string, unknown>[], projectRoot?: string): string {
+  if (!Array.isArray(todos) || todos.length === 0) {
+    return 'None yet.';
+  }
+  return todos.map((todo) => renderPendingTodoBullet(todo, projectRoot)).join('\n');
+}
+
+function pendingTodoFieldAsString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+/**
+ * #4384 regression fix: the bullet's markdown link target, rendered
+ * repo-relative when `projectRoot` is given and the todo's `path` is
+ * absolute. The JSON `todos[].path` field stays absolute (#2376 contract);
+ * only the rendered display link changes — embedding the machine-variable
+ * absolute base let macOS's /private/var/folders/… temp paths consume the
+ * 240-char budget and drop the "Needs <solution>" clause on long-path
+ * machines only (next's own macos CI shard went red on exactly this, run
+ * 34038716700). Repo-relative links also resolve correctly from STATE.md at
+ * the repo root and survive repo moves.
+ */
+function pendingTodoLinkTarget(todo: Record<string, unknown>, projectRoot: string | undefined): string {
+  const raw = pendingTodoFieldAsString(todo['path'], '');
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0 || !path.isAbsolute(raw)) {
+    return raw;
+  }
+  const rel = toPosixPath(path.relative(projectRoot, raw));
+  if (rel.length === 0 || path.isAbsolute(rel)) {
+    // Degenerate (path === projectRoot) or Windows cross-drive fallback:
+    // keep the raw target rather than emitting an empty or incorrect link.
+    return raw;
+  }
+  return rel;
+}
+
+function renderPendingTodoBullet(todo: Record<string, unknown>, projectRoot?: string): string {
+  const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
+  let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
+  let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
+  // Strip trailing "." so the fixed "Needs ....` template below never
+  // produces a doubled period when the source text already ended in one.
+  let needs =
+    typeof todo['needs'] === 'string'
+      ? sanitizePendingTodoInline(todo['needs']).replace(/\.+$/, '')
+      : '';
+  const link = `[todo file](${pendingTodoLinkTarget(todo, projectRoot)})`;
+
+  const assemble = (): string => {
+    const needsClause = needs ? ` — Needs ${needs}.` : '';
+    return `- [${date}] [${area}] ${title} — ${link}${needsClause}`;
+  };
+
+  let line = assemble();
+  if (line.length <= PENDING_TODO_BULLET_MAX_CHARS) return line;
+
+  // 1) Drop the needs clause entirely first — date/area/title/link untouched.
+  needs = '';
+  line = assemble();
+  if (line.length <= PENDING_TODO_BULLET_MAX_CHARS) return line;
+
+  // 2) Shorten the title next, down to a floor — date/area/link untouched.
+  const titleOverage = line.length - PENDING_TODO_BULLET_MAX_CHARS;
+  const targetTitleLen = Math.max(PENDING_TODO_TITLE_FLOOR, title.length - titleOverage);
+  if (targetTitleLen < title.length) {
+    title = truncatePendingTodoText(title, targetTitleLen);
+    line = assemble();
+  }
+  if (line.length <= PENDING_TODO_BULLET_MAX_CHARS) return line;
+
+  // 3) Shorten area as a last resort — date and the markdown link are never
+  // altered (link correctness > strict cap; see design doc "Known limits").
+  const areaOverage = line.length - PENDING_TODO_BULLET_MAX_CHARS;
+  const targetAreaLen = Math.max(PENDING_TODO_AREA_FLOOR, area.length - areaOverage);
+  if (targetAreaLen < area.length) {
+    area = truncatePendingTodoText(area, targetAreaLen);
+    line = assemble();
+  }
+
+  return line;
+}
+
 function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void {
   const config = loadConfig(cwd);
 
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
+  // #4256: todos are root-scoped shared state (migrateToWorkstreams keeps
+  // them at .planning/todos/ and every workflow writer writes that literal
+  // path), so this read resolves via todosDir(cwd) — NOT planningDir(cwd),
+  // which would look in .planning/workstreams/<ws>/todos/ under a workstream
+  // (a directory nothing creates) and report existing todos as absent.
+  const todosRoot = todosDir(cwd);
+  const pendingDir = path.join(todosRoot, 'pending');
   let count = 0;
   const todos: Record<string, unknown>[] = [];
+  // #2618: distinct from "genuinely zero pending todos" — false only when
+  // readdirSync itself failed for a reason OTHER than the directory simply
+  // not existing yet (ENOENT), mirroring the ENOENT-vs-other-errno split
+  // already used above in this file (#3885, ADR-3473 §8.5). Without this,
+  // a real I/O/permission error on the pending dir would look identical to
+  // "no pending todos" and could wipe an existing, non-empty Pending Todos
+  // section in STATE.md on refresh — the fail-safe requirement for #2618.
+  let pendingReadOk = true;
 
   try {
-    const files = fs.readdirSync(pendingDir).filter((f) => f.endsWith('.md'));
+    // #2618: sorted so pending_todos_markdown's bullet order is stable across
+    // runs — readdirSync's order is filesystem-dependent, not contractually
+    // stable, and an unstable order would reorder every bullet on an
+    // unrelated re-render, turning a one-line git diff into a full-section
+    // rewrite (must-have #3). Filenames are `YYYY-MM-DD-slug.md`, so this
+    // also yields a sensible chronological order as a side effect.
+    const files = fs.readdirSync(pendingDir).filter((f) => f.endsWith('.md')).sort();
     for (const file of files) {
       const content = platformReadSync(path.join(pendingDir, file));
       if (content === null) continue;
@@ -2217,6 +2393,21 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
         // #2337: kept in parity with cmdListTodos — surface severity when
         // present, omit the key entirely for todos with no severity line.
         const severityMatch = content.match(/^severity:\s*(.+)$/m);
+        // #2618: first non-empty line of the `## Solution` body, used as the
+        // bullet's "Needs ..." clause. "TBD" (the create_file template's own
+        // placeholder for an unresolved solution) renders no clause at all
+        // rather than the useless literal "Needs TBD.".
+        const solutionSection = collectSection(content, (h) => h.level === 2 && h.text.trim() === 'Solution');
+        let needs: string | undefined;
+        if (solutionSection) {
+          const firstLine = solutionSection.body
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => l.length > 0);
+          if (firstLine && firstLine.toUpperCase() !== 'TBD') {
+            needs = firstLine;
+          }
+        }
         const todoArea = areaMatch ? areaMatch[1].trim() : 'general';
 
         if (area && todoArea !== area) continue;
@@ -2228,15 +2419,19 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
           title: titleMatch ? titleMatch[1].trim() : 'Untitled',
           area: todoArea,
           // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
-          path: toPosixPath(path.join(planningDir(cwd), 'todos', 'pending', file)),
+          path: toPosixPath(path.join(pendingDir, file)),
           ...(severityMatch ? { severity: severityMatch[1].trim() } : {}),
+          ...(needs ? { needs } : {}),
         });
       } catch {
         /* intentionally empty */
       }
     }
-  } catch {
-    /* intentionally empty */
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      pendingReadOk = false;
+    }
   }
 
   const result: Record<string, unknown> = {
@@ -2250,12 +2445,24 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
     area_filter: area || null,
 
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
-    pending_dir: toPosixPath(path.join(planningDir(cwd), 'todos', 'pending')),
-    completed_dir: toPosixPath(path.join(planningDir(cwd), 'todos', 'completed')),
+    // #4256: both dir fields probe the ROOT todos tree via todosDir(cwd).
+    pending_dir: toPosixPath(pendingDir),
+    completed_dir: toPosixPath(path.join(todosRoot, 'completed')),
 
+    // planning_exists intentionally stays workstream/project-scoped — it
+    // answers "does the ACTIVE planning dir exist", not a todos question.
     planning_exists: fs.existsSync(planningDir(cwd)),
-    todos_dir_exists: fs.existsSync(path.join(planningDir(cwd), 'todos')),
-    pending_dir_exists: fs.existsSync(path.join(planningDir(cwd), 'todos', 'pending')),
+    todos_dir_exists: fs.existsSync(todosRoot),
+    pending_dir_exists: fs.existsSync(pendingDir),
+
+    // #2618: see PENDING_TODO_BULLET_MAX_CHARS comment / design doc. Consumed
+    // by add-todo.md / check-todos.md's update_state step; omitted entirely
+    // (rather than emitted with possibly-wrong data) when pendingReadOk is
+    // false, so the workflow's fail-safe check can key off field presence.
+    pending_read_ok: pendingReadOk,
+    // #4384 fix: pass cwd as projectRoot so the bullet link renders
+    // repo-relative — see pendingTodoLinkTarget.
+    ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos, cwd) } : {}),
   };
 
   output(withProjectRoot(cwd, result), raw);
@@ -3034,7 +3241,7 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
  *   location has one source instead of two kept in sync by hand.
  * - `debugger_model` — `resolveModelInternal`, which IS what `query
  *   resolve-model --pick model` returns (`cmdResolveModel`, src/commands.cts).
- * - `tdd_mode` — the `Boolean(wf['tdd_mode'])` idiom `cmdInitExecutePhase` and
+ * - `tdd_mode` — the `Boolean(config.tdd_mode)` idiom `cmdInitExecutePhase` and
  *   `cmdInitPlanPhase` already use. `/gsd:debug` has no `--tdd` flag, so the
  *   sibling handlers' `options['tdd'] ||` disjunct is deliberately omitted
  *   rather than carried as a phantom.
@@ -3052,7 +3259,6 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
  */
 function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
-  const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
@@ -3061,7 +3267,7 @@ function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown
     // own cwd may differ from the orchestrator's.
     debug_dir: toPosixPath(planningPaths(cwd).debug),
     debugger_model: resolveModelInternal(cwd, 'gsd-debugger'),
-    tdd_mode: Boolean(wf['tdd_mode']),
+    tdd_mode: Boolean(config.tdd_mode),
     diagnose: options['diagnose'] === true,
   };
 
@@ -3337,6 +3543,10 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
+    // #4040: partial-init discriminator (see buildInitCompletenessFields) —
+    // also adds planning_exists / requirements_exists / milestones_exists so
+    // progress.md's init_context routing never has to fall back to Glob.
+    ...buildInitCompletenessFields(cwd),
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
     state_path: toPosixPath(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_path: toPosixPath(path.join(planningDir(cwd), 'ROADMAP.md')),
@@ -4150,4 +4360,5 @@ export = {
   cmdAgentSkills,
   buildSkillManifest,
   cmdSkillManifest,
+  renderPendingTodosMarkdown,
 };

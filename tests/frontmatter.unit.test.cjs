@@ -24,6 +24,8 @@ const {
   stripFrontmatter,
   noOpObjectListSetError,
   parseMustHavesBlock,
+  frontmatterListEntries,
+  flattenObjectListItem,
   FRONTMATTER_SCHEMAS,
   agentScalarNeedsDoubleQuoting,
   escapeDoubleQuotedScalar,
@@ -1855,5 +1857,102 @@ describe('#3742: propagateCommentChannel — merge, root filter, trailing dedupe
     propagateCommentChannel(src, target);
     const ch = target[symOf(target)];
     assert.deepEqual(ch.trailing, ['# trail']);
+  });
+});
+
+// ─── frontmatterListEntries (#3850) ───────────────────────────────────────────
+//
+// Direct coverage for the two exports #3850 added (#3879 review round 4, Minor
+// 1). They were previously exercised only through `uat.cts`' readers, so a
+// change in either primitive could only be caught by a test about something
+// else.
+
+describe('frontmatterListEntries: returns parsed entries, not display strings', () => {
+  const doc = ['---',
+    'gaps:',
+    '  - truth: "The widget renders"',
+    '    status: failed',
+    '    reason: "only on one platform"',
+    '  - truth: "The other thing"',
+    '    status: resolved',
+    '---',
+    '',
+    '# Body',
+    ''].join('\n');
+
+  test('object entries come back as objects with their fields intact', () => {
+    const entries = frontmatterListEntries(doc, 'gaps');
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].status, 'failed');
+    assert.equal(entries[0].truth, 'The widget renders');
+    assert.equal(entries[0].reason, 'only on one platform');
+    assert.equal(entries[1].status, 'resolved');
+  });
+
+  test('a field is readable as a field, not recoverable only from prose', () => {
+    // The whole reason this export exists: `extractFrontmatter` flattens the
+    // same entry to a display string in which a real `resolution:` field and
+    // the same text quoted inside `truth:` are indistinguishable.
+    const trap = ['---',
+      'gaps:',
+      '  - truth: "the report said resolution: done"',
+      '    status: failed',
+      '---',
+      ''].join('\n');
+    const [entry] = frontmatterListEntries(trap, 'gaps');
+    assert.equal(entry.resolution, undefined, 'prose inside truth is not a resolution field');
+    assert.equal(entry.status, 'failed');
+  });
+
+  test('EVERY element is returned at its own index, whatever its type', () => {
+    // #3850 review round 3, Blocker: filtering to objects compacted the array
+    // and renumbered a caller iterating by position.
+    const mixed = ['---',
+      'gaps:',
+      '  - truth: "an object"',
+      '  - a bare scalar',
+      '  -',
+      '  - - nested',
+      '    - sequence',
+      '---',
+      ''].join('\n');
+    const entries = frontmatterListEntries(mixed, 'gaps');
+    assert.equal(entries.length, 4);
+    assert.equal(typeof entries[0], 'object');
+    assert.equal(entries[1], 'a bare scalar');
+    assert.equal(entries[2], null);
+    assert.ok(Array.isArray(entries[3]));
+  });
+
+  test('null for every "nothing to iterate" case, never a throw', () => {
+    assert.equal(frontmatterListEntries('no frontmatter here', 'gaps'), null);
+    assert.equal(frontmatterListEntries('---\ngaps:\n  - a\n', 'gaps'), null, 'unterminated');
+    assert.equal(frontmatterListEntries('---\nother: 1\n---\n', 'gaps'), null, 'key absent');
+    assert.equal(frontmatterListEntries('---\ngaps: not-an-array\n---\n', 'gaps'), null, 'not an array');
+    assert.equal(frontmatterListEntries('---\n  : : :\n---\n', 'gaps'), null, 'unparseable');
+  });
+
+  test('agrees index-for-index with extractFrontmatter\'s display array', () => {
+    // `parsedEntriesFor` in uat.cts pairs these two by index and degrades to
+    // all-null if their lengths ever disagree. Pin the agreement here, where
+    // the two parsers actually live.
+    const display = extractFrontmatter(doc).gaps;
+    const parsed = frontmatterListEntries(doc, 'gaps');
+    assert.equal(display.length, parsed.length);
+  });
+});
+
+describe('flattenObjectListItem (#3850)', () => {
+  test('renders an object entry the way extractFrontmatter displays it', () => {
+    const entry = { test: 'Do the thing', expected: 'it works' };
+    const rendered = flattenObjectListItem(entry);
+    const viaExtract = extractFrontmatter(['---',
+      'human_verification:',
+      '  - test: "Do the thing"',
+      '    expected: "it works"',
+      '---',
+      ''].join('\n')).human_verification[0];
+    assert.equal(rendered, viaExtract,
+      'a caller naming an item from the parsed object must produce the byte-identical string');
   });
 });

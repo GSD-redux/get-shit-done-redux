@@ -43,6 +43,7 @@ const CONFIG_DOC_PATH = path.join(__dirname, '..', 'docs', 'CONFIGURATION.md');
 const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
 const PLANNER_REVIEWS_PATH = path.join(__dirname, '..', 'gsd-core', 'references', 'planner-reviews.md');
 const PLAN_CHECKER_PATH = path.join(__dirname, '..', 'agents', 'gsd-plan-checker.md');
+const WORKFLOW_REVIEW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
 
 // #2315: the workflow's reviewer-resolution block pipes through `jq`, which is
 // a documented production dependency (review.md:244 "install jq if missing")
@@ -812,6 +813,25 @@ describe('plan-review-convergence workflow: escalation gate (#2306)', () => {
       'workflow must support TEXT_MODE for plain-text escalation prompt'
     );
   });
+
+  test('#3771 "Proceed anyway" is withheld at max cycles when a plan-revision conflict is open', () => {
+    const maxCyclesSection = workflow.slice(workflow.indexOf('**Max cycles check:**'));
+    const branchPoint = maxCyclesSection.indexOf('**Otherwise (`OPEN_CONFLICTS` == 0):**');
+    assert.notEqual(branchPoint, -1,
+      'the max-cycles escalation must branch on OPEN_CONFLICTS before offering "Proceed anyway"');
+    const openConflictBranch = maxCyclesSection.slice(0, branchPoint);
+    const noConflictBranch = maxCyclesSection.slice(branchPoint);
+    // Match the actual OFFER shapes (a numbered option or an AskUserQuestion label), not any
+    // sentence that merely mentions the phrase while explaining it is withheld.
+    const offersProceedAnyway = (text) =>
+      /1\.\s*Proceed anyway/.test(text) || /label:\s*"Proceed anyway"/.test(text);
+    assert.ok(!offersProceedAnyway(openConflictBranch),
+      'an open plan-revision conflict is a blocker — the branch reached while OPEN_CONFLICTS > 0 must never offer to accept it silently');
+    assert.match(openConflictBranch, /blocker/i,
+      'the open-conflict branch must tell the user why "Proceed anyway" is unavailable');
+    assert.ok(offersProceedAnyway(noConflictBranch),
+      '"Proceed anyway" must still be offered when there is no open conflict, only HIGH/actionable concerns');
+  });
 });
 
 // ─── Workflow: stall detection — behavioral ───────────────────────────────
@@ -995,6 +1015,148 @@ describe('plan-review-convergence reviews-mode incorporation contract (#724)', (
       planChecker.includes('CYCLE_SUMMARY') &&
         (planChecker.includes('Do NOT look for') || planChecker.includes('do NOT look for')),
       'CYCLE_SUMMARY must appear in plan-checker only as a prohibited pattern, not as a parsing instruction'
+    );
+  });
+});
+
+// ─── Reviews-mode ledger canonicalization (#3806) ──────────────────────────
+//
+// #3806: reviews-mode requires actionable findings to be incorporated or
+// explicitly deferred/rejected IN PLAN.md (#724/#728), but nothing canonized
+// WHERE in PLAN.md, WHAT SHAPE, or how a line reference survives REVIEWS.md
+// being rewritten wholesale every round. Two independently-invented, mutually
+// incompatible disposition formats were observed across two consecutive
+// rounds of the same phase. The fix promotes the existing Step-4 return-
+// payload tables (`### Review Feedback Addressed` / `### Review Feedback
+// Deferred`) into a canonical `## Review Dispositions Ledger` PLAN.md
+// section, stated ONCE in planner-reviews.md and referenced — not restated —
+// from plan-phase.md and gsd-plan-checker.md. These tests are the parity
+// assertion the maintainer's verdict required (condition 3): they fail if
+// the three seams diverge.
+
+describe('plan-review-convergence reviews-mode ledger canonicalization (#3806)', () => {
+  const plannerReviews = fs.readFileSync(PLANNER_REVIEWS_PATH, 'utf8');
+  const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+  const planChecker = fs.readFileSync(PLAN_CHECKER_PATH, 'utf8');
+  const reviewWorkflow = fs.readFileSync(WORKFLOW_REVIEW_PATH, 'utf8');
+
+  const LEDGER_HEADING_RE = /^##\s+(Review Dispositions Ledger[^\r\n]{0,200})$/m;
+
+  test('planner-reviews.md defines the canonical "Review Dispositions Ledger" heading exactly once', () => {
+    // Counts only the REAL heading occurrence, skipping any fenced code-block
+    // example that happens to show the same heading text as sample content
+    // (planner-reviews.md's worked example does this deliberately, so a plan-
+    // writing agent has a full copyable sample including its own top heading).
+    const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+    let inFence = false;
+    let realHeadingCount = 0;
+    for (const line of splitLines(plannerReviews)) {
+      if (line.trimStart().startsWith('```')) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      if (line.trim() === '## Review Dispositions Ledger') realHeadingCount += 1;
+    }
+    assert.equal(
+      realHeadingCount,
+      1,
+      'references/planner-reviews.md must define the real (non-fenced-example) "## Review Dispositions Ledger" heading exactly once — this is the single canonical statement of the ledger contract (#3806)'
+    );
+  });
+
+  test('plan-phase.md references the canonical ledger instead of restating its shape', () => {
+    const headingMatch = plannerReviews.match(LEDGER_HEADING_RE);
+    assert.ok(headingMatch, 'precondition: canonical heading must exist in planner-reviews.md');
+    const canonicalHeading = headingMatch[1].trim();
+
+    assert.match(
+      planPhase,
+      /references\/planner-reviews\.md/,
+      'plan-phase.md <review_incorporation_contract> must point at references/planner-reviews.md for the ledger shape (#3806)'
+    );
+    assert.ok(
+      planPhase.includes(canonicalHeading),
+      `plan-phase.md must name the live canonical heading ("${canonicalHeading}") — if planner-reviews.md renames it without updating this reference, this fails (#3806 parity)`
+    );
+    assert.doesNotMatch(
+      planPhase,
+      /^##\s+Review Dispositions Ledger[^\r\n]*$/m,
+      'plan-phase.md must NOT define its own competing "## Review Dispositions Ledger" heading — the contract is stated once, in planner-reviews.md, never restated (#3806)'
+    );
+  });
+
+  test('gsd-plan-checker.md references the canonical ledger instead of restating its shape', () => {
+    const headingMatch = plannerReviews.match(LEDGER_HEADING_RE);
+    assert.ok(headingMatch, 'precondition: canonical heading must exist in planner-reviews.md');
+    const canonicalHeading = headingMatch[1].trim();
+
+    assert.match(
+      planChecker,
+      /references\/planner-reviews\.md/,
+      'gsd-plan-checker.md Review Incorporation dimension must point at references/planner-reviews.md for the ledger shape (#3806)'
+    );
+    assert.ok(
+      planChecker.includes(canonicalHeading),
+      `gsd-plan-checker.md must name the live canonical heading ("${canonicalHeading}") — if planner-reviews.md renames it without updating this reference, this fails (#3806 parity)`
+    );
+    assert.doesNotMatch(
+      planChecker,
+      /^##\s+Review Dispositions Ledger[^\r\n]*$/m,
+      'gsd-plan-checker.md must NOT define its own competing "## Review Dispositions Ledger" heading — the contract is stated once, in planner-reviews.md, never restated (#3806)'
+    );
+  });
+
+  test('planner-reviews.md documents round-scoping and the L##@{sha} anchor format', () => {
+    assert.match(
+      plannerReviews,
+      /###\s+Round\s*\{?N\}?/,
+      'canonical ledger must define a per-round subsection (e.g. "### Round {N} — ...") so successive reviews-mode rounds do not collide or overwrite each other (#3806)'
+    );
+    assert.match(
+      plannerReviews,
+      /L##@\{?REVIEWS_sha\}?/,
+      'canonical ledger must define the L##@{REVIEWS_sha} line-anchor format — a bare line number is meaningless once REVIEWS.md is rewritten wholesale next round (#3806)'
+    );
+  });
+
+  test('planner-reviews.md documents append-only supersession, not in-place edits', () => {
+    assert.match(
+      plannerReviews,
+      /append-only/i,
+      'canonical ledger must state the append-only rule: a later round never edits or deletes a prior round\'s tables (#3806)'
+    );
+    assert.match(
+      plannerReviews,
+      /supersed/i,
+      'canonical ledger must define how a later round overturns an earlier verdict (a new row naming what it supersedes), not by editing history (#3806)'
+    );
+  });
+
+  test('planner-reviews.md keeps the ledger\'s Concern/Reason fields free text (no closed enum introduced)', () => {
+    // Condition 4 of the maintainer's verdict: the reviewer roster is
+    // capability-owned and third parties can add reviewers, so `{reviewer}`
+    // must never become a closed enum. Guard against the ledger promotion
+    // accidentally introducing one (e.g. "must be one of: Codex, Claude, ...").
+    assert.ok(
+      !/reviewer\s+must\s+be\s+one\s+of/i.test(plannerReviews),
+      'the ledger must not introduce a closed reviewer/severity enum — the field stays free text (#3806 condition 4)'
+    );
+  });
+
+  test('workflows/review.md still commits REVIEWS.md as its own commit (anchor precondition)', () => {
+    // The L##@{sha} anchor format is only meaningful if REVIEWS.md snapshots
+    // are actually addressable by commit. If this ever stops being true, the
+    // anchoring half of the #3806 contract silently becomes unfulfillable.
+    assert.match(
+      reviewWorkflow,
+      /REVIEWS\.md/,
+      'workflows/review.md must still reference REVIEWS.md as a committed artifact — the #3806 ledger anchors against its commit sha'
+    );
+    assert.match(
+      reviewWorkflow,
+      /commit["\s]/,
+      'workflows/review.md must still run a commit step for REVIEWS.md — without it, {REVIEWS_sha} has nothing to point at'
     );
   });
 });

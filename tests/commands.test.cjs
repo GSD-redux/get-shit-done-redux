@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, createTempDir, cleanup } = require('./helpers.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
@@ -652,18 +653,147 @@ describe('todo complete command', () => {
       'should be in completed'
     );
 
-    // Verify completion timestamp added
+    // Verify completion timestamp added — #4096: the completed/status keys must
+    // live INSIDE a well-formed frontmatter block (line 1 is the opening fence),
+    // never above it.
     const content = fs.readFileSync(
       path.join(tmpDir, '.planning', 'todos', 'completed', 'add-dark-mode.md'),
       'utf-8'
     );
-    assert.ok(content.startsWith('completed:'), 'should have completed timestamp');
+    assert.ok(content.startsWith('---\n'), 'should open with a frontmatter fence');
+    assert.match(content, /^completed: \d{4}-\d{2}-\d{2}$/m);
   });
 
   test('fails for nonexistent todo', () => {
     const result = runGsdTools('todo complete nonexistent.md', tmpDir);
     assert.ok(!result.success, 'should fail');
     assert.ok(result.error.includes('not found'), 'error mentions not found');
+  });
+
+  // #4096 regressions — --dry-run must not mutate, and completion keys must be
+  // written inside the frontmatter fence.
+  test('--dry-run previews without moving the file or mutating anything', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const source = path.join(pendingDir, 'dry-run-probe.md');
+    fs.writeFileSync(source, '---\ntitle: probe\nstatus: pending\n---\n\n# body\n');
+
+    const result = runGsdTools('todo complete dry-run-probe.md --dry-run', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.dry_run, true, 'payload must be preview-shaped (dry_run)');
+    assert.strictEqual(output.would_complete, true, 'payload must say would_complete');
+    assert.strictEqual('completed' in output, false, 'preview must never report completed:true');
+    assert.strictEqual(output.file, 'dry-run-probe.md');
+    assert.match(output.date, /^\d{4}-\d{2}-\d{2}$/);
+
+    // File untouched, in place; nothing written to completed/.
+    assert.ok(fs.existsSync(source), 'pending file must still exist under --dry-run');
+    const completedPath = path.join(tmpDir, '.planning', 'todos', 'completed', 'dry-run-probe.md');
+    assert.ok(!fs.existsSync(completedPath), 'no completed copy under --dry-run');
+    assert.strictEqual(
+      fs.readFileSync(source, 'utf-8'),
+      '---\ntitle: probe\nstatus: pending\n---\n\n# body\n',
+      'source bytes must be unchanged under --dry-run'
+    );
+  });
+
+  test('--dry-run still fails for nonexistent todo', () => {
+    const result = runGsdTools('todo complete nonexistent.md --dry-run', tmpDir);
+    assert.ok(!result.success, 'dry-run must still run existence checks');
+    assert.ok(result.error.includes('not found'), 'error mentions not found');
+  });
+
+  test('writes completed and status: completed inside the frontmatter fence', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pendingDir, 'fence-probe.md'),
+      '---\ntitle: fence probe\nstatus: pending\ncreated: 2025-01-01\n---\n\n# body\n'
+    );
+
+    const result = runGsdTools('todo complete fence-probe.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'todos', 'completed', 'fence-probe.md'),
+      'utf-8'
+    );
+    // Line 1 must remain the opening fence (#4096 defect 2).
+    assert.ok(content.startsWith('---\n'), 'opening fence must stay on line 1');
+    const lines = splitLines(content);
+    const closeIdx = lines.indexOf('---', 1);
+    assert.ok(closeIdx > 0, 'closing fence must exist');
+    const fm = lines.slice(1, closeIdx);
+    assert.ok(fm.includes('status: completed'), 'status: completed must be inside the fence');
+    assert.strictEqual(fm.filter(l => /^completed: /.test(l)).length, 1,
+      'exactly one completed: line, inside the fence');
+    // Other frontmatter keys survive.
+    assert.ok(fm.some(l => l.startsWith('title:')), 'existing keys preserved');
+    // Body preserved after the block.
+    assert.ok(content.includes('# body'), 'body preserved');
+  });
+
+  test('upserts an existing completed field instead of duplicating it', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pendingDir, 'recomplete-probe.md'),
+      '---\ntitle: recomplete\nstatus: pending\ncompleted: 2020-01-01\n---\n\n# body\n'
+    );
+
+    const result = runGsdTools('todo complete recomplete-probe.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'todos', 'completed', 'recomplete-probe.md'),
+      'utf-8'
+    );
+    assert.ok(content.startsWith('---\n'), 'opening fence must stay on line 1');
+    assert.ok(!content.includes('completed: 2020-01-01'), 'stale completed value replaced');
+    assert.strictEqual(
+      (content.match(/^completed: /gm) || []).length, 1,
+      'exactly one completed: occurrence'
+    );
+  });
+
+  test('wraps a frontmatter-less todo in a complete frontmatter block', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, 'bare.md'), '# just a body\n');
+
+    const result = runGsdTools('todo complete bare.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const content = fs.readFileSync(
+      path.join(tmpDir, '.planning', 'todos', 'completed', 'bare.md'),
+      'utf-8'
+    );
+    // #4096 fix-2: no bare prefix line — a complete frontmatter block instead.
+    assert.ok(content.startsWith('---\n'), 'frontmatter block must open the file');
+    const lines = splitLines(content);
+    const closeIdx = lines.indexOf('---', 1);
+    assert.ok(closeIdx > 0, 'closing fence must exist');
+    const fm = lines.slice(1, closeIdx);
+    assert.ok(fm.some(l => /^completed: \d{4}-\d{2}-\d{2}$/.test(l)), 'completed inside block');
+    assert.ok(fm.includes('status: completed'), 'status: completed inside block');
+    assert.ok(content.includes('# just a body'), 'body preserved');
+  });
+
+  test('rejects unknown flags instead of silently completing', () => {
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, 'flag-probe.md'), '---\nstatus: pending\n---\n');
+
+    const result = runGsdTools('todo complete flag-probe.md --bogus-flag', tmpDir);
+    assert.ok(!result.success, 'unknown flag must fail loudly');
+    assert.ok(result.error.includes('Unknown flag'), 'error mentions Unknown flag');
+    // And crucially: nothing moved.
+    assert.ok(
+      fs.existsSync(path.join(pendingDir, 'flag-probe.md')),
+      'file must not move when a flag is rejected'
+    );
   });
 });
 
@@ -1283,6 +1413,38 @@ describe('resolve-model command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.profile, 'balanced', 'should default to balanced profile');
     assert.ok(output.model, 'should resolve a model');
+  });
+
+  // #4192 (AC1, behavioral): a claude-runtime tier override must change the
+  // resolved output relative to the no-override control — the CLI surface the
+  // orchestrator reads is where the documented contract is observable.
+  test('claude-runtime tier override changes resolved output vs control (#4192)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_profile_overrides: { claude: { opus: 'claude-opus-4-7' } },
+    }));
+    const pinned = runGsdTools('resolve-model gsd-planner', tmpDir);
+    assert.ok(pinned.success, `Command failed: ${pinned.error}`);
+    assert.strictEqual(JSON.parse(pinned.output).model, 'claude-opus-4-7');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+    }));
+    const control = runGsdTools('resolve-model gsd-planner', tmpDir);
+    assert.ok(control.success, `Command failed: ${control.error}`);
+    assert.strictEqual(JSON.parse(control.output).model, 'opus');
+  });
+
+  // #4192 (AC2, behavioral): a per-agent fully-qualified Claude model ID is
+  // resolved as configured through the CLI surface.
+  test('per-agent fully-qualified claude ID resolves as configured (#4192)', () => {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({
+      model_profile: 'balanced',
+      model_overrides: { 'gsd-debugger': 'claude-opus-4-7' },
+    }));
+    const result = runGsdTools('resolve-model gsd-debugger', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).model, 'claude-opus-4-7');
   });
 
   // #443: resolve-model now emits unified `effort` instead of `reasoning_effort`.
@@ -4343,7 +4505,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, captureFdSync } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 
@@ -4369,18 +4531,7 @@ function makeTmpDir(prefix) {
 // output() in core.cjs uses fs.writeSync(1, data) — intercept fd=1 writes.
 // Pass raw=false so output() emits JSON (raw=true emits the plain rawValue string).
 function captureOutput(fn) {
-  const origWriteSync = fs.writeSync;
-  let captured = '';
-  fs.writeSync = (fd, data) => {
-    if (fd === 1) captured += data;
-    else origWriteSync(fd, data);
-  };
-  try {
-    fn();
-  } finally {
-    fs.writeSync = origWriteSync;
-  }
-  return JSON.parse(captured);
+  return JSON.parse(captureFdSync(1, fn));
 }
 
 function makeAgentsDir(tmpDir) {
