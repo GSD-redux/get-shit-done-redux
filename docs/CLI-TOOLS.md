@@ -1159,6 +1159,13 @@ pre-milestone directories are not counted as current-milestone phases, and the
 aggregate completion percentage no longer reads `100` while phases from the
 active window are still outstanding.
 
+On a project explicitly configured with `phase_id_convention: "bracket"`, both
+JSON surfaces keep the phase's bare join key in `phases[].number` and add its
+canonical human label in `phases[].display_id` (for example,
+`{"number":"05.03","display_id":"[GSD.02] 05.03"}`). Their
+`milestone_version` and table headings use `[GSD.02]` rather than the legacy
+`v2.0` marker. Other conventions retain their prior object and table shapes.
+
 ```bash
 # Complete a todo
 node gsd-tools.cjs todo complete <filename> [--dry-run]

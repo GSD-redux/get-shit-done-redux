@@ -165,6 +165,13 @@ Phase-completion verbs never write `Milestone complete` (the overloaded bare val
 
 **Scene priority:** when both `active_phase` and `next_action` are populated, Scene 1 wins — an orchestrator is in flight, so a "next recommendation" would be misleading. This priority is enforced by check order in `formatGsdState()` and covered by the `"scene priority"` suite in `tests/gsd-statusline.test.cjs`.
 
+When `phase_id_convention` is exactly `"bracket"` and `project_code` is set,
+the full and compact renderers replace the legacy milestone/phase labels with
+the canonical identity: `[GSD.02] · [GSD.02] 05.03 executing`. They do not emit
+the `vX.Y`, `Phase`, or compact `P` labels on that gated path. Any other
+convention, or a bracket config missing the metadata needed to form an ID,
+falls back to the strings shown in the table above.
+
 The progress bar (`[██░░░░░░░░] 20%`) is appended to the milestone segment only when `progress.percent` is present in frontmatter; absent means no bar.
 
 ---

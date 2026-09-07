@@ -42,6 +42,10 @@ if (require.main === module) {
 const { isSemverNewer } = require('../gsd-core/bin/lib/semver-compare.cjs');
 const { PACKAGE_NAME, updateCacheFileName } = require('../gsd-core/bin/lib/package-identity.cjs');
 const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+const {
+  renderBracketPhaseDisplay,
+  renderBracketMilestoneDisplay,
+} = require('../gsd-core/bin/lib/phase-id-display.cjs');
 // #2850: reuse the existing workstream resolution seams rather than
 // re-implementing CLI>env>store precedence or path construction inline.
 // peekActiveWorkstream is the read-only sibling of the store-tier lookup
@@ -359,16 +363,26 @@ function renderProgressBar(percent) {
  * Progress bar is opt-in: appended to the milestone segment only when
  * progress.percent is present in frontmatter; absent → empty string.
  */
-function formatGsdState(s) {
+function formatGsdState(s, opts = {}) {
   // #2850: workstream mode with nothing resolvable — an observable signal,
   // never silent emptiness (distinguishes from "GSD isn't installed here").
   if (s.noActiveWorkstream) return NO_ACTIVE_WORKSTREAM_LABEL;
 
   const parts = [];
+  const bracket = opts.convention === 'bracket';
+  const bracketMilestone = bracket
+    ? renderBracketMilestoneDisplay(s.milestone, opts.projectCode)
+    : null;
+  const phaseLabel = (phase) => {
+    const display = bracket
+      ? renderBracketPhaseDisplay(s.milestone, phase, opts.projectCode)
+      : null;
+    return display ?? `Phase ${phase}`;
+  };
 
   // Milestone segment: version + name + (opt-in) progress bar
   if (s.milestone || s.milestoneName) {
-    const ver = s.milestone || '';
+    const ver = bracketMilestone ?? s.milestone ?? '';
     const name = (s.milestoneName && s.milestoneName !== 'milestone') ? s.milestoneName : '';
     const bar = renderProgressBar(s.percent);
     const pieces = [ver, name, bar].filter(Boolean);
@@ -384,7 +398,8 @@ function formatGsdState(s) {
     // stage = whichever lifecycle status was written by the orchestrator
     //   (discussing / planning / executing / verifying)
     const stage = s.status || '';
-    parts.push(stage ? `Phase ${s.activePhase} ${stage}` : `Phase ${s.activePhase}`);
+    const phase = phaseLabel(s.activePhase);
+    parts.push(stage ? `${phase} ${stage}` : phase);
   } else if (s.nextAction && phasesStr) {
     // Scene 2: idle + a recommended next command is visible to the user.
     // Surfaces "what to run next" without the user opening STATE.md.
@@ -402,9 +417,16 @@ function formatGsdState(s) {
     // earlier so no existing project's status-line changes shape.
     if (s.status) parts.push(s.status);
     if (s.phaseNum && s.phaseTotal) {
+      const bracketPhase = bracket
+        ? renderBracketPhaseDisplay(s.milestone, s.phaseNum, opts.projectCode)
+        : null;
       const phase = s.phaseName
-        ? `${s.phaseName} (${s.phaseNum}/${s.phaseTotal})`
-        : `ph ${s.phaseNum}/${s.phaseTotal}`;
+        ? bracketPhase
+          ? `${bracketPhase} ${s.phaseName} (${s.phaseNum}/${s.phaseTotal})`
+          : `${s.phaseName} (${s.phaseNum}/${s.phaseTotal})`
+        : bracketPhase
+          ? `${bracketPhase} (${s.phaseNum}/${s.phaseTotal})`
+          : `ph ${s.phaseNum}/${s.phaseTotal}`;
       parts.push(phase);
     }
   }
@@ -490,17 +512,24 @@ function shortGsdStatus(status) {
  * default format — and collapses narrative statuses via shortGsdStatus().
  * The default "full" format is untouched.
  */
-function formatGsdStateCompact(s) {
+function formatGsdStateCompact(s, opts = {}) {
   // #2850: mirrors formatGsdState's observable "nothing resolvable" signal.
   if (s.noActiveWorkstream) return NO_ACTIVE_WORKSTREAM_LABEL;
 
   const parts = [];
+  const bracket = opts.convention === 'bracket';
+  const bracketMilestone = bracket
+    ? renderBracketMilestoneDisplay(s.milestone, opts.projectCode)
+    : null;
 
-  if (s.milestone) parts.push(s.milestone);
+  if (s.milestone) parts.push(bracketMilestone ?? s.milestone);
 
   const phaseId = s.activePhase || s.phaseNum;
   if (phaseId) {
-    parts.push(s.phaseTotal ? `P${phaseId}/${s.phaseTotal}` : `P${phaseId}`);
+    const bracketPhase = bracket
+      ? renderBracketPhaseDisplay(s.milestone, phaseId, opts.projectCode)
+      : null;
+    parts.push(bracketPhase ?? (s.phaseTotal ? `P${phaseId}/${s.phaseTotal}` : `P${phaseId}`));
   }
 
   // Scene exclusivity mirrors formatGsdState's if/else chain: an in-flight
@@ -747,7 +776,7 @@ function formatStateFreshness(fresh) {
  * entry points — this collapses both onto one resolver.
  *
  * @param {object} cfg — parsed .planning/config.json (readGsdConfig())
- * @returns {{ showLastCommand: boolean, position: 'end'|'front', stateFormat: 'full'|'compact', showGit: boolean, showStateFreshness: boolean }}
+ * @returns {{ showLastCommand: boolean, position: 'end'|'front', stateFormat: 'full'|'compact', showGit: boolean, showStateFreshness: boolean, convention: string|null, projectCode: string|null }}
  */
 function resolveStatuslineOptions(cfg) {
   const showLastCommand = getConfigValue(cfg, 'statusline.show_last_command') === true;
@@ -759,7 +788,22 @@ function resolveStatuslineOptions(cfg) {
   const stateFormat = getConfigValue(cfg, 'statusline.state_format') === 'compact' ? 'compact' : 'full';
   const showGit = getConfigValue(cfg, 'statusline.show_git') === true;
   const showStateFreshness = getConfigValue(cfg, 'statusline.show_state_freshness') === true;
-  return { showLastCommand, position, stateFormat, showGit, showStateFreshness };
+  const convention = getConfigValue(cfg, 'phase_id_convention') === 'bracket'
+    ? 'bracket'
+    : null;
+  const projectCodeValue = getConfigValue(cfg, 'project_code');
+  const projectCode = typeof projectCodeValue === 'string' && projectCodeValue !== ''
+    ? projectCodeValue
+    : null;
+  return {
+    showLastCommand,
+    position,
+    stateFormat,
+    showGit,
+    showStateFreshness,
+    convention,
+    projectCode,
+  };
 }
 
 // --- stdin ------------------------------------------------------------------
@@ -934,7 +978,9 @@ function runStatusline() {
     // freshness git spawn here would spend a subprocess on discarded output.
     if (!task) {
       const state = readGsdState(dir, { stateFreshness: options.showStateFreshness }) || {};
-      gsdStateStr = options.stateFormat === 'compact' ? formatGsdStateCompact(state) : formatGsdState(state);
+      gsdStateStr = options.stateFormat === 'compact'
+        ? formatGsdStateCompact(state, options)
+        : formatGsdState(state, options);
     }
 
     // Output
@@ -1042,6 +1088,7 @@ module.exports = {
   STATE_HEAD_ADVISORY_COMMITS, isValidStateHeadStamp,
   readStateHeadCommits, parseRevListCounts, deriveStateFreshness,
   formatStateFreshness, resolveStatuslineOptions,
+  renderBracketPhaseDisplay, renderBracketMilestoneDisplay,
 };
 
 /**
@@ -1059,7 +1106,15 @@ function renderStatusline(data) {
   // key from reaching only one of them.
   let lastCmdSuffix = '';
   let gitSuffix = '';
-  let options = { showLastCommand: false, position: 'end', stateFormat: 'full', showGit: false, showStateFreshness: false };
+  let options = {
+    showLastCommand: false,
+    position: 'end',
+    stateFormat: 'full',
+    showGit: false,
+    showStateFreshness: false,
+    convention: null,
+    projectCode: null,
+  };
   try {
     const cfg = readGsdConfig(dir);
     options = resolveStatuslineOptions(cfg);
@@ -1075,7 +1130,9 @@ function renderStatusline(data) {
   } catch (e) { /* swallow */ }
 
   const state = readGsdState(dir, { stateFreshness: options.showStateFreshness }) || {};
-  const gsdStateStr = options.stateFormat === 'compact' ? formatGsdStateCompact(state) : formatGsdState(state);
+  const gsdStateStr = options.stateFormat === 'compact'
+    ? formatGsdStateCompact(state, options)
+    : formatGsdState(state, options);
   const middle = gsdStateStr ? `\x1b[2m${gsdStateStr}\x1b[0m` : null;
   return composeStatusline({ model, ctx: '', middle, dirname, lastCmdSuffix, gitSuffix, position: options.position });
 }

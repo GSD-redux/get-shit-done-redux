@@ -515,10 +515,14 @@ function parsePhaseId(input: string): PhaseId {
   throw new Error(`parsePhaseId: not a bracket phase id: ${JSON.stringify(input)}`);
 }
 
+function renderMilestoneId(id: { project: string; milestone: string }): string {
+  return `[${id.project}.${id.milestone}]`;
+}
+
 function renderPhaseId(id: PhaseId): string {
   const sub = id.subphase ? `.${id.subphase}` : '';
   const plan = id.plan ? `-${id.plan}` : '';
-  return `[${id.project}.${id.milestone}] ${id.phase}${sub}${plan}`;
+  return `${renderMilestoneId(id)} ${id.phase}${sub}${plan}`;
 }
 
 // PhaseId is a structural type: nothing forces a caller through parsePhaseId,
@@ -1510,6 +1514,7 @@ export = {
   getMilestoneFromPhaseId,
   getPhaseDirFromPhaseId,
   parsePhaseId,
+  renderMilestoneId,
   renderPhaseId,
   toDir,
   SENTINEL_RANGES,

@@ -245,6 +245,8 @@ build/
 /gsd-core/bin/lib/core-utils.cjs
 /gsd-core/bin/lib/io.cjs
 /gsd-core/bin/lib/phase-id.cjs
+/gsd-core/bin/lib/phase-id-card.cjs
+/gsd-core/bin/lib/phase-id-display.cjs
 /gsd-core/bin/lib/normalize-test-command.cjs
 /gsd-core/bin/lib/config-loader.cjs
 /gsd-core/bin/lib/unusable-input.cjs

@@ -13,6 +13,65 @@ const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup, delay } = require('./helpers.cjs');
 
+// ─── ADR-612 PR-5: phase_id_convention enum validation ──────────────────────
+
+describe('#3638: phase_id_convention config enum', () => {
+  test('accepts sequential, milestone-prefixed, and bracket exactly', (t) => {
+    const tmpDir = createTempProject('gsd-phase-id-convention-');
+    t.after(() => cleanup(tmpDir));
+
+    for (const convention of ['sequential', 'milestone-prefixed', 'bracket']) {
+      const result = runGsdTools(['config-set', 'phase_id_convention', convention], tmpDir);
+      assert.ok(result.success, `config-set phase_id_convention ${convention} failed: ${result.error}`);
+      assert.equal(readConfig(tmpDir).phase_id_convention, convention);
+    }
+  });
+
+  test('absent and null preserve the unset legacy behavior', (t) => {
+    const tmpDir = createTempProject('gsd-phase-id-convention-');
+    t.after(() => cleanup(tmpDir));
+    assert.equal(
+      fs.existsSync(path.join(tmpDir, '.planning', 'config.json')),
+      false,
+      'an absent config leaves the convention unset',
+    );
+    writeConfig(tmpDir, { phase_id_convention: 'bracket', model_profile: 'balanced' });
+
+    const result = runGsdTools(['config-set', 'phase_id_convention', 'null'], tmpDir);
+    assert.ok(result.success, `config-set phase_id_convention null failed: ${result.error}`);
+    const config = readConfig(tmpDir);
+    assert.equal(Object.hasOwn(config, 'phase_id_convention'), false);
+    assert.equal(config.model_profile, 'balanced', 'unsetting the convention must preserve sibling config');
+  });
+
+  test('rejects unsupported and case-mismatched values with the supported set', (t) => {
+    const tmpDir = createTempProject('gsd-phase-id-convention-');
+    t.after(() => cleanup(tmpDir));
+
+    for (const value of ['free-form', 'Bracket']) {
+      const result = runGsdTools(['config-set', 'phase_id_convention', value], tmpDir);
+      assert.equal(result.success, false, `${value} must be rejected`);
+      assert.match(result.error, /Invalid phase_id_convention/);
+      assert.match(result.error, /sequential, milestone-prefixed, bracket/);
+    }
+  });
+
+  test('sequential remains valid configuration but is not a roadmap-upgrade target', (t) => {
+    const tmpDir = createTempProject('gsd-phase-id-convention-');
+    t.after(() => cleanup(tmpDir));
+
+    const configResult = runGsdTools(['config-set', 'phase_id_convention', 'sequential'], tmpDir);
+    assert.ok(configResult.success, `sequential config failed: ${configResult.error}`);
+
+    const migrationResult = runGsdTools(
+      ['roadmap', 'upgrade', '--convention', 'sequential', '--dry-run'],
+      tmpDir,
+    );
+    assert.equal(migrationResult.success, false, 'sequential must not become a migration target');
+    assert.match(migrationResult.error, /Only --convention milestone-prefixed is supported/);
+  });
+});
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function readConfig(tmpDir) {

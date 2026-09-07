@@ -310,6 +310,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `verifier-phase-gates.md` | Verifier-time gates eagerly imported by `gsd-verifier` (migrated from the retired `verify-phase` workflow, #1892): decision-coverage validation (#2492), test-quality audit, and infrastructure-phase human-verification scoping (#2504). |
 | `verifier-evidence-gate.md` | Re-verification convergence gate loaded by `gsd-verifier` (#3304): a Step 7 anti-pattern blocker that is neither a carried-forward gap nor a regression needs deterministic evidence to stay blocking, else it downgrades to advisory. |
 | `planning-config.md` | Full config schema and behavior. |
+| `phase-id-convention.md` | Canonical bracket phase-ID grammar card and display/disk translation reference (ADR-612). |
 | `security-asvs-levels.md` | OWASP ASVS level definitions for GSD threat modeling — per-level planner disposition rigor and auditor verification depth (L1 opportunistic, L2 standard, L3 comprehensive). |
 | `git-integration.md` | Git commit, branching, and history patterns. |
 | `git-planning-commit.md` | Planning directory commit conventions. |
@@ -588,6 +589,8 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `pattern.cjs` | The pattern-construction seam — `escapeRegex` (delegates to the built-in `RegExp.escape`) and `literalPattern`; sole owner of building a `RegExp` from a runtime value (ADR-3212 §1, epic #3212 Phase 1, #3412) |
 | `phase-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools phase` |
 | `phase-estimation.cjs` | Pure phase-effort estimation — `estimate`/`actuals` schema parse+render, smart-zone budget classification, and estimate-vs-actual calibration (median ratio, clamped, sample-gated). Confidence is derived from calibration sample count, never self-rated (ADR-2629) |
+| `phase-id-card.cjs` | Single runtime source for the compact annotated bracket phase-ID convention card and legend (ADR-612 PR-5) |
+| `phase-id-display.cjs` | Pure display adapter that routes legacy milestone metadata through the canonical bracket phase-ID parse/render pair (ADR-612 PR-5) |
 | `phase-id.cjs` | Pure phase-id parsing/matching helpers — normalize, token match, milestone/phase-dir id parsing, phase-markdown regex builders (extracted from `core.cjs`, ADR-857) |
 | `phase-lifecycle.cjs` | Pure-computation phase lifecycle helpers extracted from the phase-lifecycle SDK handler |
 | `phase-locator.cjs` | Phase-directory search/location — active + archived phase-dir discovery, phase-id matching against the filesystem (extracted from `core.cjs`, ADR-857) |

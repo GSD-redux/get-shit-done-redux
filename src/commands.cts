@@ -23,7 +23,20 @@ import coreUtilsMod = require('./core-utils.cjs');
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+const {
+  normalizePhaseName,
+  comparePhaseNum,
+  extractPhaseToken,
+  PHASE_NUMBER_TOKEN_SOURCE,
+  isSentinelPhaseId,
+  parsePhaseId,
+  renderPhaseId,
+  phaseHeadingPrefixSrcFor,
+  PHASE_HEADING_BASELINE,
+} = phaseIdMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseIdDisplayMod = require('./phase-id-display.cjs');
+const { renderBracketMilestoneDisplay } = phaseIdDisplayMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -49,7 +62,7 @@ import { parseCodexAgentToml, renderCodexAgentToml, stripModel, stripReasoningEf
 import hostIntegrationMod = require('./host-integration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, planningPaths } = planningWorkspace;
+const { planningDir, planningPaths, resolvePhaseIdConvention } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar } = frontmatter;
@@ -76,10 +89,44 @@ interface ArchivedPhaseDir {
 
 interface PhaseProgress {
   number: string;
+  display_id?: string;
   name: string;
   plans: number;
   summaries: number;
   status: string;
+}
+
+interface BracketPhaseDirProjection {
+  number: string;
+  display_id: string;
+  name: string;
+}
+
+/**
+ * Project one canonical bracket directory onto its display identity and slug.
+ *
+ * The identity is deliberately obtained only through parsePhaseId/renderPhaseId;
+ * this helper owns no second bracket grammar. Callers invoke it only after the
+ * project's resolved convention is exactly `bracket`.
+ */
+function bracketPhaseDirProjection(dir: string): BracketPhaseDirProjection {
+  const id = parsePhaseId(dir);
+  const number = id.subphase ? `${id.phase}.${id.subphase}` : id.phase;
+  const identityPrefix = `${id.project}.${id.milestone}-${number}`;
+  const slug = dir.slice(identityPrefix.length).replace(/^-/, '');
+  return {
+    number,
+    display_id: renderPhaseId(id),
+    name: slug ? slug.replace(/-/g, ' ') : '',
+  };
+}
+
+function recoverBracketPhaseName(dir: string, phaseToken: string): string {
+  const tokenBoundary = `-${phaseToken}`;
+  const tokenOffset = dir.indexOf(tokenBoundary);
+  if (tokenOffset === -1) return '';
+  const afterToken = dir.slice(tokenOffset + tokenBoundary.length).replace(/^-/, '');
+  return afterToken ? afterToken.replace(/-/g, ' ') : '';
 }
 
 interface GroupFilesBySubrepoResult {
@@ -2688,6 +2735,11 @@ async function cmdWebsearch(query: string | undefined, options: WebsearchOptions
 function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
   const milestone = getMilestoneInfo(cwd).value;
+  const phaseIdConvention = resolvePhaseIdConvention(cwd);
+  const milestoneDisplay = phaseIdConvention === 'bracket'
+    ? renderBracketMilestoneDisplay(milestone?.version, loadConfig(cwd).project_code)
+    : null;
+  const milestoneVersion = milestoneDisplay ?? milestone?.version ?? null;
 
   const phases: PhaseProgress[] = [];
   let totalPlans = 0;
@@ -2700,13 +2752,35 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     // comparePhaseNum. This command previously read the phases directory
     // directly with neither, which is why `query progress` listed 999.*
     // backlog directories as current-milestone phases (#3167).
-    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, {
+      cwd,
+      phaseIdConvention,
+    });
     phaseScope = scope;
 
     for (const dir of dirs) {
-      const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
-      const phaseNum = dm ? dm[1] : dir;
-      const phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
+      let phaseNum: string;
+      let phaseName: string;
+      let displayId: string | undefined;
+      if (phaseIdConvention === 'bracket') {
+        try {
+          const projection = bracketPhaseDirProjection(dir);
+          phaseNum = projection.number;
+          phaseName = projection.name;
+          displayId = projection.display_id;
+        } catch {
+          // A malformed/tolerated directory must not suppress every later row.
+          // It cannot receive a canonical display_id because parsePhaseId
+          // rejected it, but the convention-aware token keeps it observable.
+          const phaseToken = extractPhaseToken(dir, phaseIdConvention);
+          phaseNum = phaseToken || dir;
+          phaseName = recoverBracketPhaseName(dir, phaseToken);
+        }
+      } else {
+        const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
+        phaseNum = dm ? dm[1] : dir;
+        phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
+      }
       // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
       // canonical pairing) from the single owner.
       const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
@@ -2718,7 +2792,14 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
 
       const status = determinePhaseStatus(plans, summaries, path.join(phasesDir, dir), 'Pending');
 
-      phases.push({ number: phaseNum, name: phaseName, plans, summaries, status });
+      phases.push({
+        number: phaseNum,
+        ...(displayId ? { display_id: displayId } : {}),
+        name: phaseName,
+        plans,
+        summaries,
+        status,
+      });
     }
   } catch { /* intentionally empty */ }
 
@@ -2739,12 +2820,12 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
-    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
+    let out = `# ${milestoneVersion ?? ''} ${milestone?.name ?? ''}\n\n`;
     out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
     for (const p of phases) {
-      out += `| ${p.number} | ${p.name} | ${p.summaries}/${p.plans} | ${p.status} |\n`;
+      out += `| ${p.display_id ?? p.number} | ${p.name} | ${p.summaries}/${p.plans} | ${p.status} |\n`;
     }
     output({ rendered: out }, raw, out);
   } else if (format === 'bar') {
@@ -2757,7 +2838,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
   } else {
     // JSON format
     output({
-      milestone_version: milestone?.version ?? null,
+      milestone_version: milestoneVersion,
       milestone_name: milestone?.name ?? null,
       phases,
       total_plans: totalPlans,
@@ -3056,10 +3137,16 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   const reqPath = planningPaths(cwd).requirements;
   const statePath = planningPaths(cwd).state;
   const milestone = getMilestoneInfo(cwd).value;
+  const phaseIdConvention = resolvePhaseIdConvention(cwd);
+  const milestoneDisplay = phaseIdConvention === 'bracket'
+    ? renderBracketMilestoneDisplay(milestone?.version, loadConfig(cwd).project_code)
+    : null;
+  const milestoneVersion = milestoneDisplay ?? milestone?.version ?? null;
 
   // Phase & plan stats (reuse progress pattern)
   const phasesByNumber = new Map<string, {
     number: string;
+    display_id?: string;
     name: string;
     plans: number;
     summaries: number;
@@ -3082,19 +3169,47 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     // prose mentioning `### Phase N:` inside an inline code span produced a phantom
     // Not-Started row and made phases_total disagree with roadmap analyze.
     // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
-    const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
+    const capturesBracketId = phaseIdConvention === 'bracket';
+    const headingPrefix = phaseHeadingPrefixSrcFor(
+      PHASE_HEADING_BASELINE.ANY_BRACKET,
+      phaseIdConvention,
+      capturesBracketId,
+    );
+    // phase-id-owner: this preserves cmdStats's shipped dot-or-dash heading
+    // token variant; PHASE_NUMBER_TOKEN_SOURCE is dot-only and would drop M-NN.
+    const headingPattern = new RegExp(
+      // phase-id-owner: cmdStats's shipped [.-] token variant; the canonical token is dot-only.
+      `#{2,4}\\s*${headingPrefix}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`,
+      'gi',
+    );
     let match: RegExpExecArray | null;
     while ((match = headingPattern.exec(roadmapContent)) !== null) {
+      const bracketId = capturesBracketId ? match[1] : undefined;
+      const phaseToken = capturesBracketId ? match[2] : match[1];
+      const phaseName = capturesBracketId ? match[3] : match[2];
       // #3185: the heading seed carried no sentinel filter, so a
       // `### Phase 999.1:` backlog heading produced a stats row even with no
       // directory on disk. Uses the canonical predicate (phase-id.cts), not a
       // local literal — the rule had five copies and three regex variants
       // before this phase, disagreeing about Phase 0.
-      if (isSentinelPhaseId(match[1])) continue;
-      const key = normalizePhaseName(match[1]);
+      const sentinelId = bracketId ? `${bracketId}-${phaseToken}` : phaseToken;
+      if (capturesBracketId
+        ? isSentinelPhaseId(sentinelId, phaseIdConvention)
+        : isSentinelPhaseId(sentinelId)) continue;
+      const key = normalizePhaseName(phaseToken);
+      let displayId: string | undefined;
+      if (bracketId) {
+        try {
+          displayId = renderPhaseId(parsePhaseId(`${bracketId}-${phaseToken}`));
+        } catch {
+          // Read tolerance can admit a non-canonical heading spelling; keep
+          // the stats row but do not invent a canonical identity for it.
+        }
+      }
       phasesByNumber.set(key, {
         number: key,
-        name: match[2].replace(/\(INSERTED\)/i, '').trim(),
+        ...(displayId ? { display_id: displayId } : {}),
+        name: phaseName.replace(/\(INSERTED\)/i, '').trim(),
         plans: 0,
         summaries: 0,
         status: 'Not Started',
@@ -3108,16 +3223,35 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     // sentinel filter — and getMilestonePhaseFilter degrades to a pass-all
     // predicate when its heading set is empty, at which point every directory
     // on disk passed, backlog included (#3167).
-    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, {
+      cwd,
+      phaseIdConvention,
+    });
     phaseScope = scope;
 
     for (const dir of dirs) {
-      // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.
-      const phaseToken = extractPhaseToken(dir) as string | null;
-      const phaseNum = phaseToken || dir;
-      // phaseName is everything after the token (strip leading '-')
-      const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
-      const phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
+      let phaseNum: string;
+      let phaseName: string;
+      let displayId: string | undefined;
+      if (phaseIdConvention === 'bracket') {
+        try {
+          const projection = bracketPhaseDirProjection(dir);
+          phaseNum = projection.number;
+          phaseName = projection.name;
+          displayId = projection.display_id;
+        } catch {
+          const phaseToken = extractPhaseToken(dir, phaseIdConvention);
+          phaseNum = phaseToken || dir;
+          phaseName = recoverBracketPhaseName(dir, phaseToken);
+        }
+      } else {
+        // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.
+        const phaseToken = extractPhaseToken(dir) as string | null;
+        phaseNum = phaseToken || dir;
+        // phaseName is everything after the token (strip leading '-')
+        const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
+        phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
+      }
       // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
       // canonical pairing) from the single owner.
       const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
@@ -3133,6 +3267,9 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
       const existing = phasesByNumber.get(normalizedNum);
       phasesByNumber.set(normalizedNum, {
         number: normalizedNum,
+        ...(existing?.display_id || displayId
+          ? { display_id: existing?.display_id || displayId }
+          : {}),
         name: existing?.name || phaseName,
         plans: (existing?.plans || 0) + plans,
         summaries: (existing?.summaries || 0) + summaries,
@@ -3194,7 +3331,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   }
 
   const result = {
-    milestone_version: milestone?.version ?? null,
+    milestone_version: milestoneVersion,
     milestone_name: milestone?.name ?? null,
     phases,
     phases_completed: completedPhases,
@@ -3217,7 +3354,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     const barWidth = 10;
     const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
+    let out = `# ${milestoneVersion ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases${percentSuffix}\n`;
     if (totalPlans > 0 && planPercent !== null) {
@@ -3231,7 +3368,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     out += `| Phase | Name | Plans | Completed | Status |\n`;
     out += `|-------|------|-------|-----------|--------|\n`;
     for (const p of phases) {
-      out += `| ${p.number} | ${p.name} | ${p.plans} | ${p.summaries} | ${p.status} |\n`;
+      out += `| ${p.display_id ?? p.number} | ${p.name} | ${p.plans} | ${p.summaries} | ${p.status} |\n`;
     }
     if (gitCommits > 0) {
       out += `\n**Git:** ${gitCommits} commits`;

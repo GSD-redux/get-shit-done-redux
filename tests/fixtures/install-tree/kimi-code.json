@@ -224,6 +224,7 @@
   "gsd-core/references/nyquist-compliance.md",
   "gsd-core/references/offer-next.md",
   "gsd-core/references/phase-argument-parsing.md",
+  "gsd-core/references/phase-id-convention.md",
   "gsd-core/references/plan-checker-examples.md",
   "gsd-core/references/planner-antipatterns.md",
   "gsd-core/references/planner-chunked.md",

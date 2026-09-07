@@ -97,7 +97,21 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
+const {
+  comparePhaseNum,
+  normalizePhaseName,
+  matchPhaseDirs,
+  stripProjectCodePrefix,
+  PHASE_NUMBER_TOKEN_SOURCE,
+  isForeignPrefixedPhaseQuery,
+  isSentinelPhaseId,
+  extractPhaseToken,
+  scopeToPhase,
+  parsePhaseId,
+  renderPhaseId,
+  phaseHeadingPrefixSrcFor,
+  PHASE_HEADING_BASELINE,
+} = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -109,6 +123,7 @@ const {
   diagnoseUnresolvedActiveWorkstream,
   describeUnresolvedWorkstreamReason,
   findContextMdIn,
+  resolvePhaseIdConvention,
 } = planningWorkspace;
 
 const { determinePhaseStatus } = commandsMod;
@@ -2625,6 +2640,17 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   const milestone = milestoneRecord(cwd);
   const _slashRuntime = resolveRuntime(cwd);
+  const phaseIdConvention = resolvePhaseIdConvention(cwd);
+  const capturesBracketId = phaseIdConvention === 'bracket';
+  const phaseHeadingPrefix = phaseHeadingPrefixSrcFor(
+    PHASE_HEADING_BASELINE.LABEL_ONLY,
+    phaseIdConvention,
+    capturesBracketId,
+  );
+  const phaseHeadingPrefixNoCapture = phaseHeadingPrefixSrcFor(
+    PHASE_HEADING_BASELINE.LABEL_ONLY,
+    phaseIdConvention,
+  );
 
   const paths = planningPaths(cwd);
 
@@ -2643,27 +2669,52 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   // routed through it instead of a hand-rolled readdirSync + a separate
   // getMilestonePhaseFilter window check (which also never excluded
   // sentinels, unlike the owner).
-  const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, { cwd }).value;
+  const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, {
+    cwd,
+    phaseIdConvention,
+  }).value;
 
   const _checkboxStates = new Map<string, boolean>();
-  const _cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
+  const _cbPattern = new RegExp(
+    `-\\s*\\[(x| )\\]\\s*.*${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`,
+    'gi',
+  );
   let _cbMatch: RegExpExecArray | null;
   while ((_cbMatch = _cbPattern.exec(content)) !== null) {
-    _checkboxStates.set(_cbMatch[2], _cbMatch[1].toLowerCase() === 'x');
+    const phaseGroup = capturesBracketId ? 3 : 2;
+    _checkboxStates.set(_cbMatch[phaseGroup], _cbMatch[1].toLowerCase() === 'x');
   }
 
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-  const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+  const phasePattern = new RegExp(
+    `#{2,4}\\s*${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`,
+    'gi',
+  );
   const phases: Record<string, unknown>[] = [];
   let match: RegExpExecArray | null;
 
   while ((match = phasePattern.exec(content)) !== null) {
-    const phaseNum = match[1];
-    const phaseName = match[2].replace(/\(INSERTED\)/i, '').trim();
+    const bracketId = capturesBracketId ? match[1] : undefined;
+    const phaseNum = capturesBracketId ? match[2] : match[1];
+    const phaseName = (capturesBracketId ? match[3] : match[2])
+      .replace(/\(INSERTED\)/i, '')
+      .trim();
+    let displayId: string | undefined;
+    if (bracketId) {
+      try {
+        displayId = renderPhaseId(parsePhaseId(`${bracketId}-${phaseNum}`));
+      } catch {
+        // The bracket selector is deliberately read-tolerant. If a heading is
+        // non-canonical, retain the manager row without fabricating display_id.
+      }
+    }
 
     const sectionStart = match.index;
     const restOfContent = content.slice(sectionStart);
-    const nextHeader = restOfContent.match(/\n#{2,4}\s+Phase\s+\d[\d.]*/i);
+    const nextHeader = restOfContent.match(new RegExp(
+      `\\n#{2,4}\\s+${phaseHeadingPrefixNoCapture}\\d[\\d.]*`,
+      'i',
+    ));
     const sectionEnd = nextHeader
       ? sectionStart + (nextHeader.index as number)
       : content.length;
@@ -2700,7 +2751,11 @@ function cmdInitManager(cwd: string, raw: boolean): void {
       // milestone-scoped set and onto the physical one; that scope choice is
       // kept. Only the matcher is this PR's: matchPhaseDirs resolves
       // digit-leading directory names the token predicate cannot (#2528).
-      const dirMatch = matchPhaseDirs(_phaseDirEntries, normalized).matches[0];
+      const dirMatch = matchPhaseDirs(
+        _phaseDirEntries,
+        normalized,
+        phaseIdConvention,
+      ).matches[0];
 
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);
@@ -2781,6 +2836,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
 
     phases.push({
       number: phaseNum,
+      ...(displayId ? { display_id: displayId } : {}),
       name: phaseName,
       goal,
       depends_on,
@@ -2825,7 +2881,10 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   );
   const phaseMap = new Map(phases.map((p) => [normalizePhaseNumber(p['number'] as string), p]));
 
-  const _allCompletedPattern = new RegExp(`-\\s*\\[x\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
+  const _allCompletedPattern = new RegExp(
+    `-\\s*\\[x\\]\\s*.*${phaseHeadingPrefixNoCapture}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`,
+    'gi',
+  );
   let _allMatch: RegExpExecArray | null;
   while ((_allMatch = _allCompletedPattern.exec(rawContent)) !== null) {
     const phaseNum = normalizePhaseNumber(_allMatch[1]);
