@@ -2,4 +2,4 @@
 type: Added
 pr: 4425
 ---
-Local installs accept a new --relative-includes flag (or GSD_RELATIVE_INCLUDES=1) that writes project-relative @ includes, so a repository worked from several git worktrees no longer has every worktree reading its workflow prose out of whichever checkout ran the installer.
+**Local installs can keep `@` includes inside each worktree** — `--relative-includes` (or `GSD_RELATIVE_INCLUDES=1`) writes project-relative includes instead of binding every worktree to whichever checkout ran the installer. (#4377)

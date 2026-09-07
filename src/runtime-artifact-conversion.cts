@@ -3036,7 +3036,10 @@ function projectRelativePrefix(localDirName): string {
   if (localDirName === runtimeNamePolicy.NO_LOCAL_CONFIG_DIR_SENTINEL) return '';
   const normalized = posixNormalize(localDirName).replace(/\/+$/, '');
   if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) return '';
-  if (normalized === '..' || normalized.startsWith('../')) return '';
+  // Reject a climb in ANY segment, not only at the beginning. posixNormalize
+  // deliberately normalizes separators rather than resolving path segments,
+  // so `nested/../../outside` must be caught explicitly here.
+  if (normalized.split('/').includes('..')) return '';
   return `${normalized}/`;
 }
 

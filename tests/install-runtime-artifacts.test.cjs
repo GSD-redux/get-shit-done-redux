@@ -5282,6 +5282,7 @@ describe('#4377 _computePathPrefix — project-relative local includes', () => {
     ['an absolute descriptor value', '/etc/gsd'],
     ['a Windows-absolute descriptor value', 'C:/gsd'],
     ['a value climbing out of the project', '../outside'],
+    ['a value climbing out of the project mid-path', 'nested/../../outside'],
     ['a bare ..', '..'],
     ['an empty value', ''],
     ['a missing value', undefined],
@@ -5306,6 +5307,32 @@ describe('#4377 _relativeIncludesEnabled — the opt-in is off unless asked for'
 
   test('an absent variable is off', () => {
     assert.equal(conversion._relativeIncludesEnabled({}), false);
+  });
+});
+
+describe('#4377 relative rewrites preserve every runtime launcher shell default', () => {
+  test('all emitted runtime conversions leave ${VAR:-default} probes verbatim', () => {
+    const launcher = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'workflows', '_runtime-launcher.snippet.sh'),
+      'utf8',
+    );
+    const defaults = [...launcher.matchAll(/\$\{[A-Za-z_][A-Za-z0-9_]*:-[^}]*\}/g)]
+      .map((match) => match[0]);
+    assert.ok(defaults.length > 0, 'the launcher fixture must contain shell-default probes');
+
+    for (const runtime of ['claude', ...conversion.NON_CLAUDE_RUNTIMES]) {
+      const rewritten = conversion._applyRuntimeRewrites(
+        launcher,
+        runtime,
+        `.${runtime}/`,
+      );
+      for (const shellDefault of defaults) {
+        assert.ok(
+          rewritten.includes(shellDefault),
+          `${runtime} relative rewrite must preserve ${shellDefault}`,
+        );
+      }
+    }
   });
 });
 
