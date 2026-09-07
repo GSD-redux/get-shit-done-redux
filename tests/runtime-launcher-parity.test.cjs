@@ -1226,7 +1226,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
-const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
@@ -1254,67 +1253,10 @@ const EXPECTED_RUNTIME_PROBES = {
   kilo:        'kilo}/gsd-core/bin/',
 };
 
-/**
- * Collect all workflow .md files recursively.
- */
-function collectWorkflowFiles() {
-  const results = [];
-  function walk(dir) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        results.push(full);
-      }
-    }
-  }
-  walk(WORKFLOWS_DIR);
-  return results;
-}
-
-/**
- * Extract all bash/sh/shell fenced blocks from markdown content.
- */
-function extractShellBlocks(content) {
-  const allLines = content.split('\n');
-  const blocks = [];
-  let inBlock = false;
-  let blockLang = null;
-  let blockLines = [];
-  let blockIndent = '';
-  let closingPattern = null;
-
-  for (let i = 0; i < allLines.length; i++) {
-    const line = allLines[i];
-    if (!inBlock) {
-      const fenceOpen = line.match(/^(\s*)```(\w+)?\s*$/);
-      if (fenceOpen) {
-        inBlock = true;
-        blockIndent = fenceOpen[1];
-        blockLang = (fenceOpen[2] || '').toLowerCase();
-        blockLines = [];
-        closingPattern = new RegExp('^' + escapeRegex(blockIndent) + '```\\s*$');
-        continue;
-      }
-    } else {
-      if (closingPattern.test(line)) {
-        if (['bash', 'sh', 'shell', 'zsh', ''].includes(blockLang)) {
-          blocks.push({ lines: blockLines });
-        }
-        inBlock = false;
-        blockLang = null;
-        blockLines = [];
-        blockIndent = '';
-        closingPattern = null;
-        continue;
-      }
-      blockLines.push(line);
-    }
-  }
-  return blocks;
-}
-
+// collectWorkflowFiles and extractShellBlocks are intentionally not redeclared
+// here — this block reuses the CRLF-safe module-scope copies above (bug #4409:
+// a redeclared copy here shadowed them and split only on '\n', leaking '\r'
+// into extracted block lines on CRLF checkouts).
 
 describe('bug-891: non-Claude runtime home fallback arms', () => {
 
@@ -1677,6 +1619,19 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
         `Run \`node scripts/sync-runtime-launcher.cjs\` to propagate:\n` +
         missing.join('\n'),
     );
+  });
+
+  // Regression for bug #4409: this fold used to redeclare its own
+  // extractShellBlocks that split only on '\n', leaking '\r' into every
+  // extracted line on CRLF checkouts. Assert the CRLF-safe module-scope
+  // copy is what actually resolves inside this nested block scope.
+  test('(F) extractShellBlocks strips \\r from CRLF-fenced blocks inside this fold scope', () => {
+    const crlfContent = '```bash\r\ngsd_run foo\r\n```\r\n';
+    const blocks = extractShellBlocks(crlfContent);
+    assert.strictEqual(blocks.length, 1);
+    for (const line of blocks[0].lines) {
+      assert.ok(!line.includes('\r'), `expected no CR in extracted line, got ${JSON.stringify(line)}`);
+    }
   });
 });
   });
