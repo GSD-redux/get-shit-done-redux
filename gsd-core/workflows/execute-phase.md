@@ -627,7 +627,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    - Override `PARALLELIZATION` to `false` for this wave only — run all plans in the wave
      sequentially regardless of the global parallelization setting.
    - This is a safety net for plans that were incorrectly assigned to the same wave.
-   - The planner should have caught this; flag it as a planning defect so the user can
+     The planner should have caught this; flag it as a planning defect so the user can
      replan the phase if desired.
 
    **If no overlap:** proceed normally (parallel if `PARALLELIZATION=true`).
