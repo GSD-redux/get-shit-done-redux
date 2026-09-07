@@ -221,8 +221,15 @@ describe('SIZE: reserved-margin boundary fixtures (#4261 — negative proof)', (
       const margin = marginFor(cap);
       assert.ok(margin < cap, `margin ${margin} must sit below cap ${cap}`);
       assert.equal(margin > cap * MARGIN_RATIO - 1, true, `margin ${margin} must track the ratio`);
-      assert.equal(margin > margin, false, 'a file exactly at the margin is NOT over it');
-      assert.equal(margin + 1 > margin, true, 'one byte past the margin IS over it');
+      const rows = buildHeadroomRows({
+        'below.md': margin - 1,
+        'exact.md': margin,
+        'above.md': margin + 1,
+      }, () => ({ tier: 'FIXTURE', cap }));
+      const byName = new Map(rows.map((row) => [row.name, row]));
+      assert.equal(byName.get('below').overMargin, false, 'margin - 1 is NOT over it');
+      assert.equal(byName.get('exact').overMargin, false, 'exactly at the margin is NOT over it');
+      assert.equal(byName.get('above').overMargin, true, 'margin + 1 IS over it');
     }
   });
 

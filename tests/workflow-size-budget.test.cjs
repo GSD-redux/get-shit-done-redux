@@ -79,6 +79,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('node:os');
 const path = require('path');
+const fc = require('fast-check');
 const {
   lfByteCount: byteCount,
   listWorkflowStems,
@@ -212,9 +213,39 @@ describe('SIZE: workflow headroom census (issue #4261)', () => {
     for (const cap of [DEFAULT_CAP, LARGE_CAP, XL_CAP]) {
       const margin = marginFor(cap);
       assert.ok(margin < cap, `margin ${margin} must sit below cap ${cap}`);
-      assert.equal(margin > margin, false, 'a file exactly at the margin is NOT over it');
-      assert.equal(margin + 1 > margin, true, 'one byte past the margin IS over it');
+      const rows = buildHeadroomRows({
+        'below.md': margin - 1,
+        'exact.md': margin,
+        'above.md': margin + 1,
+      }, () => ({ tier: 'FIXTURE', cap }));
+      const byName = new Map(rows.map((row) => [row.name, row]));
+      assert.equal(byName.get('below').overMargin, false, 'margin - 1 is NOT over it');
+      assert.equal(byName.get('exact').overMargin, false, 'exactly at the margin is NOT over it');
+      assert.equal(byName.get('above').overMargin, true, 'margin + 1 IS over it');
     }
+  });
+
+  test('reserved-margin classification holds for every positive cap', () => {
+    fc.assert(fc.property(
+      fc.integer({ min: 2, max: 10_000_000 }),
+      (cap) => {
+        const margin = marginFor(cap);
+        const rows = buildHeadroomRows({
+          'below.md': margin - 1,
+          'exact.md': margin,
+          'above.md': margin + 1,
+        }, () => ({ tier: 'FIXTURE', cap }));
+        const byName = new Map(rows.map((row) => [row.name, row]));
+
+        assert.ok(margin >= 0 && margin < cap);
+        assert.equal(byName.get('below').overMargin, false);
+        assert.equal(byName.get('exact').overMargin, false);
+        assert.equal(byName.get('above').overMargin, true);
+        assert.equal(byName.get('below').headroom, cap - (margin - 1));
+        assert.equal(byName.get('exact').headroom, cap - margin);
+        assert.equal(byName.get('above').headroom, cap - (margin + 1));
+      },
+    ));
   });
 });
 
