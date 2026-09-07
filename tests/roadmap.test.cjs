@@ -1312,7 +1312,7 @@ function buildChecklistRoadmap4247(tableCell) {
 }
 
 /** Phase 68 on disk: 5 plans, 1 summary → In Progress, 1/5. */
-function seedPhase68WithPlans(tmpDir, { withNestedPlanRows = false, roadmap } = {}) {
+function seedPhase68WithPlans(tmpDir, { roadmap } = {}) {
   fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
   const p68 = path.join(tmpDir, '.planning', 'phases', '68-scheduler');
   fs.mkdirSync(p68, { recursive: true });
