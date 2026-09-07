@@ -521,7 +521,7 @@ test('a rollback with no prior manifest leaves the payload alone (#4249)', (t) =
     // A first install cannot tell "GSD created this file" from "GSD overwrote a
     // file the user already had there" — no prior manifest records the
     // difference. Removing it would be data loss, not rollback.
-    fs.rmSync(path.join(first.configDir, 'gsd-file-manifest.json'));
+    fs.unlinkSync(path.join(first.configDir, 'gsd-file-manifest.json'));
     const userBytes = '# a file the user had at a tracked path\n';
     fs.writeFileSync(managedPath, userBytes);
 
