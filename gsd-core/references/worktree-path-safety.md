@@ -37,7 +37,8 @@ cannot be quoted this way must halt the phase (surface a blocker) rather than
 ship a pin that could mis-parse. The comparison is git-vs-git on BOTH sides —
 `git -C` resolves the pinned path to its repo's canonical toplevel in git's
 own path representation, so symlink aliases, trailing slashes, `/var` vs
-`/private/var` spellings, and Windows drive-letter forms compare equal by
+`/private/var` spellings, and Windows drive-letter forms — forward- or
+backslash-separated, `RUNNER~1`-style short names included — compare equal by
 construction (shell `pwd -P` normalization does NOT match git's emission on
 Windows — do not re-introduce it).
 
@@ -54,9 +55,9 @@ gsd_pin_fail() {
   exit 1
 }
 case "$PINNED_ROOT" in
-  ''|'{PINNED_ROOT}') gsd_pin_fail ;;  # empty or unexpanded pin — fail closed, never warn-and-proceed
-  /*|[A-Za-z]:/*) ;;                   # absolute POSIX / MSYS / git-emitted Windows drive form
-  *) gsd_pin_fail ;;                   # relative pin — never trustworthy across cwds
+  ''|'{PINNED_ROOT}') gsd_pin_fail ;;     # empty or unexpanded pin — fail closed, never warn-and-proceed
+  /*|[A-Za-z]:[\\/]*) ;;                  # absolute POSIX / MSYS / Windows drive form, either separator
+  *) gsd_pin_fail ;;                      # relative pin — never trustworthy across cwds
 esac
 ACTUAL_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || gsd_pin_fail
 [ -n "$ACTUAL_ROOT" ] || gsd_pin_fail

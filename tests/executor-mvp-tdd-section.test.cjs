@@ -466,15 +466,23 @@ describe('bug #4254: sequential executor supplied-root pin', () => {
     try {
       // Relative pins are never trustworthy across cwds — rejected outright.
       assert.equal(runPinGuard(lane, 'relative/path').exitCode, 1);
-      // The forward-slash drive-letter form git emits on Windows (C:/…)
-      // must pass the guard's absolute-form gate (shell `case` semantics,
-      // exercised filesystem-free) and then fail only on the git lookup —
-      // never on the form rejection. #4296 review precedent (Minor 2).
-      const formGate = runHook('-c', ["case 'C:/Users/runneradmin/repo' in /*|[A-Za-z]:/*) echo FORM_OK;; *) echo FORM_REJECT;; esac"], {
-        interpreter: 'bash', cwd: lane, timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
-      });
-      assert.equal(formGate.stdout.trim(), 'FORM_OK');
+      // The drive-letter forms Windows produces must pass the guard's
+      // absolute-form gate (shell `case` semantics, exercised filesystem-free)
+      // and then fail only on the git lookup — never on the form rejection:
+      // the forward-slash form git EMITS (C:/…) and the backslash form Node's
+      // path.join and cmd.exe PRODUCE (C:\…, including RUNNER~1-style short
+      // names). #4296 review precedent (Minor 2) + the CI-found defect where a
+      // backslash pin was rejected before the actual root was ever computed.
+      for (const driveForm of ['C:/Users/runneradmin/repo', 'C:\\Users\\RUNNER~1\\repo']) {
+        const formGate = runHook(
+          '-c',
+          [`case '${driveForm.replace(/'/g, `'\\''`)}' in /*|[A-Za-z]:[\\\\/]*) echo FORM_OK;; *) echo FORM_REJECT;; esac`],
+          { interpreter: 'bash', cwd: lane, timeoutMs: HOOK_FANOUT_TIMEOUT_MS },
+        );
+        assert.equal(formGate.stdout.trim(), 'FORM_OK', `drive form ${driveForm} must pass the form gate`);
+      }
       assert.equal(runPinGuard(lane, 'C:/definitely/not/a/repo').exitCode, 1, 'nonexistent drive-letter pin must fail closed');
+      assert.equal(runPinGuard(lane, 'C:\\definitely\\not\\a\\repo').exitCode, 1, 'nonexistent backslash drive pin must fail closed');
     } finally {
       cleanup(primary);
     }
