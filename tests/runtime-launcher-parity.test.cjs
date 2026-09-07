@@ -392,7 +392,7 @@ describe('runtime-launcher-parity (#373)', () => {
     const snippetContent = fs.readFileSync(SNIPPET_FILE, 'utf8');
     const covered = new Set([...Object.keys(TEST_ENV_BASE), ...Object.keys(SNIPPET_SCRUB), ...SELF_ASSIGNED]);
     const uncovered = [...new Set(
-      [...snippetContent.matchAll(/\$\{([A-Z_]+):-/g)].map((m) => m[1]),
+      [...snippetContent.matchAll(/\$\{([A-Z_][A-Z0-9_]*):-/g)].map((m) => m[1]),
     )].filter((name) => !covered.has(name));
 
     assert.deepStrictEqual(
