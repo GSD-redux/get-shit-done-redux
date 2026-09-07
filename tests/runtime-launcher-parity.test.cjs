@@ -380,6 +380,32 @@ describe('runtime-launcher-parity (#373)', () => {
     );
   });
 
+  // ─── (A2) Snippet's ${VAR:-default} surface is fully covered by the scrub lists (#4424) ──
+  // SNIPPET_SCRUB above is hand-maintained for vars TEST_ENV_BASE cannot derive.
+  // Nothing previously asserted the union actually covers every fallback arm in
+  // the snippet, so a new runtime-home arm with no scrub entry could drift
+  // silently — the same shape as #4205, arriving through the hand-listed half.
+  test('(A2) every ${VAR:-default} arm in the snippet is covered by TEST_ENV_BASE, SNIPPET_SCRUB, or a caller-supplied var', () => {
+    // RUNTIME_DIR: an external input the snippet reads, never assigns — every
+    // fixture that sources the snippet sets it in-script before doing so.
+    // GSD_TOOLS: the snippet assigns this one itself, before this arm's
+    // ${GSD_TOOLS:-} check runs.
+    const CALLER_OR_SELF_ASSIGNED = new Set(['RUNTIME_DIR', 'GSD_TOOLS']);
+    const snippetContent = fs.readFileSync(SNIPPET_FILE, 'utf8');
+    const covered = new Set([...Object.keys(TEST_ENV_BASE), ...Object.keys(SNIPPET_SCRUB), ...CALLER_OR_SELF_ASSIGNED]);
+    const uncovered = [...new Set(
+      [...snippetContent.matchAll(/\$\{([A-Z_][A-Z0-9_]*):-/g)].map((m) => m[1]),
+    )].filter((name) => !covered.has(name));
+
+    assert.deepStrictEqual(
+      uncovered,
+      [],
+      'Snippet fallback arm(s) not covered by TEST_ENV_BASE, SNIPPET_SCRUB, or a caller-supplied var — ' +
+        'add a SNIPPET_SCRUB entry (or confirm the capability registry should carry it):\n' +
+        uncovered.join('\n'),
+    );
+  });
+
   // ─── (B) Exactly ONE canonical preamble per using file ───────────────────
   test('(B) each workflow .md using gsd_run contains exactly ONE canonical preamble, before the first gsd_run call', () => {
     const preamble = expectedPreamble();
