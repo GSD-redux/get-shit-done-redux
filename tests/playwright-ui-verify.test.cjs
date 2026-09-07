@@ -304,9 +304,15 @@ function stripComment(line) {
   const stack = [];
   const top = () => stack[stack.length - 1];
   let out = '';
+  // WORD START is tracked, not inferred from the previous character. `echo a \ # b` has a
+  // space before the `#`, but that space is ESCAPED — it belongs to the word ` #`, and bash
+  // prints `a  # b`. Reading `line[i - 1]` called it a comment. Driven by the round review.
+  let wordStart = true;
   for (let i = 0; i < line.length; i += 1) {
     const c = line[i];
     const ctx = top();
+    const wasWordStart = wordStart;
+    wordStart = stack.length === 0 && /[\t ]/.test(c);
     if (ctx === 'sq') { out += c; if (c === "'") stack.pop(); continue; }
     if (ctx === 'ansi') {                       // $'...' — backslash escapes ARE processed
       if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
@@ -333,12 +339,12 @@ function stripComment(line) {
     if (c === '"' && ctx === 'dq') { out += c; stack.pop(); continue; }
     if (c === '"') { out += c; stack.push('dq'); continue; }
     if (c === "'" && ctx !== 'dq') { out += c; stack.push('sq'); continue; }
-    if (c === '#' && stack.length === 0 && (i === 0 || /[\t ]/.test(line[i - 1]))) {
-      // A `\` the removed text was hiding did NOT continue the line in bash, so this
-      // reader must not treat it as one. Driven: `echo one \ # x` followed by
-      // `--timeout=30000` runs the second line as its OWN command — bash never joins
-      // them, and keeping the backslash would make logicalLines() join what bash does not.
-      return out.replace(/[\t ]+$/, '').replace(/\\+$/, '');
+    if (c === '#' && stack.length === 0 && wasWordStart) {
+      // Trailing backslashes before the comment STAY. Reaching this branch means the space
+      // before `#` was unescaped, so any backslash run ahead of it was even — escaped
+      // backslashes, literal, never a continuation. (`echo one \ # x` no longer arrives
+      // here at all: its space is escaped, the `#` is literal, and bash prints it.)
+      return out.replace(/[\t ]+$/, '');
     }
     out += c;
   }
@@ -1346,6 +1352,10 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const otherOverTimeout = ok(runFence({ PROBE_3000: 'timeout', PROBE_8080: '503' }));
     assert.strictEqual(otherOverTimeout.captureStatus, 'not captured (dev server answered, not 2xx: http://localhost:8080 (HTTP 503))');
     assert.match(otherOverTimeout.stdout, /http:\/\/localhost:8080 \(HTTP 503\) answered/);
+    // And the other order — the round review found this pair driven one way only, which
+    // is exactly the "by class, not by probe order" claim left unproven.
+    const otherFirst = ok(runFence({ PROBE_3000: '503', PROBE_8080: 'timeout' }));
+    assert.strictEqual(otherFirst.captureStatus, 'not captured (dev server answered, not 2xx: http://localhost:3000 (HTTP 503))');
   });
 
   test('every capture invocation passes a positive timeout as its own argument', () => {
@@ -1397,6 +1407,18 @@ describe('#4176 — bash reader, units', () => {
     for (const lab of [falsePass, falseFail, quotedSpace]) {
       for (const p of lab) assert.strictEqual(p.active.length, p.text.length, 'text and active must stay the same length');
     }
+  });
+
+  test('stripComment opens a comment only at a WORD start — an escaped space is not one', () => {
+    // bash: `#` starts a comment only where a word could start. After `\ ` the `#` is the
+    // second character of the word ` #`, so it is literal. After `\\ ` (escaped backslash,
+    // then a real space) it IS a comment. Found by the round review, driven against bash.
+    assert.strictEqual(stripComment('echo a \\ # b'), 'echo a \\ # b');
+    assert.strictEqual(stripComment('echo a \\\\ # b'), 'echo a \\\\');
+    assert.strictEqual(stripComment('echo a # b'), 'echo a');
+    assert.strictEqual(stripComment('echo a#b'), 'echo a#b');
+    assert.strictEqual(stripComment('# whole line'), '');
+    assert.strictEqual(stripComment('echo "a # b" # c'), 'echo "a # b"');
   });
 
   test('logicalLines joins only a backslash that is the LAST character of the line, in an odd run', () => {
