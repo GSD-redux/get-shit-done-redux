@@ -91,6 +91,18 @@ const NESTED_FAMILIES = [
     subdir: 'steps',
     filter: (f) => f.endsWith('.md'),
   },
+  {
+    name: 'workflow_detail',
+    root: path.join(ROOT, 'gsd-core', 'workflows'),
+    subdir: 'detail',
+    filter: (f) => f.endsWith('.md'),
+  },
+  {
+    name: 'workflow_templates',
+    root: path.join(ROOT, 'gsd-core', 'workflows'),
+    subdir: 'templates',
+    filter: (f) => f.endsWith('.md'),
+  },
 ];
 
 /**

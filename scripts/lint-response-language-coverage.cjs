@@ -22,8 +22,10 @@
  * explanations" describes the gap rather than closing it. Coverage therefore
  * requires a narration-class token as well — see `NARRATION_CLASS_RE`.
  *
- * A workflow FRAGMENT (`<workflow>/<modes|steps|templates>/<name>.md`, the shape
- * the #1671 fragment epic extracts) additionally passes when its parent workflow
+ * A workflow FRAGMENT (`<workflow>/<modes|steps|templates|detail>/<name>.md`, the
+ * shape the #1671 fragment epic extracts — `detail/` is the fourth such
+ * subdirectory kind, added by the #4403/ADR-4139 spine+detail split) additionally
+ * passes when its parent workflow
  * names that exact fragment path and is itself covered — see
  * `inheritsParentCoverage`, which proves the inheritance per file instead of
  * granting it to a directory.
@@ -124,7 +126,11 @@ const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
 // failure for a quiet assumption; as it stands, extracting a fragment-of-a-
 // fragment without pinning it turns the lint RED, which is the correct answer
 // and names the file to fix.
-const FRAGMENT_DIRS = new Set(['modes', 'steps', 'templates']);
+// `detail` (ADR-4139 §6 Decision 6 / #4403) is the fourth fragment-directory kind,
+// alongside modes/steps/templates from #1671: a spine's `detail/<part>.md` is
+// reached the same way -- a `read and execute` stub in the top-level parent -- so
+// it inherits coverage through the exact same mechanism, not a parallel one.
+const FRAGMENT_DIRS = new Set(['modes', 'steps', 'templates', 'detail']);
 const DIRECTIVE_ACTION_RE = /\b(?:apply|present|render|respond|translate|use|write|must|should)\b/i;
 const USER_OUTPUT_RE = /\b(?:explanations?|language|narration|outputs?|prompts?|prose|questions?|templates?|user-facing)\b/i;
 // The defect #2529 reports is NARRATION, not the question/answer surface: a
