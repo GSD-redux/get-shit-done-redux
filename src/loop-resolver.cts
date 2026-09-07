@@ -673,8 +673,11 @@ function cmdLoopRenderHooks(
     }
   }
   // Emit loudly to stderr in EVERY output mode (including --active-cap), so a
-  // skipped gate is never silently invisible to the operator/agent.
-  for (const w of loadFailWarnings) {
+  // skipped gate or a dropped #4030 phase context is never silently invisible
+  // to the operator/agent — no host workflow reads `.warnings` back out of
+  // the `*_HOOKS_JSON` envelope it captures, so stderr is the only channel
+  // that actually surfaces these today.
+  for (const w of [...loadFailWarnings, ...phaseWarnings]) {
     process.stderr.write(`gsd: warning — ${w}\n`);
   }
 

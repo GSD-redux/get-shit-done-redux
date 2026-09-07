@@ -1354,6 +1354,10 @@ describe('cmdLoopRenderHooks --phase (#4030)', () => {
     assert.ok(!Object.prototype.hasOwnProperty.call(envelope, 'context'));
     assert.ok(Array.isArray(envelope.warnings) && envelope.warnings.length > 0);
     assert.match(envelope.warnings.join('\n'), /did not match a phase directory/);
+    // ...and ALSO to stderr (no host workflow reads `.warnings` back out of
+    // the JSON it captures into a shell variable, so stderr is the channel
+    // that actually surfaces this to an operator or agent).
+    assert.match(result.stderr, /did not match a phase directory/);
   });
 
   test('[bva] --phase matching two directories (ambiguous) omits context, warns with both names, exits 0 not thrown', (t) => {
