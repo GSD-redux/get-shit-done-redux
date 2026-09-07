@@ -50,6 +50,12 @@ function spy(impl) {
   return fn;
 }
 
+// Fixture data, not a real wait bound: this only fills the `timeoutMs` field of a synthetic
+// `ReviewerLanePlan` object `dispatchReviewerLanes` never actually waits on (`invoke` is always a
+// spy/stub in this suite). Distinct class from tests/helpers/timeouts.cjs's real subprocess norms
+// (local/no-adhoc-timeout-literal).
+const FIXTURE_PLAN_TIMEOUT_MS = 60000;
+
 function okPlan(slug) {
   return {
     ok: true,
@@ -66,7 +72,7 @@ function okPlan(slug) {
       outputTarget: { kind: 'stdout' },
       reviewPath: `${RUN_DIR}/gsd-review-${slug}.md`,
       errPath: `${RUN_DIR}/gsd-review-${slug}.err`,
-      timeoutMs: 60000,
+      timeoutMs: FIXTURE_PLAN_TIMEOUT_MS,
       emptyOutput: 'stub',
       evidenceClass: 'source-grounded',
       handler: 'default',
@@ -696,5 +702,121 @@ describe('dispatchReviewerLanes — fail-closed: budget overflow', () => {
     assert.match(bySlug.claude.detail, /boom: spawn EMFILE/);
     assert.equal(bySlug.codex.ok, true, 'the later sibling lane must still be invoked despite the first lane\'s invoke throw');
     assert.equal(result.ok, false);
+  });
+});
+
+// ─── property: validatePaths boundary-containment (#4209 review: fast-check gap) ──
+//
+// ADR-456's test-rigor architecture requires a fast-check property test for any parser/budget-
+// limit module (docs/adr/456-test-rigor-architecture.md). `validatePaths` is exactly that class —
+// a path-shape parser guarding the prompt-injection/path-traversal trust boundary — and had only
+// example-based coverage before this entry. Three properties, one per rejection reason it owns:
+// safe paths are always accepted, a single-level escape is always rejected, a control character
+// anywhere is always rejected. `path.resolve` on a non-existent synthetic root needs no real
+// filesystem — `fs.realpathSync`'s ENOENT catch treats a non-existent lexical path as non-escaping.
+
+const fcCore = require('./helpers/fast-check-setup.cjs');
+const { estimateTokens } = require('../gsd-core/bin/lib/prompt-budget.cjs');
+
+const PATH_SAFE_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.'.split('');
+const safeSegment = fcCore
+  .string({ unit: fcCore.constantFrom(...PATH_SAFE_CHARS), minLength: 1, maxLength: 12 })
+  .filter((s) => s !== '.' && s !== '..');
+const safePath = fcCore.array(safeSegment, { minLength: 1, maxLength: 4 }).map((segs) => segs.join('/'));
+
+function neverCalled(label) {
+  return () => { throw new Error(`must not be called: ${label}`); };
+}
+
+describe('dispatchReviewerLanes — validatePaths property: boundary-containment (#4209 review)', () => {
+  test('property: any path built from safe segments is never rejected as invalid or escaping', async () => {
+    await fcCore.assert(
+      fcCore.asyncProperty(fcCore.array(safePath, { minLength: 1, maxLength: 5 }), async (paths) => {
+        const result = await dispatchReviewerLanes(
+          baseInput({ paths }),
+          { getLane: () => undefined, plan: neverCalled('plan'), invoke: neverCalled('invoke'), writePromptFile: noopWrite },
+        );
+        assert.notEqual(result.reason, DISPATCH_REASON.INVALID_PATHS);
+        assert.notEqual(result.reason, DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT);
+      }),
+    );
+  });
+
+  test('property: a single leading "../" always escapes the one-segment repoRoot', async () => {
+    await fcCore.assert(
+      fcCore.asyncProperty(safePath, async (suffix) => {
+        const result = await dispatchReviewerLanes(
+          baseInput({ paths: [`../${suffix}`] }),
+          { getLane: () => undefined, plan: neverCalled('plan'), invoke: neverCalled('invoke'), writePromptFile: noopWrite },
+        );
+        assert.equal(result.reason, DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT);
+      }),
+    );
+  });
+
+  test('property: a control character at either end of a safe path is always rejected as invalid', async () => {
+    const controlChar = fcCore.constantFrom('\x00', '\x01', '\x07', '\x1f', '\x7f', '\u2028', '\u2029', '\n', '\r');
+    const atEnd = fcCore.constantFrom('start', 'end');
+    await fcCore.assert(
+      fcCore.asyncProperty(safePath, controlChar, atEnd, async (base, ch, where) => {
+        const injected = where === 'start' ? ch + base : base + ch;
+        const result = await dispatchReviewerLanes(
+          baseInput({ paths: [injected] }),
+          { getLane: () => undefined, plan: neverCalled('plan'), invoke: neverCalled('invoke'), writePromptFile: noopWrite },
+        );
+        assert.equal(result.reason, DISPATCH_REASON.INVALID_PATHS);
+      }),
+    );
+  });
+});
+
+// ─── exact boundary: budget overflow's `>` vs `>=` (#4209 review: off-by-one gap) ──
+//
+// Existing budget-overflow tests (above) only exercised a budget far below the estimate and
+// `budget: 0` (unbounded) — never the exact threshold crossing where an off-by-one would hide.
+// `estimateTokens` is deterministic (`Math.ceil(text.length / 4)`, gsd-core/bin/lib/prompt-budget
+// .cjs) and `buildSourceReviewPrompt`/`estimateTokens` are the SAME functions the module under
+// test calls internally, so the resolved token count here is exact, not approximated.
+
+describe('dispatchReviewerLanes — budget overflow exact boundary (#4209 review)', () => {
+  const BUDGET_KEY = 'review.max_prompt_tokens_per_reviewer.claude';
+
+  function budgetInput() {
+    const input = baseInput({ selection: { explicitFlags: ['claude'], detected: ['claude'] } });
+    return { input, tokens: estimateTokens(buildSourceReviewPrompt(input)) };
+  }
+
+  async function runWithBudget(input, budget) {
+    const lanes = new Map([['claude', fakeLane('claude', { promptBudgetKey: BUDGET_KEY })]]);
+    const invoke = spy(() => ({ ok: true }));
+    const result = await dispatchReviewerLanes(input, {
+      getLane: (slug) => lanes.get(slug),
+      plan: (lane) => okPlan(lane.slug),
+      invoke,
+      configGet: (key) => (key === BUDGET_KEY ? budget : undefined),
+      writePromptFile: noopWrite,
+    });
+    return { result, invokeCalls: invoke.calls.length };
+  }
+
+  test('budget === estimatedTokens does not hard-fail (the check is `>`, not `>=`)', async () => {
+    const { input, tokens } = budgetInput();
+    const { result, invokeCalls } = await runWithBudget(input, tokens);
+    assert.equal(invokeCalls, 1, 'a budget exactly equal to the estimate must not be treated as exceeded');
+    assert.equal(result.ok, true);
+  });
+
+  test('budget === estimatedTokens - 1 hard-fails (one token over budget)', async () => {
+    const { input, tokens } = budgetInput();
+    const { result, invokeCalls } = await runWithBudget(input, tokens - 1);
+    assert.equal(invokeCalls, 0);
+    assert.equal(result.results[0].reason, 'budget_exceeded');
+  });
+
+  test('budget === estimatedTokens + 1 does not hard-fail (one token of headroom)', async () => {
+    const { input, tokens } = budgetInput();
+    const { result, invokeCalls } = await runWithBudget(input, tokens + 1);
+    assert.equal(invokeCalls, 1);
+    assert.equal(result.ok, true);
   });
 });
