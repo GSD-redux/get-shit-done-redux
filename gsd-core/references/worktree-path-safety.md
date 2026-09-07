@@ -73,6 +73,14 @@ gsd_pin_fail() {
 # gate on the #4254 CI Windows legs. printf's octal escape is a lone backslash,
 # which does survive; the quoted expansion below is literal in a case pattern.
 BS=$(printf '\134')
+# Fail closed if the comparator could not be generated: an empty BS would widen
+# the drive-form arm below to drive-RELATIVE pins (C:foo) — the one fail-open
+# seam in this construction, closed loudly rather than trusted to the shell.
+if [ -z "$BS" ]; then
+  PIN_STAGE=form-gate
+  PIN_DIAG='backslash comparator generation failed (printf octal escape returned empty)'
+  gsd_pin_fail
+fi
 case "$PINNED_ROOT" in
   ''|'{PINNED_ROOT}') PIN_STAGE=pin-unbound; gsd_pin_fail ;;  # empty or unexpanded pin — fail closed, never warn-and-proceed
   /*) ;;                                                     # absolute POSIX form
