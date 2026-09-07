@@ -24,7 +24,7 @@ import path from 'node:path';
 import { platformWriteSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
-import { clampPercent } from './phase-lifecycle.cjs';
+import { clampPercent, renderProgressBar } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -382,8 +382,7 @@ function buildStateMd(phaseMap: PhaseMapEntry[]): string {
   const currentSlug = currentEntry ? slugify(currentEntry.slice.title) : 'complete';
   const status = currentEntry ? 'Ready to plan' : 'All phases complete';
 
-  const filled = Math.round(pct / 10);
-  const bar = `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}]`;
+  const bar = `[${renderProgressBar(pct, 10)}]`;
   const today = realClock.localToday();
 
   return [

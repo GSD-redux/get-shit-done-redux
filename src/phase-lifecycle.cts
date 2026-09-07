@@ -151,3 +151,55 @@ export function clampPercent(completed: number, total: number): number {
   if (!total || total <= 0) return 0;
   return clampPercentFromFraction(completed / total);
 }
+
+/**
+ * How many cells of a `width`-cell progress bar are filled for `percent`.
+ *
+ * #4294: the RENDER half's kernel — the counterpart of `clampPercentFromFraction`
+ * one layer down. That function owns `fraction -> integer percent`; this one
+ * owns `integer percent -> filled cells`, and is the single place that rounding
+ * is expressed. Six call sites used to carry their own
+ * `Math.round((percent / 100) * width)`, and every copy saturated: at width 10
+ * that rounds to a full bar from 95 up, at width 20 from 98 up, so a project
+ * at 19/20 plans drew the same bar as a shipped one beside a number that said
+ * otherwise.
+ *
+ * Contract:
+ *   - A FULL bar is reserved for an actual 100. Below 100 the fill is held one
+ *     cell short of the width. This is the only departure from the old formula:
+ *     at width 10 exactly 95-99 move (10 -> 9), at width 20 exactly 98-99
+ *     (20 -> 19); every other percent in 0-100 rounds as before.
+ *   - `null` / `undefined` / non-finite renders an empty bar, matching the
+ *     `percent === null ? 0 : ...` guard the `progress` renderers already carried.
+ *   - Out-of-range input is clamped to 0-100 before rounding, so the count is
+ *     always within `[0, width]` and a `'░'.repeat(width - filled)` can never
+ *     be handed a negative count (the old inline form threw `RangeError` at
+ *     120%). A non-positive width yields 0.
+ *
+ * Callers wanting the glyph run call `renderProgressBar`; this is exported so
+ * the rounding rule can be pinned directly against the legacy curve.
+ */
+export function progressBarFilledCells(percent: number | null | undefined, width: number): number {
+  const cells = Number.isFinite(width) && width > 0 ? Math.floor(width) : 0;
+  if (cells === 0) return 0;
+  if (typeof percent !== 'number' || !Number.isFinite(percent)) return 0;
+  const clamped = Math.max(0, Math.min(100, percent));
+  if (clamped >= 100) return cells;
+  // Scale by the WIDTH, not by 100 — this is cells-from-percent, not the
+  // completion-ratio derivation lint-completion-ratio-drift.cjs guards.
+  const rounded = Math.round((clamped / 100) * cells);
+  return Math.min(rounded, cells - 1);
+}
+
+/**
+ * Render the glyph run of a `width`-cell progress bar for `percent` —
+ * `'█'` for each filled cell, `'░'` for the rest, always exactly `width`
+ * glyphs (an empty string for a non-positive width). Brackets, the printed
+ * percent and any suffix stay with the caller; the fill rule is
+ * `progressBarFilledCells` (#4294).
+ */
+export function renderProgressBar(percent: number | null | undefined, width: number): string {
+  const filled = progressBarFilledCells(percent, width);
+  const cells = Number.isFinite(width) && width > 0 ? Math.floor(width) : 0;
+  return '█'.repeat(filled) + '░'.repeat(cells - filled);
+}

@@ -4,7 +4,7 @@
  * Behavioral tests for phase-lifecycle.cjs
  *
  * Module: gsd-core/bin/lib/phase-lifecycle.cjs
- * Exports: deriveProgressFromRoadmap, clampPercent
+ * Exports: deriveProgressFromRoadmap, clampPercent, progressBarFilledCells, renderProgressBar
  *
  * ADR-2143 (epic #2143) migrated deriveProgressFromRoadmap from position-based
  * regexes to the markdown-table schema registry (collectSection + parseMarkdownTable
@@ -21,7 +21,13 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { deriveProgressFromRoadmap, clampPercent } = require('../gsd-core/bin/lib/phase-lifecycle.cjs');
+const {
+  deriveProgressFromRoadmap,
+  clampPercent,
+  progressBarFilledCells,
+  renderProgressBar,
+} = require('../gsd-core/bin/lib/phase-lifecycle.cjs');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 describe('deriveProgressFromRoadmap', () => {
   test('parses the 4-column flat Progress table (behaviour preserved)', () => {
@@ -180,5 +186,93 @@ describe('clampPercent', () => {
   test('returns 0 when total is 0 or negative', () => {
     assert.equal(clampPercent(0, 0), 0);
     assert.equal(clampPercent(3, -1), 0);
+  });
+});
+
+describe('renderProgressBar / progressBarFilledCells (#4294 — the render half has one owner)', () => {
+  // The formula every call site used to carry inline. Kept here as the
+  // reference curve the kernel is pinned against, NOT as an implementation.
+  const legacyFilled = (percent, width) => Math.round((percent / 100) * width);
+  const WIDTHS_IN_USE = [10, 20];
+
+  const count = (bar, glyph) => bar.split('').filter((ch) => ch === glyph).length;
+
+  test('a full bar is reserved for 100: the last sub-100 percents are held one cell short', () => {
+    // width 10 — 94 already rounded to 9; 95-99 used to round to 10.
+    assert.equal(renderProgressBar(94, 10), '█████████░');
+    assert.equal(renderProgressBar(95, 10), '█████████░');
+    assert.equal(renderProgressBar(99, 10), '█████████░');
+    assert.equal(renderProgressBar(100, 10), '██████████');
+    // width 20 — 97 already rounded to 19; 98-99 used to round to 20.
+    assert.equal(renderProgressBar(97, 20), '███████████████████░');
+    assert.equal(renderProgressBar(98, 20), '███████████████████░');
+    assert.equal(renderProgressBar(99, 20), '███████████████████░');
+    assert.equal(renderProgressBar(100, 20), '████████████████████');
+    // The bottom of the range is untouched.
+    assert.equal(renderProgressBar(0, 10), '░░░░░░░░░░');
+    assert.equal(renderProgressBar(5, 10), '█░░░░░░░░░');
+    assert.equal(renderProgressBar(50, 10), '█████░░░░░');
+  });
+
+  test('exhaustive 0-100 curve at both widths: identical to the legacy formula except exactly the saturating percents', () => {
+    const expectedMoved = { 10: [95, 96, 97, 98, 99], 20: [98, 99] };
+    for (const width of WIDTHS_IN_USE) {
+      const moved = [];
+      for (let percent = 0; percent <= 100; percent++) {
+        const legacy = legacyFilled(percent, width);
+        const actual = progressBarFilledCells(percent, width);
+        if (actual !== legacy) {
+          moved.push(percent);
+          // The only permitted departure: legacy saturated below 100, kernel holds one short.
+          assert.equal(legacy, width, `width ${width}, ${percent}%: moved but legacy was not saturated`);
+          assert.equal(actual, width - 1, `width ${width}, ${percent}%: moved to ${actual}, expected ${width - 1}`);
+        }
+        // The rendered glyph run agrees with the count and is always width glyphs long.
+        const bar = renderProgressBar(percent, width);
+        assert.equal(bar.length, width);
+        assert.equal(count(bar, '█'), actual);
+        assert.equal(count(bar, '░'), width - actual);
+      }
+      assert.deepEqual(moved, expectedMoved[width], `width ${width}: the set of moved percents`);
+    }
+  });
+
+  test('withheld / non-finite percent renders an empty bar (the `percent === null ? 0` guard, centralized)', () => {
+    for (const value of [null, undefined, NaN, Infinity, -Infinity, '50']) {
+      assert.equal(renderProgressBar(value, 10), '░░░░░░░░░░', `value ${String(value)}`);
+      assert.equal(progressBarFilledCells(value, 10), 0, `value ${String(value)}`);
+    }
+  });
+
+  test('out-of-range percent is clamped, never thrown: 120% is a full bar, -30% an empty one', () => {
+    // The old inline form threw `RangeError: Invalid count value: -2` at 120%.
+    assert.equal(renderProgressBar(120, 10), '██████████');
+    assert.equal(renderProgressBar(-30, 10), '░░░░░░░░░░');
+    assert.equal(renderProgressBar(100.4, 10), '██████████');
+    assert.equal(renderProgressBar(99.9, 10), '█████████░');
+  });
+
+  test('property: for any finite percent and width in use, exactly width glyphs, and full only at >= 100', () => {
+    fc.assert(
+      fc.property(
+        fc.double({ noDefaultInfinity: true, noNaN: true }),
+        fc.constantFrom(...WIDTHS_IN_USE),
+        (percent, width) => {
+          const bar = renderProgressBar(percent, width);
+          assert.equal(bar.length, width);
+          assert.match(bar, /^█*░*$/);
+          const full = count(bar, '█') === width;
+          assert.equal(full, percent >= 100, `${percent}% at width ${width}: full=${full}`);
+        },
+      ),
+    );
+  });
+
+  test('degenerate widths: non-positive yields nothing, width 1 fills only at 100', () => {
+    assert.equal(renderProgressBar(50, 0), '');
+    assert.equal(renderProgressBar(50, -3), '');
+    assert.equal(progressBarFilledCells(50, 0), 0);
+    assert.equal(renderProgressBar(99, 1), '░');
+    assert.equal(renderProgressBar(100, 1), '█');
   });
 });

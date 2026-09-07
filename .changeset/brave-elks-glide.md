@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 0
+---
+**A progress bar is full only at 100%** — every bar-drawing surface (`progress` in table and bar format, `stats`, `state update-progress`, the STATE.md progress line written by `state sync`, and the gsd2 import writer) now draws through one render kernel, `renderProgressBar`, beside the completion-ratio kernel in `phase-lifecycle`. The six inline copies of `Math.round((percent / 100) * width)` each rounded to a full bar before the percent reached 100: at the 10-cell width every percent from 95 up drew `[██████████]`, at the 20-cell width every percent from 98 up, so a project at 19/20 plans was visually indistinguishable from a shipped one beside a number that said otherwise. Below 100 the fill is now held one cell short; only those percents move (95-99 at width 10, 98-99 at width 20), every other value in 0-100 renders exactly as before. A null or non-finite percent still renders an empty bar, and an out-of-range percent is clamped instead of throwing `RangeError` from `'░'.repeat` as the inline form did at 120%.

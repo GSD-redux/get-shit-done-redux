@@ -58,7 +58,7 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
-import { clampPercent } from './phase-lifecycle.cjs';
+import { clampPercent, renderProgressBar } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
@@ -2735,9 +2735,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
 
   if (format === 'table') {
     // Render markdown table
-    const barWidth = 10;
-    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
-    const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const bar = renderProgressBar(percent, 10);
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
     out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}\n\n`;
@@ -2748,9 +2746,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     }
     output({ rendered: out }, raw, out);
   } else if (format === 'bar') {
-    const barWidth = 20;
-    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
-    const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const bar = renderProgressBar(percent, 20);
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     const text = `[${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}`;
     output({ bar: text, percent, completed: totalSummaries, total: totalPlans }, raw, text);
@@ -3214,9 +3210,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   };
 
   if (format === 'table') {
-    const barWidth = 10;
-    const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
-    const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const bar = renderProgressBar(percent, 10);
     let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
     const percentSuffix = percent === null ? '' : ` (${percent}%)`;
     out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases${percentSuffix}\n`;

@@ -56,6 +56,14 @@ describe('formatProgressMachineSegment properties (#4213 review finding)', () =>
     assert.equal(formatProgressMachineSegment(105), '[██████████] 100%');
     assert.equal(formatProgressMachineSegment(-30), '[░░░░░░░░░░] 0%');
   });
+
+  // #4294: the bar is drawn by the render kernel, so a sub-100 percent can no
+  // longer round up to a full bar beside a number that says otherwise.
+  test('#4294 boundary literals: 95 and 99 hold one cell short of full; 94 is unchanged', () => {
+    assert.equal(formatProgressMachineSegment(94), '[█████████░] 94%');
+    assert.equal(formatProgressMachineSegment(95), '[█████████░] 95%');
+    assert.equal(formatProgressMachineSegment(99), '[█████████░] 99%');
+  });
 });
 
 describe('stateReplaceProgressPercent properties (#4213 review finding)', () => {
