@@ -509,3 +509,48 @@ test('a malformed prior manifest degrades the Codex rollback instead of deleting
     restoreConfigLocationEnv();
   }
 });
+
+test('a minimal Codex rollback restores skills from the alternate skills home (#4249 CodeRabbit)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-skills-'));
+  t.after(() => helpers.cleanup(root));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    const first = install(true, 'codex');
+    // Codex resolves skills to $HOME/.agents/skills, NOT configDir (ADR-1239
+    // skills-kind `home` override) — the surface #3245's own snapshot owns and
+    // the manifest-driven pass deliberately leaves to it.
+    const skillsRoot = path.join(root, '.agents', 'skills');
+    const skillDir = fs.readdirSync(skillsRoot).find(name => name.startsWith('gsd-'));
+    assert.ok(skillDir, `a Codex install must write gsd-* skills under ${skillsRoot}`);
+    const skillFile = path.join(skillsRoot, skillDir, 'SKILL.md');
+
+    const priorBytes = '# bytes only this test wrote\n';
+    fs.writeFileSync(skillFile, priorBytes);
+
+    // Marker-driven core profile — the `gsd update` path into minimal mode.
+    fs.writeFileSync(path.join(first.configDir, '.gsd-profile'), 'core\n');
+    const second = install(true, 'codex');
+    second.rollbackInstallerMigrations();
+
+    assert.equal(
+      fs.existsSync(skillFile),
+      true,
+      'a minimal-mode rollback must not delete a skill dir it never snapshotted',
+    );
+    assert.equal(
+      fs.readFileSync(skillFile, 'utf8'),
+      priorBytes,
+      'a minimal-mode rollback must restore alternate-home skills byte-for-byte',
+    );
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    restoreConfigLocationEnv();
+  }
+});
