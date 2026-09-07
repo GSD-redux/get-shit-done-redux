@@ -9,7 +9,31 @@ const test = require('node:test');
 const helpers = require('./helpers.cjs');
 
 const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
-const { install, finishInstall } = require('../bin/install.js');
+const { install, installAllRuntimes, finishInstall } = require('../bin/install.js');
+
+/**
+ * Run `fn` with HOME/USERPROFILE pointed at a fresh temp dir and every
+ * config-location env var scrubbed, so a real install() never touches the
+ * developer's own config. Restores all of it, and cleans the dir, afterwards.
+ */
+function withSandboxedHome(t, prefix, fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => helpers.cleanup(root));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    return fn(root);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    restoreConfigLocationEnv();
+  }
+}
 
 test('configured entrypoint validation exposes an aggregate typed boundary', () => {
   assert.equal(
@@ -50,14 +74,7 @@ test('finishInstall rejects an invalid configured entrypoint before Done output'
 });
 
 test('a hook already registered under a stale command is still tracked for validation on re-install (#4154 Blocker)', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-stale-'));
-  t.after(() => helpers.cleanup(root));
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = root;
-  process.env.USERPROFILE = root;
-  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
-  try {
+  withSandboxedHome(t, 'configured-entrypoint-stale-', () => {
     const first = install(true, 'claude');
     assert.ok(first.settingsPath, 'a fresh global install must produce a settings path');
     finishInstall(first.settingsPath, first.settings, first.statuslineCommand, false, 'claude', true, first.configDir, {
@@ -96,13 +113,7 @@ test('a hook already registered under a stale command is still tracked for valid
       trackedNames.includes('gsd-check-update.js'),
       `a hook already registered under a stale command must still be tracked for validation, got: ${trackedNames.join(', ')}`,
     );
-  } finally {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-    restoreConfigLocationEnv();
-  }
+  });
 });
 
 test('configured entrypoint validation aggregates file and interpreter failures without execution', (t) => {
@@ -383,14 +394,7 @@ test('runtime config writers expose the exact configured entrypoints they emit',
 });
 
 test('a Codex rollback restores every manifest-tracked GSD file byte-for-byte (#4249 CodeRabbit)', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-rollback-'));
-  t.after(() => helpers.cleanup(root));
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = root;
-  process.env.USERPROFILE = root;
-  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
-  try {
+  withSandboxedHome(t, 'configured-entrypoint-codex-rollback-', () => {
     const first = install(true, 'codex');
     const manifestPath = path.join(first.configDir, 'gsd-file-manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -428,24 +432,11 @@ test('a Codex rollback restores every manifest-tracked GSD file byte-for-byte (#
       priorManifestBytes,
       'rollback must also restore the manifest itself',
     );
-  } finally {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-    restoreConfigLocationEnv();
-  }
+  });
 });
 
 test('a minimal-profile Codex install snapshots its managed files too (#4249 CodeRabbit)', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-minimal-'));
-  t.after(() => helpers.cleanup(root));
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = root;
-  process.env.USERPROFILE = root;
-  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
-  try {
+  withSandboxedHome(t, 'configured-entrypoint-codex-minimal-', () => {
     const first = install(true, 'codex');
     const managedPath = path.join(first.configDir, 'gsd-core', 'CHANGELOG.md');
     // Marker-driven core profile — the `gsd update` path into minimal mode
@@ -468,24 +459,11 @@ test('a minimal-profile Codex install snapshots its managed files too (#4249 Cod
       priorBytes,
       'a minimal Codex install must snapshot and restore its managed files, not just a full one',
     );
-  } finally {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-    restoreConfigLocationEnv();
-  }
+  });
 });
 
 test('a malformed prior manifest degrades the Codex rollback instead of deleting the payload (#4249 CodeRabbit)', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-badmanifest-'));
-  t.after(() => helpers.cleanup(root));
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = root;
-  process.env.USERPROFILE = root;
-  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
-  try {
+  withSandboxedHome(t, 'configured-entrypoint-codex-badmanifest-', () => {
     const first = install(true, 'codex');
     const managedPath = path.join(first.configDir, 'gsd-core', 'CHANGELOG.md');
     // An unparseable manifest leaves the pre-install GSD-owned set UNKNOWN.
@@ -501,24 +479,11 @@ test('a malformed prior manifest degrades the Codex rollback instead of deleting
       true,
       'an unreadable prior manifest must not let rollback delete the managed payload',
     );
-  } finally {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-    restoreConfigLocationEnv();
-  }
+  });
 });
 
 test('a minimal Codex rollback restores skills from the alternate skills home (#4249 CodeRabbit)', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-skills-'));
-  t.after(() => helpers.cleanup(root));
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = root;
-  process.env.USERPROFILE = root;
-  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
-  try {
+  withSandboxedHome(t, 'configured-entrypoint-codex-skills-', (root) => {
     const first = install(true, 'codex');
     // Codex resolves skills to $HOME/.agents/skills, NOT configDir (ADR-1239
     // skills-kind `home` override) — the surface #3245's own snapshot owns and
@@ -546,11 +511,59 @@ test('a minimal Codex rollback restores skills from the alternate skills home (#
       priorBytes,
       'a minimal-mode rollback must restore alternate-home skills byte-for-byte',
     );
-  } finally {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-    restoreConfigLocationEnv();
-  }
+  });
+});
+
+test('a rollback with no prior manifest leaves the payload alone (#4249)', (t) => {
+  withSandboxedHome(t, 'configured-entrypoint-codex-nomanifest-', () => {
+    const first = install(true, 'codex');
+    const managedPath = path.join(first.configDir, 'gsd-core', 'CHANGELOG.md');
+    // A first install cannot tell "GSD created this file" from "GSD overwrote a
+    // file the user already had there" — no prior manifest records the
+    // difference. Removing it would be data loss, not rollback.
+    fs.rmSync(path.join(first.configDir, 'gsd-file-manifest.json'));
+    const userBytes = '# a file the user had at a tracked path\n';
+    fs.writeFileSync(managedPath, userBytes);
+
+    const second = install(true, 'codex');
+    second.rollbackInstallerMigrations();
+
+    assert.equal(
+      fs.existsSync(managedPath),
+      true,
+      'with no prior manifest the removal pass must not run at all',
+    );
+  });
+});
+
+test('an aggregate entrypoint validation failure rolls the Codex install back (#4249)', (t) => {
+  withSandboxedHome(t, 'configured-entrypoint-aggregate-', () => {
+    const first = install(true, 'codex');
+    const managedPath = path.join(first.configDir, 'gsd-core', 'CHANGELOG.md');
+    const priorBytes = '# bytes only this test wrote\n';
+    fs.writeFileSync(managedPath, priorBytes);
+
+    // Cline's `#!/usr/bin/env node` hook records interpreterCandidates: ['node'],
+    // resolved off PATH. Emptying PATH makes exactly that entry fail, which is
+    // the only way to drive a REAL aggregate failure through installAllRuntimes:
+    // every other entrypoint is a path the installer just wrote. Codex installs
+    // first, so the reversed rollback loop reaches its restoreCodexSnapshot.
+    const savedPath = process.env.PATH;
+    process.env.PATH = '';
+    try {
+      assert.throws(
+        () => installAllRuntimes(['codex', 'cline'], true, false),
+        /Configured entrypoint validation failed/,
+        'an unresolvable interpreter must fail the aggregate gate',
+      );
+    } finally {
+      process.env.PATH = savedPath;
+    }
+
+    assert.equal(
+      fs.readFileSync(managedPath, 'utf8'),
+      priorBytes,
+      'the aggregate failure must reach restoreCodexSnapshot, not just throw',
+    );
+  });
 });
