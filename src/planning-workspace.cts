@@ -139,12 +139,14 @@ type WorkstreamAdapterOpts = Record<string, unknown>;
  * two-readers-two-bases lesson).
  */
 function resolveEnvWorkstream(): string | null {
-  return process.env['GSD_WORKSTREAM'] ?? null;
+  const value = process.env['GSD_WORKSTREAM']?.trim();
+  return value || null;
 }
 
 function planningDir(cwd: string, ws?: string | null, project?: string | null): string {
   if (project === undefined) project = process.env['GSD_PROJECT'] ?? null;
   if (ws === undefined) ws = resolveEnvWorkstream();
+  else if (typeof ws === 'string') ws = ws.trim() || null;
 
   // Reject path separators and traversal components in project/workstream names
   const BAD_SEGMENT = /[/\\]|\.\./;

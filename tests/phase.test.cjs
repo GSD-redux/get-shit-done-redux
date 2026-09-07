@@ -2919,6 +2919,28 @@ describe('phase add --ws workstream-scoped allocation vs sibling git worktrees (
     );
   });
 
+  test('whitespace-only GSD_WORKSTREAM uses the root sibling horizon (#4462)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4462-blank-ws-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 2, 'ws-alpha', 39);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(
+      ['query', 'phase.add', 'Root next'],
+      repoDir,
+      { GSD_WORKSTREAM: '  ' },
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 3);
+    assert.strictEqual(output.directory, '.planning/phases/03-root-next');
+    assert.ok(
+      !fs.existsSync(path.join(repoDir, '.planning', 'workstreams', '  ')),
+      'an effectively-empty env value must not mint a whitespace-named workstream',
+    );
+  });
+
   test('phase next-decimal --ws is unaffected (planningDir-scoped already)', () => {
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-dec-'));
     activeDirs.push(repoDir);
