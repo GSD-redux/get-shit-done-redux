@@ -53,6 +53,17 @@ describe('planning-workspace: planningDir/planningPaths parity', () => {
     assert.throws(() => planningDir(cwd, 'foo/bar', null), /invalid path characters/);
     assert.throws(() => planningDir(cwd, 'foo\\bar', null), /invalid path characters/);
   });
+
+  test('treats a whitespace-only env workstream as unset and trims a padded name (#4462)', () => {
+    process.env.GSD_WORKSTREAM = '  ';
+    assert.strictEqual(planningDir(cwd), path.join(cwd, '.planning'));
+
+    process.env.GSD_WORKSTREAM = '  feature-x  ';
+    assert.strictEqual(
+      planningDir(cwd),
+      path.join(cwd, '.planning', 'workstreams', 'feature-x'),
+    );
+  });
 });
 
 describe('planning-workspace: session adapter precedence', () => {
