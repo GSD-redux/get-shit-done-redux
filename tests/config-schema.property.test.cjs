@@ -150,6 +150,14 @@ describe('config-schema: isValidConfigKey properties', () => {
     assert.equal(result, false, 'empty string must not be a valid config key');
   });
 
+  test('hooks.commit_types is a valid config key (#4443)', () => {
+    assert.equal(
+      isValidConfigKey('hooks.commit_types'),
+      true,
+      'hooks.commit_types is a documented, hook-consumed key (docs/COMMANDS.md) and must be settable via config-set'
+    );
+  });
+
   // Boundary: null/undefined/number return false (not throw, not true)
   test('null, undefined, number inputs return false', () => {
     assert.equal(isValidConfigKey(null), false);
@@ -1232,3 +1240,27 @@ describe('feat-3210: workflow and config contracts', () => {
 });
   });
 }
+
+describe('config-set: hooks.commit_types end-to-end (#4443)', () => {
+  const { spawnSync } = require('node:child_process');
+
+  test('config-set hooks.commit_types accepts a JSON array and does not report Unknown config key', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4443-'));
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), '{}\n');
+
+    const gsdTools = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+    const result = spawnSync(
+      process.execPath,
+      [gsdTools, 'config-set', 'hooks.commit_types', '["enhance"]'],
+      { cwd: dir, encoding: 'utf8', timeout: 15000 },
+    );
+
+    assert.equal(result.status, 0, `config-set failed: ${result.stderr || result.stdout}`);
+    assert.doesNotMatch(result.stdout + result.stderr, /Unknown config key/);
+
+    const written = JSON.parse(fs.readFileSync(path.join(dir, '.planning', 'config.json'), 'utf8'));
+    assert.deepEqual(written.hooks.commit_types, ['enhance']);
+  });
+});
