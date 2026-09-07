@@ -936,7 +936,14 @@ describe('CR-REVIEWER-LANES: optional external source-reviewer dispatch (#4209)'
   });
 
   test('external evidence block marks findings as unverified and requires re-opening source (CONS-02)', () => {
-    assert.ok(/UNVERIFIED/.test(workflowContent) && /re-open|reopen/i.test(workflowContent),
+    // Scoped to the EXTERNAL_EVIDENCE_BLOCK assignment line itself (#4209 review): a whole-file
+    // match on `workflowContent` would still pass if UNVERIFIED and re-open/reopen appeared in
+    // two unrelated parts of this 1000+-line workflow, which proves nothing about the actual
+    // evidence block's contract. Line-filtered via splitLines (not a bare-`\n` regex spanning
+    // readFileSync content) so this stays CRLF-portable.
+    const blockLine = splitLines(workflowContent).find((l) => l.includes('EXTERNAL_EVIDENCE_BLOCK=$(printf'));
+    assert.ok(blockLine, 'EXTERNAL_EVIDENCE_BLOCK assignment not found');
+    assert.ok(/UNVERIFIED/.test(blockLine) && /re-open|reopen/i.test(blockLine),
       'external evidence block must mark external findings as unverified and require the internal reviewer to re-open cited source');
   });
 
