@@ -1058,6 +1058,12 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     const originalContent = fs.readFileSync(roadmapPath, 'utf-8');
     let roadmapContent = originalContent;
     const phasePattern = phaseMarkdownRegexSource(phaseNum);
+    // #4247: ONE local source for the ATX phase-heading anchor that every
+    // section-scoped writer below (`planCountPattern`,
+    // `insertRowsPatternA|B`) starts with — extracted so the target-detection
+    // gate below reads the SAME grammar the writers anchor on, and a future
+    // edit to one cannot drift from the other three copies.
+    const phaseHeadingAnchor = `#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])`;
     // #4247: target detection runs against the ORIGINAL content's active
     // (post-</details>) region — the same milestone scoping every writer
     // below applies — so the gate asks "does the file carry a writable phase
@@ -1068,10 +1074,7 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
       : originalContent.slice(gateDetailsClose + '</details>'.length);
     // Heading target: the exact grammar `planCountPattern` /
     // `insertRowsPatternA|B` anchor on (an ATX phase heading for this phase).
-    const headingTargetFound = new RegExp(
-      `#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])`,
-      'i',
-    ).test(gateActiveRegion);
+    const headingTargetFound = new RegExp(phaseHeadingAnchor, 'i').test(gateActiveRegion);
     // Checklist target: when the phase is complete, its own checklist bullet
     // (`- [ ] **Phase N: …**`) IS a writable phase row — the completion
     // checkbox stamp below updates it. Same grammar as that writer, widened
@@ -1168,7 +1171,7 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     //      continuation on the next line, since the pattern never spans past
     //      `\n` in the first place.
     const planCountPattern = new RegExp(
-      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans?)?([^\\r\\n]*)`,
+      `(${phaseHeadingAnchor}(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans?)?([^\\r\\n]*)`,
       'i'
     );
     const planCountText = isComplete
@@ -1261,11 +1264,11 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
       // Pattern A: anchor to bare `Plans:` header (preferred).
       // Pattern B: fallback to bold summary when no bare header exists.
       const insertRowsPatternA = new RegExp(
-        `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:^|\\n)(?:Plans:)[^\\n]*)`,
+        `(${phaseHeadingAnchor}(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:^|\\n)(?:Plans:)[^\\n]*)`,
         'i'
       );
       const insertRowsPatternB = new RegExp(
-        `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*)[^\\n]*)`,
+        `(${phaseHeadingAnchor}(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*)[^\\n]*)`,
         'i'
       );
 
