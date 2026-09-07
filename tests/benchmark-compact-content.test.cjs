@@ -21,6 +21,8 @@ const os = require('node:os');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const fc = require('./helpers/fast-check-setup.cjs');
+const { discoverRegisteredSplits: discoverRegisteredSplitsViaSharedHelper } = require('./helpers/compact-content-split.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'benchmark-compact-content.cjs');
@@ -86,6 +88,34 @@ describe('discovery', () => {
     const b = benchmark.discoverRegisteredSplits().map((s) => s.name).sort();
     assert.deepStrictEqual(a, b);
   });
+
+  test('parity: this script\'s own discovery agrees with tests/helpers/compact-content-split.cjs on the real tree', () => {
+    // This module's header explains WHY discovery is reimplemented here rather
+    // than importing the shared test helper (a scripts/ reporting tool must
+    // not depend on a test-only module). CLAUDE.md's "Generative Fix
+    // Divergence" rule requires a parity assertion for exactly this shape —
+    // two independently-maintained copies of the same discovery rule that
+    // could silently drift apart. This test is that assertion: it does NOT
+    // import the shared helper into the script, it only proves the two
+    // implementations still agree on the real repo tree today.
+    const ownResults = benchmark.discoverRegisteredSplits();
+    const sharedResults = discoverRegisteredSplitsViaSharedHelper();
+
+    const ownByName = new Map(ownResults.map((s) => [s.name, s]));
+    // The shared helper also reports a split whose spine file is missing
+    // (spineExists: false); this script's own discovery filters those out
+    // entirely (see the `fs.existsSync(spinePath)` guard above), so parity is
+    // scoped to splits BOTH implementations agree are real.
+    const sharedByName = new Map(sharedResults.filter((s) => s.spineExists).map((s) => [s.name, s]));
+
+    assert.deepStrictEqual([...ownByName.keys()].sort(), [...sharedByName.keys()].sort());
+    for (const name of ownByName.keys()) {
+      const own = ownByName.get(name);
+      const shared = sharedByName.get(name);
+      assert.strictEqual(own.spinePath, shared.spinePath, `spinePath diverged for split "${name}"`);
+      assert.deepStrictEqual(own.detailPaths, shared.detailPaths, `detailPaths diverged for split "${name}"`);
+    }
+  });
 });
 
 // ─── Reduction math ─────────────────────────────────────────────────────────
@@ -118,6 +148,43 @@ describe('reduction math', () => {
     const expectedPct = Math.round(((10100 - 1090) / 10100) * 100 * 100) / 100;
     assert.strictEqual(aggregate.reductionPct, expectedPct);
     assert.notStrictEqual(aggregate.reductionPct, 50, 'must not be the naive average of 90% and 10%');
+  });
+
+  // CLAUDE.md's Property-Based Testing rule requires at least one fast-check
+  // property test for budget-limit arithmetic; computeAggregate's off/on
+  // token summation is exactly that.
+  test('property: computeAggregate is a true sum over any number of splits, never NaN/Infinity, and never exceeds the summed off total', () => {
+    fc.assert(
+      fc.property(
+        fc.dictionary(
+          fc.stringMatching(/^[a-z][a-z0-9-]{0,19}$/),
+          fc.record({
+            onTokens: fc.nat({ max: 1_000_000 }),
+            extraDetailTokens: fc.nat({ max: 1_000_000 }),
+          }),
+          { minKeys: 0, maxKeys: 20 },
+        ),
+        (splitInputs) => {
+          const splitResults = {};
+          let expectedOff = 0;
+          let expectedOn = 0;
+          for (const key of Object.keys(splitInputs)) {
+            const { onTokens, extraDetailTokens } = splitInputs[key];
+            const offTokens = onTokens + extraDetailTokens; // mirrors computeSplitTokens's own invariant: off >= on
+            splitResults[key] = { offTokens, onTokens };
+            expectedOff += offTokens;
+            expectedOn += onTokens;
+          }
+
+          const aggregate = benchmark.computeAggregate(splitResults);
+
+          assert.strictEqual(aggregate.offTokens, expectedOff);
+          assert.strictEqual(aggregate.onTokens, expectedOn);
+          assert.ok(Number.isFinite(aggregate.reductionPct), 'reductionPct must never be NaN/Infinity');
+          assert.ok(aggregate.reductionPct <= 100, 'reductionPct can never exceed 100% when off >= on for every split');
+        },
+      ),
+    );
   });
 });
 
@@ -191,6 +258,20 @@ describe('offline proof', () => {
     });
     assert.strictEqual(result.exitCode, 0, `stderr: ${result.stderr}`);
     assert.doesNotThrow(() => JSON.parse(result.stdout));
+  });
+
+  test('two consecutive runs under the deny-network preload are byte-identical (combined determinism + offline property)', () => {
+    // The "determinism" and "offline proof" describe-blocks above each prove
+    // one half of this on its own (two runs agree; one run survives with
+    // network denied). This test is the combined property the issue's
+    // Done-when criterion actually asks for: identical output ACROSS two
+    // runs THAT ARE BOTH network-denied, not each half verified separately.
+    const env = { ...process.env, NODE_OPTIONS: `--require ${DENY_NETWORK_PRELOAD}` };
+    const r1 = runBenchmark([], { env });
+    const r2 = runBenchmark([], { env });
+    assert.strictEqual(r1.exitCode, 0, `stderr: ${r1.stderr}`);
+    assert.strictEqual(r2.exitCode, 0, `stderr: ${r2.stderr}`);
+    assert.strictEqual(r1.stdout, r2.stdout);
   });
 
   test('the preload does not leak into this (parent) test process', () => {
