@@ -57,10 +57,11 @@ function makeBareDir() {
 /**
  * Spawn gsd-tools via raw spawnSync; returns { status, stdout, stderr }.
  *
- * #4291: env: installSpawnEnv() sandboxes HOME so capability-loader's
- * overlayRoots (which falls back to os.homedir()) never reaches the real
- * machine — without it, a capability genuinely installed on the host
- * running the suite (e.g. beads, markdown-linting) leaked into these
+ * #4291: env: installSpawnEnv() sandboxes HOME AND blanks GSD_HOME, which
+ * capability-loader's overlayRoots checks BEFORE falling back to
+ * os.homedir() — sandboxing HOME alone would leave that env var reaching
+ * the real machine. Without both, a capability genuinely installed on the
+ * host running the suite (e.g. beads, markdown-linting) leaked into these
  * empty-point/exact-shape assertions.
  */
 function spawnGsd(args, cwd) {
