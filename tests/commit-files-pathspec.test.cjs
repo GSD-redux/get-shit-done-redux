@@ -1573,6 +1573,12 @@ describe('workflow call sites declare --files (#2269)', () => {
       // vouch as a value.
       'gsd_run query commit "docs: revert" --files >/dev/null 2>&1 || true',
       'gsd_run query commit "docs: plan" --files > out.md',
+      // #4276 NEGATIVE CONTROL. Here the 2 is genuinely an IO number: the
+      // shell consumes `2>&1` whole and --files reaches argv with no value.
+      // This row is what stops the quoted-digit fix below from over-
+      // correcting into "stop consuming IO numbers" — an implementation that
+      // simply dropped the redirection branch would satisfy the scoped rows
+      // and fail here.
       'gsd_run query commit "docs: plan" --files 2>&1',
       // An unquoted # begins a comment: everything after it, --files included,
       // never reaches argv.
@@ -1612,6 +1618,20 @@ describe('workflow call sites declare --files (#2269)', () => {
       'gsd_run query commit "docs: ship phase 4 — PR #42 [ci skip]" --files .planning/STATE.md',
       // Mid-word # is literal too, as in the shell.
       'gsd_run query commit docs:PR#42 --files .planning/STATE.md',
+      // #4276: a QUOTED digit run is not an IO number. POSIX recognizes one
+      // only when the digits are bare, so the shell passes `"2"` as an
+      // ordinary argument and this invocation IS scoped — on a file named
+      // `2`, which is legal. Before the fix the tokenizer read the token's
+      // characters without its quoting, ate the value as an IO number, and
+      // reported a correct line as unscoped.
+      'gsd_run query commit "docs: plan" --files "2">out',
+      // Detached from the operator, and single-quoted, so neither the gluing
+      // nor the quote style is what carries the fix.
+      'gsd_run query commit "docs: plan" --files \'2\' > out',
+      // Partially quoted: `2"3"` is not a bare digit run either, and a mask
+      // test that asked "any character unquoted?" instead of "every
+      // character unquoted?" would get this one wrong.
+      'gsd_run query commit "docs: plan" --files 2"3">out',
     ];
     for (const line of scoped) {
       assert.ok(invocationCandidates(line).length > 0, `should be an invocation: ${line}`);
