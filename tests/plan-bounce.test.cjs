@@ -20,6 +20,10 @@ const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const GSD_ROOT = path.join(__dirname, '..', 'gsd-core');
 const CONFIG_TEMPLATE_PATH = path.join(GSD_ROOT, 'templates', 'config.json');
 const PLAN_PHASE_PATH = path.join(GSD_ROOT, 'workflows', 'plan-phase.md');
+// #4030: step 12.5's body was extracted to a lazily-read step file so plan-phase.md
+// stays under the ADR-857 XL byte cap. The bounce contract these tests guard now
+// spans the pointer (plan-phase.md) plus that body, so they read both.
+const PLAN_BOUNCE_STEP_PATH = path.join(GSD_ROOT, 'workflows', 'plan-phase', 'steps', 'plan-bounce.md');
 
 describe('Plan Bounce: config keys', () => {
   test('config-set accepts workflow.plan_bounce', () => {
@@ -86,7 +90,8 @@ describe('Plan Bounce: config template defaults', () => {
 // plan-phase.md is the installed AI workflow instruction — its text content IS what executes.
 // String presence tests guard against accidental deletion of bounce step clauses.
 describe('Plan Bounce: plan-phase.md step 12.5', () => {
-  const content = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+  const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+  const content = planPhase + '\n' + fs.readFileSync(PLAN_BOUNCE_STEP_PATH, 'utf-8');
 
   test('plan-phase.md contains step 12.5', () => {
     assert.ok(

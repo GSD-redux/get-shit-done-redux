@@ -89,7 +89,7 @@ const { harvestPriorVerifyCommands } = verifyCommandGrounding;
 const { output, error, ERROR_REASON, formatDiagnosticToken } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
-const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
+const { guardedFindPhase, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
@@ -131,15 +131,6 @@ const REQUIREMENTS_HEADER_RE = /^\*\*Requirements:?\*\*[^\S\n]*:?[^\S\n]*([^\n]*
 // phaseInfoMatchesExactPrefix and roadmapPhaseMatchesExactPrefix are local
 // helpers that post-filter the lookup results for foreign-prefix queries.
 
-function phaseInfoMatchesExactPrefix(
-  phaseInfo: Record<string, unknown> | null,
-  phase: string,
-): boolean {
-  const num = phaseInfo?.['phase_number'];
-  const numStr = typeof num === 'string' ? num : (typeof num === 'number' ? String(num) : '');
-  return numStr.toUpperCase() === phase.toUpperCase();
-}
-
 function roadmapPhaseMatchesExactPrefix(
   roadmapPhase: Record<string, unknown> | null,
   phase: string,
@@ -152,18 +143,6 @@ function roadmapPhaseMatchesExactPrefix(
 // #2104: shared helpers that wrap findPhaseInternal / getRoadmapPhaseInternal
 // with the #2056 foreign-prefix guard, so every init command gets the same
 // protection without duplicating the guard logic at each call site.
-function guardedFindPhase(
-  cwd: string,
-  phase: string,
-  projectCode: unknown,
-): Record<string, unknown> | null {
-  let phaseInfo = findPhaseInternal(cwd, phase) as unknown as Record<string, unknown> | null;
-  if (isForeignPrefixedPhaseQuery(phase, projectCode) && !phaseInfoMatchesExactPrefix(phaseInfo, phase)) {
-    phaseInfo = null;
-  }
-  return phaseInfo;
-}
-
 function guardedGetRoadmapPhase(
   cwd: string,
   phase: string,

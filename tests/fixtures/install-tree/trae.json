@@ -437,6 +437,7 @@
   "gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md",
   "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md",
   "gsd-core/workflows/plan-phase/steps/closed-phase-gate.md",
+  "gsd-core/workflows/plan-phase/steps/plan-bounce.md",
   "gsd-core/workflows/plan-phase/steps/prd-express-gate.md",
   "gsd-core/workflows/plan-phase/steps/prd-express-path.md",
   "gsd-core/workflows/plan-phase/steps/research-only-early-exit.md",

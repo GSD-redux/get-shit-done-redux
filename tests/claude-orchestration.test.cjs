@@ -1791,9 +1791,14 @@ describe('H. the execute:wave:pre fragment documents concrete manifest construct
     // frozen ceiling just gets re-tripped by growth this PR does not own (#4148
     // review history) — the tier hard cap in workflow-size-budget.test.cjs (98304
     // bytes, "extract, not bump") is the correct backstop for that.
-    const { lfByteCount } = require('../scripts/workflow-size.cjs');
+    //
+    // #4030: this number is no longer written here. It is one of three tests that
+    // assert the same pre-phase-6 line, so the value lives with lfByteCount and a
+    // raise is a one-line edit there, not a three-file lockstep hunt.
+    const { lfByteCount, PRE_PHASE6_CEILINGS } = require('../scripts/workflow-size.cjs');
+    const ceiling = PRE_PHASE6_CEILINGS['execute-phase.md'];
     const bytes = lfByteCount(WORKFLOW_PATH);
-    assert.ok(bytes < 93600, `execute-phase.md must stay below the frozen pre-phase-6 ceiling (93600); got ${bytes}`);
+    assert.ok(bytes < ceiling, `execute-phase.md must stay below the frozen pre-phase-6 ceiling (${ceiling}); got ${bytes}`);
   });
 });
 

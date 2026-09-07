@@ -43,13 +43,14 @@ const STALL_HELPERS_PATH = path.join(
 );
 const MANAGER_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'manager.md');
 
-// The phase6 shrink-only line for plan-phase.md (tests/phase6-capstone-
-// conformance.test.cjs PRE_PHASE6) — mirrored here so a guard sentence can
-// never quietly push the file past it. #3771/#3916 raised the authoritative
-// PRE_PHASE6 value (94519 -> 96700 -> 98300) for the REVISION_CONFLICT
-// persistence/routing gate before this file's own next-merge landed; keep
-// this mirror equal to that constant, not a stale snapshot of it.
-const PLAN_PHASE_PHASE6_LINE = 98300;
+// The phase6 shrink-only line for plan-phase.md, asserted here so a guard
+// sentence can never quietly push the file past it. #4030 replaced the former
+// hand-mirrored copy with the shared constant: this file's own comment used to
+// say "keep this mirror equal to that constant, not a stale snapshot of it",
+// which is a maintenance instruction no reader can enforce — importing it makes
+// drift unrepresentable instead (ADR-3473).
+const { PRE_PHASE6_CEILINGS } = require('../scripts/workflow-size.cjs');
+const PLAN_PHASE_PHASE6_LINE = PRE_PHASE6_CEILINGS['plan-phase.md'];
 
 function lfByteCount(p) {
   return Buffer.byteLength(readFileNormalized(p), 'utf-8');

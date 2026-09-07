@@ -5198,7 +5198,9 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       );
 
       const workflow = fs.readFileSync(path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8');
-      const wavePre = workflow.indexOf('WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre --raw)');
+      // #4030: anchor on the call-site prefix, not the full literal — --phase/GSD_WS
+      // args now follow --raw, tolerating that legitimate CLI extension.
+      const wavePre = workflow.indexOf('WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre');
       const stepDispatch = workflow.indexOf('**Step dispatch:**', wavePre);
       const executorSpawn = workflow.indexOf('3. **Spawn executor agents:**', wavePre);
       assert.ok(

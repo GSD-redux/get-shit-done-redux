@@ -219,8 +219,17 @@ describe('ADR-857 Phase 6 capstone conformance (#1139)', () => {
     // and a same-session conflict record never closed on resolution). Same rationale as #3771:
     // conflict-record persistence is core planner control flow, not an un-extracted
     // optional feature.
-    const { lfByteCount } = require('../scripts/workflow-size.cjs');
-    const PRE_PHASE6 = { 'plan-phase.md': 98300, 'execute-phase.md': 93600 };
+    //
+    // #4030: the execute-phase.md ceiling was raised from 93600 to thread a typed
+    // `--phase` argument onto the existing `gsd_run loop render-hooks <point>`
+    // call sites (Decision 5's resolution seam) at execute:post and
+    // execute:wave:pre/post, so hook dispatch downstream (steps, gates) can resolve
+    // the task-local phase rather than inferring one. That is core dispatch-seam
+    // machinery, not optional-feature inline logic — see ADR-4030. plan-phase.md
+    // is threaded too and got SMALLER (98258 -> 96149): #3916 had left it 46 bytes
+    // under the XL hard cap, so #4030 took the remedy that cap's own message
+    // prescribes and extracted step 12.5's body to a lazily-read step file.
+    const { lfByteCount, PRE_PHASE6_CEILINGS: PRE_PHASE6 } = require('../scripts/workflow-size.cjs');
     const notShrunk = [];
     for (const [file, frozen] of Object.entries(PRE_PHASE6)) {
       const now = lfByteCount(path.join(ROOT, 'gsd-core', 'workflows', file));
