@@ -1,7 +1,7 @@
 @~/.claude/gsd-core/references/response-language-directive.md
 
 <purpose>
-Review source files changed during a phase for bugs, security issues, and code quality problems. Computes file scope (--files override > SUMMARY.md > git diff fallback), checks config gate, spawns gsd-code-reviewer agent, commits REVIEW.md, and presents results to user. When --fix is passed, delegates to code-review-fix.md after review to auto-apply findings via gsd-code-fixer.
+Review source files changed during a phase for bugs, security issues, and code quality problems. Computes file scope (--files override > SUMMARY.md > phase task commits), checks config gate, spawns gsd-code-reviewer agent, commits REVIEW.md, and presents results to user. When --fix is passed, delegates to code-review-fix.md after review to auto-apply findings via gsd-code-fixer.
 </purpose>
 
 <required_reading>
@@ -216,15 +216,15 @@ if [ -z "$FILES_OVERRIDE" ]; then
     done
     
     if [ ${#REVIEW_FILES[@]} -eq 0 ]; then
-      echo "Warning: SUMMARY artifacts found but contained no file paths. Falling back to git diff."
+      echo "Warning: SUMMARY artifacts found but contained no file paths. Falling back to the phase task commits."
     fi
   fi
 fi
 ```
 
-**Tier 3 — Git diff fallback (per D-02) and SUMMARY/diff cross-check (per #2666):**
+**Tier 3 — Phase task-commit fallback (per D-02, #3926) and SUMMARY/scope cross-check (per #2666):**
 
-If no SUMMARY.md files found OR no files extracted from them, fall back to the git diff.
+If no SUMMARY.md files found OR no files extracted from them, fall back to the phase's own commits (#3926).
 Additionally, whenever a reliable diff base is available, cross-check the SUMMARY scope
 against the diff and warn about (then add) any changed files the SUMMARY extractor did not
 surface — so a partial SUMMARY result can no longer silently mask the rest of the phase.
@@ -273,33 +273,132 @@ elif [ -n "$PHASE_START" ]; then
   fi
 fi
 
-if [ ${#REVIEW_FILES[@]} -eq 0 ]; then
-  # Full git-diff fallback (per D-02): SUMMARY scoping yielded nothing.
-  if [ -n "$DIFF_BASE" ]; then
-    # Run git diff with specific exclusions (per D-03)
-    DIFF_FILES=$(git diff --name-only "${DIFF_BASE}..HEAD" -- . \
+# #3926: bound the change set at the phase, not at the present. A
+# `${DIFF_BASE}..HEAD` range sweeps in everything landed after the phase's
+# first commit — interleaved and post-phase work alike (measured: a 20-file
+# phase scoped as 248, crossing the >50 threshold and silently downgrading
+# --depth=deep to standard).
+#
+# The phase's commit set comes from the `## Task Commits` sections of the
+# SUMMARYs under PHASE_DIR. That record is PATH-ANCHORED as PHASE_START is — a
+# later milestone's SUMMARY lives in a different directory — so it needs no
+# message grep (the class re-fixed five times, #2989/#3191/#3503/#3995, and
+# banned by the T6 docs-parity row) and no diff-tip choice (a two-token `A..B`
+# bound silently drops an unscoped post-merge repair commit).
+#
+# The parse is SECTION-SCOPED and BACKTICK-ANCHORED, which is what
+# `scripts/lint-summary-task-commits-drift.cjs` pins across the SUMMARY
+# templates. Both properties are load-bearing: `verifySummaryCore` in
+# `src/phase.cts` matches bare `\b[0-9a-f]{7,40}\b` over a whole SUMMARY, which
+# its own comment calls too noisy to show a user — a short SHA quoted in prose
+# would become a phase commit. This parser is deliberately not that one.
+# SCOPE_SOURCE is initialized before any branch sets it: the tier label reads
+# it, and an inherited value would mislabel an ordinary SUMMARY scope.
+SCOPE_SOURCE=""
+PHASE_SUMMARIES=$(ls "${PHASE_DIR}"/*-SUMMARY.md 2>/dev/null)
+PHASE_COMMIT_SET=""
+if [ -n "$PHASE_SUMMARIES" ]; then
+  # Rewrapped through unquoted command substitution for the same zsh reason as
+  # Tier 2 above (gsd-core#4109).
+  for summary in $(printf '%s' "$PHASE_SUMMARIES"); do
+    TASK_COMMIT_SECTION=$(awk '/^## Task Commits[ \t\r]*$/ { inside=1; next } /^## / { inside=0 } inside' "$summary" 2>/dev/null)
+    [ -n "$TASK_COMMIT_SECTION" ] || continue
+    # shellcheck disable=SC2016  # the backticked hex pattern and the awk program are
+    # literal by design — nothing here is meant to expand.
+    for ref in $(printf '%s' "$TASK_COMMIT_SECTION" | grep -oE '`[0-9a-f]{7,40}`' | tr -d '`'); do
+      # Resolve, and keep only commits that exist and are reachable from HEAD.
+      # A SUMMARY can name a commit that a later rebase dropped; an unresolvable
+      # ref is skipped, never guessed at.
+      FULL_SHA=$(git rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null) || continue
+      [ -n "$FULL_SHA" ] || continue
+      git merge-base --is-ancestor "$FULL_SHA" HEAD 2>/dev/null || continue
+      # #3661: DIFF_BASE prefers LAST_REVIEW_COMMIT over PHASE_START, so the set
+      # is filtered to commits AFTER it. Without this a wave-scoped review would
+      # silently re-widen to the whole phase — the narrowing #3661 added.
+      if [ -n "$DIFF_BASE" ] && git merge-base --is-ancestor "$FULL_SHA" "$DIFF_BASE" 2>/dev/null; then
+        continue
+      fi
+      PHASE_COMMIT_SET=$(printf '%s\n%s' "$PHASE_COMMIT_SET" "$FULL_SHA")
+    done
+  done
+  PHASE_COMMIT_SET=$(printf '%s' "$PHASE_COMMIT_SET" | grep -v '^$' | sort -u)
+fi
+
+PHASE_DIFF_FILES=""
+if [ -n "$PHASE_COMMIT_SET" ]; then
+  # --first-parent: a phase-scoped MERGE commit must contribute its diff
+  # against its first parent. The default combined diff is EMPTY for a clean
+  # merge (and conflict-resolutions-only for a conflicted one), so a phase
+  # whose work lands as one merge commit would otherwise scope to zero files.
+  # On non-merge commits --first-parent changes nothing.
+  PHASE_DIFF_FILES=$(for c in $(printf '%s' "$PHASE_COMMIT_SET"); do
+    git show --pretty=format: --name-only --first-parent "$c" -- . \
       ':!.planning/' ':!ROADMAP.md' ':!STATE.md' \
       ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
-      ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
+      ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null
+  done | grep -v '^$' | sort -u)
+fi
+
+if [ ${#REVIEW_FILES[@]} -eq 0 ]; then
+  # Full fallback (per D-02): SUMMARY key_files yielded no file paths. Note the
+  # predicate is "no FILE PATHS extracted", not "no SUMMARY exists" — when
+  # SUMMARYs are present but their key_files did not parse, or were skipped as
+  # unchanged since the last review (#3661), `## Task Commits` is a different
+  # section and parses fine.
+  if [ -n "$PHASE_DIFF_FILES" ]; then
+    # Exclusions (per D-03) are applied inside the PHASE_DIFF_FILES derivation.
+    DIFF_FILES="$PHASE_DIFF_FILES"
 
     while IFS= read -r file; do
       [ -n "$file" ] && REVIEW_FILES+=("$file")
     done <<< "$DIFF_FILES"
 
-    echo "File scope: ${#REVIEW_FILES[@]} files from git diff (base: ${DIFF_BASE})"
+    # Record the ACTUAL source: the tier label below cannot re-derive it.
+    # `SUMMARIES` is non-empty here (the record lives in a SUMMARY), so a label
+    # keyed on that alone would report "SUMMARY.md" for a task-commit scope.
+    SCOPE_SOURCE="phase task commits"
+    echo "File scope: ${#REVIEW_FILES[@]} files from phase task commits (base: ${DIFF_BASE:-<none>})"
+  elif [ -z "$PHASE_SUMMARIES" ]; then
+    # Fail closed, loudly — no SUMMARY artifacts at all, so the `## Task
+    # Commits` membership record does not exist and the phase's commit set is
+    # underivable. Do NOT fall back to a commit-message grep: that is the class
+    # #3995 removed, and re-introducing it here as a fallback re-opens it.
+    echo "Warning: No SUMMARY artifacts readable for '${PADDED_PHASE}' (the enumeration above suppresses errors, so an unreadable directory is indistinguishable from an empty one). Cannot determine reliable phase scope."
+    echo "Use --files flag to specify files explicitly: /gsd:code-review ${PHASE_ARG} --files=file1,file2,..."
   else
-    # Fail closed — no reliable diff base found. Do not use arbitrary HEAD~N.
-    echo "Warning: No phase commits found for '${PADDED_PHASE}'. Cannot determine reliable diff scope."
+    # SUMMARYs exist but produced no reviewable files. The trigger is an empty
+    # PHASE_DIFF_FILES, which is NOT the same condition as an empty commit set,
+    # so the two are reported separately below. Naming a single cause here would
+    # assert one the operator may not have — several distinct states reach this
+    # point, and some of them are benign.
+    if [ -z "$PHASE_COMMIT_SET" ]; then
+      # No commit survived resolution, reachability and the DIFF_BASE filter.
+      echo "Warning: SUMMARY artifacts found for '${PADDED_PHASE}' but their '## Task Commits' sections named no commit that resolves, is reachable from HEAD, and postdates the diff base (${DIFF_BASE:-<none>}). Cannot determine reliable phase scope."
+    else
+      # Commits exist but their diff union is empty, and that is ALL the code
+      # knows: an empty commit, a no-op merge, changes confined to the D-03
+      # exclusions, and a suppressed `git show` failure all reach the identical
+      # state. State the CONDITION and offer the causes; asserting one sends the
+      # operator to fix something that may be fine.
+      echo "Warning: the phase task commits for '${PADDED_PHASE}' yielded no reviewable paths. Nothing to review. (The recorded commits resolve, but their diff union is empty — possible causes include an empty commit, a merge with no first-parent delta, changes confined to the D-03 exclusions, or a git failure suppressed above.)"
+    fi
     echo "Use --files flag to specify files explicitly: /gsd:code-review ${PHASE_ARG} --files=file1,file2,..."
   fi
-elif [ -n "$DIFF_BASE" ]; then
+elif [ -z "$PHASE_DIFF_FILES" ] && [ -n "$PHASE_SUMMARIES" ]; then
+  # SUMMARY key_files produced a scope but the task-commit derivation yielded
+  # no PATHS, so the #2666 cross-check has nothing to compare against. The
+  # predicate is the empty FILE set, not an empty COMMIT set — commits may well
+  # exist — so the message says "no paths", never "no commits". The SUMMARY
+  # scope stands, but say so: a silent skip is indistinguishable from a
+  # cross-check that ran and found nothing missing.
+  echo "Note: no phase task-commit paths available for comparison; the #2666 cross-check was skipped and the SUMMARY scope stands unverified."
+elif [ -n "$PHASE_DIFF_FILES" ]; then
   # #2666 cross-check: SUMMARY yielded a non-empty (possibly partial) scope.
   # Warn about — and add — any changed files the SUMMARY extractor did not surface,
   # so a partial result can no longer silently ship an incomplete review scope.
-  DIFF_FILES=$(git diff --name-only "${DIFF_BASE}..HEAD" -- . \
-    ':!.planning/' ':!ROADMAP.md' ':!STATE.md' \
-    ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
-    ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
+  # #3926: compare against the phase's own change set, never ..HEAD — these
+  # files are ADDED to the scope, so an inflated diff *becomes* the scope.
+  DIFF_FILES="$PHASE_DIFF_FILES"
 
   # Build a newline-delimited list of already-scoped files for exact membership
   # testing (portable — bash 3.2 on macOS has no associative arrays). grep -Fxq
@@ -319,7 +418,14 @@ elif [ -n "$DIFF_BASE" ]; then
   done <<< "$DIFF_FILES"
 
   if [ ${#MISSING_FROM_SUMMARY[@]} -gt 0 ]; then
-    echo "Warning: SUMMARY scope was missing ${#MISSING_FROM_SUMMARY[@]} changed file(s) the git diff surfaced; adding them to the review scope:"
+    # The scope is MIXED: SUMMARY key_files plus files only the task commits
+    # surfaced, so "SUMMARY.md" would understate it. This records DERIVATION,
+    # not survival — post-processing drops deleted paths, so a scope whose
+    # task-commit additions were all deletions still reports mixed. Every tier
+    # label already has that property; fixing it would mean re-attributing
+    # every surviving path after the filter.
+    SCOPE_SOURCE="SUMMARY.md + phase task commits"
+    echo "Warning: SUMMARY scope was missing ${#MISSING_FROM_SUMMARY[@]} changed file(s) the phase task commits surfaced; adding them to the review scope:"
     printf '  - %s\n' "${MISSING_FROM_SUMMARY[@]}"
   fi
 fi
@@ -390,10 +496,22 @@ REVIEW_FILES=("${DEDUPED[@]}")
 ```bash
 if [ -n "$FILES_OVERRIDE" ]; then
   TIER="--files override"
-elif [ -n "$SUMMARIES" ] && [ ${#REVIEW_FILES[@]} -gt 0 ]; then
+elif [ ${#REVIEW_FILES[@]} -eq 0 ]; then
+  # #3926: an empty scope is the FAIL-CLOSED outcome, not a tier that ran and
+  # found nothing. "git diff" named a mechanism Tier 3 no longer uses and read
+  # as a successful zero-file diff.
+  TIER="no derivable scope (failed closed)"
+elif [ -n "$SCOPE_SOURCE" ]; then
+  # Keyed on the recorded source because it cannot be re-derived here: the
+  # task-commit record lives IN a SUMMARY, so `SUMMARIES` is non-empty on both
+  # Tier-3 branches and a label keyed on it alone is wrong on one of them.
+  TIER="$SCOPE_SOURCE"
+elif [ -n "$SUMMARIES" ]; then
   TIER="SUMMARY.md"
 else
-  TIER="git diff"
+  # Defensive default only. No workflow path reaches this: a non-empty scope
+  # with no SUMMARIES and no recorded source cannot be produced by Tiers 1-3.
+  TIER="unattributed"
 fi
 echo "File scope: ${#REVIEW_FILES[@]} files from ${TIER}"
 
@@ -576,8 +694,78 @@ if [ -n "$PHASE_START" ]; then
   else
     DIFF_BASE="${PHASE_START}"
   fi
+  # #3926: also hand the agent an upper bound — its fallback diff otherwise
+  # runs ${DIFF_BASE}..HEAD. The bound is the newest commit named by the
+  # phase's `## Task Commits` sections, read exactly as compute_file_scope
+  # reads them (see that step for why no message grep and no bare hex match).
+  # APPROXIMATE by design: commits interleaved inside the phase window stay
+  # inside ${DIFF_BASE}..${DIFF_TIP}. That is acceptable for a last-resort net
+  # normal operation never reaches (the workflow always passes files:), and it
+  # is strictly tighter than HEAD.
+  #
+  # TWO WAYS THE BOUND CAN BE ABSENT, deliberately not collapsed — a single
+  # A..B range cannot express commits on divergent branches, which is why
+  # Tier 3 unions per-commit diffs instead of bounding a range:
+  #   no task commits at all  -> DIFF_TIP stays empty and the agent bounds at
+  #     HEAD, unchanged from before this fix. KNOWN RESIDUAL, disclosed not
+  #     fixed: Tier 3 fails closed here, the agent's own fallback does not,
+  #     because spawn_reviewer derives DIFF_BASE from the phase directory
+  #     unconditionally (a contract #3191/#3503/#3995 pin by test) and the
+  #     agent defaults an absent diff_tip to HEAD for direct invocations.
+  #     Closing it means changing one of those two — a separate concern.
+  #   no unique newest commit -> leave DIFF_TIP empty. Picking either tip drops
+  #     the other branch's commits; on a last-resort net, over-scoping is the
+  #     tolerable error and under-scoping is not.
+  #   a unique newest commit  -> use it.
+  PHASE_TIP_CANDIDATES=""
+  for summary in $(printf '%s' "$(ls "${PHASE_DIR}"/*-SUMMARY.md 2>/dev/null)"); do
+    TASK_COMMIT_SECTION=$(awk '/^## Task Commits[ \t\r]*$/ { inside=1; next } /^## / { inside=0 } inside' "$summary" 2>/dev/null)
+    [ -n "$TASK_COMMIT_SECTION" ] || continue
+    # shellcheck disable=SC2016  # the backticked hex pattern and the awk program are
+    # literal by design — nothing here is meant to expand.
+    for ref in $(printf '%s' "$TASK_COMMIT_SECTION" | grep -oE '`[0-9a-f]{7,40}`' | tr -d '`'); do
+      FULL_SHA=$(git rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null) || continue
+      [ -n "$FULL_SHA" ] || continue
+      git merge-base --is-ancestor "$FULL_SHA" HEAD 2>/dev/null || continue
+      PHASE_TIP_CANDIDATES=$(printf '%s\n%s' "$PHASE_TIP_CANDIDATES" "$FULL_SHA")
+    done
+  done
+  PHASE_TIP_CANDIDATES=$(printf '%s' "$PHASE_TIP_CANDIDATES" | grep -v '^$' | sort -u)
+
+  DIFF_TIP=""
+  if [ -z "$PHASE_TIP_CANDIDATES" ]; then
+    # No record to bound with. DIFF_BASE is deliberately left alone — see the
+    # KNOWN RESIDUAL above; clearing it here would break the phase-directory
+    # anchor #3191/#3503/#3995 pin by test.
+    echo "Note: no SUMMARY task commits for '${PADDED_PHASE}'; the reviewer agent's fallback will bound at HEAD."
+  else
+    # The tip must be an ancestor-descendant maximum of the WHOLE set: every
+    # other candidate must be an ancestor of it. Commit DATES are unusable —
+    # a rebase or cherry-pick re-stamps them — so the ordering is topological.
+    #
+    # TWO LINEAR PASSES, not a pairwise scan. Ancestry is a partial order, so a
+    # running maximum is well defined: pass 1 keeps whichever candidate is a
+    # descendant of the one held, pass 2 confirms that candidate really covers
+    # the whole set (pass 1 alone cannot — on divergent branches it ends up
+    # holding an arbitrary incomparable element). Same verdict as comparing
+    # every pair, at ~2n `git merge-base` subprocesses instead of n(n-1); the
+    # pairwise form is fine for a handful of task commits and is not for a
+    # phase with hundreds.
+    for cand in $(printf '%s' "$PHASE_TIP_CANDIDATES"); do
+      if [ -z "$DIFF_TIP" ]; then DIFF_TIP="$cand"; continue; fi
+      git merge-base --is-ancestor "$DIFF_TIP" "$cand" 2>/dev/null && DIFF_TIP="$cand"
+    done
+    for other in $(printf '%s' "$PHASE_TIP_CANDIDATES"); do
+      [ "$other" = "$DIFF_TIP" ] && continue
+      git merge-base --is-ancestor "$other" "$DIFF_TIP" 2>/dev/null || { DIFF_TIP=""; break; }
+    done
+    if [ -z "$DIFF_TIP" ]; then
+      echo "Note: phase task commits are on divergent branches; no single diff tip covers them. The reviewer agent's fallback will bound at HEAD."
+    fi
+  fi
 else
   DIFF_BASE=""
+  DIFF_TIP=""
 fi
 ```
 
@@ -647,6 +835,7 @@ depth: ${REVIEW_DEPTH}
 phase_dir: ${PHASE_DIR}
 review_path: ${REVIEW_PATH}
 ${DIFF_BASE:+diff_base: ${DIFF_BASE}}
+${DIFF_TIP:+diff_tip: ${DIFF_TIP}}
 files:
 ${CONFIG_FILES}
 </config>
@@ -801,7 +990,7 @@ If `--files` validation fails unexpectedly on macOS, install coreutils or use ab
 - [ ] Capability gate checked (`workflow.code_review` config key)
 - [ ] --fix/--all/--auto flags parsed via code-review-flags.cjs typed IR (not ad-hoc bash)
 - [ ] Depth resolved with validation (quick|standard|deep)
-- [ ] File scope computed with 3 tiers: --files > SUMMARY.md > git diff
+- [ ] File scope computed with 3 tiers: --files > SUMMARY.md > phase task commits
 - [ ] Malformed/missing SUMMARY.md handled gracefully with fallback
 - [ ] Deleted files filtered from scope
 - [ ] Files deduplicated and sorted

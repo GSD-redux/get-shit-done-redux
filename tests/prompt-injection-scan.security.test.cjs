@@ -100,6 +100,18 @@ const SIZE_ONLY_WORKFLOWS = new Set([
   // injection scanned. Splitting it per the progressive-disclosure pattern is the real
   // fix and is worth its own change.
   'gsd-core/workflows/quick.md',
+  // ~51.4K after the #3926 phase-scope derivation. This file sat at 39.9K, so
+  // unlike review.md and quick.md above it was not already at the line — the
+  // #3926 change carries it over on its own, and the excess is the derivation's
+  // own rationale (why no message grep, why no diff tip, why this parser is not
+  // verifySummaryCore). ~1.9K of that prose was trimmed rather than exempted;
+  // the remainder is load-bearing for a mechanism that has been re-fixed five
+  // times. Deliberately NOT trimmed to just under 50K: review.md and quick.md
+  // each landed a few hundred chars under and then tripped on the next change,
+  // which is the failure this list already records twice. Size-only: the file
+  // is still fully injection scanned. Splitting it per the progressive-
+  // disclosure pattern is the real fix and is worth its own change.
+  'gsd-core/workflows/code-review.md',
 ]);
 
 // ─── Scanner ────────────────────────────────────────────────────────────────

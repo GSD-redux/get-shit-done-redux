@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 4127
+---
+**/gsd-code-review scopes Tier-3 review to the phase's own commits instead of everything since the phase began** — the changed-file set is now derived from the `## Task Commits` sections of the phase's SUMMARY artifacts rather than `DIFF_BASE..HEAD`. Re-reviewing a closed phase (or reviewing on a shared tree with interleaved work) no longer inflates the file count, no longer floods the review with unrelated files, and no longer silently downgrades `--depth=deep` to `standard` on a wrong >50 count. Where SUMMARY `key_files` yields nothing, Tier 3 now derives the scope from the phase's own commits instead of diffing to `HEAD`; where no task-commit paths are derivable either, it reports an empty scope and says which state it is in rather than widening. The reviewer agent's own last-resort fallback is unchanged and still bounds at `HEAD` when no diff tip is derivable. The parse tolerates CRLF SUMMARY artifacts, so a Windows checkout scopes identically to a Unix one rather than silently to nothing. (#3926)

@@ -346,19 +346,31 @@ describe('Bug 1 — compute_file_scope SUMMARY parser', () => {
     );
   });
 
-  // #2666 docs-parity: the Tier-3 git-diff fallback must intersect with the
-  // SUMMARY scope and warn on dropped files (not only fire on zero Tier-2 hits).
-  test('#2666 docs-parity: Tier-3 intersects/warns against git diff --name-only', () => {
+  // #2666 docs-parity: the Tier-3 fallback must intersect with the SUMMARY
+  // scope and warn on dropped files (not only fire on zero Tier-2 hits).
+  // #3926 changed the cross-check's SOURCE from `git diff --name-only
+  // ${DIFF_BASE}..HEAD` to the PHASE_DIFF_FILES union derived from the phase
+  // commits themselves — the cross-check itself (compare + warn + add) stays.
+  test('#2666 docs-parity: Tier-3 intersects/warns against the phase change set', () => {
     const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
-    // The shipped workflow must compute git diff --name-only AND emit a warning
-    // when the diff contains files the SUMMARY extractor did not surface.
+    // Pin the cross-check's own lines INSIDE the Tier-3 fence — a whole-doc
+    // grep passes even with the cross-check deleted (driven by the #3926
+    // pre-file adversarial review): scope every assertion to the fence.
+    const fenceStart = src.indexOf('# Compute diff base from phase commits');
+    assert.ok(fenceStart !== -1, 'Tier-3 fence anchor must exist');
+    const fenceEnd = src.indexOf('\n```', fenceStart);
+    const fence = src.slice(fenceStart, fenceEnd);
     assert.ok(
-      src.includes('git diff --name-only'),
-      'code-review.md must run `git diff --name-only` to cross-check the SUMMARY scope (#2666)'
+      fence.includes('DIFF_FILES="$PHASE_DIFF_FILES"'),
+      'the cross-check must compare against the phase change set (#2666, #3926)'
     );
     assert.ok(
-      /warn|missing|not surfaced|did not|not in/i.test(src),
-      'code-review.md must warn when git diff contains files the SUMMARY extractor dropped (#2666)'
+      fence.includes('MISSING_FROM_SUMMARY+=("$file"); REVIEW_FILES+=("$file")'),
+      'the cross-check must ADD files the SUMMARY missed to the review scope (#2666)'
+    );
+    assert.ok(
+      fence.includes('Warning: SUMMARY scope was missing'),
+      'the cross-check must WARN when the SUMMARY missed changed files (#2666)'
     );
   });
 
@@ -1253,4 +1265,782 @@ describe('Bug 6 (#3503/#3995) — diff base keys on the phase directory, not com
       }
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// #3926 — the Tier-3 change set must be bounded at the phase, not at HEAD.
+//
+// Both Tier-3 consumers (the D-02 full fallback and the #2666 SUMMARY
+// cross-check) used `git diff ${DIFF_BASE}..HEAD`: the base was the phase's
+// first commit (correct since #3503) but the tip was unconditionally HEAD, so
+// every commit landed outside the phase — interleaved from other sessions, or
+// after the phase closed — joined the review scope. The #2666 cross-check
+// ADDS its findings to REVIEW_FILES, so the inflation became the scope, and
+// the inflated count crossed code-review-depth.cjs's >50 threshold, silently
+// downgrading --depth=deep to standard (measured: a 20-file phase scoped as
+// 248 files). Fix: derive the change set from PHASE_COMMITS themselves —
+// exact under interleaved history, where a DIFF_BASE..<newest-phase-commit>
+// bound recovers almost nothing (2 of 228 excess files on the measured repo).
+//
+// Same behavioral style as Bug 5: the SHIPPED bash is extracted from the
+// workflow .md and executed via a real bash subprocess against a git fixture.
+// ---------------------------------------------------------------------------
+
+describe('#3926 — Tier-3 scope is the phase change set, not everything since the phase began', () => {
+  const SKIP_WIN32 = { skip: process.platform === 'win32' };
+
+  // The WHOLE Tier-3 fence: derivation plus both consumer branches (the D-02
+  // fallback and the #2666 cross-check).
+  function extractTier3FullFence() {
+    const src = readFileNormalized(WORKFLOW_PATH);
+    return fenceContaining(src, '# Compute diff base from phase commits');
+  }
+
+  const PHASE_DIR = '.planning/phases/06-ctx';
+
+  function commitFile(repo, file, message) {
+    const abs = path.join(repo, file);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, `${message}\n`);
+    gitOrThrow(['add', '--', file], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', message], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+    return gitOrThrow(['rev-parse', 'HEAD'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim();
+  }
+
+  // Write (and commit) a SUMMARY whose `## Task Commits` section names `hashes`
+  // in the shipped template's shape — numbered task lines, hash in BACKTICKS,
+  // section terminated by the next `## ` heading. That shape is pinned by
+  // scripts/lint-summary-task-commits-drift.cjs.
+  function commitSummary(repo, hashes, eol = '\n') {
+    const body = [
+      '---',
+      'phase: 06',
+      '---',
+      '',
+      '## Task Commits',
+      '',
+      ...hashes.map((h, i) => `${i + 1}. **Task ${i + 1}: work** - \`${h}\` (feat)`),
+      '',
+      '## Files Created/Modified',
+      '',
+      '## Next Phase Readiness',
+      '',
+    ].join(eol);
+    const rel = `${PHASE_DIR}/06-1-SUMMARY.md`;
+    fs.mkdirSync(path.join(repo, PHASE_DIR), { recursive: true });
+    fs.writeFileSync(path.join(repo, rel), body);
+    gitOrThrow(['add', '--', rel], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'docs: phase summary'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+  }
+
+  // Phase-06's own commits touch phase-a/phase-b; unrelated commits land before
+  // the phase, interleaved INSIDE the phase window, and after the phase closed.
+  // HEAD sits on the post-phase commit, as in any re-review of a closed phase.
+  //
+  // Every commit SUBJECT here is deliberately unscoped — no `feat(06)`, no
+  // `test(6-3)`. That is the point: membership comes from the SUMMARY's
+  // `## Task Commits` record, so a fixture that still leaked phase-scoped
+  // subjects could pass under a message grep and prove nothing about #3995's
+  // ban on that class.
+  function buildScopeFixture(prefix, eol = '\n') {
+    const repo = createTempGitProject(prefix);
+    commitFile(repo, 'pre.txt', 'chore: unrelated work before the phase');
+    // Creating the phase directory is what anchors PHASE_START (#3995).
+    commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+    const phaseA = commitFile(repo, 'phase-a.txt', 'chore: first phase commit, subject carries no phase scope');
+    commitFile(repo, 'interleaved.txt', 'chore: unrelated work interleaved inside the phase window');
+    const phaseB = commitFile(repo, 'phase-b.txt', 'chore: second phase commit, subject carries no phase scope');
+    commitSummary(repo, [phaseA, phaseB], eol);
+    commitFile(repo, 'post.txt', 'docs: unrelated work after the phase closed');
+    return repo;
+  }
+
+  // Run the full Tier-3 fence with REVIEW_FILES seeded by `preamble`, then
+  // sentinel-print the resulting scope.
+  function runScope(repo, preamble) {
+    const script = [
+      'PADDED_PHASE=06',
+      `PHASE_DIR=${PHASE_DIR}`,
+      preamble,
+      extractTier3FullFence(),
+      'echo "===REVIEW_FILES==="',
+      '[ ${#REVIEW_FILES[@]} -gt 0 ] && printf \'%s\\n\' "${REVIEW_FILES[@]}"',
+      'echo "===END==="',
+    ].join('\n');
+    return toLegacyResult(
+      runHook('-c', [script, 'bash'], {
+        interpreter: 'bash',
+        cwd: repo,
+        timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+      })
+    );
+  }
+
+  test(
+    'D-02 fallback scope is exactly the phase change set — pre-phase, interleaved, and post-phase files stay out',
+    SKIP_WIN32,
+    () => {
+      const repo = buildScopeFixture('gsd-3926-fallback-');
+      try {
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        const scope = parseSentinel(result.stdout, 'REVIEW_FILES');
+        // Pre-fix: DIFF_BASE..HEAD also sweeps interleaved.txt and post.txt.
+        assert.deepStrictEqual(
+          scope.sort(),
+          ['phase-a.txt', 'phase-b.txt'],
+          `fallback scope must be the phase's own files; got: ${JSON.stringify(scope)}`
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'a CRLF SUMMARY is parsed the same as an LF one — the heading anchor tolerates the carriage return',
+    SKIP_WIN32,
+    () => {
+      // Windows is a supported platform and git may check SUMMARYs out with
+      // CRLF. The heading matcher was `/^## Task Commits[ \t]*$/`, which a
+      // trailing \r does not satisfy — so the section never opened, the commit
+      // set came back empty, and the phase silently scoped to nothing while the
+      // drift lint (which normalises CRLF before matching) still reported clean.
+      // Driven both ways: the old anchor extracted 0 hashes from CRLF and 1
+      // from LF; the new one extracts 1 from each.
+      const repo = buildScopeFixture('gsd-3926-crlf-', '\r\n');
+      try {
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        const scope = parseSentinel(result.stdout, 'REVIEW_FILES');
+        assert.deepStrictEqual(
+          scope.sort(),
+          ['phase-a.txt', 'phase-b.txt'],
+          `a CRLF SUMMARY must scope identically to an LF one; got: ${JSON.stringify(scope)}`
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    '#2666 cross-check adds only phase files a partial SUMMARY missed — never out-of-phase commits',
+    SKIP_WIN32,
+    () => {
+      const repo = buildScopeFixture('gsd-3926-crosscheck-');
+      try {
+        // SUMMARY surfaced only phase-a.txt; the cross-check must add
+        // phase-b.txt and nothing else.
+        const result = runScope(repo, 'REVIEW_FILES=(phase-a.txt)');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        const scope = parseSentinel(result.stdout, 'REVIEW_FILES');
+        // Pre-fix: the cross-check REVIEW_FILES+='s interleaved.txt and
+        // post.txt too — the inflation that crossed the >50 depth-downgrade
+        // threshold on the reporting repo.
+        assert.deepStrictEqual(
+          scope.sort(),
+          ['phase-a.txt', 'phase-b.txt'],
+          `cross-check must add only missed PHASE files; got: ${JSON.stringify(scope)}`
+        );
+        assert.match(
+          result.stdout,
+          /Warning: SUMMARY scope was missing 1 changed file/,
+          'the cross-check must WARN about the file the SUMMARY missed (#2666)'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'a phase landing as one phase-scoped MERGE commit scopes to its first-parent diff, not the empty combined diff',
+    SKIP_WIN32,
+    () => {
+      // Phase-06's work arrives as a clean --no-ff merge, and the SUMMARY's
+      // `## Task Commits` names the MERGE commit itself — `git show` without
+      // --first-parent prints an EMPTY combined diff for it, scoping the
+      // phase to zero files (driven by the #3926 pre-file adversarial review).
+      const repo = createTempGitProject('gsd-3926-merge-');
+      try {
+        commitFile(repo, 'base.txt', 'chore: base');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        gitOrThrow(['checkout', '-b', 'phase-branch'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        commitFile(repo, 'branch-work.txt', 'chore: branch work');
+        gitOrThrow(['checkout', '-'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['merge', '--no-ff', 'phase-branch', '-m', 'chore: land phase work'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        const mergeSha = gitOrThrow(['rev-parse', 'HEAD'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim();
+        commitSummary(repo, [mergeSha]);
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        const scope = parseSentinel(result.stdout, 'REVIEW_FILES');
+        assert.deepStrictEqual(
+          scope,
+          ['branch-work.txt'],
+          `merge-landed phase must scope to its first-parent diff; got: ${JSON.stringify(scope)}`
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'a prior review narrows the set to task commits after it — #3661 wave scoping survives',
+    SKIP_WIN32,
+    () => {
+      // DIFF_BASE prefers LAST_REVIEW_COMMIT over PHASE_START (#3661), so the
+      // task-commit set must be filtered to commits reachable AFTER it. An
+      // unfiltered set would re-widen a wave-scoped review back to the whole
+      // phase — silently undoing #3661 while every other assertion here still
+      // passed, which is why this branch gets its own fixture rather than
+      // riding on the PHASE_START one.
+      const repo = createTempGitProject('gsd-3926-waves-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        const phaseA = commitFile(repo, 'phase-a.txt', 'chore: wave 1, already reviewed');
+        const reviewCommit = commitFile(repo, `${PHASE_DIR}/06-REVIEW.md`, 'docs: wave 1 review');
+        const phaseB = commitFile(repo, 'phase-b.txt', 'chore: wave 2, not yet reviewed');
+        commitSummary(repo, [phaseA, phaseB]);
+
+        const result = runScope(repo, `LAST_REVIEW_COMMIT=${reviewCommit}\nREVIEW_FILES=()`);
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          (parseSentinel(result.stdout, 'REVIEW_FILES') || []).sort(),
+          ['phase-b.txt'],
+          'a wave-scoped review must see only task commits after the last review (#3661)'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'a hash quoted OUTSIDE `## Task Commits`, or unbackticked inside it, is not a phase commit',
+    SKIP_WIN32,
+    () => {
+      // The parse is section-scoped AND backtick-anchored, and this exercises
+      // both anchors behaviourally rather than by docs-parity alone.
+      // `verifySummaryCore` (src/phase.cts) resolves hashes out of a whole
+      // SUMMARY with a bare \b[0-9a-f]{7,40}\b, and its own comment records
+      // that this is too noisy to put in front of a user — inheriting it would
+      // let a short SHA quoted in "Decisions & Deviations" become a phase
+      // commit. Here `outside.txt`'s hash is quoted in prose, in backticks, in
+      // a later section; `sneaky.txt`'s is inside the right section but
+      // unbackticked. Neither may enter the scope.
+      const repo = createTempGitProject('gsd-3926-anchors-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        const phaseA = commitFile(repo, 'phase-a.txt', 'chore: the one real phase commit');
+        const sneaky = commitFile(repo, 'sneaky.txt', 'chore: named unbackticked inside the section');
+        const outside = commitFile(repo, 'outside.txt', 'chore: named in prose in a later section');
+
+        const rel = `${PHASE_DIR}/06-1-SUMMARY.md`;
+        fs.writeFileSync(
+          path.join(repo, rel),
+          [
+            '## Task Commits',
+            '',
+            `1. **Task 1: work** - \`${phaseA}\` (feat)`,
+            `2. **Task 2: work** - ${sneaky} (feat)`,
+            '',
+            '## Decisions & Deviations',
+            '',
+            `Reverted the approach from \`${outside}\` after review.`,
+            '',
+            '## Next Phase Readiness',
+            '',
+          ].join('\n')
+        );
+        gitOrThrow(['add', '--', rel], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        gitOrThrow(['commit', '-m', 'docs: phase summary'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          (parseSentinel(result.stdout, 'REVIEW_FILES') || []).sort(),
+          ['phase-a.txt'],
+          'only the backticked hash inside `## Task Commits` is a phase commit'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'no SUMMARY at all fails closed with a loud warning and an empty scope — never a message grep',
+    SKIP_WIN32,
+    () => {
+      // Sub-case 3 of the D-02 predicate: the `## Task Commits` membership
+      // record does not exist, so the phase commit set is underivable. The
+      // ruled behaviour is a loud fail-closed warning, not a fallback.
+      const repo = createTempGitProject('gsd-3926-nosummary-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: unrelated work before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        commitFile(repo, 'phase-a.txt', 'chore: phase work with no SUMMARY recorded');
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        // An EMPTY scope prints `===REVIEW_FILES===` immediately followed by
+        // `===END===`, which parseSentinel reports as null (its regex requires
+        // a newline inside the block) — so null and [] are the same answer
+        // here, and both mean the scope stayed empty.
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'REVIEW_FILES') || [],
+          [],
+          'an underivable phase scope must stay EMPTY, never fall back to a wider one'
+        );
+        assert.match(
+          result.stdout,
+          /Warning: No SUMMARY artifacts readable for '06'/,
+          'the no-SUMMARY sub-case must say so loudly (#3926)'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'SUMMARYs whose task commits none resolve report the middle empty-scope state, not the no-SUMMARY one',
+    SKIP_WIN32,
+    () => {
+      // The THIRD empty-scope branch, and the one the other two do not reach:
+      // SUMMARY artifacts exist and their `## Task Commits` section parses, but
+      // no named commit survives resolution, reachability and the DIFF_BASE
+      // filter. Its message must name THAT state — a reader told "no SUMMARY
+      // artifacts readable" would go looking for a missing file that is right
+      // there. Raised by the #3926 pre-push body audit, which found the branch
+      // reported by the code and asserted by nothing.
+      const repo = createTempGitProject('gsd-3926-unresolvable-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        commitFile(repo, 'phase-a.txt', 'chore: phase work, subject carries no phase scope');
+        // A well-formed hash that names no commit in this repository.
+        commitSummary(repo, ['0123456789abcdef0123456789abcdef01234567']);
+
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'REVIEW_FILES') || [],
+          [],
+          'an unresolvable commit set yields an empty scope'
+        );
+        assert.match(
+          result.stdout,
+          /named no commit that resolves, is reachable from HEAD, and postdates the diff base/,
+          `must report the unresolvable-commit state; got: ${result.stdout}`
+        );
+        assert.doesNotMatch(
+          result.stdout,
+          /No SUMMARY artifacts readable/,
+          'must NOT claim the SUMMARYs are missing — they are present and parsed'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'task commits with an empty diff report the condition, not an unearned cause',
+    SKIP_WIN32,
+    () => {
+      // PHASE_COMMIT_SET non-empty with PHASE_DIFF_FILES empty is reachable by
+      // an EMPTY COMMIT, which involves no excluded path at all — so a message
+      // asserting "every changed path falls under the D-03 exclusions" would be
+      // stating a cause the code cannot know. Raised by the #3926 pre-push
+      // adversarial review, which drove exactly this fixture.
+      const repo = createTempGitProject('gsd-3926-empty-commit-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        gitOrThrow(['commit', '--allow-empty', '-m', 'chore: an empty phase commit'], {
+          cwd: repo,
+          timeoutMs: GIT_TIMEOUT_MS,
+        });
+        const empty = gitOrThrow(['rev-parse', 'HEAD'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim();
+        commitSummary(repo, [empty]);
+
+        const result = runScope(repo, 'REVIEW_FILES=()');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'REVIEW_FILES') || [],
+          [],
+          'an empty-diff commit set yields an empty scope'
+        );
+        assert.match(
+          result.stdout,
+          /yielded no reviewable paths/,
+          'the message must describe the condition reached'
+        );
+        assert.doesNotMatch(
+          result.stdout,
+          /every changed path falls under the D-03 exclusions\./,
+          'and must not assert an exclusion cause it cannot know — this commit changed nothing'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'the skipped-cross-check note says "no paths", never "no commits"',
+    SKIP_WIN32,
+    () => {
+      // The note's predicate is an empty FILE set, not an empty COMMIT set:
+      // a recorded EMPTY COMMIT leaves PHASE_COMMIT_SET non-empty while
+      // PHASE_DIFF_FILES is empty, so a message claiming "no phase task
+      // commits" would be false on exactly the state that selects it. Raised
+      // by the #3926 pre-push adversarial review, which named this fixture.
+      const repo = createTempGitProject('gsd-3926-xcheck-note-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        commitFile(repo, 'phase-a.txt', 'chore: real phase work');
+        gitOrThrow(['commit', '--allow-empty', '-m', 'chore: an empty phase commit'], {
+          cwd: repo,
+          timeoutMs: GIT_TIMEOUT_MS,
+        });
+        const empty = gitOrThrow(['rev-parse', 'HEAD'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim();
+        // Record ONLY the empty commit, so the set is non-empty and its diff is not.
+        commitSummary(repo, [empty]);
+
+        // A live SUMMARY key_files scope, so the cross-check branch is reached.
+        const result = runScope(repo, 'REVIEW_FILES=(phase-a.txt)');
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.match(
+          result.stdout,
+          /no phase task-commit paths available for comparison/,
+          'the note must describe the empty PATH set that actually selects it'
+        );
+        assert.doesNotMatch(
+          result.stdout,
+          /no phase task commits in scope/,
+          'and must not claim there are no commits — this fixture records one'
+        );
+        assert.deepStrictEqual(
+          (parseSentinel(result.stdout, 'REVIEW_FILES') || []).sort(),
+          ['phase-a.txt'],
+          'the SUMMARY scope stands unchanged when the cross-check is skipped'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'the final tier label names the source that actually produced the scope',
+    SKIP_WIN32,
+    () => {
+      // The task-commit record lives IN a SUMMARY, so `SUMMARIES` is non-empty
+      // on BOTH Tier-3 branches. A label keyed on that alone reports
+      // "SUMMARY.md" for a scope that came from task commits after key_files
+      // yielded nothing, and the intended branch is unreachable. Raised by the
+      // #3926 pre-push adversarial review, which found the first version of
+      // this label had a branch no input could select.
+      const repo = buildScopeFixture('gsd-3926-tier-label-');
+      try {
+        const script = [
+          'PADDED_PHASE=06',
+          `PHASE_DIR=${PHASE_DIR}`,
+          'REVIEW_FILES=()',
+          `SUMMARIES=$(ls ${PHASE_DIR}/*-SUMMARY.md 2>/dev/null)`,
+          'FILES_OVERRIDE=""',
+          extractTier3FullFence(),
+          fenceContaining(readFileNormalized(WORKFLOW_PATH), 'TIER="--files override"'),
+          'echo "===TIER==="',
+          'echo "${TIER}"',
+          'echo "===END==="',
+        ].join('\n');
+        const result = toLegacyResult(
+          runHook('-c', [script, 'bash'], {
+            interpreter: 'bash',
+            cwd: repo,
+            timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+          })
+        );
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'TIER') || [],
+          ['phase task commits'],
+          'a scope produced by the task-commit derivation must not be labelled SUMMARY.md'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'a mixed #2666 cross-check scope is labelled as mixed, not as SUMMARY.md alone',
+    SKIP_WIN32,
+    () => {
+      // The cross-check starts from SUMMARY key_files and ADDS files only the
+      // task commits surfaced, so the final scope is mixed and "SUMMARY.md"
+      // understates it. Raised by the #3926 pre-push adversarial review.
+      const repo = buildScopeFixture('gsd-3926-mixed-label-');
+      try {
+        const script = [
+          'PADDED_PHASE=06',
+          `PHASE_DIR=${PHASE_DIR}`,
+          'REVIEW_FILES=(phase-a.txt)',
+          `SUMMARIES=$(ls ${PHASE_DIR}/*-SUMMARY.md 2>/dev/null)`,
+          'FILES_OVERRIDE=""',
+          extractTier3FullFence(),
+          fenceContaining(readFileNormalized(WORKFLOW_PATH), 'TIER="--files override"'),
+          'echo "===TIER==="',
+          'echo "${TIER}"',
+          'echo "===END==="',
+        ].join('\n');
+        const result = toLegacyResult(
+          runHook('-c', [script, 'bash'], {
+            interpreter: 'bash',
+            cwd: repo,
+            timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+          })
+        );
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'TIER') || [],
+          ['SUMMARY.md + phase task commits'],
+          'the cross-check adds task-commit files, so the label must say so'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'SCOPE_SOURCE is initialized — an inherited value cannot mislabel a plain SUMMARY scope',
+    SKIP_WIN32,
+    () => {
+      // The label reads SCOPE_SOURCE; without an explicit initialization a value
+      // inherited from the caller's environment selects the wrong branch.
+      //
+      // The scenario has to be one where NO branch assigns SCOPE_SOURCE, or the
+      // assignment masks the missing initialization and the control is vacuous
+      // — which is exactly what the first version of this test did. So: seed
+      // REVIEW_FILES with the COMPLETE phase scope, so the #2666 cross-check
+      // finds nothing missing and never sets the variable. The label must then
+      // fall through to SUMMARY.md rather than report the inherited value.
+      const repo = buildScopeFixture('gsd-3926-scope-init-');
+      try {
+        const script = [
+          'SCOPE_SOURCE="inherited garbage"',
+          'PADDED_PHASE=06',
+          `PHASE_DIR=${PHASE_DIR}`,
+          'REVIEW_FILES=(phase-a.txt phase-b.txt)',
+          `SUMMARIES=$(ls ${PHASE_DIR}/*-SUMMARY.md 2>/dev/null)`,
+          'FILES_OVERRIDE=""',
+          extractTier3FullFence(),
+          fenceContaining(readFileNormalized(WORKFLOW_PATH), 'TIER="--files override"'),
+          'echo "===TIER==="',
+          'echo "${TIER}"',
+          'echo "===END==="',
+        ].join('\n');
+        const result = toLegacyResult(
+          runHook('-c', [script, 'bash'], {
+            interpreter: 'bash',
+            cwd: repo,
+            timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+          })
+        );
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'TIER') || [],
+          ['SUMMARY.md'],
+          'the fence must reset SCOPE_SOURCE rather than trust an inherited value'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  // The spawn_reviewer fence, extracted separately — it derives its own
+  // DIFF_BASE/DIFF_TIP and is what the reviewer agent's last-resort fallback
+  // consumes. Both #3926 rework findings live here, not in the Tier-3 fence.
+  function extractSpawnFence() {
+    const src = readFileNormalized(WORKFLOW_PATH);
+    return fenceContaining(src, '#3926: also hand the agent an upper bound');
+  }
+
+  function runSpawnFence(repo) {
+    const script = [
+      'PADDED_PHASE=06',
+      `PHASE_DIR=${PHASE_DIR}`,
+      extractSpawnFence(),
+      'echo "===DIFF_BASE==="',
+      'echo "${DIFF_BASE}"',
+      'echo "===DIFF_TIP==="',
+      'echo "${DIFF_TIP}"',
+      'echo "===END==="',
+    ].join('\n');
+    return toLegacyResult(
+      runHook('-c', [script, 'bash'], {
+        interpreter: 'bash',
+        cwd: repo,
+        timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+      })
+    );
+  }
+
+  test(
+    'no SUMMARY task commits leaves diff_tip empty and diff_base intact — the residual is announced',
+    SKIP_WIN32,
+    () => {
+      // The reviewer agent's fallback bounds at HEAD when diff_tip is absent,
+      // so Tier 3's fail-closed scope is NOT carried into the agent tier. That
+      // is pre-existing on this path — spawn_reviewer derives DIFF_BASE from
+      // the phase directory unconditionally (#3191/#3503/#3995 pin it), and the
+      // agent defaults an absent diff_tip to HEAD for backward compatibility
+      // with direct invocations — and closing it means changing one of those
+      // two contracts, which is a separate concern. What this test pins is that
+      // the gap is ANNOUNCED rather than silent, and that neither contract is
+      // broken in passing. Raised by the #3926 pre-push adversarial review.
+      const repo = createTempGitProject('gsd-3926-spawn-nosummary-');
+      try {
+        commitFile(repo, 'pre.txt', 'chore: before the phase');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        commitFile(repo, 'phase-a.txt', 'chore: phase work with no SUMMARY recorded');
+        const result = runSpawnFence(repo);
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'DIFF_TIP') || [],
+          [],
+          'no task-commit record means no derivable bound'
+        );
+        assert.notDeepStrictEqual(
+          parseSentinel(result.stdout, 'DIFF_BASE') || [],
+          [],
+          'DIFF_BASE stays the phase-directory anchor (#3191/#3503/#3995)'
+        );
+        assert.match(
+          result.stdout,
+          /no SUMMARY task commits for '06'; the reviewer agent's fallback will bound at HEAD/,
+          'the unbounded fallback must be announced, not silent'
+        );
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  test(
+    'divergent task commits leave diff_tip empty rather than dropping a branch',
+    SKIP_WIN32,
+    () => {
+      // A single A..B range cannot express commits on divergent branches, so
+      // picking either tip DROPS the other branch. On a last-resort net,
+      // over-scoping is tolerable and under-scoping is not — so the tip is left
+      // empty (agent bounds at HEAD) and diff_base is retained. Pre-fix this
+      // selected whichever candidate the record happened to list first.
+      const repo = createTempGitProject('gsd-3926-spawn-diverge-');
+      try {
+        commitFile(repo, 'base.txt', 'chore: base');
+        commitFile(repo, `${PHASE_DIR}/06-1-PLAN.md`, 'docs: create the phase directory');
+        const root = gitOrThrow(['rev-parse', 'HEAD'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).trim();
+        gitOrThrow(['checkout', '-q', '-b', 'left'], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        const left = commitFile(repo, 'left.txt', 'chore: left branch work');
+        gitOrThrow(['checkout', '-q', '-b', 'right', root], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        const right = commitFile(repo, 'right.txt', 'chore: right branch work');
+        // Merge both so each is reachable from HEAD while neither is an
+        // ancestor of the other.
+        gitOrThrow(['merge', '--no-ff', '-m', 'chore: join', left], { cwd: repo, timeoutMs: GIT_TIMEOUT_MS });
+        commitSummary(repo, [left, right]);
+
+        const result = runSpawnFence(repo);
+        assert.equal(result.status, 0, `fence exited ${result.status}; stderr=${result.stderr}`);
+        assert.deepStrictEqual(
+          parseSentinel(result.stdout, 'DIFF_TIP') || [],
+          [],
+          'no single tip covers divergent task commits — the bound must be left to HEAD, never guessed'
+        );
+        assert.notDeepStrictEqual(
+          parseSentinel(result.stdout, 'DIFF_BASE') || [],
+          [],
+          'DIFF_BASE is retained here — commits exist, only the single-tip bound does not'
+        );
+        assert.match(result.stdout, /divergent branches/, 'the widened bound must be announced, not silent');
+      } finally {
+        cleanup(repo);
+      }
+    }
+  );
+
+  // Docs-parity anti-revert: neither Tier-3 consumer may diff to HEAD, both
+  // must consume the PHASE_DIFF_FILES union, and spawn_reviewer must hand the
+  // agent the diff_tip bound its own fallback consumes.
+  test('docs-parity: no ..HEAD tip in Tier-3; spawn_reviewer passes diff_tip; agent fallback is bounded', () => {
+    const workflow = readFileNormalized(WORKFLOW_PATH);
+    const tier3 = extractTier3FullFence();
+    assert.ok(
+      !/git diff [^\n]*\.\.HEAD/.test(tier3),
+      'Tier-3 fence must not diff to HEAD — the scope is the phase change set (#3926)'
+    );
+    assert.ok(
+      tier3.includes('PHASE_DIFF_FILES=$(for c in $(printf'),
+      'Tier-3 fence must derive the change set from the phase commits themselves'
+    );
+    // The membership record is the SUMMARY `## Task Commits` section, read
+    // section-scoped and backtick-anchored. Both anchors are asserted because
+    // dropping either silently widens the parse: without the section slice a
+    // hash quoted anywhere in the SUMMARY enters the set, and without the
+    // backticks a bare hex-shaped token in prose does (the `verifySummaryCore`
+    // failure mode, src/phase.cts).
+    // The `\r` in the heading class is load-bearing, not incidental: git may
+    // check a SUMMARY out with CRLF on Windows, and without it the section
+    // never opens, the commit set comes back empty, and the phase silently
+    // scopes to nothing (driven: 0 hashes from CRLF, 1 from LF).
+    assert.ok(
+      /awk '\/\^## Task Commits\[ \\t\\r\]\*\$\/ \{ inside=1; next \} \/\^## \/ \{ inside=0 \} inside'/.test(tier3),
+      'the phase commit set must be sliced from the SUMMARY `## Task Commits` section, CRLF-tolerantly (#3926)'
+    );
+    assert.ok(
+      tier3.includes("grep -oE '`[0-9a-f]{7,40}`'"),
+      'the hash match must be backtick-anchored, never a bare hex token in prose (#3926)'
+    );
+    assert.ok(
+      !/--grep=/.test(tier3),
+      'no phase-scope message-grep derivation may enter Tier-3 — subjects carry no milestone bound (#3995, T6)'
+    );
+    // #3661: DIFF_BASE prefers LAST_REVIEW_COMMIT, so the set must be filtered
+    // to commits after it or a wave-scoped review re-widens to the whole phase.
+    assert.ok(
+      tier3.includes('git merge-base --is-ancestor "$FULL_SHA" "$DIFF_BASE"'),
+      'the phase commit set must be filtered to commits after DIFF_BASE (#3661 narrowing)'
+    );
+    // Sub-case 3 (no SUMMARY at all) fails closed and loudly — never to a grep.
+    assert.ok(
+      tier3.includes('Warning: No SUMMARY artifacts readable for'),
+      'a phase with no SUMMARY must fail closed with a loud warning, never fall back to a grep (#3926)'
+    );
+    assert.ok(
+      tier3.includes('--first-parent "$c"'),
+      'the per-commit show must use --first-parent — a clean phase-scoped merge otherwise contributes an EMPTY combined diff (#3926)'
+    );
+    assert.ok(
+      workflow.includes('${DIFF_TIP:+diff_tip: ${DIFF_TIP}}'),
+      'spawn_reviewer must pass diff_tip to the reviewer agent (#3926)'
+    );
+    const reviewer = readFileNormalized(REVIEWER_PATH);
+    assert.ok(
+      reviewer.includes('${DIFF_BASE}..${DIFF_TIP:-HEAD}'),
+      'reviewer-agent fallback diff must be bounded by diff_tip when provided (#3926)'
+    );
+    assert.ok(
+      !/git diff [^\n]*\$\{DIFF_BASE\}\.\.HEAD/.test(reviewer),
+      'reviewer-agent fallback must not hardcode ..HEAD (#3926)'
+    );
+  });
 });
