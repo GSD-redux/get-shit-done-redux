@@ -14,6 +14,7 @@
  *   - #2289 — output-envelope allowlist; side effects still run on silent events
  *   - #1974 — one-time critical-session breadcrumb
  *   - #3709 — PreCompact clears the warn sentinel AND the metrics bridge
+ *   - #4285 — WARNING/CRITICAL fire-points resolve from .planning/config.json
  * Extend this list when folding in the next one.
  */
 
@@ -41,18 +42,35 @@ const tmpDir = os.tmpdir();
  * @param {number}  [opts.usedPct]     - used_pct for bridge file
  * @param {boolean} [opts.writeWarn]   - if true, write a warn sentinel before spawn
  * @param {object}  [opts.warnData]    - content for warn sentinel (defaults to first-warn-like data)
+ * @param {object}  [opts.planningConfig] - when given, run in a throwaway project dir
+ *   holding this object as .planning/config.json (#4285). Mutually exclusive with
+ *   `cwd`, which the caller no longer chooses; the dir is removed on the way out.
  * @returns {{ exitCode: number, stdout: string }}
  */
 function runMonitorRaw(opts) {
   const {
     sessionId,
-    cwd = tmpDir,
     writeMetrics = false,
     remaining = 20,
     usedPct = 80,
     writeWarn = false,
     warnData = null,
+    planningConfig = null,
   } = opts;
+
+  // A staged config needs a project dir of its own; without one the caller's
+  // cwd (tmpDir by default) is used exactly as before.
+  const stagedCwd = planningConfig === null
+    ? null
+    : fs.mkdtempSync(path.join(tmpDir, 'gsd-4285-cfg-'));
+  if (stagedCwd !== null) {
+    fs.mkdirSync(path.join(stagedCwd, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(stagedCwd, '.planning', 'config.json'),
+      JSON.stringify(planningConfig)
+    );
+  }
+  const cwd = stagedCwd ?? opts.cwd ?? tmpDir;
 
   const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
   const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
@@ -90,6 +108,7 @@ function runMonitorRaw(opts) {
   } finally {
     try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
     try { fs.unlinkSync(warnPath); } catch { /* already absent */ }
+    if (stagedCwd !== null) cleanup(stagedCwd);
   }
 
   return { exitCode, stdout };
@@ -2492,4 +2511,499 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
     }
   });
 
+});
+
+// ─── #4285: WARNING/CRITICAL fire-points resolve from .planning/config.json ───
+
+describe('#4285 regression: context-monitor thresholds resolve from .planning/config.json', () => {
+  // Why these are behavioural spawns rather than unit calls on resolveThresholds:
+  // the value under test is not the resolver's return, it is WHICH fire-point the
+  // running hook compares `remaining_percentage` against. A unit test on the
+  // resolver would pass even if the resolved pair were never threaded to the two
+  // comparison sites, which is the whole of the change.
+  const sid = (tag) => `test-4285-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const severityOf = (stdout) => JSON.parse(stdout)?.hookSpecificOutput?.severity;
+
+  test('a raised warning threshold fires where the default is silent', () => {
+    // remaining 40 is ABOVE the default 35 → the hook is silent by default.
+    // The control below proves that; without it this test would pass on a hook
+    // that emits for every reading.
+    const control = runMonitorRaw({ sessionId: sid('raise-control'), writeMetrics: true, remaining: 40, usedPct: 60 });
+    assert.strictEqual(control.stdout, '',
+      'control: remaining 40 must be silent under the default 35 threshold — ' +
+      'if this emits, the test below proves nothing about the config key');
+
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('raise'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 45 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'resolving a configured threshold must not fail the hook');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a configured warning threshold of 45 must fire at remaining 40; still silent means ' +
+      'the hook is comparing against the hardcoded 35');
+    assert.strictEqual(severityOf(stdout), 'warning', 'crossing only the warning point is not CRITICAL');
+  });
+
+  test('a raised critical threshold escalates a reading the default calls WARNING', () => {
+    // remaining 32: default resolves warning (32 <= 35, 32 > 25). With critical
+    // moved to 35 the same reading is CRITICAL — so this pins the critical key
+    // specifically, not just "some threshold was read".
+    const control = runMonitorRaw({ sessionId: sid('crit-control'), writeMetrics: true, remaining: 32, usedPct: 68 });
+    assert.strictEqual(severityOf(control.stdout), 'warning',
+      'control: remaining 32 is a WARNING under the defaults');
+
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('crit'),
+      writeMetrics: true,
+      remaining: 32,
+      usedPct: 68,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: 35 } },
+    });
+
+    assert.strictEqual(severityOf(stdout), 'critical',
+      'a configured critical threshold of 35 must escalate remaining 32 to CRITICAL');
+  });
+
+  test('a lowered warning threshold silences a reading the default warns on', () => {
+    // The opposite direction — proves the key moves the fire-point rather than
+    // only ever adding warnings.
+    const control = runMonitorRaw({ sessionId: sid('lower-control'), writeMetrics: true, remaining: 30, usedPct: 70 });
+    assert.match(control.stdout, /CONTEXT WARNING/,
+      'control: remaining 30 warns under the defaults');
+
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('lower'),
+      writeMetrics: true,
+      remaining: 30,
+      usedPct: 70,
+      planningConfig: { hooks: { context_warning_threshold: 20, context_critical_threshold: 10 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'hook exits 0 when the configured thresholds silence it');
+    assert.strictEqual(stdout, '',
+      'with the pair moved to 20/10, remaining 30 is above the warning point and must be silent');
+  });
+
+  test('an unusable value falls back to that key\'s default rather than throwing', () => {
+    // One row per rejection reason, each run at remaining 40, where the default
+    // is silent and the honoured value (45) is not. Silence here is NOT a unique
+    // signature of rejection — Codex review of this PR showed that an accepted
+    // out-of-domain value can reach the same silence through the pair check
+    // instead (an accepted -5 pairs with the default critical 25, which is
+    // >= -5, so both revert and 40 is silent again). So this table proves
+    // "unusable input never fires early and never throws"; the two rows BELOW
+    // are what separate per-key fallback from honouring the value.
+    const rejected = [
+      ['string', '45'],
+      ['above domain', 150],
+      ['negative', -5],
+      ['null', null],
+      ['boolean', true],
+      ['array', [45]],
+      ['object', {}],
+    ];
+
+    for (const [label, value] of rejected) {
+      const { exitCode, stdout } = runMonitorRaw({
+        sessionId: sid(`bad-${label.replace(/\W+/g, '-')}`),
+        writeMetrics: true,
+        remaining: 40,
+        usedPct: 60,
+        planningConfig: { hooks: { context_warning_threshold: value } },
+      });
+
+      assert.strictEqual(exitCode, 0, `${label}: an unusable threshold must never fail the hook`);
+      assert.strictEqual(stdout, '',
+        `${label}: an unusable threshold must fall back to the default 35, leaving remaining 40 silent`);
+    }
+  });
+
+  test('100 is inside the domain, not rejected as out of range', () => {
+    // The bound is inclusive on the top. 100 warns at every reading; if the
+    // range check were `< 100` this would fall back to 35 and go silent at
+    // remaining 40, which is exactly what the rejection table above asserts for
+    // a genuinely out-of-domain 150.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('bound-100'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 100 } },
+    });
+
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a warning threshold of 100 is in-domain and must fire at remaining 40');
+  });
+
+  test('an inconsistent pair falls back to BOTH defaults, not to the usable half', () => {
+    // warning 20 / critical 25 is inconsistent (critical >= warning). Honouring
+    // the warning half alone would leave remaining 30 SILENT; falling back to
+    // both defaults warns. NOTE the limit of this row, raised by Codex review:
+    // critical 25 IS the default here, so it cannot show that the CRITICAL side
+    // reverts — an implementation that reset only `warning` would pass it. The
+    // 45/50 block below is what pins both halves.
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('pair'),
+      writeMetrics: true,
+      remaining: 30,
+      usedPct: 70,
+      planningConfig: { hooks: { context_warning_threshold: 20, context_critical_threshold: 25 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'an inconsistent pair must never fail the hook');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an inconsistent pair resolves to the defaults (35/25), which warn at remaining 30; ' +
+      'silence here would mean the warning half was honoured on its own');
+    assert.strictEqual(severityOf(stdout), 'warning',
+      'the default critical (25) is below remaining 30, so the fallback pair yields WARNING');
+  });
+
+  test('a single override is checked against the OTHER key\'s default', () => {
+    // Same rule as the row above, reached with one key set instead of two — the
+    // case the docs call out, because it is the one an operator hits by accident.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('single'),
+      writeMetrics: true,
+      remaining: 30,
+      usedPct: 70,
+      planningConfig: { hooks: { context_warning_threshold: 20 } },
+    });
+
+    assert.match(stdout, /CONTEXT WARNING/,
+      'warning 20 against the default critical 25 is inconsistent and resolves to 35/25, ' +
+      'which warns at remaining 30');
+  });
+
+  test('an invalid key falls back alone — the sibling override survives', () => {
+    // Codex review: nothing above separated per-key fallback from a
+    // reset-BOTH implementation. Warning 45 is usable, critical is not.
+    // Per key -> (45, 25): remaining 40 is <= 45 and > 25, so WARNING.
+    // Reset both -> (35, 25): remaining 40 is above 35, so SILENCE.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('sibling'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: '30' } },
+    });
+
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unusable critical must not drag the usable warning override down with it');
+    // What this row pins is the WARNING side surviving. It does NOT by itself
+    // prove critical became 25: coercing '30' to 30 would also yield WARNING at
+    // remaining 40 (Codex review, round 2). The next row settles that.
+    assert.strictEqual(severityOf(stdout), 'warning',
+      'remaining 40 is above any resolved critical here, so the severity is the warning rung');
+  });
+
+  test('a numeric-looking STRING is rejected, not coerced', () => {
+    // Same config as the row above, read at 28 — the reading that separates the
+    // two candidate resolutions:
+    //   rejected -> (45, 25): 28 > 25, so WARNING.
+    //   coerced  -> (45, 30): 28 <= 30, so CRITICAL.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('string-critical'),
+      writeMetrics: true,
+      remaining: 28,
+      usedPct: 72,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: '30' } },
+    });
+
+    assert.strictEqual(severityOf(stdout), 'warning',
+      "'critical' at remaining 28 means the string '30' was coerced into a fire-point; " +
+      'Number.isFinite must reject it and leave critical at its default 25');
+  });
+
+  test('a below-domain critical is rejected rather than honoured', () => {
+    // Codex review: the -5 row in the table above cannot tell rejection from
+    // acceptance. Here it can. Warning 45 with critical -5:
+    //   rejected -> (45, 25): remaining 20 is <= 25, so CRITICAL.
+    //   honoured -> (45, -5): remaining 20 is above -5, so merely WARNING.
+    const { stdout } = runMonitorRaw({
+      sessionId: sid('neg-critical'),
+      writeMetrics: true,
+      remaining: 20,
+      usedPct: 80,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: -5 } },
+    });
+
+    assert.strictEqual(severityOf(stdout), 'critical',
+      'a negative critical must fall back to 25 and escalate remaining 20; ' +
+      "'warning' here means -5 was honoured as a fire-point");
+  });
+
+  describe('an inconsistent pair of TWO configured values reverts both', () => {
+    // Codex review: the 20/25 row cannot prove the critical side resets, because
+    // 25 IS the default — an implementation that reset only `warning` would pass
+    // it. 45/50 is inconsistent with BOTH halves away from their defaults, so
+    // each reading below fails a different partial implementation.
+    const pair = { context_warning_threshold: 45, context_critical_threshold: 50 };
+
+    test('the warning half reverts: remaining 40 is silent', () => {
+      // Reverted -> warning 35, and 40 > 35 -> silence.
+      // Warning 45 preserved -> 40 <= 45 -> a warning would fire.
+      const { exitCode, stdout } = runMonitorRaw({
+        sessionId: sid('pair45-40'), writeMetrics: true, remaining: 40, usedPct: 60,
+        planningConfig: { hooks: { ...pair } },
+      });
+      // exitCode first: the helper turns a spawn failure, a non-zero exit or a
+      // timeout into empty stdout too, so asserting silence alone would pass on
+      // a crashed child (Codex review, round 2).
+      assert.strictEqual(exitCode, 0, 'the silence below must come from the threshold, not from a dead child');
+      assert.strictEqual(stdout, '',
+        'output at remaining 40 means the configured warning 45 survived an inconsistent pair');
+    });
+
+    test('the critical half reverts: remaining 32 is WARNING, not CRITICAL', () => {
+      // Reverted -> critical 25, and 32 > 25 -> severity 'warning'.
+      // Critical 50 preserved -> 32 <= 50 -> severity 'critical'.
+      const { stdout } = runMonitorRaw({
+        sessionId: sid('pair45-32'), writeMetrics: true, remaining: 32, usedPct: 68,
+        planningConfig: { hooks: { ...pair } },
+      });
+      assert.match(stdout, /CONTEXT WARNING/, 'the default warning 35 must fire at remaining 32');
+      assert.strictEqual(severityOf(stdout), 'warning',
+        "'critical' at remaining 32 means the configured critical 50 survived an inconsistent pair");
+    });
+  });
+
+  test('an EQUAL pair is inconsistent too — critical must fire strictly deeper', () => {
+    // The boundary of the pair rule: `critical < warning`, not `<=`. With 45/45
+    // honoured, remaining 40 would be <= 45 on BOTH tests and every warning
+    // would arrive pre-escalated to CRITICAL. Rejected, both revert to 35/25 and
+    // remaining 40 is above the warning point.
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('equal-pair'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: { hooks: { context_warning_threshold: 45, context_critical_threshold: 45 } },
+    });
+
+    assert.strictEqual(exitCode, 0, 'an equal pair must never fail the hook');
+    assert.strictEqual(stdout, '',
+      'an equal pair must revert to 35/25, leaving remaining 40 silent');
+  });
+
+  test('context_warnings:false still wins over configured thresholds', () => {
+    // A project that tuned the thresholds and later switched warnings off stays
+    // silent: the disable exit is unconditional, so no configured fire-point can
+    // resurrect it. NOT an ordering guard — measured: moving the resolution
+    // above the disable check leaves this row green, because allow() exits
+    // either way. The ordering is a cost choice (don't resolve on a path that
+    // exits), not an observable, so nothing here pins it.
+    const { exitCode, stdout } = runMonitorRaw({
+      sessionId: sid('disabled'),
+      writeMetrics: true,
+      remaining: 40,
+      usedPct: 60,
+      planningConfig: {
+        hooks: {
+          context_warnings: false,
+          context_warning_threshold: 45,
+          context_critical_threshold: 30,
+        },
+      },
+    });
+
+    assert.strictEqual(exitCode, 0, 'hook exits 0 when warnings are disabled');
+    assert.strictEqual(stdout, '',
+      'context_warnings:false must silence the hook even when a threshold would have fired');
+  });
+});
+
+// ─── #4285: resolveThresholds domain invariants (property-based) ─────────────
+
+const fc = require('./helpers/fast-check-setup.cjs');
+const {
+  resolveThresholds,
+  WARNING_THRESHOLD,
+  CRITICAL_THRESHOLD,
+} = require(MONITOR_PATH);
+
+describe('#4285 properties: resolveThresholds holds its domain invariants for arbitrary input', () => {
+  // The spawn-based rows above pin that the RESOLVED pair reaches the two
+  // comparison sites. They cannot pin the resolver over its numeric domain:
+  // each case costs a subprocess, and only pairs that change an observable
+  // severity are visible at all. These properties cover the other half — the
+  // resolver as a total function — per ADR 456 (threshold/limit contracts get
+  // fast-check coverage) and the seam rule the repo already applies elsewhere
+  // (CONTEXT-INDEX, on the ROADMAP Requirements parser: a closure reachable
+  // only by spawning the CLI is one "no fast-check property can do", so it is
+  // exported and driven directly instead). No path literal here on purpose —
+  // the docs-guard lint reads a bare one as this file guarding a shipped doc.
+
+  const DEFAULTS = { warning: WARNING_THRESHOLD, critical: CRITICAL_THRESHOLD };
+
+  // Deliberately wider than the accepted domain: NaN/±Infinity (fc.double's
+  // default), out-of-range and negative reals, and non-numbers of every shape.
+  const anyThreshold = fc.oneof(
+    { weight: 6, arbitrary: fc.double() },
+    { weight: 3, arbitrary: fc.double({ min: -1000, max: 1000, noNaN: true }) },
+    { weight: 1, arbitrary: fc.anything() },
+  );
+
+  const isDefaults = (r) => r.warning === DEFAULTS.warning && r.critical === DEFAULTS.critical;
+
+  test('the defaults themselves satisfy the invariant they are the fallback for', () => {
+    // If this ever goes red the constants have drifted into the state the
+    // resolver rejects, and every fallback below would return a nonsense pair.
+    assert.ok(Number.isFinite(WARNING_THRESHOLD) && WARNING_THRESHOLD >= 0 && WARNING_THRESHOLD <= 100);
+    assert.ok(Number.isFinite(CRITICAL_THRESHOLD) && CRITICAL_THRESHOLD >= 0 && CRITICAL_THRESHOLD <= 100);
+    assert.ok(CRITICAL_THRESHOLD < WARNING_THRESHOLD);
+  });
+
+  test('totality: no input throws, and the pair is always two finite numbers in [0, 100]', () => {
+    fc.assert(
+      fc.property(anyThreshold, anyThreshold, (w, c) => {
+        const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
+        return (
+          Number.isFinite(r.warning) && r.warning >= 0 && r.warning <= 100 &&
+          Number.isFinite(r.critical) && r.critical >= 0 && r.critical <= 100
+        );
+      }),
+    );
+  });
+
+  test('ordering: the resolved pair always satisfies critical < warning', () => {
+    // This property enforces ORDERING only, and nothing more. It is NOT the
+    // one that catches a half-honoured pair: a resolver that "repaired" 45/50
+    // by resetting only critical returns 45/25, which is perfectly ordered and
+    // sails through here. `togetherness` below is what pins simultaneous
+    // reversion. (Both claims corrected after Codex review of this round — the
+    // comment previously credited this property with catching that case, and
+    // also claimed the behavioural rows sample an inconsistent pair at exactly
+    // one point, which is stale: they cover 20/25, 45/50 and the 45/45
+    // equality boundary.)
+    fc.assert(
+      fc.property(anyThreshold, anyThreshold, (w, c) => {
+        const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
+        return r.critical < r.warning;
+      }),
+    );
+  });
+
+  test('exactness: each side is the configured value or that key\'s default — never a third number', () => {
+    // Rules out a resolver that "repairs" an out-of-domain or inconsistent
+    // input by clamping or nudging it: 150 must become 35, not 100.
+    //
+    // Stated per key rather than per pair, because a MIXED result is legal and
+    // is the documented per-key fallback — warning 150 with critical 0 resolves
+    // to {35, 0}, which is neither "the configured pair" nor "the defaults".
+    // (Found by this property on its first run, against a per-pair phrasing.)
+    fc.assert(
+      fc.property(anyThreshold, anyThreshold, (w, c) => {
+        const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
+        return (
+          (r.warning === w || r.warning === WARNING_THRESHOLD) &&
+          (r.critical === c || r.critical === CRITICAL_THRESHOLD)
+        );
+      }),
+    );
+  });
+
+  test('togetherness: an inconsistent RESOLVED pair reverts both sides, not the offending one', () => {
+    // The complement of the property above: mixing is legal only while the
+    // resulting pair stays ordered. Once it does not, the result is the exact
+    // defaults — no half-honoured pair survives.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        (a, b) => {
+          fc.pre(b >= a); // in-domain but inconsistent: critical >= warning
+          return isDefaults(resolveThresholds({
+            context_warning_threshold: a,
+            context_critical_threshold: b,
+          }));
+        },
+      ),
+    );
+  });
+
+  test('non-vacuity: every in-domain consistent pair is honoured verbatim', () => {
+    // Without this, `resolveThresholds = () => DEFAULTS` passes all three
+    // properties above. This is the one that makes them mean something.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        fc.double({ min: 0, max: 100, noNaN: true }),
+        (a, b) => {
+          const warning = Math.max(a, b);
+          const critical = Math.min(a, b);
+          fc.pre(critical < warning);
+          const r = resolveThresholds({
+            context_warning_threshold: warning,
+            context_critical_threshold: critical,
+          });
+          return r.warning === warning && r.critical === critical;
+        },
+      ),
+    );
+  });
+
+  test('per-key fallback: one unusable key does not discard the other usable one', () => {
+    // Pins the per-key half of the contract the docs promise. warning is left
+    // at a value that stays consistent with the default critical (25), so a
+    // resolved pair survives and the honoured half is observable.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 26, max: 100, noNaN: true }),
+        // The negative arm is not decoration: without it a resolver that
+        // reverts BOTH keys whenever critical is negative passes every other
+        // property (verified — it answers 35/25 for {45, -5} where the
+        // resolver answers 45/25). Found by Codex review of this round; the
+        // mirrored property below already carried its negative arm, and the
+        // asymmetry between the two is exactly what hid the gap.
+        fc.oneof(fc.string(), fc.boolean(), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant(Infinity), fc.double({ min: 100.001, max: 1e6, noNaN: true }), fc.double({ min: -1e6, max: -0.001, noNaN: true })),
+        (warning, junkCritical) => {
+          const r = resolveThresholds({
+            context_warning_threshold: warning,
+            context_critical_threshold: junkCritical,
+          });
+          return r.warning === warning && r.critical === CRITICAL_THRESHOLD;
+        },
+      ),
+    );
+  });
+
+  test('per-key fallback, mirrored: one unusable WARNING does not discard a usable critical', () => {
+    // The mirror of the property above, and NOT redundant with it: without
+    // this, a resolver that reverts BOTH keys the moment warning is unusable
+    // passes all seven other properties. Verified against exactly that mutant
+    // — it answers 35/25 for {warning: 150, critical: 30} where the real
+    // resolver answers 35/30, and the suite stayed green at 125/0 until this
+    // row existed. (Found by Codex review of this round.)
+    //
+    // critical is generated strictly below the DEFAULT warning (35), so the
+    // resolved pair {35, critical} stays ordered and the honoured half is
+    // observable rather than swallowed by the pair check.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 34.999, noNaN: true }),
+        fc.oneof(fc.string(), fc.boolean(), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant(Infinity), fc.double({ min: 100.001, max: 1e6, noNaN: true }), fc.double({ min: -1e6, max: -0.001, noNaN: true })),
+        (critical, junkWarning) => {
+          const r = resolveThresholds({
+            context_warning_threshold: junkWarning,
+            context_critical_threshold: critical,
+          });
+          return r.warning === WARNING_THRESHOLD && r.critical === critical;
+        },
+      ),
+    );
+  });
+
+  test('a non-object hooks argument of any shape yields the defaults', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constant(null), fc.constant(undefined), fc.string(), fc.double(), fc.boolean()),
+        (hooks) => isDefaults(resolveThresholds(hooks)),
+      ),
+    );
+  });
 });

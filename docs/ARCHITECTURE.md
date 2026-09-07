@@ -287,7 +287,7 @@ Runtime hooks that integrate with the host AI agent:
 | Hook | Event | Purpose |
 |------|-------|---------|
 | `gsd-statusline.js` | `statusLine` | Displays model (long-context suffixes like `(1M context)` collapse to a compact `(1M)` badge), task, directory, and context usage bar |
-| `gsd-context-monitor.js` | `PostToolUse` / `AfterTool` | Injects agent-facing context warnings at 35%/25% remaining |
+| `gsd-context-monitor.js` | `PostToolUse` / `AfterTool` | Injects agent-facing context warnings at 35%/25% remaining by default (configurable — see [CONFIGURATION.md](CONFIGURATION.md)) |
 | `gsd-check-update.js` | `SessionStart` | Foreground trigger for the background update check |
 | `gsd-ensure-canonical-path.js` | `SessionStart` | For Claude Code plugin installs, symlinks `~/.claude/gsd-core/{bin,contexts,references,templates,workflows}` to the plugin's bundled tree so `@~/.claude/gsd-core/...` includes resolve; runs first in `SessionStart`, no-op in classic installs, self-heals after `claude plugin update` (#997) |
 | `gsd-check-update-worker.js` | (helper) | Background worker spawned by `gsd-check-update.js`; no direct event registration |
@@ -883,6 +883,11 @@ Runtime Engine (Claude Code / Antigravity CLI)
 | > 35%             | Normal   | No warning injected                     |
 | ≤ 35%             | WARNING  | "Avoid starting new complex work"       |
 | ≤ 25%             | CRITICAL | "Context nearly exhausted, inform user" |
+
+The two fire-points are defaults. `hooks.context_warning_threshold` and
+`hooks.context_critical_threshold` in `.planning/config.json` move them per
+project; see [context-monitor.md](context-monitor.md) for the resolution and
+fallback rules.
 
 
 Debounce: 5 tool uses between repeated warnings. Severity escalation (WARNING→CRITICAL) bypasses debounce.

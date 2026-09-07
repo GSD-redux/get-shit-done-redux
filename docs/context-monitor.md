@@ -28,6 +28,81 @@ breadcrumb bookkeeping.
 | WARNING | <= 35% | Wrap up current task, avoid starting new complex work |
 | CRITICAL | <= 25% | Stop immediately, save state (`/gsd-pause-work`) |
 
+### Tuning the fire-points
+
+35 and 25 are defaults, not fixed points. How much runway "35% remaining" buys
+depends on the window size and on what the phase is doing, so both are
+overridable per project in `.planning/config.json` (#4285):
+
+```jsonc
+{
+  "hooks": {
+    "context_warnings": true,
+    "context_warning_threshold": 45,
+    "context_critical_threshold": 30
+  }
+}
+```
+
+Editing the constants in `gsd-context-monitor.js` instead does not survive: the
+file is in the managed-hooks registry, so the next install re-stages the
+vendored body and the edit is gone without a conflict or a warning. A config key
+survives by construction.
+
+Both keys are optional and both are percentages of context window **remaining**,
+so a *larger* number fires *earlier*. Absent keys resolve to the defaults above,
+which is what every existing project gets.
+
+**Both keys require an installed monitor.** They are read by
+`hooks/gsd-context-monitor.js` and by nothing else, so on a runtime where that
+hook is not installed they are inert — `config-set` still stores them and still
+validates them, but no hook consumes them. Codex is that case today: the hook is
+deliberately not staged for it, because the metrics bridge it reads is written
+only by `hooks/gsd-statusline.js`, which Codex never installs (#2586). Storing a
+value is therefore not evidence that a fire-point moved; check that the monitor
+is installed for the runtime first.
+
+The hook never blocks a tool call, so it never throws on a bad value — it
+degrades:
+
+| config | resolved |
+|---|---|
+| key absent | the default (35 / 25) |
+| not a number, or outside 0-100 | the default for that key |
+| `critical >= warning` after resolution | **both** defaults — an inconsistent pair has no coherent reading, and honouring one side would silently discard the other |
+
+Note the two rows are different rules and compose in this order: an unusable
+value is replaced by ITS OWN default first, and only the resulting pair is
+checked. So `context_warning_threshold: 150` with `context_critical_threshold:
+30` resolves to 35 / 30 — not 35 / 25 — because 30 is usable and 30 < 35 holds.
+
+The pair check compares resolved values, so overriding only one key is still
+checked against the other's default: `context_warning_threshold: 20` on its own
+is inconsistent with the default critical of 25 and resolves back to 35 / 25.
+Move both when either crosses the other. `gsd-tools config-set` validates the
+0-100 domain per key but deliberately does not enforce the pair, because it
+writes one key per call and a two-step retune *can* be transiently inconsistent
+on disk — 35 / 25 to 20 / 10 is valid throughout if critical goes first, and
+inconsistent in between if warning does. A pair check in the setter would reject
+that intermediate write and force one particular order.
+
+### Scope: the root project config only
+
+The monitor reads `<cwd>/.planning/config.json` and nothing else. It does not
+consult a sub-project or workstream config, but `gsd-tools config-set` does
+write to one when the environment selects it — so a scoped write succeeds and
+the monitor keeps using the root value, or the default when the root has none:
+
+| environment | `config-set` writes to |
+|---|---|
+| neither variable | `.planning/config.json` — the file the monitor reads |
+| `GSD_PROJECT=p` | `.planning/p/config.json` |
+| `GSD_WORKSTREAM=w` | `.planning/workstreams/w/config.json` |
+| both | `.planning/p/workstreams/w/config.json` |
+
+That is the same root-only scope `hooks.context_warnings` has always had; tune
+these keys in the root `.planning/config.json`.
+
 ## Debounce
 
 To avoid spamming the agent with repeated warnings:

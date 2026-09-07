@@ -925,6 +925,23 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
     }
   }
 
+  // Context-monitor fire-points (#4285) — a percentage of the context window
+  // REMAINING, so the domain is 0-100 and the hook compares them against
+  // `remaining_percentage`. Rejecting an out-of-domain value here keeps accept
+  // and honour in agreement ON THE DOMAIN: the hook falls back to its default
+  // for a value outside it, so reporting success would be a lie. That agreement
+  // is per-key and no wider — a value accepted here can still be superseded at
+  // read time by the hook's pair check, and a scoped write (GSD_PROJECT /
+  // GSD_WORKSTREAM) lands in a config the hook does not read at all. The PAIR
+  // (critical < warning) is deliberately NOT enforced here: config-set writes
+  // one key per call, so a two-step retune can be transiently inconsistent on
+  // disk and a check here would reject that intermediate write.
+  if (kp === 'hooks.context_warning_threshold' || kp === 'hooks.context_critical_threshold') {
+    if (typeof parsedValue !== 'number' || !Number.isFinite(parsedValue) || parsedValue < 0 || parsedValue > 100) {
+      error(`Invalid ${kp} '${val}'. Must be a number between 0 and 100 (percent of context window remaining).`);
+    }
+  }
+
   // Fallow scope + profile enum validation (#3424)
   const VALID_FALLOW_SCOPES = ['phase', 'repo'];
   if (kp === 'code_quality.fallow.scope') assertEnumValue(parsedValue, val, VALID_FALLOW_SCOPES, 'code_quality.fallow.scope');

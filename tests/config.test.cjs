@@ -3053,3 +3053,77 @@ describe('references/checkpoints.md documents the flag', () => {
 });
   });
 }
+
+describe('config-set hooks.context_warning_threshold / hooks.context_critical_threshold (#4285)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    runGsdTools('config-ensure-section', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Registration: before #4285 both keys were rejected outright as unknown, so
+  // the only way to tune a fire-point was editing the managed hook file.
+  test('both keys are accepted by config-set and persisted', () => {
+    for (const [key, value] of [
+      ['hooks.context_warning_threshold', 45],
+      ['hooks.context_critical_threshold', 30],
+    ]) {
+      const result = runGsdTools(`config-set ${key} ${value}`, tmpDir);
+      assert.ok(result.success, `config-set ${key} failed: ${result.error}`);
+      const config = readConfig(tmpDir);
+      assert.strictEqual(config.hooks[key.split('.')[1]], value);
+    }
+  });
+
+  // The domain is the one the hook compares against (remaining_percentage), and
+  // the bounds are INCLUSIVE on both ends.
+  test('accepts the domain bounds 0 and 100', () => {
+    for (const value of [0, 100]) {
+      const result = runGsdTools(`config-set hooks.context_warning_threshold ${value}`, tmpDir);
+      assert.ok(result.success, `config-set must accept ${value}: ${result.error}`);
+      assert.strictEqual(readConfig(tmpDir).hooks.context_warning_threshold, value);
+    }
+  });
+
+  // Accept and honour must agree ON THE DOMAIN: the hook falls back to its
+  // default for a value outside 0-100, so config-set reporting success on such
+  // a value would tell the operator a tuning took effect when it did not. The
+  // agreement is per-key and no wider — an accepted value can still lose to the
+  // hook's pair check at read time, and a scoped write (GSD_PROJECT /
+  // GSD_WORKSTREAM) lands in a config the hook does not read at all.
+  test('rejects values the hook would discard, and leaves the config untouched', () => {
+    const before = JSON.stringify(readConfig(tmpDir));
+
+    for (const value of ['101', '-1', 'high', 'true']) {
+      for (const key of ['hooks.context_warning_threshold', 'hooks.context_critical_threshold']) {
+        const result = runGsdTools(`config-set ${key} ${value}`, tmpDir);
+        assert.ok(!result.success, `config-set ${key} ${value} must be rejected, not silently stored`);
+      }
+    }
+
+    assert.strictEqual(JSON.stringify(readConfig(tmpDir)), before,
+      'a rejected config-set must not have written anything');
+  });
+
+  // Deliberate non-guard, documented in docs/context-monitor.md: config-set
+  // writes ONE key per call, so a two-step retune (warning first, then
+  // critical) is transiently inconsistent on disk. Refusing it here would block
+  // a legitimate configuration; the hook resolves the pair at read time
+  // instead, falling back to both defaults while it is inconsistent.
+  test('does NOT enforce the pair ordering across two calls', () => {
+    const warn = runGsdTools('config-set hooks.context_warning_threshold 20', tmpDir);
+    assert.ok(warn.success, `config-set must accept a warning threshold below the default critical: ${warn.error}`);
+
+    const crit = runGsdTools('config-set hooks.context_critical_threshold 10', tmpDir);
+    assert.ok(crit.success, `config-set must accept the second half of the retune: ${crit.error}`);
+
+    const config = readConfig(tmpDir);
+    assert.strictEqual(config.hooks.context_warning_threshold, 20);
+    assert.strictEqual(config.hooks.context_critical_threshold, 10);
+  });
+});
