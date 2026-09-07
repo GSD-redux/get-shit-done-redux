@@ -3491,6 +3491,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runGsdTools, cleanup } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const WORKFLOW_PATH = path.join(
   __dirname,
@@ -3643,6 +3644,25 @@ test('bug-3491: new-project.md gates `git init` on in_nested_subdir, not just ha
   assert.ok(
     /in_nested_subdir/.test(content),
     'new-project.md must reference `in_nested_subdir` after the #3491 fix',
+  );
+});
+
+test('bug-4458: new-project.md detects both clone and linked-worktree .git entries', () => {
+  const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+  const subRepoSection = collectSection(
+    content,
+    (heading) => heading.text === '5.1. Sub-Repo Detection',
+  )?.body ?? '';
+
+  assert.match(
+    subRepoSection,
+    /-exec test -e "\{\}\/\.git"/,
+    'sub-repo detection must accept .git as either a directory (clone) or file (linked worktree)',
+  );
+  assert.doesNotMatch(
+    subRepoSection,
+    /-exec test -d "\{\}\/\.git"/,
+    'the directory-only predicate silently excludes linked worktrees',
   );
 });
   });
