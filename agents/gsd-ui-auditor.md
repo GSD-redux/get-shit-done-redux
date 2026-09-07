@@ -141,6 +141,130 @@ If dev server not detected: audit runs on code review only (Tailwind class audit
 
 Try port 3000 first, then 5173 (Vite default), then 8080.
 
+<!-- gsd:ui-interaction-capture -->
+
+### Interaction capture (default-off — `workflow.ui_interaction_capture`)
+
+The static captures show the first paint of `/` and nothing after it: `npx playwright screenshot` has no click, fill, hover, press, snapshot, console or network verb, so a hover state, an open menu, a focus ring or a form's validation state never appears in them — while the Experience Design pillar is scored on exactly that evidence. When the `<config>` block carries `interaction_capture: true` (the `workflow.ui_interaction_capture` key, read by `/gsd:ui-review` and handed down because this agent has no `gsd_run` resolver) **and** a Chrome binary resolves, the `chrome-devtools` CLI from the `chrome-devtools-mcp` package adds post-interaction captures on top of the static ones. It is daemon-backed and needs only `Bash`: no MCP server, no `tools:` change. Key off, or no Chrome: one status line, and the audit proceeds exactly as before.
+
+```bash
+# INTERACTION_CAPTURE: set from the <config> block's `interaction_capture` before running
+# this; absent means off. SCREENSHOT_DIR/DEV_URL come from the static block above.
+INTERACTION_CAPTURE="${INTERACTION_CAPTURE:-false}"
+INTERACTION_STATUS="off"
+
+# The driver launches an installed Chrome, never downloads one. CHROME_BIN overrides discovery.
+CHROME_BIN="${CHROME_BIN:-}"
+if [ -z "$CHROME_BIN" ]; then
+  for _c in google-chrome google-chrome-stable chromium chromium-browser chrome; do
+    if command -v "$_c" >/dev/null 2>&1; then CHROME_BIN=$(command -v "$_c"); break; fi
+  done
+fi
+if [ -z "$CHROME_BIN" ] && [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+  CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+fi
+if [ -z "$CHROME_BIN" ] && [ -x "${PROGRAMFILES:-/nonexistent}/Google/Chrome/Application/chrome.exe" ]; then
+  CHROME_BIN="${PROGRAMFILES}/Google/Chrome/Application/chrome.exe"
+fi
+
+# Documented floor, not a pin; -y answers the npx consent prompt. --sessionId keys the
+# daemon socket (hex/dashes only): `start` restarts whatever daemon shares its session and
+# --isolated isolates only the browser profile, so concurrent audits need their own id.
+# BASHPID not $$ (a subshell inherits $$); $RANDOM separates same-second forks.
+CDT_SESSION="$(date +%s)-${BASHPID:-$$}-$RANDOM"
+CDT="npx -y -p chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION:-^1.8.0} chrome-devtools --sessionId $CDT_SESSION"
+
+if [ "$INTERACTION_CAPTURE" != "true" ]; then
+  echo "Interaction capture: off (workflow.ui_interaction_capture is false) — static captures only"
+elif [ -z "${SCREENSHOT_DIR:-}" ] || [ ! -d "$SCREENSHOT_DIR" ]; then
+  INTERACTION_STATUS="skipped (no dev server reached)"
+  echo "Interaction capture: skipped — the static capture above reached no dev server"
+elif [ -z "$CHROME_BIN" ]; then
+  INTERACTION_STATUS="skipped (no Chrome binary resolved)"
+  echo "Interaction capture: skipped — no Chrome binary resolved (set CHROME_BIN) — static captures only"
+else
+  DEV_URL="${DEV_URL:-http://localhost:3000}"
+  INTERACTION_DIR="$SCREENSHOT_DIR/interaction"
+  mkdir -p "$INTERACTION_DIR"
+  ICAPTURED=0
+  IFAILED=0
+  PAGE_ID=""
+
+  # ishot <label>: capture the current state; counts only a non-empty file, else removes it.
+  ishot() {
+    if $CDT take_screenshot "$PAGE_ID" --filePath "$INTERACTION_DIR/$1.png" >/dev/null 2>&1 \
+       && [ -s "$INTERACTION_DIR/$1.png" ]; then
+      ICAPTURED=$((ICAPTURED + 1))
+    else
+      rm -f "$INTERACTION_DIR/$1.png"
+      IFAILED=$((IFAILED + 1))
+      echo "  interaction capture FAILED: $1"
+    fi
+  }
+
+  # --isolated: throwaway profile (no shared profile-lock contention). --allowUnrestrictedPaths:
+  # otherwise every --filePath under .planning/ fails. `stop` is unconditional once `start`
+  # succeeded — the daemon does not self-reap.
+  if $CDT start -e "$CHROME_BIN" --isolated --allowUnrestrictedPaths --usageStatistics=false >/dev/null 2>&1; then
+    # new_page marks the new page `[selected]`; that number is the pageId every later verb
+    # takes first. --timeout (ms) bounds the one verb that accepts one, before the others run.
+    # Exit status is checked before the output is parsed (a page line then a non-zero exit is
+    # a failed navigation), and the `if` keeps `set -e -o pipefail` from skipping the stop.
+    # `tr -d '\r'`: CRLF output (Git Bash) must still match the `$` anchor.
+    PAGE_ID=""
+    if NEW_PAGE_OUT=$($CDT new_page "$DEV_URL" --timeout 30000 2>/dev/null); then
+      PAGE_ID=$(printf '%s\n' "$NEW_PAGE_OUT" | tr -d '\r' | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1)
+    fi
+    if [ -n "$PAGE_ID" ]; then
+      $CDT resize_page "$PAGE_ID" 1440 900 >/dev/null 2>&1
+      # The snapshot lists every element with the uid click/hover/fill take; uids are
+      # per-snapshot, so re-take it after each interaction. A failed snapshot counts.
+      if ! $CDT take_snapshot "$PAGE_ID" --filePath "$INTERACTION_DIR/snapshot.txt" >/dev/null 2>&1; then
+        # Remove what it left, or a stale file from a reused directory: wrong uids, wrong elements.
+        rm -f "$INTERACTION_DIR/snapshot.txt"
+        IFAILED=$((IFAILED + 1))
+        echo "  interaction step FAILED: take_snapshot"
+      fi
+      ishot baseline
+      # Focus ring on the first focusable element — the one interaction every page has.
+      if $CDT press_key "$PAGE_ID" Tab >/dev/null 2>&1; then
+        ishot focus-first
+      else
+        IFAILED=$((IFAILED + 1))
+        echo "  interaction step FAILED: press_key Tab (focus-first not captured)"
+      fi
+      # --- Drive each interactive component UI-SPEC.md declares (or the snapshot shows); each
+      #     line is a real invocation with a uid from the latest snapshot, named for its state:
+      #   $CDT hover "$PAGE_ID" <uid>              && ishot hover-<label>
+      #   $CDT click "$PAGE_ID" <uid>              && ishot <label>-open
+      #   $CDT fill  "$PAGE_ID" <uid> "<value>"    && ishot <label>-filled
+      #   $CDT press_key "$PAGE_ID" Enter          && ishot <label>-submitted
+      #   $CDT take_snapshot "$PAGE_ID" --filePath "$INTERACTION_DIR/snapshot.txt"
+      # Console output since navigation, for error-state and empty-state findings.
+      $CDT list_console_messages "$PAGE_ID" > "$INTERACTION_DIR/console.txt" 2>/dev/null || true
+    else
+      echo "  new_page FAILED: $DEV_URL"
+    fi
+    $CDT stop >/dev/null 2>&1
+  else
+    echo "  chrome-devtools start FAILED (npx could not fetch the driver, or Chrome did not launch from $CHROME_BIN)"
+  fi
+
+  if [ "$ICAPTURED" -gt 0 ]; then
+    INTERACTION_STATUS="captured ($ICAPTURED state(s), $IFAILED failed) in $INTERACTION_DIR"
+  else
+    INTERACTION_STATUS="not captured (driver or capture failure)"
+  fi
+  echo "Interaction capture: $INTERACTION_STATUS"
+fi
+```
+
+`wait_for` is MCP-only: where a state needs settling, poll `$CDT evaluate_script "() => document.readyState" --pageId "$PAGE_ID"` for `complete`. The driver is Chromium-only; Firefox and WebKit stay on `npx playwright screenshot -b firefox|webkit`, which this section never replaces.
+
+Carry `$INTERACTION_STATUS` into the report as the `**Interaction captures:**` field and the `<audit_pillars>` Experience Design evidence. **Never report an interaction state you did not capture** — with the key off, or the section skipped, interaction findings are code-derived and say so.
+
+<!-- /gsd:ui-interaction-capture -->
+
 </screenshot_approach>
 
 <audit_pillars>
@@ -300,6 +424,7 @@ Write to: `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`
 **Audited:** {date}
 **Baseline:** {UI-SPEC.md / abstract standards}
 **Screenshots:** {captured / not captured (no dev server)}
+**Interaction captures:** {$INTERACTION_STATUS — off / skipped (reason) / captured (N states) / not captured (reason)}
 
 ---
 
@@ -366,7 +491,7 @@ Run the gitignore gate from `<gitignore_gate>`. This MUST happen before step 3.
 
 ## Step 3: Detect Dev Server and Capture Screenshots
 
-Run the screenshot approach from `<screenshot_approach>`. Record whether screenshots were captured.
+Run the screenshot approach from `<screenshot_approach>`. Record whether screenshots were captured. Then run its interaction-capture section with `INTERACTION_CAPTURE` set from the `<config>` block's `interaction_capture` value, and record `$INTERACTION_STATUS` verbatim — it is `off` unless `workflow.ui_interaction_capture` is on and a Chrome binary resolved.
 
 ## Step 4: Scan Implemented Files
 
@@ -407,6 +532,7 @@ Use output format from `<output_format>`. If registry audit produced flags, add 
 **Phase:** {phase_number} - {phase_name}
 **Overall Score:** {total}/24
 **Screenshots:** {captured / not captured}
+**Interaction captures:** {$INTERACTION_STATUS}
 
 ### Pillar Summary
 | Pillar | Score |
@@ -441,6 +567,7 @@ UI audit is complete when:
 - [ ] .gitignore gate executed before any screenshot capture
 - [ ] Dev server detection attempted
 - [ ] Screenshots captured (or noted as unavailable)
+- [ ] Interaction-capture outcome recorded from `$INTERACTION_STATUS` (off, skipped with reason, or captured)
 - [ ] All 6 pillars scored with evidence
 - [ ] Registry safety audit executed (if shadcn + third-party registries present)
 - [ ] Top 3 priority fixes identified with concrete solutions
