@@ -35,6 +35,7 @@ const {
 } = require('../gsd-core/bin/lib/loop-resolver.cjs');
 
 const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -337,6 +338,8 @@ describe('real registry ship:pre — structural guards', () => {
 //       wired at ship:pre; these rows pin the contract the prose depends on.
 
 const SHIP_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
+const EXECUTE_PHASE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
+const PLAN_PHASE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
 
 // The repo's shared generic-gate-dispatch phrasing, used verbatim at execute:wave:post
 // (execute-phase.md), execute:post (execute-phase.md) and plan:post (plan-phase.md).
@@ -344,6 +347,33 @@ const SHIP_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
 // contract assertion: ship:pre either speaks the same dispatch language as its siblings
 // or it is hand-rolling, which is precisely what references/loop-hook-dispatch.md forbids.
 const GENERIC_GATE_LOOP = /For each active entry where\s+`kind == "gate"`/;
+
+function predicateDispatchLine(workflowPath, point) {
+  // allow-test-rule: source-text-is-the-product (#4483)
+  const lines = splitLines(fs.readFileSync(workflowPath, 'utf8'));
+  const pointLine = lines.findIndex((line) => (
+    line.toLowerCase().includes(point) && line.includes('gate') && line.includes('dispatch')
+  ));
+  if (pointLine === -1) return '';
+  return lines
+    .slice(pointLine, pointLine + 40)
+    .find((line) => line.includes('gsd_run check predicate')) ?? '';
+}
+
+describe('predicate gate phase-context forwarding (#4483)', () => {
+  test('execute:post forwards both phase number and phase directory', () => {
+    const line = predicateDispatchLine(EXECUTE_PHASE_MD, 'execute:post');
+    assert.match(line, /--phase-number "\$\{PHASE_NUMBER\}"/);
+    assert.match(line, /--phase-dir "\$\{PHASE_DIR\}"/);
+  });
+
+  test('plan:post forwards phase number, phase directory, and requirement ids', () => {
+    const line = predicateDispatchLine(PLAN_PHASE_MD, 'plan:post');
+    assert.match(line, /--phase-number "\$\{PHASE\}"/);
+    assert.match(line, /--phase-dir "\$\{PHASE_DIR\}"/);
+    assert.match(line, /--phase-req-ids "\$\{PHASE_REQ_IDS\}"/);
+  });
+});
 
 /**
  * Extract ship.md's <step name="preflight_checks"> region.
