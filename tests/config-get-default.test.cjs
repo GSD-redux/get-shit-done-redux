@@ -210,6 +210,96 @@ describe('config-get --default flag (#1893)', () => {
     const parsed = JSON.parse(result);
     assert.equal(parsed, 'json-test');
   });
+
+  test('#4262: JSON output preserves configured/default parity for every config-set value shape', () => {
+    const cases = [
+      { token: 'true', value: true },
+      { token: 'false', value: false },
+      { token: 'null', value: null },
+      { token: '5', value: 5 },
+      { token: '1.25e2', value: 125 },
+      { token: '[1,"two",false]', value: [1, 'two', false] },
+      { token: '{"path":"src/","depth":"deep"}', value: { path: 'src/', depth: 'deep' } },
+      { token: 'standard', value: 'standard' },
+      { token: '', value: '' },
+      { token: 'Infinity', value: 'Infinity' },
+      { token: '-Infinity', value: '-Infinity' },
+      { token: 'NaN', value: 'NaN' },
+      { token: '[invalid', value: '[invalid' },
+    ];
+
+    for (const { token, value } of cases) {
+      fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ probe: { present: value } }));
+      const configured = run('config-get', 'probe.present');
+      const fallback = run('config-get', 'probe.absent', '--default', token);
+      assert.equal(fallback, configured, `default token ${JSON.stringify(token)} must match the configured value`);
+    }
+  });
+
+  test('#4262: typed defaults are parsed in all three absent-key branches', () => {
+    const configPath = path.join(planningDir, 'config.json');
+    const branches = [
+      {
+        name: 'no config file',
+        arrange: () => {
+          if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+        },
+        keyPath: 'probe.absent',
+      },
+      {
+        name: 'mid-traversal non-object',
+        arrange: () => fs.writeFileSync(configPath, JSON.stringify({ probe: 'scalar' })),
+        keyPath: 'probe.absent',
+      },
+      {
+        name: 'undefined leaf',
+        arrange: () => fs.writeFileSync(configPath, JSON.stringify({ probe: {} })),
+        keyPath: 'probe.absent',
+      },
+    ];
+
+    for (const branch of branches) {
+      branch.arrange();
+      const result = run('config-get', branch.keyPath, '--default', '[{"path":"src/","depth":"deep"}]');
+      assert.deepEqual(
+        JSON.parse(result),
+        [{ path: 'src/', depth: 'deep' }],
+        `${branch.name} must emit the JSON value rather than a JSON string`,
+      );
+    }
+  });
+
+  test('#4262: raw output keeps configured/default parity after typed parsing', () => {
+    const cases = [
+      { token: 'false', value: false },
+      { token: 'null', value: null },
+      { token: '5', value: 5 },
+      { token: '[1,2]', value: [1, 2] },
+      { token: '{"depth":"deep"}', value: { depth: 'deep' } },
+      { token: 'standard', value: 'standard' },
+    ];
+
+    for (const { token, value } of cases) {
+      fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ probe: { present: value } }));
+      const configured = runRaw('config-get', 'probe.present');
+      const fallback = runRaw('config-get', 'probe.absent', '--default', token);
+      assert.equal(fallback, configured, `raw default token ${JSON.stringify(token)} must match configured output`);
+    }
+  });
+
+  test('#4262: a configured typed value still wins over a supplied default', () => {
+    const configured = [{ path: 'src/', depth: 'deep' }];
+    fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({
+      workflow: { code_review_depth_overrides: configured },
+    }));
+    const result = run(
+      'config-get',
+      'workflow.code_review_depth_overrides',
+      '--default',
+      '[{"path":"ignored/","depth":"standard"}]',
+    );
+    assert.deepEqual(JSON.parse(result), configured);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────
@@ -621,7 +711,9 @@ describe('config-get --default flag (#1893)', () => {
       const { reason } = runExpectError('config-get', 'git.protected_branches');
       assert.equal(reason, io.ERROR_REASON.CONFIG_KEY_NOT_FOUND);
       const fallback = runRaw('config-get', 'git.protected_branches', '--default', '["main"]');
-      assert.equal(fallback, '["main"]');
+      // #4262: --default uses the config-set grammar before emission, so raw
+      // output matches a configured array's existing String(value) contract.
+      assert.equal(fallback, 'main');
     });
   });
 }
