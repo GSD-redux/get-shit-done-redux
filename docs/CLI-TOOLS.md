@@ -434,6 +434,12 @@ node gsd-tools.cjs roadmap analyze
 node gsd-tools.cjs roadmap update-plan-progress <N>
 ```
 
+When the phase has no writable ROADMAP entry — no matching Progress-table row,
+no `### Phase N` detail section, and no checklist bullet this command can update
+(the checklist-only form) — the command declines with `updated: false` and a
+`missing_phase_details` reason instead of claiming success, and leaves
+`ROADMAP.md` byte-identical.
+
 ### Milestone window scope (`roadmap analyze`)
 
 `roadmap analyze` scopes its phase list to the current milestone's section of
