@@ -813,6 +813,248 @@ describe('statePhaseTokens field (Phase 11, #3309)', () => {
     assert.deepStrictEqual(snap.currentPhaseLabel, { value: null, scope: SCOPE.UNREADABLE });
     assert.strictEqual(emitted, 1, 'the shared STATE.md read must not double-emit across fields');
   });
+
+  // ─── #4257: harvest precision — a command MENTION is not a phase REFERENCE ──
+  //
+  // The pre-#4257 scan (`[Pp]hase\s+(TOKEN)`, unanchored, over the raw file)
+  // harvested the `-phase 5` tail of GSD's own command names and any token
+  // inside an inline code span / fenced block, so a ledger row quoting
+  // `/gsd-execute-phase 5` fired W002 as an undeclared-phase reference. The
+  // #4257 grammar: strip fenced blocks, then inline spans (the canonical
+  // markdown-sectionizer seam + composition order, #2365), THEN match with a
+  // left word boundary `(?<![-\w])` so a hyphen- or word-suffixed carrier
+  // (`execute-phase`, `myphase`) is not a reference while `Phase 5`,
+  // `**Phase 5:**`, `(Phase 5)` still are.
+  test('#4257 row 1 (regression): `/gsd-execute-phase 5` in a Queue ledger row inside an inline code span is NOT harvested', (t) => {
+    const cwd = createTempDir('gsd-4257-spt1-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 2',
+      '',
+      '## Queue',
+      '',
+      '- `/gsd-execute-phase 5`',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257: a bare `/gsd-execute-phase 5` command mention (no backticks) is NOT harvested — left word boundary', (t) => {
+    const cwd = createTempDir('gsd-4257-spt2-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Queue',
+      '',
+      '- Run /gsd-execute-phase 5 when the ledger clears',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257: a quoted roadmap line `- [ ] **Phase 40:**` inside an inline code span is NOT harvested', (t) => {
+    const cwd = createTempDir('gsd-4257-spt3-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Ledger',
+      '',
+      '- `- [ ] **Phase 40:** quoted from a sibling workstream roadmap`',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257: a `Phase 9` mention inside a fenced code block is NOT harvested', (t) => {
+    const cwd = createTempDir('gsd-4257-spt4-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Notes',
+      '',
+      '```',
+      'Phase 9 was quoted here verbatim',
+      '```',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257 tradeoff (pinned by the issue): a GENUINE reference written in backticks stops counting', (t) => {
+    const cwd = createTempDir('gsd-4257-spt5-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Decisions',
+      '',
+      '- see `Phase 5` notes for the rationale',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257: word-suffixed carriers (myphase 5, alphaphase 3) are NOT harvested — boundary covers non-command suffixes too', (t) => {
+    const cwd = createTempDir('gsd-4257-spt6-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Decisions',
+      '',
+      '- myphase 5 and alphaphase 3 are words, not references',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257 mixed form: prose reference survives while command mention and quoted literal are dropped from the same file', (t) => {
+    const cwd = createTempDir('gsd-4257-spt7-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 2',
+      '',
+      '## Queue',
+      '',
+      '- `/gsd-execute-phase 9` once Phase 5 wraps (see `Phase 12` notes)',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: ['5'], scope: SCOPE.COMPLETE });
+  });
+
+  // KEEP rows — the #4257 boundary must NOT narrow legitimate references.
+  test('#4257 keep: bold `**Phase 5:**` and parenthesised `(Phase 5)` and heading `### Phase 5:` forms still harvest', (t) => {
+    const cwd = createTempDir('gsd-4257-spt8-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '### Phase 5: Five',
+      '',
+      '- **Phase 5:** started',
+      '- (Phase 5) pending review',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: ['5', '5', '5'], scope: SCOPE.COMPLETE });
+  });
+
+  test('#4257 keep: silent forms stay silent (Phase5, flag form, non-English word)', (t) => {
+    const cwd = createTempDir('gsd-4257-spt9-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, [
+      '',
+      '## Queue',
+      '',
+      '- `gsd-tools phase --insert 5`',
+      '- `Phase5` shorthand does not count',
+      '- фаза 5 is not the token either',
+      '',
+    ].join('\n'));
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: [], scope: SCOPE.COMPLETE });
+  });
+});
+
+// ─── workstream field (#4257) ────────────────────────────────────────────────
+
+describe('workstream field (#4257)', () => {
+  // The env save/restore pattern mirrors tests/health-diagnostic.test.cjs:598-602
+  // and tests/config-loader.test.cjs:499-509 — GSD_WORKSTREAM is the SAME
+  // discriminator planningDir applies (planning-workspace.cts:130), and the
+  // CLI bootstrap folds the stored active-workstream pointer into it
+  // (active-workstream-store.cts:488-494), so setting it directly is the
+  // faithful rule-level simulation of "workstream alpha is active".
+  function withWorkstreamEnv(t, name) {
+    const prev = process.env['GSD_WORKSTREAM'];
+    if (name === null) delete process.env['GSD_WORKSTREAM'];
+    else process.env['GSD_WORKSTREAM'] = name;
+    t.after(() => {
+      if (prev === undefined) delete process.env['GSD_WORKSTREAM'];
+      else process.env['GSD_WORKSTREAM'] = prev;
+    });
+  }
+
+  test('flat project (no GSD_WORKSTREAM): workstream is null', (t) => {
+    const cwd = createTempDir('gsd-4257-ws1-');
+    t.after(() => cleanup(cwd));
+    writeState(cwd, { milestone: 'v1.0' });
+    withWorkstreamEnv(t, null);
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.workstream, null);
+  });
+
+  test('GSD_WORKSTREAM=alpha: workstream names the scope every workstream-aware read used', (t) => {
+    const cwd = createTempDir('gsd-4257-ws2-');
+    t.after(() => cleanup(cwd));
+    writeFile(cwd, '.planning/workstreams/alpha/STATE.md', [
+      '---',
+      'milestone: v1.0',
+      '---',
+      '',
+      '## Decisions',
+      '',
+      '- Phase 2 wrapped',
+      '',
+    ].join('\n'));
+    withWorkstreamEnv(t, 'alpha');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.strictEqual(snap.workstream, 'alpha');
+  });
+
+  test('non-divergence: the field names the base statePhaseTokens was actually read from', (t) => {
+    const cwd = createTempDir('gsd-4257-ws3-');
+    t.after(() => cleanup(cwd));
+    // Root STATE.md carries Phase 7; workstream STATE.md carries Phase 5. The
+    // tokens must come from the WORKSTREAM file (planningPaths scoped it) and
+    // the field must name that same workstream — one resolution point, two
+    // observable answers that cannot disagree.
+    writeState(cwd, { milestone: 'v1.0' });
+    appendToState(cwd, ['', '- Phase 7 lives at root scope', ''].join('\n'));
+    writeFile(cwd, '.planning/workstreams/alpha/STATE.md', [
+      '---',
+      'milestone: v1.0',
+      '---',
+      '',
+      '- Phase 5 lives in the workstream',
+      '',
+    ].join('\n'));
+    withWorkstreamEnv(t, 'alpha');
+
+    const snap = buildPlanningSnapshot(cwd);
+    assert.deepStrictEqual(snap.statePhaseTokens, { value: ['5'], scope: SCOPE.COMPLETE });
+    assert.strictEqual(snap.workstream, 'alpha');
+  });
 });
 
 describe('stateStatus field (Phase 11, #3309)', () => {

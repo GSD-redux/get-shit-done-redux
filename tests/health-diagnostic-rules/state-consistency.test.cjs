@@ -152,7 +152,9 @@ describe('W002 — STATE.md references a phase not declared on disk or ROADMAP',
     assert.equal(diagnostics.length, 1);
     assert.equal(diagnostics[0].code, 'W002');
     assert.equal(diagnostics[0].severity, SEVERITY.WARNING);
-    assert.match(diagnostics[0].message, /STATE\.md references phase 9, but only phases .* are declared/);
+    // #4257: root scope (no active workstream) keeps the BYTE-IDENTICAL
+    // message grammar — no scope clause is appended when none applies.
+    assert.match(diagnostics[0].message, /STATE\.md references phase 9, but only phases .* are declared$/);
     assert.deepEqual(diagnostics[0].remedy, {
       action: REMEDY_ACTION.ADVISE,
       risk: REMEDY_RISK.NONE,
@@ -239,6 +241,137 @@ describe('W002 — STATE.md references a phase not declared on disk or ROADMAP',
     const snapshot = buildPlanningSnapshot(cwd);
     const diagnostics = ruleFor('W002').check(snapshot);
     assert.deepEqual(diagnostics, []);
+  });
+
+  // ─── #4257: command mentions are not phase references; the warning names ──
+  // ─── its workstream scope ─────────────────────────────────────────────────
+  //
+  // Fixture shape: the issue's own repro — active workstream `alpha` declares
+  // phases 1-2, sibling `beta` declares phase 5, and alpha's STATE.md carries
+  // a Queue/Ledger row mentioning the phase via a GSD command name or a quoted
+  // roadmap line. GSD_WORKSTREAM is set directly (save/restore per
+  // tests/health-diagnostic.test.cjs:598-602) — the same discriminator
+  // planningDir applies and the CLI bootstrap folds the stored pointer into.
+  function withWorkstreamEnv(t, name) {
+    const prev = process.env['GSD_WORKSTREAM'];
+    if (name === null) delete process.env['GSD_WORKSTREAM'];
+    else process.env['GSD_WORKSTREAM'] = name;
+    t.after(() => {
+      if (prev === undefined) delete process.env['GSD_WORKSTREAM'];
+      else process.env['GSD_WORKSTREAM'] = prev;
+    });
+  }
+
+  function makeTwoWorkstreamFixture(cwd, stateQueueLine) {
+    writeFile(cwd, '.planning/config.json', '{}');
+    writeFile(
+      cwd,
+      '.planning/workstreams/alpha/ROADMAP.md',
+      '## v1.0 Current 🚧\n\n### Phase 1: One\n\n### Phase 2: Two\n',
+    );
+    writeFile(
+      cwd,
+      '.planning/workstreams/beta/ROADMAP.md',
+      '## v1.0 Current 🚧\n\n### Phase 5: Five\n',
+    );
+    writeFile(
+      cwd,
+      '.planning/workstreams/alpha/STATE.md',
+      [
+        '---',
+        'status: planning',
+        '---',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 1 of 2 (One)',
+        'Status: planning',
+        '',
+        '## Queue',
+        '',
+        `- ${stateQueueLine}`,
+        '',
+      ].join('\n'),
+    );
+  }
+
+  test('#4257 row 1 (regression): `/gsd-execute-phase 5` in a Queue row is a command mention, not a phase reference — no W002 even though 5 is only declared in a sibling workstream', (t) => {
+    const cwd = createTempDir('gsd-4257-w002-1-');
+    t.after(() => cleanup(cwd));
+    makeTwoWorkstreamFixture(cwd, '`/gsd-execute-phase 5`');
+    withWorkstreamEnv(t, 'alpha');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W002').check(snapshot), []);
+  });
+
+  test('#4257: a quoted roadmap line `- [ ] **Phase 40:**` in a code span is a quoted literal, not a reference — no W002', (t) => {
+    const cwd = createTempDir('gsd-4257-w002-2-');
+    t.after(() => cleanup(cwd));
+    writeFile(cwd, '.planning/config.json', '{}');
+    writeFile(
+      cwd,
+      '.planning/workstreams/alpha/ROADMAP.md',
+      '## v1.0 Current 🚧\n\n### Phase 1: One\n\n### Phase 2: Two\n',
+    );
+    writeFile(
+      cwd,
+      '.planning/workstreams/beta/ROADMAP.md',
+      '## v1.0 Current 🚧\n\n### Phase 40: Forty\n',
+    );
+    writeFile(
+      cwd,
+      '.planning/workstreams/alpha/STATE.md',
+      [
+        '---',
+        'status: planning',
+        '---',
+        '',
+        '## Ledger',
+        '',
+        // Closed code span (matching the A3 snapshot-level twin and the
+        // 50-test-matrix.md B2 row). An UNTERMINATED backtick run is literal
+        // text per CommonMark, so its content is prose and W002 SHOULD fire
+        // on it — not the fixture this row pins.
+        '- `- [ ] **Phase 40:** quoted from the beta roadmap`',
+        '',
+      ].join('\n'),
+    );
+    withWorkstreamEnv(t, 'alpha');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W002').check(snapshot), []);
+  });
+
+  test('#4257: a GENUINE undeclared prose reference still warns under a workstream, and the warning names its scope', (t) => {
+    const cwd = createTempDir('gsd-4257-w002-3-');
+    t.after(() => cleanup(cwd));
+    makeTwoWorkstreamFixture(cwd, 'Phase 5 wrap-up blocked on beta');
+    withWorkstreamEnv(t, 'alpha');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W002').check(snapshot);
+
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'W002');
+    // The valid set is workstream-scoped BY DESIGN (planningPaths under
+    // GSD_WORKSTREAM); the message must say so — phase 5 IS declared, in
+    // sibling `beta`, and the unqualified form read as a false project-wide
+    // claim (#4257 sub-defect 2).
+    assert.equal(
+      diagnostics[0].message,
+      'STATE.md references phase 5, but only phases 1, 2 are declared in workstream alpha',
+    );
+  });
+
+  test('#4257: a command mention naming a DECLARED phase stays silent (no false negative introduced either)', (t) => {
+    const cwd = createTempDir('gsd-4257-w002-4-');
+    t.after(() => cleanup(cwd));
+    makeTwoWorkstreamFixture(cwd, '`/gsd-execute-phase 2`');
+    withWorkstreamEnv(t, 'alpha');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    assert.deepEqual(ruleFor('W002').check(snapshot), []);
   });
 });
 
