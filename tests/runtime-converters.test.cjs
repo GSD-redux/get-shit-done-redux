@@ -2508,7 +2508,7 @@ describe('#3706: the layout seam actually threads the variant', () => {
     fs.mkdirSync(commandsDir, { recursive: true });
     fs.mkdirSync(agentsDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, '.gsd-source'), commandsDir + '\n', 'utf8');
-    fs.writeFileSync(path.join(commandsDir, 'gsd-help.md'), '# complete marker provider\n', 'utf8');
+    fs.writeFileSync(path.join(commandsDir, 'fixture-command.md'), '# fixture command\n', 'utf8');
     fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), agentContent, 'utf8');
     return configDir;
   }
@@ -2586,5 +2586,130 @@ describe('#3706: the layout seam actually threads the variant', () => {
       cleanup(configDir);
       cleanup(noConfigRoot);
     }
+  });
+});
+
+describe('#3159: runtime conversion and projection of session-survivability dispatch', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const conversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+  const { NON_CLAUDE_RUNTIMES } = conversion;
+  const ALL_RUNTIMES = ['claude', ...NON_CLAUDE_RUNTIMES];
+
+  const WORKFLOW_EXECUTE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
+  const SESSION_DISPATCH_PATH = path.join(
+    __dirname,
+    '..',
+    'gsd-core',
+    'workflows',
+    'execute-phase',
+    'steps',
+    'session-survivability-dispatch.md',
+  );
+  const ISOLATION_DISPATCH_PATH = path.join(
+    __dirname,
+    '..',
+    'gsd-core',
+    'workflows',
+    'execute-phase',
+    'steps',
+    'executor-isolation-dispatch.md',
+  );
+
+  test('harness Agent dispatch retains configuration-gated literal background and awaited foreground branches across all runtimes', () => {
+    const sessionSource = fs.readFileSync(SESSION_DISPATCH_PATH, 'utf8');
+
+    for (const rt of ALL_RUNTIMES) {
+      const out = conversion._applyRuntimeRewrites(sessionSource, rt, `$HOME/.${rt}/`, true, undefined);
+
+      const trueIdx = out.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
+      const falseIdx = out.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+      assert.ok(trueIdx !== -1, `${rt}: must have true branch in session survivability dispatch`);
+      assert.ok(falseIdx !== -1, `${rt}: must have false branch in session survivability dispatch`);
+      assert.ok(trueIdx < falseIdx, `${rt}: true branch must precede false branch`);
+
+      const trueChunk = out.slice(trueIdx, falseIdx);
+      assert.match(trueChunk, /run_in_background\s*=\s*true/);
+      assert.doesNotMatch(trueChunk, /run_in_background\s*=\s*false/);
+
+      const afterFalse = out.slice(falseIdx);
+      const nextHeadingIdx = afterFalse.indexOf('\n## ');
+      const falseChunk = nextHeadingIdx !== -1 ? afterFalse.slice(0, nextHeadingIdx) : afterFalse;
+      assert.match(falseChunk, /run_in_background\s*=\s*false/);
+      assert.match(falseChunk, /synchronously/i);
+      assert.doesNotMatch(falseChunk, /run_in_background\s*=\s*true/);
+    }
+  });
+
+  test('orchestrator-worktree backend preserves background spawn for true and synchronous wait for false across all runtimes', () => {
+    const isolationSource = fs.readFileSync(ISOLATION_DISPATCH_PATH, 'utf8');
+
+    for (const rt of ALL_RUNTIMES) {
+      const out = conversion._applyRuntimeRewrites(isolationSource, rt, `$HOME/.${rt}/`, true, undefined);
+
+      const trueIdx = out.indexOf('When it is `true`');
+      const falseIdx = out.indexOf('When it is `false`');
+      assert.ok(trueIdx !== -1, `${rt}: must have true branch in isolation dispatch`);
+      assert.ok(falseIdx !== -1, `${rt}: must have false branch in isolation dispatch`);
+      assert.ok(trueIdx < falseIdx, `${rt}: true branch must precede false branch`);
+
+      const trueChunk = out.slice(trueIdx, falseIdx);
+      assert.match(trueChunk, /background/i);
+      assert.doesNotMatch(trueChunk, /synchronously/i);
+
+      const afterFalse = out.slice(falseIdx);
+      const periodIdx = afterFalse.indexOf('. The worktree');
+      const falseChunk = periodIdx !== -1 ? afterFalse.slice(0, periodIdx) : afterFalse;
+      assert.match(falseChunk, /synchronously/i);
+      assert.match(falseChunk, /wait/i);
+      assert.doesNotMatch(falseChunk, /background/i);
+
+      assert.doesNotMatch(out, /workflow\.session_outlives_turn/, `${rt}: must consume resolved mode without re-querying config`);
+    }
+  });
+
+  test('rejects runtime-name selector and verifies session survivability in verifier dispatch', () => {
+    const sessionSource = fs.readFileSync(SESSION_DISPATCH_PATH, 'utf8');
+    const isolationSource = fs.readFileSync(ISOLATION_DISPATCH_PATH, 'utf8');
+    const executeWorkflow = fs.readFileSync(WORKFLOW_EXECUTE_PATH, 'utf8');
+
+    // Negative assertion: session-survivability decision is not guarded by runtime name
+    assert.doesNotMatch(sessionSource, /if\s*\[\s*"\$RUNTIME"|case\s*"\$RUNTIME"|RUNTIME\s*===/);
+    assert.doesNotMatch(isolationSource, /if\s*\[\s*"\$RUNTIME"|case\s*"\$RUNTIME"|RUNTIME\s*===/);
+
+    // Verifier dispatch carries session survivability guidance
+    const verifierStepStart = executeWorkflow.indexOf('<step name="verify_phase_goal">');
+    const verifierStepEnd = executeWorkflow.indexOf('</step>', verifierStepStart);
+    assert.ok(verifierStepStart !== -1 && verifierStepEnd !== -1, 'verifier step must exist');
+    const verifierStep = executeWorkflow.slice(verifierStepStart, verifierStepEnd);
+    assert.match(verifierStep, /SESSION_OUTLIVES_TURN/);
+    assert.match(verifierStep, /session-survivability-dispatch\.md/);
+
+    // Verifier dispatch section in sessionSource preserves literal branches across all runtimes
+    const verifierDispatchStart = sessionSource.indexOf('## verifier Agent dispatch');
+    assert.ok(verifierDispatchStart !== -1, 'verifier dispatch section must exist in sessionSource');
+    const verifierSource = sessionSource.slice(verifierDispatchStart);
+    for (const rt of ALL_RUNTIMES) {
+      const out = conversion._applyRuntimeRewrites(verifierSource, rt, `$HOME/.${rt}/`, true, undefined);
+      const trueIdx = out.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
+      const falseIdx = out.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+      assert.ok(trueIdx !== -1, `${rt}: must have true branch in verifier dispatch`);
+      assert.ok(falseIdx !== -1, `${rt}: must have false branch in verifier dispatch`);
+      assert.ok(trueIdx < falseIdx, `${rt}: true branch must precede false branch`);
+
+      const trueChunk = out.slice(trueIdx, falseIdx);
+      assert.match(trueChunk, /subagent_type="gsd-verifier"/);
+      assert.match(trueChunk, /run_in_background\s*=\s*true/);
+      assert.doesNotMatch(trueChunk, /run_in_background\s*=\s*false/);
+
+      const falseChunk = out.slice(falseIdx);
+      assert.match(falseChunk, /subagent_type="gsd-verifier"/);
+      assert.match(falseChunk, /run_in_background\s*=\s*false/);
+      assert.doesNotMatch(falseChunk, /run_in_background\s*=\s*true/);
+    }
+
+    // Isolation and worktree ownership remain intact
+    assert.match(isolationSource, /worktree/i);
+    assert.match(isolationSource, /cleanup/i);
   });
 });

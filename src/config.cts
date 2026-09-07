@@ -109,6 +109,7 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // single source of truth, matching workflow.smart_zone_tokens /
   // planning.pr_strict / workflow.inline_plan_threshold below.
   'workflow.compact_content': CONFIG_DEFAULTS.compact_content,
+  'workflow.session_outlives_turn': true,
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,
@@ -341,6 +342,7 @@ function buildNewProjectConfig(userChoices: Record<string, unknown>): Record<str
       verifier: true,
       nyquist_validation: true,
       auto_advance: false,
+      session_outlives_turn: true,
       node_repair: true,
       node_repair_budget: 2,
       ui_phase: true,
@@ -875,6 +877,12 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
   if (kp === 'workflow.agent_hint_routing') {
     if (typeof parsedValue !== 'boolean') {
       error(`Invalid workflow.agent_hint_routing '${val}'. Must be a boolean (true or false).`);
+    }
+  }
+
+  if (kp === 'workflow.session_outlives_turn') {
+    if (typeof parsedValue !== 'boolean') {
+      error(`Invalid workflow.session_outlives_turn '${val}'. Must be a boolean (true or false).`);
     }
   }
 

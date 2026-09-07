@@ -210,6 +210,8 @@
   - [Reachable Lint Rules and a Non-Destructive Quick-Task Append](#3951-reachable-lint-rules-and-a-non-destructive-quick-task-append)
   - [Per-Task External-Tracker Content-Resolution Seam](#3970-per-task-external-tracker-content-resolution-seam)
   - [Unreadable-Directory Scope Signal](#4014-unreadable-directory-scope-signal)
+- [v1.33 Features](#v133-features)
+  - [Executor Session Survivability Dispatch](#169-executor-session-survivability-dispatch)
 
 ---
 
@@ -4349,6 +4351,30 @@ phase directory.
   path for the rest of their output — an intentional, additive-only choice
   to avoid altering already-complex failure control-flow at those sites,
   not a performance optimization.
+
+
+---
+
+## v1.33 Features
+
+### 169. Executor Session Survivability Dispatch
+
+**Config:** `workflow.session_outlives_turn: false`
+
+**Purpose:** Lets an integration that cannot keep its parent turn alive run
+`execute-phase` executor and verifier agents in the foreground without changing
+runtime selection or worktree ownership.
+
+**Requirements:**
+- REQ-3159-01: The absent/default setting preserves background dispatch in `execute-phase`.
+- REQ-3159-02: An explicit `false` dispatches each executor and the phase verifier synchronously in the foreground.
+- REQ-3159-03: A malformed or unavailable session-survivability setting fails
+  closed to foreground dispatch; the registered absent-key default remains true.
+
+**Config:**
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `workflow.session_outlives_turn` | boolean | `true` | Set `false` when the parent session does not survive the active turn. |
 
 ---
 

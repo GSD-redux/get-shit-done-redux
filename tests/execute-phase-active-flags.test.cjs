@@ -18,6 +18,9 @@ const path = require('path');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'execute-phase.md');
+const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
+const SESSION_DISPATCH_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'session-survivability-dispatch.md');
+const ISOLATION_DISPATCH_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md');
 
 describe('execute-phase command: active flags are explicit', () => {
   test('command file exists', () => {
@@ -65,6 +68,99 @@ describe('execute-phase command: active flags are explicit', () => {
       content.includes('If none of these tokens appear, run the standard full-phase execution flow'),
       'context should define the no-flags fallback behavior'
     );
+  });
+});
+
+describe('#3159: session-survivability executor dispatch', () => {
+  test('resolves once and supplies literal opposite-control harness branches', () => {
+    const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const dispatch = fs.readFileSync(SESSION_DISPATCH_PATH, 'utf8');
+    assert.match(workflow, /SESSION_OUTLIVES_TURN=\$\(gsd_run query config-get workflow\.session_outlives_turn/);
+    assert.match(workflow, /session-survivability-dispatch\.md/);
+    const trueAnchor = dispatch.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
+    const falseAnchor = dispatch.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+    const nextSectionAnchor = dispatch.indexOf('## orchestrator-worktree process dispatch');
+    assert.ok(trueAnchor !== -1, 'true anchor must exist in dispatch fragment');
+    assert.ok(falseAnchor !== -1, 'false anchor must exist in dispatch fragment');
+    assert.ok(nextSectionAnchor !== -1, 'next section anchor must exist in dispatch fragment');
+    assert.ok(trueAnchor < falseAnchor, 'true branch precedes false branch');
+    assert.ok(falseAnchor < nextSectionAnchor, 'false branch precedes next section');
+
+    const trueRegion = dispatch.slice(trueAnchor, falseAnchor);
+    const falseRegion = dispatch.slice(falseAnchor, nextSectionAnchor);
+
+    assert.match(trueRegion, /run_in_background\s*=\s*true/);
+    assert.doesNotMatch(trueRegion, /run_in_background\s*=\s*false/);
+    assert.match(trueRegion, /model="\{executor_model\}"/);
+    assert.match(trueRegion, /\{harnessFlag\}/);
+    assert.match(trueRegion, /<required_reading>/);
+    assert.doesNotMatch(trueRegion, /\{EXECUTOR_PROMPT\}/);
+
+    assert.match(falseRegion, /run_in_background\s*=\s*false/);
+    assert.match(falseRegion, /synchronously/);
+    assert.doesNotMatch(falseRegion, /run_in_background\s*=\s*true/);
+    assert.match(falseRegion, /model="\{executor_model\}"/);
+    assert.match(falseRegion, /\{harnessFlag\}/);
+    assert.match(falseRegion, /<required_reading>/);
+    assert.doesNotMatch(falseRegion, /\{EXECUTOR_PROMPT\}/);
+  });
+
+  test('carries the resolved mode to worktree process dispatch and verifier dispatch', () => {
+    const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const dispatch = fs.readFileSync(SESSION_DISPATCH_PATH, 'utf8');
+    const isolation = fs.readFileSync(ISOLATION_DISPATCH_PATH, 'utf8');
+    assert.match(isolation, /already-resolved `SESSION_OUTLIVES_TURN` mode without re-reading configuration/);
+    assert.match(isolation, /true.*background[\s\S]*false.*synchronously[\s\S]*wait/s);
+    assert.doesNotMatch(isolation, /workflow\.session_outlives_turn/);
+    const verifierStart = dispatch.indexOf('## verifier Agent dispatch');
+    const verifierEnd = dispatch.indexOf('<!-- end verifier Agent dispatch -->', verifierStart);
+    assert.ok(verifierStart !== -1, 'verifier dispatch section must exist');
+    assert.ok(verifierEnd !== -1, 'verifier dispatch section must have an end marker');
+    assert.ok(verifierStart < verifierEnd, 'verifier dispatch boundaries must be ordered');
+    const verifierRegion = dispatch.slice(verifierStart, verifierEnd);
+    const trueAnchor = verifierRegion.indexOf('When `SESSION_OUTLIVES_TURN` is `true`');
+    const falseAnchor = verifierRegion.indexOf('When `SESSION_OUTLIVES_TURN` is `false`');
+    assert.ok(trueAnchor !== -1, 'verifier true branch must exist');
+    assert.ok(falseAnchor !== -1, 'verifier false branch must exist');
+    assert.ok(trueAnchor < falseAnchor, 'verifier true branch precedes false branch');
+
+    const trueBranch = verifierRegion.slice(trueAnchor, falseAnchor);
+    const falseBranch = verifierRegion.slice(falseAnchor);
+    const trueAgentStart = trueBranch.indexOf('Agent(');
+    const trueAgentEnd = trueBranch.indexOf('\n)', trueAgentStart);
+    const falseAgentStart = falseBranch.indexOf('Agent(');
+    const falseAgentEnd = falseBranch.indexOf('\n)', falseAgentStart);
+    assert.ok(trueAgentStart !== -1 && trueAgentEnd !== -1, 'true verifier Agent() call must exist');
+    assert.ok(falseAgentStart !== -1 && falseAgentEnd !== -1, 'false verifier Agent() call must exist');
+
+    const trueAgent = trueBranch.slice(trueAgentStart, trueAgentEnd);
+    const falseAgent = falseBranch.slice(falseAgentStart, falseAgentEnd);
+    assert.match(trueAgent, /subagent_type="gsd-verifier"/);
+    assert.match(trueAgent, /run_in_background\s*=\s*true/);
+    assert.doesNotMatch(trueAgent, /run_in_background\s*=\s*false/);
+    assert.match(falseAgent, /subagent_type="gsd-verifier"/);
+    assert.match(falseAgent, /run_in_background\s*=\s*false/);
+    assert.doesNotMatch(falseAgent, /run_in_background\s*=\s*true/);
+    assert.match(workflow, /literal verifier `Agent\(\)` branch/);
+
+    const wfVerifierStart = workflow.indexOf('<step name="verify_phase_goal">');
+    const wfVerifierEnd = workflow.indexOf('</step>', wfVerifierStart);
+    assert.ok(wfVerifierStart !== -1 && wfVerifierEnd !== -1, 'verifier step in workflow must exist');
+    const wfVerifier = workflow.slice(wfVerifierStart, wfVerifierEnd);
+    assert.match(wfVerifier, /run_in_background=\{SESSION_OUTLIVES_TURN_BOOL\}/);
+  });
+
+  test('uses foreground dispatch when a session-survivability config read is malformed or fails', () => {
+    const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    assert.match(workflow, /workflow\.session_outlives_turn --raw 2>\/dev\/null \|\| echo "false"/);
+    assert.match(workflow, /\[ "\$SESSION_OUTLIVES_TURN" = "true" \] \|\| SESSION_OUTLIVES_TURN="false"/);
+  });
+
+  test('applies session survivability to the no-isolation sequential path', () => {
+    const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const sequential = workflow.slice(workflow.indexOf('**Sequential mode**'), workflow.indexOf('4. **Wait for all agents'));
+    assert.match(sequential, /already-resolved `SESSION_OUTLIVES_TURN` mode/);
+    assert.match(sequential, /run_in_background=false/);
   });
 });
 

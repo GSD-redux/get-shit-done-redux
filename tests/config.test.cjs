@@ -399,6 +399,18 @@ describe('config-set command', () => {
     assert.strictEqual(config.workflow.use_worktrees, false);
   });
 
+  test('sets session survivability booleans and rejects non-booleans', () => {
+    writeConfig(tmpDir, {});
+    for (const [input, expected] of [['false', false], ['true', true]]) {
+      const result = runGsdTools(`config-set workflow.session_outlives_turn ${input}`, tmpDir);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      assert.strictEqual(readConfig(tmpDir).workflow.session_outlives_turn, expected);
+    }
+    const invalid = runGsdTools('config-set workflow.session_outlives_turn invalid', tmpDir);
+    assert.strictEqual(invalid.success, false);
+    assert.match(invalid.error, /Must be a boolean/);
+  });
+
   test('sets git.base_branch for non-main default branches', () => {
     writeConfig(tmpDir, {});
 

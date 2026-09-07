@@ -322,6 +322,7 @@
   "gsd-core/workflows/execute-phase/steps/protected-branch.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate-run.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate.md",
+  "gsd-core/workflows/execute-phase/steps/session-survivability-dispatch.md",
   "gsd-core/workflows/execute-phase/steps/tdd-applicability-resolution.md",
   "gsd-core/workflows/execute-phase/steps/wave-post-gate-hooks.md",
   "gsd-core/workflows/execute-phase/steps/worktree-recovery-policy.md",

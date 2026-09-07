@@ -51,18 +51,18 @@ Read STATE.md before any operation to load project context.
 These are the valid GSD subagent types registered in .claude/agents/ (or equivalent for your runtime).
 Always use the exact name from this list — do not fall back to 'general-purpose' or other built-in types:
 
-- gsd-executor — Executes plan tasks, commits, creates SUMMARY.md
-- gsd-verifier — Verifies phase completion, checks quality gates
-- gsd-planner — Creates detailed plans from phase scope
-- gsd-phase-researcher — Researches technical approaches for a phase
-- gsd-plan-checker — Reviews plan quality before execution
-- gsd-debugger — Diagnoses and fixes issues
-- gsd-codebase-mapper — Maps project structure and dependencies
-- gsd-integration-checker — Checks cross-phase integration
-- gsd-nyquist-auditor — Validates verification coverage
-- gsd-ui-researcher — Researches UI/UX approaches
-- gsd-ui-checker — Reviews UI implementation quality
-- gsd-ui-auditor — Audits UI against design requirements
+- gsd-executor
+- gsd-verifier
+- gsd-planner
+- gsd-phase-researcher
+- gsd-plan-checker
+- gsd-debugger
+- gsd-codebase-mapper
+- gsd-integration-checker
+- gsd-nyquist-auditor
+- gsd-ui-researcher
+- gsd-ui-checker
+- gsd-ui-auditor
 </available_agent_types>
 
 <process>
@@ -103,6 +103,9 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 ```bash
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
+SESSION_OUTLIVES_TURN=$(gsd_run query config-get workflow.session_outlives_turn --raw 2>/dev/null || echo "false")
+[ "$SESSION_OUTLIVES_TURN" = "true" ] || SESSION_OUTLIVES_TURN="false"
+SESSION_OUTLIVES_TURN_BOOL="$SESSION_OUTLIVES_TURN"
 EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes --raw 2>/dev/null || echo "5")
 EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes --raw 2>/dev/null || echo "10")
 
@@ -602,18 +605,6 @@ increases monotonically across waves. `{status}` is `complete` (success),
    in their `files_modified` lists, those plans have an implicit dependency and MUST NOT run
    in parallel.
 
-   **Detection algorithm (pseudocode):**
-   ```
-   seen_files = {}
-   overlapping_plans = []
-   for each plan in wave_plans:
-     for each file in plan.files_modified:
-       if file in seen_files:
-         overlapping_plans.add(plan, seen_files[file])  # both plans overlap on this file
-       else:
-         seen_files[file] = plan
-   ```
-
    **If overlap is detected:**
    - Warn the user:
      ```
@@ -623,9 +614,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
      ```
    - Override `PARALLELIZATION` to `false` for this wave only — run all plans in the wave
      sequentially regardless of the global parallelization setting.
-   - This is a safety net for plans that were incorrectly assigned to the same wave.
-     The planner should have caught this; flag it as a planning defect so the user can
-     replan the phase if desired.
+   - Flag it as a planning defect so the user can replan the phase if desired.
 
    **If no overlap:** proceed normally (parallel if `PARALLELIZATION=true`).
 
@@ -651,9 +640,6 @@ increases monotonically across waves. `{status}` is `complete` (success),
    Spawning {count} agent(s)... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
    ---
    ```
-
-   - Bad: "Executing terrain generation plan"
-   - Good: "Procedural terrain generator using Perlin noise — creates height maps and biome zones. Required before vehicle physics."
 
 2.5. **Per-plan worktree decision (run for each plan in this wave BEFORE its dispatch):**
 
@@ -706,14 +692,17 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **Isolation model.** The block below is the **`harness-worktree`** path. For `orchestrator-worktree` use the dispatch below it; for `none` use sequential mode. Both are detailed in `execute-phase/steps/executor-isolation-dispatch.md`.
 
    **Sequential dispatch for parallel execution (waves with 2+ agents):**
-   Dispatch each `Agent()` call **one at a time with `run_in_background: true`**. Do NOT
-   send all Agent calls in a single message: simultaneous `git worktree add` calls race
-   on `.git/config.lock`. Agents still run in parallel once their worktrees are created.
+   When `SESSION_OUTLIVES_TURN` is `true` (default), dispatch each `Agent()` call
+   one at a time with `run_in_background: true` (`git worktree add` calls race on
+   `.git/config.lock`). Agents still run in parallel once created. When `false`,
+   dispatch each with `run_in_background: false` and wait before the next dispatch.
 
    ```text
-   # CORRECT: one Agent() per message with run_in_background: true
-   # WRONG: multiple Agent() calls in one message -> .git/config.lock contention
+   # CORRECT: one Agent() per message with run_in_background: true (or false if session_outlives_turn=false)
+   # WRONG: multiple Agent() calls in a single message -> .git/config.lock contention
    ```
+
+   Read `execute-phase/steps/session-survivability-dispatch.md` for literal executor branches (verifier dispatch is in step 10).
 
    ```text
    Agent(
@@ -814,6 +803,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **Orchestrator-managed worktree dispatch** (`ISOLATION=orchestrator-worktree`): read and execute `execute-phase/steps/executor-isolation-dispatch.md`. GSD creates each worktree (`worktree create`) and spawns the executor into it; the orchestrator performs every git operation. Merge-back and cleanup are the existing manifest-scoped gauntlet, unchanged.
 
    **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is `false` — either project-level `USE_WORKTREES=false`, or per-plan submodule intersection forced it false in step 2.5):
+
+   Apply the already-resolved `SESSION_OUTLIVES_TURN` mode: use `run_in_background=false`
+   and wait when `false`; otherwise retain background dispatch.
 
    Omit `isolation="worktree"` from the Agent call. Replace the `<parallel_execution>` block with:
 
@@ -1274,6 +1266,11 @@ Verify phase achieved its GOAL, not just completed tasks.
 VERIFIER_SKILLS=$(gsd_run query agent-skills gsd-verifier)
 ```
 
+Read `execute-phase/steps/session-survivability-dispatch.md` and use its
+literal verifier `Agent()` branch for the already-resolved
+`SESSION_OUTLIVES_TURN` value. When `false`, the verifier runs in the
+foreground (`run_in_background=false`) and must return before reading status.
+
 ```
 Agent(
   description="Verify phase {phase_number} goal achievement",
@@ -1298,7 +1295,8 @@ ${CONTEXT_WINDOW >= 500000 ? `- {phase_dir}/*-CONTEXT.md (User decisions — ver
 
 ${VERIFIER_SKILLS}",
   subagent_type="gsd-verifier",
-  model="{verifier_model}"
+  model="{verifier_model}",
+  run_in_background={SESSION_OUTLIVES_TURN_BOOL}
 )
 ```
 
