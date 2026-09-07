@@ -1179,7 +1179,7 @@ function isEnvDependentGeneratedPath(rel) {
 test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', {
   skip: process.platform === 'win32'
     ? 'regen:derived (full build + 8 generators) is bounded at 900000ms, which exceeds the '
-      + '600000ms per-chunk CI budget — the chunk killer always fires first, so this can never '
+      + '800000ms per-chunk CI budget — the chunk killer always fires first, so this can never '
       + 'complete on the Windows lane. Covered on the Linux lanes. See #3145.'
     : false,
 }, (t) => {
@@ -1207,7 +1207,7 @@ test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', {
     // allow-spawn-timeout-ceiling: regen:derived is a full build plus eight
     // generators; 300_000 was observed killing a genuinely-completed run
     // near the end on a loaded bench, not a real hang, so 900_000 is
-    // deliberately above the 600000 ceiling to never repeat that flake.
+    // deliberately above the 800000 ceiling to never repeat that flake.
     timeout: 900000,
     maxBuffer: 64 * 1024 * 1024,
   });

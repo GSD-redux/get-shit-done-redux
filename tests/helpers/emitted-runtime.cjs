@@ -452,8 +452,8 @@ function baselineManifestsAtRef(base = 'origin/next') {
  */
 const WORKTREE_TIMEOUT_MS = 60_000;
 const BUILD_LIB_TIMEOUT_MS = 180_000;
-// 360s for the generator step. NOT the 600000ms `local/no-unbounded-spawn`
-// ceiling: `scripts/run-tests.cjs:973` bounds the WHOLE chunk at 600000ms, so a
+// 360s for the generator step. NOT the 800000ms `local/no-unbounded-spawn`
+// ceiling: `scripts/run-tests.cjs:973` bounds the WHOLE chunk at 800000ms, so a
 // step bound equal to it loses the race — the chunk is killed first and the
 // failure arrives as an opaque "no failed step" kill instead of the per-step
 // message below. The bounds must escalate inward-out, and
@@ -477,7 +477,7 @@ const BUILD_TIMEOUT_MS = 360_000;
 // narrowly: the bounds here must be checkable against it, and the alternative is
 // reading that script's source, which `local/no-source-grep` bans. The lock test
 // names this as the drift risk.
-const CHUNK_TIMEOUT_CEILING_MS = 600_000;
+const CHUNK_TIMEOUT_CEILING_MS = 800_000;
 
 function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-emitted-baseline-wt-'));

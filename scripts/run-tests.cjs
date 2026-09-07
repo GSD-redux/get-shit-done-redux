@@ -1475,7 +1475,17 @@ function main() {
   // "# fail 0" with exit 1. Do not reason about a modern chunk kill using the
   // old 20m silent-cancel model; they are different failure modes with
   // different evidence.
-  const chunkTimeoutMs = positiveNumberEnv(process.env.RUN_TESTS_CHUNK_TIMEOUT_MS, 600000);
+  // #4444 CI: install-minimal-hooks.test.cjs (weight=24.45, the heaviest file in
+  // the suite) sits alone in its own chunk yet still occasionally brushed the
+  // 600000ms ceiling on Windows (observed on PR #4504's first CI run, passed on
+  // rerun -- consistent with "legitimately too slow for the budget", not a leak).
+  // Raised to 800000ms: ~33% more margin, still comfortably below the 900000ms
+  // regen:derived fixture timeout that a different test (fragment-single-edit-
+  // propagation.install.test.cjs) deliberately keeps ABOVE this ceiling, and far
+  // under the 45-minute job cap -- Windows shards currently finish in ~19-20
+  // minutes total (see the 2026-09-06 PR #4428 measurement above), so there is
+  // ample headroom to raise the per-chunk budget without threatening the job cap.
+  const chunkTimeoutMs = positiveNumberEnv(process.env.RUN_TESTS_CHUNK_TIMEOUT_MS, 800000);
 
   // #2665: snapshot GSD's install footprint in every LIVE runtime config dir
   // before a single test runs. The suite must not write there; the check after
