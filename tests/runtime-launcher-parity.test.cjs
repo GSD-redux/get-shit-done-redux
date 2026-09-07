@@ -1913,31 +1913,8 @@ const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
 // The snippet uses _GSD_RUNTIME_ROOT as the intermediate variable.
 const LOCAL_CLAUDE_PROBE = '_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/';
 
-/**
- * Return the full system PATH with extra bin dirs prepended. Deliberately does
- * NOT filter gsd_run — unlike buildIsolatedPath() above, which does.
- *
- * The isolation here comes from resolution ORDER, not from the PATH contents.
- * Callers give RUNTIME_DIR a .claude/gsd-core/bin/ stub, and the resolver
- * checks RUNTIME_DIR/gsd-core/bin/ then RUNTIME_DIR/.claude/gsd-core/bin/
- * before it ever reaches `command -v gsd_run`, so an ambient gsd_run on PATH
- * is unreachable for these tests. Keeping PATH whole is what keeps node
- * resolvable when node co-locates with a global gsd_run (e.g. /opt/homebrew/bin).
- *
- * That makes this helper safe ONLY for tests whose stub wins before the PATH
- * arm. Any test that must prove the PATH arm itself misses needs
- * buildIsolatedPath(), which excludes gsd_run-bearing directories outright.
- *
- * For B and C: the stub sits at RUNTIME_DIR/.claude/..., picked at elif-1.
- */
-function makeIsolatedPath(extraBefore = []) {
-  // Keep full system PATH so node remains accessible.
-  // Tests B and C exercise only the RUNTIME_DIR/.claude arm which fires
-  // before command -v gsd_run — so the real gsd_run on PATH is never reached.
-  const systemPaths = (process.env.PATH || '/usr/bin:/bin').split(path.delimiter);
-  return [...extraBefore, ...systemPaths].join(path.delimiter);
-}
-
+// Tests B and C below need no PATH isolation: the RUNTIME_DIR/.claude arm
+// they exercise fires before the resolver ever reaches `command -v gsd_run`.
 describe('bug-444: resolver finds repo-local .claude install', () => {
   // --- (A) Snippet contains the repo-local .claude arm ----------------------
   test('(A) snippet file contains the repo-local .claude/ check arm before $HOME/.claude/', () => {
@@ -1981,8 +1958,6 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
     // NO stub at gsd-core/bin/, NOT on PATH, NOT in $HOME/.claude
     const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-444-root-'));
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-444-home-'));
-    const noToolsBin = path.join(fakeRoot, 'nobin');
-    fs.mkdirSync(noToolsBin, { recursive: true });
 
     try {
       // Create the stub at the repo-local .claude path ONLY
@@ -2008,12 +1983,8 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
       const scriptPath = path.join(fakeRoot, 'test-local-claude.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      // Keep node in PATH (needed to run the .cjs stub); the .claude arm
-      // resolves before the PATH arm, so gsd_run is never probed here.
-      const isolatedPath = makeIsolatedPath([noToolsBin]);
-
       const stdout = runBashFile(scriptPath, {
-        env: { PATH: isolatedPath, HOME: fakeHome },
+        env: { HOME: fakeHome },
       });
 
       // Must have resolved to the local .claude stub
@@ -2037,8 +2008,6 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
   test('(C) repo-local .claude/ install wins over $HOME/.claude/ when both exist', () => {
     const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-444-prec-root-'));
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-444-prec-home-'));
-    const noToolsBin = path.join(fakeRoot, 'nobin');
-    fs.mkdirSync(noToolsBin, { recursive: true });
 
     try {
       // Stub at repo-local .claude/ path (should be picked)
@@ -2073,10 +2042,8 @@ describe('bug-444: resolver finds repo-local .claude install', () => {
       const scriptPath = path.join(fakeRoot, 'test-precedence.sh');
       fs.writeFileSync(scriptPath, scriptContent);
 
-      const isolatedPath = makeIsolatedPath([noToolsBin]);
-
       const stdout = runBashFile(scriptPath, {
-        env: { PATH: isolatedPath, HOME: fakeHome },
+        env: { HOME: fakeHome },
       });
 
       assert.ok(
