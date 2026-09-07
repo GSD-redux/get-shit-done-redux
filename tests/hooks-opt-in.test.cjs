@@ -410,6 +410,21 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       }
     });
 
+    test('large commit_types payload never leaks SIGPIPE status 141 from the opt-in read (#4429)', () => {
+      const manyTypes = Array.from({ length: 20000 }, (_, index) => `custom-${index}`);
+      writeConfigWithHooks(tmpDir, true, manyTypes);
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const result = runHookCmd('git commit -m "feat(core): x"');
+        assert.strictEqual(
+          result.status,
+          0,
+          `attempt ${attempt + 1}: conforming commit must pass, never inherit a pipeline signal; ` +
+            `status=${result.status}, signal=${result.signal}, stderr=${result.stderr}`,
+        );
+      }
+    });
+
     test('dedupes a configured type that duplicates a built-in', () => {
       writeConfigWithHooks(tmpDir, true, ['feat']);
       const okResult = runHookCmd('git commit -m "feat(core): x"');
