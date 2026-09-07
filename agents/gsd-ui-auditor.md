@@ -152,10 +152,15 @@ if [ -n "$DEV_URL" ]; then
   SUFFIX=1
   ALLOC_FAILURE=""
   until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
-    # Retry ONLY a name collision. A candidate that failed and still does not exist failed
-    # structurally (parent unwritable/missing/a file, ENOSPC) — no suffix cures that.
-    # -L as well as -e: a dangling symlink occupies the name but -e follows it and says no.
+    # Retry ONLY a name collision. A candidate that failed and is still absent (-L too: a
+    # dangling symlink occupies the name but -e follows it) either failed structurally —
+    # parent unwritable/missing/a file, ENOSPC — or lost a race to a name taken and freed
+    # between the two calls. One more attempt tells them apart: a race is won, structure
+    # fails again, and no suffix cures the latter.
     if [ ! -e "$SCREENSHOT_DIR" ] && [ ! -L "$SCREENSHOT_DIR" ]; then
+      if mkdir "$SCREENSHOT_DIR" 2>/dev/null; then
+        break
+      fi
       ALLOC_FAILURE="could not create a review directory under .planning/ui-reviews"
       SCREENSHOT_DIR=""
       break

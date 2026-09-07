@@ -995,8 +995,14 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const mkdirCounter = env.COUNT_MKDIR
       ? `mkdir() { printf 'mkdir %s\\n' "$*" >> ${JSON.stringify(mkdirLog)}; command mkdir "$@"; }\n`
       : '';
+    // RACE_MKDIR: the FIRST mkdir of a candidate (no -p) fails and creates nothing, as if the
+    // name had been taken and freed between the call and the checks that follow it. The
+    // second attempt runs for real. Constructs the two-syscall race deterministically.
+    const mkdirRace = env.RACE_MKDIR
+      ? `__raced=0\nmkdir() { if [ "$1" != -p ] && [ "$__raced" = 0 ]; then __raced=1; return 1; fi; command mkdir "$@"; }\n`
+      : '';
     fs.writeFileSync(script,
-      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${dateOverride}${mkdirCounter}${screenshotApproachBlock()}\n`
+      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${dateOverride}${mkdirCounter}${mkdirRace}${screenshotApproachBlock()}\n`
       + 'FENCE_RC=$?\n'
       + `printf %s "$CAPTURE_STATUS" > ${JSON.stringify(statusFile)}\n`
       + `printf %s "$FENCE_RC" > ${JSON.stringify(rcFile)}\n`);
@@ -1211,8 +1217,9 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     assert.strictEqual(r.captureStatus, 'not captured (could not create a review directory under .planning/ui-reviews)');
     assert.match(r.stdout, /Could not allocate a review directory — could not create/);
     assert.strictEqual(r.invocations.length, 0, 'nothing may be captured with no directory');
-    // One `mkdir -p` for the parent, one candidate, then stop. Before the fix this was 101.
-    assert.ok(r.mkdirCalls.length <= 2,
+    // One `mkdir -p` for the parent, one candidate, one re-try that tells a race from
+    // structure, then stop. Before the fix this was 101.
+    assert.ok(r.mkdirCalls.length <= 3,
       `the allocator must not retry a structural failure: ${r.mkdirCalls.length} mkdir calls\n${r.mkdirCalls.slice(0, 5).join('\n')}`);
     assert.strictEqual(fs.readFileSync(path.join(dir, '.planning', 'ui-reviews'), 'utf8'), 'not a directory',
       'the file standing where the directory should be must be left alone');
@@ -1233,6 +1240,18 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
     assert.ok(fs.existsSync(path.join(reviews, '07-20300101-000000-1')), 'the run must have taken the first suffix');
     assert.ok(fs.lstatSync(path.join(reviews, '07-20300101-000000')).isSymbolicLink(), 'the planted link must be left alone');
+  });
+
+  test('a name taken and freed between mkdir and the checks is won on the retry, not read as structural', () => {
+    // The round review's refutation of the structural guard: between `mkdir` failing and
+    // `[ -e ]`/`[ -L ]` running, another audit could have removed the name it had just won,
+    // and both tests then say "absent" — which the guard read as "unwritable" and gave up
+    // on. One more attempt separates the two. The harness's RACE_MKDIR wrapper makes the
+    // first candidate mkdir fail without creating anything, exactly that window.
+    const r = ok(runFence({ PROBE_3000: '200', RACE_MKDIR: '1', FIXED_DATE: '20300101-000000', PADDED_PHASE: '07' }));
+    assert.match(r.stdout, /Screenshots captured/, 'a freed name must be won on the retry');
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
+    assert.deepStrictEqual(r.shotDirs, ['07-20300101-000000'], 'the BASE name must be the one won, not a suffix');
   });
 
   test('the last candidate suffix is tried, not skipped', () => {
