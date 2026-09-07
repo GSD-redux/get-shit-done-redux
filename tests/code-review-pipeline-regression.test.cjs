@@ -59,21 +59,25 @@ const REVIEWER_PATH = path.join(ROOT, 'agents', 'gsd-code-reviewer.md');
 // across unrelated statements. The fold corrects the input, so everything built
 // on the scan is fixed at once.
 //
-// `[ \t]*` rather than `\s*` after the newline: this is exactly the shell's
-// own rule (backslash-newline is removed, the continued line's indentation
-// collapses into the separator), and it cannot swallow a blank line and glue
-// two unrelated statements together.
-const foldShellContinuations = (src) => src.replace(/\\\n[ \t]*/g, ' ');
+// A newline is continued only when its immediately preceding run contains an
+// ODD number of backslashes: one is consumed by the continuation and every
+// preceding pair represents literal backslashes. An even run ends the shell
+// statement normally. `[ \t]*` deliberately cannot swallow a blank line.
+const foldShellContinuations = (src) => src.replace(
+  /(^|[^\\])((?:\\\\)*)\\\n[ \t]*/gm,
+  (_match, prefix, literalPairs) => `${prefix}${literalPairs} `,
+);
 
-// Built per call rather than shared at module scope: a `/g` regex carries
-// lastIndex, and one shared across call sites is a state bug waiting for the
-// second caller.
-const grepSiteRe = () => /^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm;
+const GREP_SITE_RE = /^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm;
+const BASH_FENCE_RE = /^```(?:bash|sh)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
 
 const findGrepSites = (src) => Array.from(
-  foldShellContinuations(src).matchAll(grepSiteRe()),
-  (m) => m[0],
-);
+  src.matchAll(BASH_FENCE_RE),
+  (fence) => Array.from(
+    foldShellContinuations(fence[1]).matchAll(GREP_SITE_RE),
+    (match) => match[0],
+  ),
+).flat();
 
 // ---------------------------------------------------------------------------
 // Pure-function implementation of the compute_file_scope Node script body.
@@ -1123,7 +1127,7 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
     ].join('\n');
 
     // Semantically identical to the row above. The only difference is two
-    // backslashes and two newlines, and that used to be enough to vanish.
+    // continued physical lines, and that used to be enough to vanish.
     const continued = [
       '```bash',
       'PHASE_START=$(git log \\',
@@ -1147,40 +1151,62 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
       );
     }
 
-    // Negative controls — the fold must not manufacture hits.
-    const benign = 'RELEASE_NOTES=$(git log --grep="^chore" --format="%s")';
+    // Negative control that DOES exercise the fold: a continued, non-phase
+    // grep site remains a site, but must not become a phase-scope finding.
+    const benign = [
+      '```bash',
+      'RELEASE_NOTES=$(git log \\',
+      '  --grep="^chore" --format="%s")',
+      '```',
+    ].join('\n');
     assert.equal(
       findGrepSites(benign).filter((l) => l.includes('PHASE_SCOPE_NUM') || /phase-\)?\(/.test(l)).length,
       0,
       'a non-phase-scope --grep must stay clean',
     );
 
-    // A wrapped assignment that merely sits near a --grep string must not be
-    // glued into one logical line with it. This is what a naive [\s\S]*?
-    // widening of the regex would have got wrong.
+    // A wrapped git-log assignment that merely sits near a --grep string must
+    // not be glued into one logical line with it. This exercises the fold and
+    // still contains every keyword the site regex looks for.
     const unrelated = [
-      'SOME_VAR=$(printf %s \\',
-      '  "not a git log")',
-      '',
+      '```bash',
+      'SOME_VAR=$(git log \\',
+      '  --format="%H")',
       'echo "--grep=$SOME_VAR"',
+      '```',
     ].join('\n');
     assert.deepStrictEqual(findGrepSites(unrelated), [], 'a wrapped unrelated assignment must not glue into a hit');
 
     // A continuation must not reach across a blank line — the reason this
     // folds [ \t]* rather than \s* after the newline.
     const acrossBlank = [
+      '```bash',
       'SOME_VAR=$(git log \\',
       '',
       'FOO=--grep=x',
+      '```',
     ].join('\n');
     assert.deepStrictEqual(findGrepSites(acrossBlank), [], 'the fold must stop at a blank line');
+
+    // Two trailing backslashes represent one literal backslash followed by a
+    // real newline. Folding this would invent a site the shell does not have.
+    const evenBackslashes = [
+      '```bash',
+      'PHASE_START=$(git log \\\\',
+      '  --grep="phase-${PHASE_SCOPE_NUM}")',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(
+      findGrepSites(evenBackslashes),
+      [],
+      'an even trailing-backslash run is not a shell continuation',
+    );
   });
 
   test('#4259 T6 site scan reports nothing on the live workflow files', () => {
-    // The adoption check: the fold must introduce no false positive on the
-    // current tree, or landing it would mean editing a workflow file to
-    // appease a test. Distinct from T6 itself, which asserts the narrower
-    // "no PHASE_SCOPE_NUM site" — this asserts the scan is quiet outright.
+    // The adoption check: only shell code fences are scanned, so markdown hard
+    // breaks and examples in other languages cannot be folded into fake shell
+    // sites. Distinct from T6 itself, this asserts the live scan is quiet.
     for (const src of [
       readFileNormalized(WORKFLOW_PATH),
       readFileNormalized(PRE_PASS_STEP_PATH).replace(/\\"/g, '"'),
