@@ -22,6 +22,9 @@
  *   but the aggregate `ok` is `false` so no caller mistakes a partial run for a clean one.
  * - Once a lane is planned, a per-lane plan/budget/invoke failure never displaces or cancels a
  *   sibling lane already run.
+ * - A lane whose `promptChannel` is `'none'` (it reviews the working tree on its own terms, fed
+ *   nothing — e.g. `coderabbit`) cannot receive the bounded prompt below and is rejected before
+ *   plan/invoke, same as an unresolved slug.
  *
  * The bounded source-review prompt built here is METADATA ONLY — repository root, canonical
  * file paths, review depth, base SHA, and four fixed prohibitions. It never embeds file
@@ -361,6 +364,23 @@ export async function dispatchReviewerLanes(
     const lane = getLane(slug);
     if (!lane) {
       results.push({ slug, ok: false, reason: 'malformed_lane', detail: 'no such declared lane' });
+      anyFailed = true;
+      continue;
+    }
+
+    // #4209 review: a `promptChannel: 'none'` lane (coderabbit) is fed nothing and reviews
+    // whatever it independently sees fit (its own working-tree diff, review.md:367) rather than
+    // the bounded `paths`/`depth`/`baseSha` scope `buildSourceReviewPrompt` promises — silently
+    // dispatching it here would violate this interpreter's own scoped, metadata-only review
+    // contract. Reject before plan()/invoke() rather than let the mismatch surface as an
+    // unexplained out-of-scope review.
+    if (lane.transport === 'spawn' && lane.invoke.promptChannel === 'none') {
+      results.push({
+        slug,
+        ok: false,
+        reason: 'prompt_channel_unsupported',
+        detail: `lane '${slug}' declares promptChannel 'none' and cannot receive a scoped source-review prompt`,
+      });
       anyFailed = true;
       continue;
     }
