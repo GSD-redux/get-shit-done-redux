@@ -3635,9 +3635,9 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
 
     t3('#4480: table phase names are resolved by a recognized header', () => {
       const nameRows = rp3.collectTablePhaseRows([
-        '| Phase | Name | Status |',
+        '| Phase | Status | Name |',
         '| --- | --- | --- |',
-        '| 1 | First Thing | done |',
+        '| 1 | done | First Thing |',
       ].join('\n'));
       const phaseNameRows = rp3.collectTablePhaseRows([
         '| Phase | Phase Name | Status |',
@@ -3680,7 +3680,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
         '| 3 | 1/2 | In Progress | |',
         '',
         '```md',
-        '| Phase | Focus |',
+        '| Phase | Name |',
         '| --- | --- |',
         '| 77 | fenced example |',
         '```',
@@ -3702,7 +3702,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
       writeRoadmap3(tmpDir, [
         '# Roadmap', '', '## v1.0', '',
         '### Phase 1: Heading Form', '**Goal:** g', '',
-        '| Phase | Focus |',
+        '| Phase | Name |',
         '| --- | --- |',
         '| 1 | heading dup guard |',
         '| 2.5 | decimal row |',
