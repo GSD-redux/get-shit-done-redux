@@ -303,7 +303,7 @@ function normalizeAntigravityPayload(data) {
   if (call === null || typeof call !== 'object') return data;
   const raw = call.name;
   if (typeof raw !== 'string') return data;
-  const mapped = ANTIGRAVITY_TOOL_NAMES.get(raw.slice(raw.lastIndexOf(':') + 1));
+  const mapped = ANTIGRAVITY_TOOL_NAMES.get(raw);
   if (!mapped) return data;
   data.tool_name = mapped;
   if (typeof data.session_id !== 'string' && typeof data.conversationId === 'string') {
@@ -311,7 +311,9 @@ function normalizeAntigravityPayload(data) {
   }
   const args = call.args;
   if (args !== null && typeof args === 'object') {
-    const input = (data.tool_input !== null && typeof data.tool_input === 'object') ? data.tool_input : {};
+    // A nested Antigravity call is authoritative. Start fresh rather than
+    // retaining fields from a synthetic flat+nested hybrid payload.
+    const input = {};
     // Only documented keys are lifted, and only from a string: a bulk copy of
     // `args` would carry an attacker-chosen `__proto__` key into a plain
     // object, and would invent field names this runtime has not been observed
@@ -319,9 +321,7 @@ function normalizeAntigravityPayload(data) {
     // failing open exactly as it does today — never worse than dormant.
     if (typeof args.TargetFile === 'string') input.file_path = args.TargetFile;
     if (typeof args.AbsolutePath === 'string') input.file_path = args.AbsolutePath;
-    for (const key of ['CommandLine', 'Command']) {
-      if (typeof args[key] === 'string') { input.command = args[key]; break; }
-    }
+    if (typeof args.CommandLine === 'string') input.command = args.CommandLine;
     data.tool_input = input;
   }
   return data;
