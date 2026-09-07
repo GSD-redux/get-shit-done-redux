@@ -55,11 +55,29 @@ export function formatProgressMachineSegment(percent: number): string {
 // `syncCore`'s call here.
 export function stateReplaceProgressPercent(content: string, percent: number): string | null {
   const body = stripFrontmatter(content);
-  // #2177: bold `**Progress:**` anywhere in the body wins outright; the plain
-  // `^Progress:` form is the fallback only when no bold line exists, so an
-  // earlier free-text line starting with `Progress:` cannot capture the
-  // rewrite ahead of the real status line.
-  const boldProgressPattern = /(\*\*Progress:\*\*[ \t]*)([^\r\n]*)/i;
+  // #2177: bold `**Progress:**` takes priority over the plain `^Progress:`
+  // form, so an earlier free-text line starting with `Progress:` cannot
+  // capture the rewrite ahead of the real status line.
+  //
+  // #4243 (follow-up to #4453, maintainer ruling 2026-09-07): the bold form
+  // is also ANCHORED to line start, with same-line leading whitespace only —
+  // the exact idiom #4453 applied to stateReplaceField's bold branch. The
+  // pre-fix pattern carried no `^` and no `m` flag, so a bold percent-ish
+  // label quoted MID-SENTENCE inside prose (an Accumulated Context bullet
+  // mentioning `**Progress:**`) captured the machine-segment rewrite and
+  // destroyed the rest of its line, silently, while the real Progress line
+  // stayed stale — every caller (cmdStateUpdateProgress, syncCore's percent
+  // arm, applyPostSyncPreservation) feeds the whole document. #2177's own
+  // recorded requirements are unaffected: the frontmatter is stripped before
+  // matching (its defect was the YAML `progress:` key shadowing the body
+  // line), the suffix-preserving machine-segment swap is untouched, and the
+  // bold-beats-plain priority now governs LINE-START forms. The leading class
+  // is `[ \t]*`, deliberately NOT `\s*` — `^\s*\*\*` can consume the newlines
+  // before the label into the match and drop them on rebuild (#4010's
+  // same-line confinement hazard). `$` is explicit-and-inert (`[^\r\n]*`
+  // never crosses line terminators) and documents that the match ends at
+  // end-of-line.
+  const boldProgressPattern = /^([ \t]*\*\*Progress:\*\*[ \t]*)([^\r\n]*)$/im;
   const plainProgressPattern = /^(Progress:[ \t]*)([^\r\n]*)/im;
   const pattern = boldProgressPattern.test(body)
     ? boldProgressPattern
