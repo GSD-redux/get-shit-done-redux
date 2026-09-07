@@ -1429,6 +1429,208 @@ describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declare
   });
 });
 
+describe('#3830: advancePlan cross-checks prose plan position against the plan set on disk', () => {
+  const clock = { clock: fixedClock };
+
+  // The reproduction from the issue: twelve plans on disk, prose still says
+  // "2 of 8". Pre-fix this returned { advanced: true, current_plan: 3,
+  // total_plans: 8 } and wrote "Plan: 3 of 8" back.
+  const COMPOUND_STALE = [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    'Plan: 2 of 8',
+    'Status: Ready to execute',
+    'Last Activity: 2026-06-26',
+    '',
+  ].join('\n');
+
+  const LEGACY_STALE = [
+    '# Project State',
+    '',
+    '**Current Plan:** 02',
+    '**Total Plans in Phase:** 08',
+    '**Status:** Ready to execute',
+    '**Last Activity:** 2026-06-26',
+    '',
+  ].join('\n');
+
+  // Default shape: both disk counts agree with each other, so only a prose
+  // total matching neither can diverge.
+  const diskSays = (planCount, extra = {}) => ({
+    ...clock,
+    planSetProvider: () => ({
+      ok: true,
+      phase: '01',
+      planCount,
+      planCountAll: planCount,
+      ...extra,
+    }),
+  });
+
+  test('refuses to advance when the disk plan count diverges from the prose total (compound)', () => {
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.advanced, false);
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged');
+    assert.deepStrictEqual(result.data && result.data.prose, { current_plan: 2, total_plans: 8 });
+    assert.deepStrictEqual(result.data && result.data.disk, {
+      phase: '01',
+      plan_count: 12,
+      plan_count_all: 12,
+    });
+  });
+
+  test('the refusal reports NO updated fields and returns the input bytes untouched', () => {
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, diskSays(12));
+    assert.deepStrictEqual(result.updated, []);
+    // Byte-identical, not merely "Plan: still 2 of 8": a refusal that
+    // normalizes frontmatter or reflows the section is still a mutation, and
+    // this verb's whole defect is writing when it should not.
+    assert.strictEqual(result.content, COMPOUND_STALE);
+  });
+
+  test('the legacy Current Plan / Total Plans in Phase shape goes through the same check', () => {
+    const result = transitionCore(LEGACY_STALE, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged');
+    assert.strictEqual(result.content, LEGACY_STALE);
+  });
+
+  // #4067 landed on `next` mid-review and re-decides the phase-complete branch
+  // from disk in cmdStateAdvancePlan (every plan summarized, or decline as
+  // `plans_outstanding`). Its own fixture is a `7 of 7` carried into a 3-plan
+  // phase — a total this check calls diverged — and it expects that branch to be
+  // REACHED. So the core reports the divergence on the completion branch instead
+  // of refusing there, and the command-layer tests in tests/state.test.cjs pin
+  // what the disk then decides. The increment branch is unchanged: see
+  // 'single-plan drift in either direction is still divergence' below.
+  test('a diverged total on the phase-COMPLETION branch is reported, not refused', () => {
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 8 of 8');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+    assert.strictEqual(result.data && result.data.status, 'ready_for_verification');
+    assert.deepStrictEqual(result.data && result.data.prose_diverged, {
+      prose: { current_plan: 8, total_plans: 8 },
+      disk: { phase: '01', plan_count: 12, plan_count_all: 12 },
+    }, 'the completion answer must carry the divergence it did not refuse on');
+    assert.notStrictEqual(result.content, input, 'the core still writes the completion; #4067 declines it at the command layer when plans are outstanding');
+  });
+
+  test('an in-range last plan carries no prose_diverged', () => {
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 8 of 8');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(8));
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+    assert.strictEqual(result.data && result.data.prose_diverged, undefined);
+  });
+
+  test('a position past its own total is reported on the completion branch, not refused', () => {
+    // `20 of 12` is `rangeDiverged` with an agreeing total; it satisfies
+    // currentPlan >= totalPlans, so it lands on the completion branch and #4067's
+    // disk answer is the only thing that says anything true about the phase.
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 20 of 12');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+    assert.deepStrictEqual(result.data && result.data.prose_diverged && result.data.prose_diverged.prose,
+      { current_plan: 20, total_plans: 12 });
+  });
+
+  test('a position BELOW the plan set is still refused — that is the increment branch', () => {
+    const input = COMPOUND_STALE.replace('Plan: 2 of 8', 'Plan: 0 of 12');
+    const result = transitionCore(input, { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged');
+    assert.strictEqual(result.content, input);
+  });
+
+  test('advances exactly as before when the prose TOTAL matches the disk plan count', () => {
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, diskSays(8));
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 3);
+    assert.strictEqual(result.data && result.data.total_plans, 8);
+    assert.ok(/3 of 8/.test(stateExtractField(result.content, 'Plan') || ''));
+  });
+
+  // The three "no evidence" shapes below must NOT be read as divergence.
+  // Blocking on any of them would strand a project this check knows nothing
+  // about (ADR-3180 Decision 2 / #3057 B1: a non-answer is not a zero).
+
+  test('an ABSENT provider leaves behaviour exactly as it was (skip-clean)', () => {
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, clock);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 3);
+  });
+
+  test('a scan that could not complete (ok:false) is unknown, not diverged', () => {
+    const deps = { ...clock, planSetProvider: () => ({ ok: false, reason: 'phases directory not readable' }) };
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+
+  test('a phase with no plan files on disk yet is not diverged and is not blocked', () => {
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, diskSays(0));
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 3);
+  });
+
+  test('single-plan drift in either direction is still divergence', () => {
+    for (const planCount of [7, 9]) {
+      const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, diskSays(planCount));
+      assert.strictEqual(
+        result.data && result.data.reason,
+        'position_diverged',
+        `disk=${planCount} vs prose total 8 should diverge`,
+      );
+    }
+  });
+
+  // --- the two-writer supersession split (#2893 / plan_count vs plan_count_all) ---
+
+  test('a prose total matching plan_count_all is NOT divergence, even when live plans are fewer', () => {
+    // execute-phase writes the live count; plan-review-convergence writes
+    // plan_count_all. A superseded plan makes them differ by design, and a
+    // check that insisted on one would report that writer split as drift.
+    const deps = diskSays(7, { planCountAll: 8 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true, 'prose total 8 == plan_count_all 8');
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+
+  test('a prose total matching NEITHER disk count is divergence', () => {
+    const deps = diskSays(11, { planCountAll: 12 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged');
+  });
+
+  test('a phase whose plans are ALL superseded is EVIDENCE, not absence (#3862 review)', () => {
+    // The presence test guarded on the LIVE count alone, which made this state
+    // indistinguishable from "no plans written yet" — both report planCount 0 — so
+    // the gate abstained and the stale prose was incremented, the very defect #3830
+    // reports. Driven against the real binary before the fix: eight superseded
+    // plans with prose `Plan: 2 of 7` returned `{"advanced": true, "current_plan": 3}`,
+    // where the identical non-superseded fixture refused.
+    const deps = diskSays(0, { planCountAll: 12 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged',
+      'prose total 8 matches neither 0 live nor 12 including superseded');
+    assert.strictEqual(result.data && result.data.advanced, false);
+  });
+
+  test('all-superseded whose prose total matches plan_count_all still advances', () => {
+    // The other half: widening the presence test must not turn the accepted
+    // two-writer split into drift just because the live count is zero.
+    const deps = diskSays(0, { planCountAll: 8 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true, 'prose total 8 == plan_count_all 8');
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+
+  test('the unparseable-prose error still wins over the disk check', () => {
+    // No position to compare, so there is nothing for the cross-check to say.
+    const result = transitionCore('# Project State\n\nNo plan fields here.\n', { kind: 'advancePlan' }, diskSays(12));
+    assert.strictEqual(result.data && result.data.error, true);
+  });
+});
+
 describe('ADR-1769 Phase 2: advancePlan with frontmatter (#1255 pattern — codex review)', () => {
   const deps = { clock: fixedClock };
 

@@ -1028,6 +1028,23 @@ export type StateTransitionDeps = {
    * callers and test stubs are unaffected when absent.
    */
   sourcePath?: string;
+  /**
+   * Plan-set provider for `advancePlan` (#3830): resolves the plan files
+   * actually on disk for the phase `## Current Position` names, so the verb
+   * can check its prose-derived plan position against ground truth before
+   * mutating on it. Optional: when absent, `advancePlan` behaves exactly as
+   * it did before this check existed (Leaky-Abstractions guard — the core
+   * stays pure and testable without disk I/O, same shape as
+   * `phaseInventoryProvider` and `roadmapProvider`).
+   *
+   * Zero-arg by design. `advance-plan` still takes no phase argument, so the
+   * phase is whatever `## Current Position` names; the ADAPTER resolves it
+   * (it already parses that field inside the STATE.md lock for the #3311
+   * milestone-claim check) and closes over it here. Re-parsing the phase
+   * inside the core would duplicate the position-selection question that
+   * #3807 and #3812 own separately.
+   */
+  planSetProvider?: () => PlanSetResult;
 };
 
 /**
@@ -1051,6 +1068,27 @@ export type PhaseInventoryRecord = {
  * array means "nothing to reconcile"; `ok:false` means "unknown — do not
  * treat as reconciled".
  */
+/**
+ * Discriminated result of a `planSetProvider` disk scan (#3830). Mirrors
+ * `PhaseInventoryResult`'s contract, for the same reason (#3057 B1): a scan
+ * that could not complete is NOT the same answer as "no plans on disk".
+ *
+ * Only `ok:true` licenses a divergence claim. `ok:false` means "unknown", and
+ * `advancePlanCore` treats unknown as no-evidence rather than as divergence —
+ * refusing to advance because a phase directory could not be read would block
+ * a project the check has nothing against.
+ */
+export type PlanSetResult =
+  | {
+      ok: true;
+      phase: string;
+      /** Live canonical plans (superseded excluded) — `phase-plan-index`'s `plan_count`. */
+      planCount: number;
+      /** Canonical plans INCLUDING superseded — `find-phase`'s `plan_count_all`. */
+      planCountAll: number;
+    }
+  | { ok: false; reason: string };
+
 export type PhaseInventoryResult =
   | { ok: true; phases: PhaseInventoryRecord[] }
   | { ok: false; reason: string };
@@ -1820,6 +1858,145 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     };
   }
 
+  // #3830: everything above came out of `## Current Position` prose and out of
+  // nothing else — there is no filesystem read anywhere in this function. The
+  // guards above check the prose's SHAPE and its INTERNAL agreement — #3791's
+  // `ambiguous_plan_position` compares the two spellings' parsed positions
+  // against each other, which is a judgement about meaning, not shape — but not
+  // one of them compares the prose against the plans on disk. So a single
+  // well-formed, self-consistent `2 of 8` passes every one of them and gets
+  // incremented, written back, and reported as `advanced: true` for a phase that
+  // may have twelve plans on disk, all summarized. Cross-check the prose against
+  // the plan set actually on disk before mutating on it.
+  //
+  // (This paragraph named the `isNaN` check when it was written, then briefly
+  // over-corrected to "every guard above is SYNTACTIC" — which #3791's
+  // cross-spelling comparison falsifies. The property the gate actually rests on
+  // is the narrower one above: no guard above it reads the disk. Both earlier
+  // wordings were caught by review; the note is kept so the next edit reaches for
+  // that property rather than for whichever mechanism is current.)
+  //
+  // The gate sits BEFORE both branches, but it REFUSES on only one of them.
+  // On the increment branch (`currentPlan < totalPlans`) a diverged prose pair
+  // is refused outright: moving the counter against a total it disagrees with
+  // is the #3830 write, and nothing downstream re-checks it. On the
+  // phase-completion branch (`currentPlan >= totalPlans`) the divergence is
+  // REPORTED, not refused — #4067 (`cmdStateAdvancePlan`, src/state.cts) landed
+  // on `next` while this fix was in review and re-decides that branch from the
+  // plans on disk: every plan summarized -> the phase completes; otherwise the
+  // whole write is declined as `plans_outstanding`. That disk answer is a
+  // better guard for completion than counter agreement is — it checks whether
+  // the phase IS complete, not whether the counter is self-consistent — and
+  // refusing ahead of it would turn its motivating case (a `7 of 7` carried
+  // into a fresh 3-plan phase, which #4067 tolerates by design) into a hard
+  // stop for every executor in the wave. So the completion branch proceeds and
+  // carries the divergence out as `prose_diverged` for the command layer to
+  // announce on stderr; the counter is never trusted silently on either branch.
+  //
+  // Deliberately narrow. Divergence is claimed ONLY from a completed scan that
+  // found at least one plan file. An absent provider (existing callers and test
+  // stubs), a scan that could not complete (`ok:false`), and a phase with no
+  // plan files on disk yet are all "no evidence" — NOT "diverged". Blocking on
+  // those would strand projects this check knows nothing about, and the
+  // no-plans-yet case is the ordinary state of a phase between `begin-phase`
+  // and its first written plan.
+  //
+  // "At least one plan FILE", not "at least one LIVE plan": the presence test
+  // reads BOTH counts. Guarding on `planCount` alone made a phase whose plans are
+  // every one of them `status: superseded` indistinguishable from a phase with no
+  // plans written yet — live count 0 in both — so the gate abstained and the stale
+  // prose was incremented exactly as #3830 reports. Driven: eight superseded plans
+  // with prose `Plan: 2 of 7` returned `{"advanced": true, "current_plan": 3}`,
+  // where the identical non-superseded fixture refuses. `planCountAll` separates
+  // them, and the comparison below is unchanged — it already accepts a prose total
+  // matching EITHER count, so an all-superseded phase whose prose tracks the full
+  // set still agrees and still advances.
+  const planSet = deps.planSetProvider ? deps.planSetProvider() : null;
+  // Set on the completion branch only; the increment branch returns instead.
+  let proseDiverged: { prose: Record<string, number>; disk: Record<string, unknown> } | null = null;
+  if (planSet !== null && planSet.ok && (planSet.planCount > 0 || planSet.planCountAll > 0)) {
+    // The prose total is accepted if it matches EITHER disk count. The two
+    // commands that write it disagree about supersession — execute-phase's
+    // init scan supplies the live count, plan-review-convergence supplies
+    // `plan_count_all` — so insisting on one of them would report a writer
+    // disagreement as project drift. Divergence means the prose total matches
+    // neither, which is unambiguous.
+    const totalDiverged =
+      totalPlans !== planSet.planCount && totalPlans !== planSet.planCountAll;
+
+    // #3862 review (Major 3): a total that agrees with disk says nothing about
+    // where the position sits INSIDE it. `Plan: 20 of 12` against twelve plans on
+    // disk passes the total test, then satisfies `currentPlan >= totalPlans` below
+    // and declares the phase ready_for_verification from a position that provably
+    // exceeds the plan set; `Plan: 0 of 12` sails through the same way.
+    //
+    // `Plan: -1 of 12` was named here too, and no longer belongs: #3791 made the
+    // position grammar unsigned and anchored, so a negative current is refused as
+    // an unreadable shape well above this point and never reaches the range check.
+    // Pinned by "a negative current_plan is refused by the position parse, not by
+    // the range check" in tests/state.test.cjs.
+    //
+    // This is pure arithmetic over two integers the provider already
+    // returns — it derives no completion predicate and re-reads no `scan.completed`,
+    // so scripts/lint-completion-predicate-drift.cjs does not bite and no
+    // FUNCTION_SCOPED_EXEMPTIONS entry is needed.
+    //
+    // The upper bound is `planCountAll`, never `planCount`: a phase whose plans are
+    // every one of them superseded is legitimately positioned past the LIVE count,
+    // and bounding on that would manufacture a divergence out of ordinary
+    // supersession — the same reason the total test accepts either count.
+    // ONE upper bound, and it is the prose total — not a disk count. Reaching here means
+    // `totalDiverged` is false, so `totalPlans` already equals `planCount` or
+    // `planCountAll`; since `planCount <= planCountAll`, it follows that
+    // `totalPlans <= planCountAll` and therefore `currentPlan > planCountAll` implies
+    // `currentPlan > totalPlans`. A `planCountAll` term is strictly redundant — driven
+    // exhaustively over the bounded space, zero decisions change without it. An earlier
+    // draft shipped both and justified them with a counterexample (`20 of 12`) that in
+    // fact trips both, which is how a redundant clause acquires a confident comment.
+    //
+    // The bound that actually does the work: `Plan: 10 of 8` against 12 plan files of
+    // which 8 are live. The total (8) matches `planCount`, so the total test passes;
+    // the position (10) then satisfied `currentPlan >= totalPlans` below and returned
+    // `{reason: "last_plan", status: "ready_for_verification"}` while WRITING the phase
+    // complete, from a position past its own declared total. Driven before the fix.
+    //
+    // `>` is strict, so `12 of 12` is in range and still reaches `last_plan`, and the
+    // all-superseded `5 of 8` still advances.
+    //
+    // Since #4067 the past-the-total half of this check (`10 of 8`, `20 of 12`) is
+    // REPORTED rather than refused — those positions sit on the completion branch,
+    // and the gate comment above says who decides there. `currentPlan < 1` is on
+    // the increment branch and is still a refusal.
+    const rangeDiverged = currentPlan < 1 || currentPlan > totalPlans;
+
+    if (totalDiverged || rangeDiverged) {
+      const divergence = {
+        prose: { current_plan: currentPlan, total_plans: totalPlans },
+        disk: {
+          phase: planSet.phase,
+          plan_count: planSet.planCount,
+          plan_count_all: planSet.planCountAll,
+        },
+      };
+      if (currentPlan < totalPlans) {
+        return {
+          // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
+          // round-trip: a refusal must not mutate, and frontmatter reconstruction
+          // is a normalizing transform. The sibling `error: true` path above
+          // round-trips because it predates this rule; do not copy it here.
+          content,
+          updated: [],
+          data: { advanced: false, reason: 'position_diverged', ...divergence },
+        };
+      }
+      // Completion branch: reported, not refused — see the gate comment above.
+      // `rangeDiverged` lands here too (`20 of 12`): a position past its own
+      // total says nothing true about the phase, and the disk answer #4067
+      // takes next is the only one that does.
+      proseDiverged = divergence;
+    }
+  }
+
   const updated: string[] = [];
 
   const statusDefaults = KNOWN_TEMPLATE_DEFAULTS['Status'];
@@ -1838,7 +2015,17 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     return {
       content: reassemble(body),
       updated,
-      data: { advanced: false, reason: 'last_plan', current_plan: currentPlan, total_plans: totalPlans, status: 'ready_for_verification' },
+      data: {
+        advanced: false,
+        reason: 'last_plan',
+        current_plan: currentPlan,
+        total_plans: totalPlans,
+        status: 'ready_for_verification',
+        // #3830 x #4067: the counter disagreed with disk and was not trusted —
+        // the command layer warns on stderr and then decides completion from
+        // the plans on disk. Absent when the counter agreed.
+        ...(proseDiverged !== null ? { prose_diverged: proseDiverged } : {}),
+      },
     };
   }
 

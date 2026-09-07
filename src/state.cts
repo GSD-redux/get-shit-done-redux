@@ -35,6 +35,12 @@ const {
   scopeToPhase,
   // #2761 M3: owns the bracket milestone intro and canonical pad2 spelling.
   bracketMilestoneIntroSrcFor,
+  // #3830: phase-directory selection for advance-plan's disk cross-check —
+  // with `matchPhaseDirs` above, the same two owners `cmdPhasePlanIndex` uses,
+  // so the read-only plan-index verb and this writing verb cannot disagree
+  // about which directory a phase names.
+  normalizePhaseName,
+  comparePhaseNum,
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -62,6 +68,12 @@ function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean 
 }
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
+// #3830: the STRICT canonical predicate. scanPhasePlans's own planFiles carry
+// isRootPlanFile's loose `/PLAN/i` fallback (deliberately permissive for
+// live-plan counting); cmdPhasePlanIndex intersects with this for the same
+// reason (#2893), and the cross-check below must report the same number that
+// verb does or it introduces a THIRD count to disagree with.
+const { isCanonicalPlanFile } = scanPhasePlans;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -989,6 +1001,271 @@ function unsummarizedPlansForPositionPhase(
   return scanOutstanding(phasesDir, retry.matches[0]);
 }
 
+/**
+ * Resolve the plan set actually on disk for `phase` — the ground truth
+ * `state.advance-plan` checks its `## Current Position` prose against (#3830).
+ *
+ * Every step delegates to the existing canonical owner, which is the point:
+ *
+ * - Phase-directory ENUMERATION is a RAW listing of the phases directory —
+ *   no milestone window, no sentinel filter — which is exactly what
+ *   `cmdPhasePlanIndex` does (`src/phase.cts`). Parity is the whole point of
+ *   this function, and it is a property of the LISTING as much as of the
+ *   matcher: a filtered listing is a strict SUBSET of the raw one, so it can
+ *   disagree with the readers this check is meant to agree with in BOTH
+ *   directions, and #3862 round 4 constructed all three shapes.
+ *
+ *   Through `listMilestonePhaseDirs` (#3185 / ADR-3180 Decision 1) this check
+ *   MISSED directories those readers see, and then abstained: a phase outside
+ *   a resolvable milestone window, and a real phase directory whose leading
+ *   integer is a sentinel (`isSentinelPhaseId`, SENTINEL_RANGES [0, 999]) —
+ *   the latter refused unconditionally, even under the owner's pass-all
+ *   degrade. Both advanced stale prose past five plans sitting on disk, which
+ *   is #3830's own defect recurring inside this fix's scope. In the other
+ *   direction a subset can COLLAPSE an ambiguity: under hyphenated roadmap ids
+ *   the window admits by continuation token (`03-01` vs `03-02`), so of two
+ *   directories sharing a bare number one can survive while `matchPhaseDirs`'
+ *   bare-number fallback matches both. This check then named one of them as
+ *   ground truth while `phase-plan-index` refused the same token as ambiguous
+ *   — inside a warning telling the operator to go run `phase-plan-index`.
+ *
+ *   THE TRADE, because it is a trade and not a clean win: the window was also
+ *   DISAMBIGUATING. In that third shape the filtered listing left one match and
+ *   this check refused a real divergence; the raw listing leaves two, so it
+ *   abstains and the stale prose ADVANCES — the very class #3830 is about.
+ *   Driven on the fixture above: prose `Plan: 1 of 9` against `03-01-alpha` (2
+ *   plans) held at `1 of 9` before, advances to `2 of 9` now. Two shapes gained,
+ *   one lost. It is taken deliberately, on the ground that the recovered
+ *   refusal rested on a token `matchPhaseDirs` and `phase-plan-index` both call
+ *   undecidable (#2237) — the window happened to break a tie the repo does not
+ *   consider breakable, so the catch was luck rather than a property. Abstaining
+ *   is what this function already does with every other unknown. The alternative
+ *   worth naming if that judgment is ever revisited: keep the raw listing and
+ *   fall back to the window ONLY to disambiguate a multi-match. That recovers
+ *   the refusal and re-opens the disagreement — the check would answer where
+ *   `phase-plan-index` refuses — so it buys coverage with the parity this
+ *   function exists to hold. Not obviously wrong; not taken here.
+ *
+ *   Reading raw does not re-derive the window owner's job, because this lookup
+ *   asks a different question: one NAMED phase, never a scoped aggregate.
+ *   `cmdStateUpdateProgress` sums across the window and must therefore own it;
+ *   selection here is `matchPhaseDirs` over a phase token, so a backlog or
+ *   sentinel directory is reachable only when the prose names its number — and
+ *   when the prose does name it, `phase-plan-index` reads that same directory.
+ *   Agreeing with the repo's readers is the contract; agreeing with the
+ *   milestone window never was.
+ *
+ *   One shape worth naming so it is not mistaken for a hole (#3862 round 3):
+ *   a phase directory a SHIPPED milestone left behind, whose bare number the
+ *   current milestone reuses, when the current phase's own directory does not
+ *   exist yet. `matchPhaseDirs` returns that one stale directory and this
+ *   lookup reads a prior milestone's plan set. `milestone complete` archives
+ *   phase directories by default, but `--no-archive-phases` and an unreadable
+ *   window both leave them in place, so the state is reachable. It is not a
+ *   disagreement: this check and `phase-plan-index` share both the listing and
+ *   the matcher, so they select that directory together by construction, and
+ *   `find-phase` additionally walks archived milestones so it agrees here
+ *   without being bound to in general. The refusal reports the drift those
+ *   readers report for that phase token. It writes nothing, names that
+ *   directory's counts, and dissolves once the stale directory is archived.
+ *   Pinned in tests/state.test.cjs ("a stale prior-milestone directory that
+ *   is the sole bare-number match").
+ * - Phase SELECTION goes through `normalizePhaseName` + `matchPhaseDirs`, the
+ *   canonical two-pass matcher (#2528) `cmdPhasePlanIndex` uses. Sharing the
+ *   matcher over a shared listing is what keeps the read-only plan-index verb
+ *   and this writing verb from disagreeing about which directory a phase
+ *   names, and it inherits the #2237 fail-loud rule for a bare number matching
+ *   several directories — which this function spends as an abstention, exactly
+ *   where `phase-plan-index` spends it as a refusal to answer.
+ * - Plan COUNTING goes through `scanPhasePlans` (#3199), which owns the
+ *   canonical-plan-file predicate and the #2349 superseded-plan exclusion. A
+ *   local filter would count files this project does not consider plans and
+ *   then report divergence against its own mistake.
+ *
+ * Anything that is not a completed scan returns `ok:false`. A phase absent
+ * from the enumeration, an ambiguous phase number, and a plan scan whose own
+ * `scope` is not COMPLETE are all "unknown" — and `advancePlanCore` treats
+ * unknown as no-evidence rather than as divergence (ADR-3180 Decision 2 /
+ * #3057 B1: a non-answer is not a zero). TRUNCATED matters specifically: it
+ * means a nested `plans/` directory exists but could not be read, so the count
+ * is a floor, and a floor below the prose total is not proof the prose is
+ * wrong.
+ */
+function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.PlanSetResult {
+  const normalized = normalizePhaseName(phase);
+  const phasesDir = planningPaths(cwd).phases;
+
+  // Enumerate the way `cmdPhasePlanIndex` does — a raw directory listing, no
+  // milestone window and no sentinel filter (#3862 round 4). Filtering here is
+  // what let the two disagree: see the docblock's parity paragraph.
+  let phaseDirs: string[];
+  try {
+    phaseDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort((a, b) => comparePhaseNum(a, b));
+  } catch {
+    return { ok: false, reason: `phases directory for ${normalized} could not be read` };
+  }
+
+  const { matches } = matchPhaseDirs(phaseDirs, normalized);
+  if (matches.length === 0) {
+    return { ok: false, reason: `phase ${normalized} not found among the phase directories on disk` };
+  }
+  if (matches.length > 1) {
+    // #2237: several directories match the same bare phase number. Which plan
+    // set belongs to this position is genuinely undecidable, so say so rather
+    // than first-matching one and comparing the prose against a coin flip.
+    return { ok: false, reason: `phase ${normalized} is ambiguous: ${matches.length} directories match` };
+  }
+
+  const scan = scanPhasePlans(path.join(phasesDir, matches[0]));
+  if (scan.scope !== SCOPE.COMPLETE) {
+    return { ok: false, reason: `plan scan for phase ${normalized} is ${String(scan.scope)}, not a complete answer` };
+  }
+
+  // Two counts, deliberately, because the two writers of the prose total do not
+  // agree on supersession and the cross-check must not manufacture divergence
+  // out of that disagreement:
+  //   planCount    — live canonical plans (superseded excluded). What
+  //                  `phase-plan-index` reports as `plan_count`, and what
+  //                  execute-phase's init scan hands `begin-phase --plans`.
+  //   planCountAll — canonical plans including superseded. What `find-phase`
+  //                  reports as `plan_count_all`, and what
+  //                  plan-review-convergence hands `planned-phase --plans`.
+  // Both are intersected with isCanonicalPlanFile so neither can drift from the
+  // read-only verb the issue used as ground truth.
+  const planCount = scan.planFiles.filter(isCanonicalPlanFile).length;
+  const planCountAll = scan.allPlanFiles.filter(isCanonicalPlanFile).length;
+
+  // Deliberately NOT returning a completion signal. Whether every plan is
+  // summarized is a real and separate question, and answering it here means
+  // either re-deriving `summaryCount >= planCount` or reading the scan's
+  // `.completed` — both of which lint-completion-predicate-drift flags outside
+  // `plan-scan.cts`, the second only dischargeable by adding this function to
+  // that lint's FUNCTION_SCOPED_EXEMPTIONS table. This fix reports the position
+  // divergence the issue asks about and leaves that table alone; see the PR
+  // body for the case it therefore does not catch.
+  return { ok: true, phase: normalized, planCount, planCountAll };
+}
+
+/**
+ * #3862 review (Major): make `position_diverged` audible on stderr.
+ *
+ * The refusal itself is correct — it is reported on stdout as
+ * `{"advanced": false, "reason": "position_diverged", ...}` and exits 0 — but
+ * "reported" and "surfaced" are not the same claim, and the PR that added the
+ * refusal asserted the second. Both first-party callers
+ * (`gsd-core/workflows/execute-plan.md`, `agents/gsd-executor.md`) invoke
+ * `gsd_run query state.advance-plan` bare: stdout discarded, exit code untested.
+ * So on a diverged project the plan counter silently stopped advancing and the
+ * surrounding workflow carried on, which is quieter than the wrong write it
+ * replaced but is not a signal.
+ *
+ * Modelled on `warnMilestoneConflict` (src/milestone-lock.cts), the sibling
+ * warning this same verb already emits two lines up: stderr only, never stdout,
+ * so `--raw` / `--pick` consumers keep a clean parse; a `[gsd-tools] WARNING:`
+ * prefix so it reads the same as its neighbour in a workflow log; and the two
+ * numbers plus the repair path, because a warning that does not say what to run
+ * next just relocates the puzzle.
+ */
+// `outcome` selects the verb: `refused` is the increment-branch refusal, where
+// nothing was written; `yielded` is the completion branch, where the counter
+// was not trusted and #4067's disk-derived decision (next in cmdStateAdvancePlan)
+// completes the phase or declines it as `plans_outstanding`. Same numbers, same
+// repair path — the operator still has a stale line to fix — different verb.
+function warnPositionDiverged(data: Record<string, unknown>, outcome: 'refused' | 'yielded' = 'refused'): void {
+  // Narrow rather than `String(unknown)`: these fields come off a
+  // `Record<string, unknown>` payload, and blind stringification renders an
+  // unexpected shape as `[object Object]` inside an operator-facing warning —
+  // the one place a silently wrong value is worst. `@typescript-eslint/no-base-to-string`
+  // flags it, and the flag is right; `?` is the honest rendering of a field the
+  // refusal did not carry.
+  // #3862 review (Minor 8): strip C0/DEL before rendering. HARDENING, not a bug
+  // fix, and the distinction is stated because the review's premise does not hold
+  // as written: I could not reach this render with a control character.
+  //
+  // The boundary is EARLIER than normalizePhaseName, and naming it wrongly is worse
+  // than not naming it — the RV6.5 review refuted the first version of this comment.
+  // normalizePhaseName does NOT exclude control characters: its final branch returns a
+  // custom ID verbatim (`return str`), and matchPhaseDirs will match such an ID against
+  // a directory carrying the same bytes. Driven: `CUSTOM<ESC>[31m` normalizes to itself
+  // and matches.
+  //
+  // What actually closes the route is upstream of both — `parsePhaseFromProse`, which
+  // `cmdStateAdvancePlan` uses to read `Phase:`, accepts only numeric and
+  // project-code-numeric tokens and returns `phase: null` for anything else. A null
+  // phase leaves the provider absent, so no scan runs and no warning is emitted. The
+  // numeric paths sanitize by construction on the way through (`01<ESC>[31m (Demo)` ->
+  // `01`, `PROJ-42<ESC>[31m` -> `42`).
+  //
+  // Kept anyway, and the case is stronger for being stated accurately: the only thing
+  // between a custom phase ID and this line is one prose parser's token grammar. Widen
+  // parsePhaseFromProse to accept custom IDs — which normalizePhaseName and
+  // matchPhaseDirs already support — and the route opens with nothing else in the way.
+  //
+  // No end-to-end test, because no CLI input reaches the render today; that is a
+  // property of the parser, not of this function, and a test asserting it would be
+  // pinning the parser from the wrong end.
+  const scrub = (v: string): string => v.replace(/[\x00-\x1f\x7f]/g, '');
+  const scalar = (v: unknown): string =>
+    typeof v === 'string' ? scrub(v) : typeof v === 'number' || typeof v === 'bigint' ? v.toString() : '?';
+  const prose = (data['prose'] ?? {}) as Record<string, unknown>;
+  const disk = (data['disk'] ?? {}) as Record<string, unknown>;
+  const phase = disk['phase'] == null ? 'the current phase' : `phase ${scalar(disk['phase'])}`;
+  // #3862 RV6.5 review (MISSED). There are now TWO ways to diverge and they have
+  // different explanations, so a single sentence is wrong for one of them. The old
+  // text always said "the prose position matches neither" — true for a total that
+  // matches no disk count, and FALSE for the range refusal added this round, where
+  // `Plan: 10 of 8` has a total agreeing with the live count and a position past it.
+  // Telling an operator their total matches nothing when it matches exactly sends
+  // them to reconcile the wrong half of the line.
+  // NOT `Number()`. These arrive as `unknown`, and `Number('')` and `Number(null)`
+  // are both 0 — so a blank or null prose total against a zero disk count would take
+  // the "total agrees" branch and tell the operator the wrong half of the line is
+  // wrong. Anything that is not a finite number falls to the "matches neither"
+  // branch, the honest default when the payload cannot be read.
+  //
+  // HARDENING, and declared as such: this narrowing has NO reversion control, for the
+  // same structural reason as the scrub below. `resultData` is built by
+  // advancePlanCore and every field it carries is a number, so no CLI input produces
+  // `''`, `null`, `NaN` or a numeric string here — reverting to `Number()` leaves the
+  // warning-wording test green because the test can only reach the shapes that are
+  // reachable. Two behavioural changes in this round are hardening rather than fixes
+  // (this and the scrub), and both say so rather than being counted as covered.
+  const asFiniteNumber = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const proseTotal = asFiniteNumber(prose['total_plans']);
+  const totalMatchesDisk =
+    proseTotal !== null &&
+    (proseTotal === asFiniteNumber(disk['plan_count']) ||
+      proseTotal === asFiniteNumber(disk['plan_count_all']));
+  const because = totalMatchesDisk
+    ? `The total agrees with the plans on disk, but the position is outside it, so `
+    : `The prose total matches neither count, so `;
+  const verb = outcome === 'refused'
+    ? `REFUSED to advance (#3830)`
+    : `did NOT trust the plan counter (#3830)`;
+  // The two outcomes give OPPOSITE instructions on purpose, and the RV6.5 review
+  // of the round that added the second is why: a refusal stops the caller's step,
+  // so "before continuing" is right; a yield does NOT stop anything — both
+  // first-party callers proceed on the answer that follows it — so a warning that
+  // says "before continuing" contradicts the caller contract the operator is
+  // reading it beside. The stale line still wants fixing; it is not a blocker.
+  const consequence = outcome === 'refused'
+    ? `nothing was written and the plan counter did NOT advance. Reconcile STATE.md before continuing — `
+    : `the phase-complete decision was taken from the plans on disk instead (#4067) and the counter was left as it is; ` +
+      `this call did not stop the workflow. Reconcile the stale line when convenient — `;
+  process.stderr.write(
+    `[gsd-tools] WARNING: state.advance-plan ${verb}: ` +
+      `## Current Position says plan ${scalar(prose['current_plan'])} of ${scalar(prose['total_plans'])} ` +
+      `for ${phase}, but the plans on disk number ${scalar(disk['plan_count'])} ` +
+      `(${scalar(disk['plan_count_all'])} including superseded). ${because}${consequence}` +
+      `\`gsd-tools query phase-plan-index\` shows the real plan set; \`state rebuild\`, \`state sync\` or ` +
+      `\`state patch\` are the repair paths.\n`,
+  );
+}
+
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -1050,7 +1327,30 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
         milestoneLockMod.warnMilestoneConflict(milestoneConflict, 'state.advance-plan');
       }
     }
-    const result = transitionCore(content, intent, deps);
+    // #3830: hand the core a disk-truth provider for the SAME phase the
+    // milestone check above just resolved, built inside the lock so the
+    // position read and the plan scan cannot interleave with another session's
+    // Current Position write (the #3311 reason, applied one level down to the
+    // plan position). `deps` is spread rather than mutated so it stays the
+    // immutable, phase-independent object the other call sites share. A null
+    // `positionPhase` leaves the provider absent, and the core then behaves
+    // exactly as it did before this check existed.
+    const result = transitionCore(content, intent, {
+      ...deps,
+      planSetProvider:
+        positionPhase === null ? undefined : () => resolvePlanSetForPhase(cwd, positionPhase),
+    });
+    // #3830 x #4067: on the completion branch the core REPORTS a diverged
+    // counter rather than refusing on it (see advancePlanCore's gate comment),
+    // so that the disk-derived guard below can decide completion from what is
+    // actually on disk. Announce it here, ahead of that guard, so the warning
+    // reaches stderr whichever way the guard then answers — `last_plan` carries
+    // `prose_diverged` on stdout too, `plans_outstanding` is #4067's own
+    // payload and does not.
+    const proseDiverged = result.data?.['prose_diverged'];
+    if (proseDiverged !== null && typeof proseDiverged === 'object') {
+      warnPositionDiverged(proseDiverged as Record<string, unknown>, 'yielded');
+    }
     // #4067: the transform's phase-complete branch is decided by STATE.md's
     // scalar plan counter, which can neither carry a stale value across phases
     // nor represent wave-parallel execution. Before letting that branch write
@@ -1193,6 +1493,24 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // preservation restored that this transform never touched (#3345's
   // direction).
   const updated = reconcileReportedFields(statePath, preWriteState, precomputedUpdated, divergedFields);
+
+  // #3862 review (Major): the refusal must be AUDIBLE, not merely reported.
+  // `output(...)` writes stdout and exits 0, and neither first-party caller
+  // reads either — `gsd-core/workflows/execute-plan.md` and `agents/gsd-executor.md`
+  // both run `gsd_run query state.advance-plan` bare, discarding stdout and never
+  // testing the exit code. Without a stderr line the diverged case is a silent
+  // non-write: the counter stops advancing, the workflow proceeds to
+  // update-progress and record-metric as if it had, and every later plan re-runs
+  // against a frozen position with no operator-visible signal anywhere.
+  //
+  // The precedent is `warnMilestoneConflict` above (:975), added for exactly this
+  // reason and for exactly this verb. Same channel, same shape: a `[gsd-tools]
+  // WARNING:` line on stderr that says what was refused and what to do about it.
+  // stderr specifically, so it cannot pollute the JSON on stdout that `--pick`
+  // and `--raw` callers parse.
+  if (resultData['advanced'] === false && resultData['reason'] === 'position_diverged') {
+    warnPositionDiverged(resultData);
+  }
 
   if (resultData['advanced'] === false) {
     output({ ...resultData, updated, milestone_conflict: milestoneConflict }, raw, 'false');

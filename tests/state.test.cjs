@@ -13,6 +13,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, captureFdSync } = require('./helpers.cjs');
+const stateTestHelpers = require('./helpers.cjs');
+const stateTestProcessSeam = require('./helpers/process-seam.cjs');
+// runGsdTools's legacy shape DROPS stderr on a zero exit, and the #3862 contract
+// is exactly that the divergence refusal is VISIBLE on stderr while still exiting
+// 0. Drive the process seam directly for those assertions — the same adapter
+// tests/milestone-lock.test.cjs uses for the sibling warning this one mirrors.
+function runToolsWithStderr(args, cwd, env = {}) {
+  return stateTestProcessSeam.runNode([stateTestHelpers.TOOLS_PATH, ...args], {
+    cwd,
+    // No `timeoutMs`: tests/helpers/process-seam.cjs owns this policy — omitting it
+    // is that module's documented way to take its bounded DEFAULT_TIMEOUT_MS, and a
+    // local copy would be a second place for the same value to drift.
+    env: { ...process.env, ...stateTestHelpers.TEST_ENV_BASE, ...env },
+  });
+}
 const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
 // ADR-3473 §8.7 (#3872): git-fixture spawns for the state_head rows (10/11)
 // go through the throw-preserving wrapper, never a raw execFileSync.
@@ -2253,6 +2268,1336 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
       assert.strictEqual(out.suggested.current_plan, 2, `got: ${JSON.stringify(out.suggested)}`);
       assert.strictEqual(out.advanced, undefined, 'an unreadable position must never be advanced');
     });
+  });
+});
+
+describe('#3830: state advance-plan checks its prose position against the plans on disk', () => {
+  let tmpDir;
+
+  // A phase whose Current Position names it, so the adapter has a phase to
+  // resolve. `advance-plan` still takes no phase argument — this is the only
+  // input it has, which is the whole point of the defect.
+  const stateWith = (planLine) => [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    'Phase: 01 (Demo Phase) — EXECUTING',
+    planLine,
+    'Status: Ready to execute',
+    'Last Activity: 2026-08-01',
+    '',
+  ].join('\n');
+
+  const seedPhase = (dirName, planCount, summaryCount = planCount) => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= planCount; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+      if (i <= summaryCount) {
+        fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
+    }
+    return phaseDir;
+  };
+
+  const stateText = () => fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  const writeState = (planLine) =>
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateWith(planLine));
+
+  beforeEach(() => { tmpDir = createFixture(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('refuses to advance stale prose and leaves STATE.md byte-identical', () => {
+    // The issue's reproduction: twelve plans on disk, prose still "2 of 8".
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'position_diverged');
+    assert.deepStrictEqual(output.prose, { current_plan: 2, total_plans: 8 });
+    assert.strictEqual(output.disk.phase, '01');
+    assert.strictEqual(output.disk.plan_count, 12);
+    assert.deepStrictEqual(output.updated, []);
+    assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+  });
+
+  // #3862 review (Major): the refusal has to be AUDIBLE, not merely reported.
+  // Both first-party callers run `gsd_run query state.advance-plan` bare —
+  // stdout discarded, exit code untested — so a stdout-only refusal is a silent
+  // non-write. These pin the stderr channel, its content, and (critically) that
+  // adding it did not pollute the JSON those same callers may `--pick` from.
+  test('a divergence refusal is announced on stderr, not only on stdout', () => {
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `the refusal must still exit 0: ${result.stderr}`);
+
+    const stderr = result.stderr || '';
+    assert.match(stderr, /\[gsd-tools\] WARNING:/, `expected a [gsd-tools] WARNING on stderr; got: ${JSON.stringify(stderr)}`);
+    assert.match(stderr, /REFUSED to advance/, 'the warning must say the advance did not happen');
+    // Both sides of the disagreement, so the operator can act without re-running anything.
+    assert.match(stderr, /2 of 8/, 'the warning must name the prose position');
+    assert.match(stderr, /12/, 'the warning must name the disk plan count');
+    // And the repair path, so the warning does not merely relocate the puzzle.
+    assert.match(stderr, /phase-plan-index/, 'the warning must name how to see the real plan set');
+  });
+
+  test('the stderr warning does not pollute the JSON on stdout', () => {
+    // The negative control for the test above: `--raw`/`--pick` consumers parse
+    // stdout, so a warning written to the wrong channel would break them.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.reason, 'position_diverged');
+    assert.ok(!result.stdout.includes('[gsd-tools] WARNING'), 'the warning must not reach stdout');
+  });
+
+  // #3862 RV6.5 adversarial review (MISSED finding): `advanced: false` is NOT
+  // synonymous with "refused". The ordinary phase-complete answer is also
+  // `advanced: false`, with `reason: 'last_plan'`. A caller keyed on `advanced`
+  // alone therefore treats the LAST PLAN of every phase as a failure and skips
+  // its progress and metric recording — which is exactly what the first cut of
+  // this round's caller fix did. These pin the discriminator both callers now use.
+  test('the last plan is advanced:false with reason last_plan, not a refusal', () => {
+    seedPhase('01-demo', 12);
+    writeState('Plan: 12 of 12');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `last plan must exit 0: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.advanced, false, 'the last plan does not advance');
+    assert.strictEqual(parsed.reason, 'last_plan', 'and it must be distinguishable from a refusal');
+    assert.notStrictEqual(parsed.reason, 'position_diverged');
+    assert.ok(!(result.stderr || '').includes('REFUSED to advance'),
+      `the last plan is not a refusal and must not warn; got: ${JSON.stringify(result.stderr)}`);
+  });
+
+  // #3862 review (Blocker 2): the first assertion here was VACUOUS — it checked
+  // only that stdout was empty, so it passed just as readily when the command
+  // FAILED. That mattered more than a style nit, because #3884 changed what this
+  // invocation does: `--pick` on an absent field is now a hard failure
+  // (`ERROR_REASON.PICK_FIELD_ABSENT`, gsd-core/bin/gsd-tools.cjs), and a normal
+  // advance emits no `reason` key at all. So after the rebase this command exits
+  // NON-ZERO on the advance case — and the old assertion stayed green over it.
+  //
+  // The contract is restated rather than deleted, because absence became a
+  // SIGNAL under #3884 instead of an empty string. Every case now asserts the
+  // exit status as well as the projection, so none of them can pass by failing.
+  //
+  // Note for callers: this is not how the first-party callers discriminate. Both
+  // invoke the verb BARE and match the full JSON — pinned by the caller-guard
+  // test and by the parity test below — so `--pick reason` is an operator
+  // convenience here, not a caller contract.
+  test('--pick reason: absence is a failure, and each reason projects exactly', () => {
+    seedPhase('01-demo', 12);
+
+    writeState('Plan: 3 of 12');
+    const advance = runGsdTools('state advance-plan --pick reason', tmpDir);
+    assert.ok(!advance.success,
+      `#3884: a normal advance carries no reason, so --pick reason must FAIL, not return empty; got: ${advance.output}`);
+    assert.ok(`${advance.output || ''}${advance.error || ''}`.includes('field not found'),
+      'the failure must name the absent field rather than any other error');
+
+    writeState('Plan: 12 of 12');
+    const last = runGsdTools('state advance-plan --pick reason', tmpDir);
+    assert.ok(last.success, `the last plan must still project: ${last.error}`);
+    assert.strictEqual(last.output.trim(), 'last_plan');
+
+    writeState('Plan: 2 of 8');
+    const diverged = runGsdTools('state advance-plan --pick reason', tmpDir);
+    assert.ok(diverged.success, `a divergence must still project: ${diverged.error}`);
+    assert.strictEqual(diverged.output.trim(), 'position_diverged');
+  });
+
+  // #3862 RV6.5 pass 3 (CLAIM 7). The warning gained two explanatory branches and
+  // NOTHING asserted them: reverting it to the old unconditional "matches neither"
+  // sentence left every existing warning test green, so a behavioural fix was
+  // shipping uncontrolled. The wording is behaviour here — it is the only thing that
+  // tells an operator WHICH half of `Plan: N of M` to reconcile, and naming the wrong
+  // half sends them to edit the number that is already correct.
+  test('the divergence warning names which half of the position is wrong', () => {
+    // Total AGREES with the live count, position is out of range.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 12; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`),
+        `---\nstatus: ${i <= 8 ? 'complete' : 'superseded'}\n---\n# Plan\n`);
+    }
+    writeState('Plan: 10 of 8');
+    const ranged = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(ranged.exitCode, 0, `must still exit 0: ${ranged.stderr}`);
+    assert.match(ranged.stderr, /total agrees with the plans on disk, but the position is outside it/,
+      `a range refusal must not claim the total matches nothing; got: ${ranged.stderr}`);
+    assert.ok(!/matches neither count/.test(ranged.stderr),
+      `and it must not carry the total-mismatch wording; got: ${ranged.stderr}`);
+
+    // Total matches the ALL-FILES count rather than the live one. Pass 4 of the round
+    // review found the fixtures above exercise only `plan_count`, so a branch that
+    // checked that count alone would pass every assertion here. 12 files, 8 live,
+    // prose total 12: matches planCountAll and not planCount, position out of range.
+    // The fixture above is already 12 files with 8 live, and the refusal wrote
+    // nothing, so it stands unchanged — only the prose total moves. (No teardown
+    // here on purpose: a raw fs.rmSync in a test is refused by
+    // local/no-raw-rmsync-in-tests, and re-seeding an identical tree to change one
+    // line of prose is work for its own sake.)
+    writeState('Plan: 15 of 12');
+    const allFiles = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(allFiles.exitCode, 0, `must still exit 0: ${allFiles.stderr}`);
+    assert.match(allFiles.stderr, /total agrees with the plans on disk, but the position is outside it/,
+      `a total matching plan_count_all also agrees; got: ${allFiles.stderr}`);
+
+    // Total matches NEITHER count — the original case, still worded that way.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 7');
+    const mismatched = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(mismatched.exitCode, 0, `must still exit 0: ${mismatched.stderr}`);
+    assert.match(mismatched.stderr, /prose total matches neither count/,
+      `a total mismatch must say so; got: ${mismatched.stderr}`);
+    assert.ok(!/position is outside it/.test(mismatched.stderr),
+      `and it must not claim the total agrees; got: ${mismatched.stderr}`);
+  });
+
+  test('a normal advance emits no divergence warning', () => {
+    // Negative control the other way: the warning must be specific to the
+    // refusal, or it becomes noise every caller learns to ignore.
+    seedPhase('01-demo', 8);
+    writeState('Plan: 2 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `Command should exit 0: ${result.stderr}`);
+    assert.strictEqual(JSON.parse(result.stdout).advanced, true);
+    assert.ok(!(result.stderr || '').includes('REFUSED to advance'),
+      `a successful advance must be silent on stderr; got: ${JSON.stringify(result.stderr)}`);
+  });
+
+  test('advances normally when the prose total matches the plans on disk', () => {
+    seedPhase('01-demo', 8);
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(output.current_plan, 3);
+    const updated = stateText();
+    assert.ok(updated.includes('Plan: 3 of 8'), `expected "Plan: 3 of 8"; got:\n${updated}`);
+  });
+
+  test('a phase with no plan files on disk yet is not blocked', () => {
+    seedPhase('01-demo', 0);
+    writeState('Plan: 1 of 3');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true, 'an empty phase directory is a real zero, not divergence');
+    assert.strictEqual(output.current_plan, 2);
+  });
+
+  test('no phases directory at all is not blocked', () => {
+    writeState('Plan: 1 of 3');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true, 'an unresolvable phase is unknown, not diverged');
+  });
+
+  test('an AMBIGUOUS phase number is unknown, not divergence — the verb still advances', () => {
+    // #2237: two directories match bare "01". Which plan set belongs to this
+    // position is genuinely undecidable, so the check must abstain rather than
+    // first-match one and compare the prose against a coin flip.
+    seedPhase('01-demo', 12);
+    seedPhase('01-other', 4);
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(output.reason, undefined);
+  });
+
+  // #3862 round 3 (Minor): the one on-disk `scope` the provider's own docblock
+  // motivates by name — a nested `plans/` entry that exists but cannot be read —
+  // was pinned only through a stubbed provider. This drives it through the real
+  // CLI: a regular FILE named `plans` satisfies existsSync and makes readdirSync
+  // throw ENOTDIR, which is scanPhasePlans's TRUNCATED path with no chmod (root
+  // and Windows ignore it) and no mock (a child process cannot be mocked).
+  test('a TRUNCATED plan scan (unreadable nested plans/) is unknown, not divergence — the verb still advances', () => {
+    const phaseDir = seedPhase('01-demo', 3);
+    fs.writeFileSync(path.join(phaseDir, 'plans'), '');
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true,
+      `three plans the scan could see is a FLOOR, not proof that 8 is wrong; got ${result.output}`);
+    assert.strictEqual(output.current_plan, 3);
+  });
+
+  test('the same phase with a READABLE nested plans/ is a complete scan, and 3 vs 8 refuses', () => {
+    // The negative control for the test above: the identical fixture with
+    // `plans` a directory instead of a file. Without it the abstention above
+    // passes for any reason at all — including the cross-check never running.
+    const phaseDir = seedPhase('01-demo', 3);
+    fs.mkdirSync(path.join(phaseDir, 'plans'));
+    writeState('Plan: 2 of 8');
+    const before = stateText();
+
+    const output = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+    assert.strictEqual(output.reason, 'position_diverged');
+    assert.strictEqual(output.disk.plan_count, 3);
+    assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+  });
+
+  // #3862 round 3 (Minor): the fail-safe argument in resolvePlanSetForPhase's
+  // docblock — an unscoped listing can only cause a MISS — has one shape it did
+  // not name: a phase directory a SHIPPED milestone left behind, whose bare
+  // number the current milestone reuses, when the current phase's own directory
+  // does not exist yet. `matchPhaseDirs` then returns that one stale directory
+  // and the cross-check reads a prior milestone's plan set as ground truth.
+  //
+  // Reachable, and constructed here rather than argued away: `milestone complete`
+  // archives phase directories by default, but `--no-archive-phases` and an
+  // unreadable milestone window both leave them in place. What these pin is
+  // that the check does not DISAGREE with the repo's own readers about which
+  // directory that is. Not because they share a listing — phase-plan-index
+  // reads the phases directory raw, find-phase also walks archived milestones —
+  // but because under this ROADMAP's plain numeric ids the milestone window
+  // admits a directory by its phase number, so every listing carries the reused
+  // number and the shared matchPhaseDirs picks the same stale directory in all
+  // three. (Hyphenated ids narrow the window — getMilestonePhaseFilter — and are
+  // not what this fixture claims.) The refusal reports the drift those readers would
+  // report; it is non-mutating, and it dissolves the moment the stale directory
+  // is archived.
+  describe('a stale prior-milestone directory that is the sole bare-number match', () => {
+    const ROADMAP = [
+      '# Roadmap',
+      '',
+      '<details>',
+      '<summary>v1.0 — Old Milestone (Shipped)</summary>',
+      '',
+      '## Roadmap v1.0: Old Milestone',
+      '### Phase 1: Old Foundation',
+      '### Phase 2: Old API',
+      '### Phase 3: Old Deploy',
+      '',
+      '</details>',
+      '',
+      '## Roadmap v2.0: New Milestone',
+      '### Phase 1: New Foundation',
+      '### Phase 2: New API',
+      '### Phase 3: Payments',
+      '',
+    ].join('\n');
+    const stateAtPhase3 = (planLine) => [
+      '---',
+      'milestone: v2.0',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 03 (Payments) — EXECUTING',
+      planLine,
+      'Status: Ready to execute',
+      '',
+    ].join('\n');
+    // v1.0's phase 3, never archived. v2.0's phase 3 has no directory yet.
+    const seedStale = () => {
+      const dir = path.join(tmpDir, '.planning', 'phases', '03-old-deploy');
+      fs.mkdirSync(dir, { recursive: true });
+      for (let i = 1; i <= 5; i++) {
+        fs.writeFileSync(path.join(dir, `03-0${i}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+        fs.writeFileSync(path.join(dir, `03-0${i}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
+      return dir;
+    };
+    const seedProject = (planLine) => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP);
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateAtPhase3(planLine));
+    };
+
+    test('the cross-check and the read-only verbs select the SAME directory — the refusal is not a disagreement', () => {
+      seedStale();
+      seedProject('Plan: 1 of 3');
+      const before = stateText();
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 3', tmpDir).output);
+      const found = JSON.parse(runGsdTools('find-phase 3', tmpDir).output);
+
+      assert.strictEqual(advance.reason, 'position_diverged');
+      assert.strictEqual(advance.disk.plan_count, 5, 'the stale directory is what the cross-check read');
+      assert.strictEqual(index.plans.length, 5, 'phase-plan-index reads the same stale directory');
+      assert.match(found.directory, /03-old-deploy$/, 'find-phase selects it too, ahead of any archived milestone');
+      assert.strictEqual(found.plan_count_all, 5);
+      assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+    });
+
+    test('archiving the stale directory the way milestone-complete does dissolves the match — the verb abstains and advances', () => {
+      const stale = seedStale();
+      seedProject('Plan: 1 of 3');
+      const archive = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases');
+      fs.mkdirSync(archive, { recursive: true });
+      fs.renameSync(stale, path.join(archive, '03-old-deploy'));
+
+      const output = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      assert.strictEqual(output.advanced, true, `no directory matches phase 03 now, so the check abstains; got ${JSON.stringify(output)}`);
+      assert.strictEqual(output.current_plan, 2);
+    });
+  });
+
+  // #3862 round 4 (Nit): the cross-check used to enumerate phase directories
+  // through `listMilestonePhaseDirs` — milestone window plus sentinel filter —
+  // while `phase-plan-index` enumerates the phases directory raw. A filtered
+  // listing is a strict SUBSET of a raw one, so the two could disagree in both
+  // directions. All three shapes below are constructed rather than argued away,
+  // and each asserts the cross-check and the read-only verb now give the SAME
+  // answer, which is the parity the docblock claims.
+  describe('the cross-check enumerates the same directory listing its readers do', () => {
+    const roadmapWith = (...phaseHeadings) => [
+      '# Roadmap',
+      '',
+      '## Roadmap v1.0: Current Milestone',
+      ...phaseHeadings,
+      '',
+    ].join('\n');
+    const stateAt = (phaseLine, planLine) => [
+      '---',
+      'milestone: v1.0',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      phaseLine,
+      planLine,
+      'Status: Ready to execute',
+      '',
+    ].join('\n');
+    const seedDir = (dirName, prefix, count) => {
+      const dir = path.join(tmpDir, '.planning', 'phases', dirName);
+      fs.mkdirSync(dir, { recursive: true });
+      for (let i = 1; i <= count; i++) {
+        const id = String(i).padStart(2, '0');
+        fs.writeFileSync(path.join(dir, `${prefix}-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+        fs.writeFileSync(path.join(dir, `${prefix}-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
+      return dir;
+    };
+    const seedProject = (roadmap, phaseLine, planLine) => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateAt(phaseLine, planLine));
+    };
+
+    test('a phase outside the milestone WINDOW is still checked — the window is not the reader', () => {
+      // The ROADMAP declares phases 1-2, so the filter's heading set is
+      // non-empty and does NOT degrade pass-all; `03-payments` was therefore
+      // dropped from the listing, no directory matched, and the check abstained
+      // while five plans sat on disk. That abstention is #3830 recurring.
+      seedDir('03-payments', '03', 5);
+      seedProject(roadmapWith('### Phase 1: Foundation', '### Phase 2: API'),
+        'Phase: 03 (Payments) — EXECUTING', 'Plan: 1 of 3');
+      const before = stateText();
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 3', tmpDir).output);
+
+      assert.strictEqual(advance.reason, 'position_diverged',
+        `an out-of-window phase must still be checked; got ${JSON.stringify(advance)}`);
+      assert.strictEqual(advance.disk.plan_count, 5);
+      assert.strictEqual(index.plans.length, 5, 'phase-plan-index reads the same directory');
+      assert.strictEqual(advance.disk.plan_count, index.plans.length,
+        'the writing verb and the read-only verb must report the same count');
+      assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+    });
+
+    test('a SENTINEL-numbered directory that is the real current phase is still checked', () => {
+      // `isSentinelPhaseId` refuses leading 0 and 999 UNCONDITIONALLY — it
+      // survives even the pass-all degrade — so a project whose Current
+      // Position genuinely names phase 0 lost the cross-check entirely.
+      seedDir('00-bootstrap', '00', 5);
+      seedProject(roadmapWith('### Phase 0: Bootstrap', '### Phase 1: Foundation'),
+        'Phase: 00 (Bootstrap) — EXECUTING', 'Plan: 1 of 3');
+      const before = stateText();
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 0', tmpDir).output);
+
+      assert.strictEqual(advance.reason, 'position_diverged',
+        `a sentinel-numbered real phase must still be checked; got ${JSON.stringify(advance)}`);
+      assert.strictEqual(advance.disk.plan_count, 5);
+      assert.strictEqual(advance.disk.plan_count, index.plans.length);
+      assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+    });
+
+    test('an ambiguous bare number abstains here exactly where phase-plan-index refuses', () => {
+      // The other direction, and the one no review round named: under
+      // hyphenated ids the window admits by continuation token, so it could
+      // leave ONE of two bare-number-matching directories standing. The check
+      // then reported a plan_count as ground truth for a token its own warning
+      // told the operator to resolve with `phase-plan-index` — which refuses it
+      // as ambiguous. Sharing the listing makes both see two matches: one
+      // abstains, the other refuses to answer, and neither invents a number.
+      //
+      // This one COSTS coverage and the assertion below is what pins the cost:
+      // the window was disambiguating, so before the listing change this fixture
+      // REFUSED (`position_diverged`, plan_count 2) and now advances stale prose
+      // 1 of 9 -> 2 of 9. Taken deliberately — the recovered refusal rested on a
+      // token #2237 calls undecidable — but it is a trade, not a clean win, and
+      // a future reader must not "restore" the refusal without reading the
+      // docblock's named alternative.
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'),
+        JSON.stringify({ phase_id_convention: 'milestone-prefixed' }));
+      seedDir('03-01-alpha', '03-01', 2);
+      seedDir('03-02-beta', '03-02', 7);
+      seedProject(roadmapWith('### Phase 3-01: Alpha', '### Phase 4-01: Later'),
+        'Phase: 3 (Alpha) — EXECUTING', 'Plan: 1 of 9');
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 3', tmpDir).output);
+
+      assert.match(index.error, /ambiguous/, 'phase-plan-index refuses the token as ambiguous');
+      assert.strictEqual(advance.reason ?? null, null,
+        `an undecidable phase is no-evidence, never a named plan set; got ${JSON.stringify(advance)}`);
+      assert.strictEqual(advance.advanced, true,
+        'abstention advances, per ADR-3180 Decision 2 — and this is the coverage COST of sharing '
+        + 'the listing: the window used to break this tie and refuse. Do not "fix" this to a refusal '
+        + 'without reading resolvePlanSetForPhase\'s docblock on the trade.');
+      assert.strictEqual(advance.disk, undefined,
+        'the check must not report disk counts for a directory its readers refuse to name');
+    });
+  });
+
+  test('a non-canonically-named plan-shaped file does not inflate the count', () => {
+    // scanPhasePlans's own planFiles carry isRootPlanFile's loose /PLAN/i
+    // fallback; phase-plan-index intersects with the strict predicate (#2893).
+    // The cross-check must report the same number that verb does, or a stray
+    // `notes-PLAN-draft.md` manufactures divergence out of nothing.
+    const phaseDir = seedPhase('01-demo', 8);
+    fs.writeFileSync(path.join(phaseDir, 'notes-PLAN-draft.md'), '# not a canonical plan\n');
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true, `stray plan-shaped file must not count; got ${result.output}`);
+  });
+
+  test('the reported plan_count matches what phase-plan-index reports', () => {
+    // The issue's premise is that two commands in one CLI disagreed about the
+    // same fact. A cross-check that introduced a THIRD number would be worse
+    // than the defect it fixes.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+
+    const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+    const index = JSON.parse(runGsdTools('query phase-plan-index 01', tmpDir).output);
+    assert.strictEqual(advance.disk.plan_count, index.plans.length,
+      'advance-plan and phase-plan-index must agree on the plan count');
+  });
+
+  // #3862 review (Major 3): the total agreeing with disk says nothing about where
+  // the position sits inside it. Each case below has a prose total that MATCHES the
+  // twelve plans on disk, so the total test passes and only the range check stands
+  // between the input and a write.
+  test('a current_plan BELOW the plan set is a divergence, even when the TOTAL agrees', () => {
+    // `0 of 12` sits on the increment branch (0 < 12), where a diverged pair is
+    // refused outright. The past-the-total cases (`20 of 12`, `13 of 12`) sit on
+    // the completion branch and are covered two tests down: since #4067 that
+    // branch is decided from disk, not refused on the counter.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 0 of 12');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.advanced, false, 'Plan: 0 of 12 must not advance');
+    assert.strictEqual(output.reason, 'position_diverged',
+      'Plan: 0 of 12 is out of range and must be reported as a divergence');
+    assert.strictEqual(output.status, undefined,
+      'Plan: 0 of 12 must not be allowed to claim ready_for_verification');
+    assert.strictEqual(stateText(), before, 'Plan: 0 of 12 must leave STATE.md byte-identical');
+  });
+
+  // #4067 (on `next` since this PR's round 6) re-decides the phase-complete branch
+  // from the plans on disk — every plan summarized completes the phase, anything
+  // less declines the whole write as `plans_outstanding`. Its own fixture is a stale
+  // `7 of 7` in a 3-plan phase, a total this cross-check calls diverged, so the two
+  // fixes collide on exactly one branch. The reconciliation: on the completion branch
+  // the counter is REPORTED as untrusted and the disk decides; on the increment
+  // branch it is refused as before. These pin the reported half.
+  test('a position past the total is not refused: a phase complete on disk completes (#4067)', () => {
+    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12']) {
+      // Every plan summarized -> the phase really is complete, and it completes.
+      seedPhase('01-demo', 12);
+      writeState(planLine);
+      const done = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+      assert.strictEqual(done.exitCode, 0, `${planLine}: ${done.stderr}`);
+      const out = JSON.parse(done.stdout);
+      assert.strictEqual(out.reason, 'last_plan', `${planLine} with every plan summarized must complete; got ${done.stdout}`);
+      assert.deepStrictEqual(out.prose_diverged && out.prose_diverged.prose,
+        { current_plan: Number(planLine.match(/\d+/)[0]), total_plans: 12 },
+        `${planLine} must carry the divergence it did not refuse on`);
+      assert.match(done.stderr, /did NOT trust the plan counter/,
+        `${planLine} must still be announced on stderr; got ${JSON.stringify(done.stderr)}`);
+      assert.ok(stateText().includes('Phase complete'), `${planLine}: the phase is complete on disk, so Status moves`);
+    }
+  });
+
+  test('a position past the total is not refused: outstanding plans decline it, byte-identical (#4067)', () => {
+    // Seeded ONCE with seven of twelve summarized and never re-seeded fuller —
+    // seedPhase only adds files, so a fully-summarized seed in the same fixture
+    // would make this case unreachable (the first draft of this test did that).
+    seedPhase('01-demo', 12, 7);
+    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12']) {
+      writeState(planLine);
+      const before = stateText();
+      const held = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+      assert.strictEqual(held.exitCode, 0, `${planLine}: ${held.stderr}`);
+      const out = JSON.parse(held.stdout);
+      assert.strictEqual(out.reason, 'plans_outstanding', `${planLine} with 5 unsummarized plans must be declined by #4067; got ${held.stdout}`);
+      assert.strictEqual(out.outstanding_plans && out.outstanding_plans.length, 5);
+      assert.strictEqual(stateText(), before, `${planLine}: a declined completion leaves STATE.md byte-identical`);
+      // The divergence is STILL announced: the payload is #4067's, so stderr carries it.
+      assert.match(held.stderr, /did NOT trust the plan counter/,
+        `${planLine}: the divergence must be announced even when #4067 declines; got ${JSON.stringify(held.stderr)}`);
+      assert.ok(!held.stderr.includes('REFUSED to advance'),
+        'the completion branch does not refuse, so the refusal verb must not appear');
+      // RV6.5 review of the round that added the yield: the warning must not tell the
+      // operator to stop when the caller contract beside it says to proceed.
+      assert.ok(!held.stderr.includes('before continuing'),
+        `a yield does not stop the workflow, so its warning must not say "before continuing"; got ${JSON.stringify(held.stderr)}`);
+      assert.match(held.stderr, /did not stop the workflow/,
+        'the yielded warning must say the call did not stop anything');
+    }
+  });
+
+  // `Plan: -1 of 12` used to sit in the loop above, refused by the range check as
+  // `position_diverged`. It no longer reaches that check: #3791 (on `next`) tightened
+  // the position parse, so a negative current is now rejected as an unreadable shape
+  // BEFORE the cross-check runs. Round 2 of this PR's review flagged that same input as
+  // hitting "a pre-existing advancePlanCore bug ... Present at base; flagged for the
+  // record, not attributed to you" — this is that bug being fixed upstream, and the
+  // case moves here rather than being dropped.
+  //
+  // What is asserted is the PROPERTY, which is unchanged and is what #3830 is about:
+  // exit 0, no advance, and STATE.md byte-identical. The mechanism is asserted
+  // separately and deliberately loosely — the accepted-shapes message belongs to
+  // #3791, not to this PR, so this pins that a refusal happened and that it is NOT a
+  // silent advance, without pinning another PR's wording.
+  test('a negative current_plan is refused by the position parse, not by the range check', () => {
+    seedPhase('01-demo', 12);
+    writeState('Plan: -1 of 12');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.ok(output.error, `a negative position must be refused, not advanced; got ${result.output}`);
+    assert.strictEqual(output.advanced, undefined,
+      'the parse refusal precedes the cross-check, so it carries no `advanced` key at all');
+    assert.strictEqual(output.status, undefined,
+      'a negative position must not be allowed to claim ready_for_verification');
+    assert.strictEqual(stateText(), before,
+      'a negative position must leave STATE.md byte-identical');
+  });
+
+  // #3862 RV6.5 review. The disk bound alone was not enough, and this is the case it
+  // missed: 12 plan files of which 8 are live, prose `Plan: 10 of 8`. The total (8)
+  // matches planCount, the position (10) sits UNDER planCountAll (12), so both disk
+  // tests passed — and the verb then satisfied `currentPlan >= totalPlans`, returned
+  // `{reason: "last_plan", status: "ready_for_verification"}` and WROTE the phase to
+  // complete from a position past its own declared total. Driven at HEAD before the fix.
+  test('a current_plan past its OWN declared total is a divergence, even when disk agrees', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 12; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`),
+        `---\nstatus: ${i <= 8 ? 'complete' : 'superseded'}\n---\n# Plan\n`);
+    }
+    writeState('Plan: 10 of 8');
+    const before = stateText();
+
+    // Post-#4067 the completion branch is decided from disk: none of the eight
+    // live plans is summarized, so the write is declined as `plans_outstanding` —
+    // byte-identical, exactly as the refusal was — and the incoherent position is
+    // announced on stderr rather than being the reason itself.
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `must still exit 0: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'plans_outstanding',
+      `with no plan summarized the disk must decline the completion; got ${result.stdout}`);
+    assert.strictEqual(output.status, undefined,
+      'it must NOT be allowed to claim ready_for_verification');
+    assert.strictEqual(stateText(), before,
+      'and it must not write — this case previously mutated STATE.md');
+    assert.match(result.stderr, /did NOT trust the plan counter/,
+      'a position past its own total is still announced as untrusted');
+  });
+
+  test('the range check does not fire on an all-superseded phase positioned past the LIVE count', () => {
+    // The bound is planCountAll, not planCount, and this is the negative control
+    // for that choice: eight plan FILES of which none is live, prose positioned at
+    // 5 of 8. Bounding on the live count would manufacture a divergence out of
+    // ordinary supersession — the same reason the total test accepts either count.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 8; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: superseded\n---\n# Plan\n');
+    }
+    writeState('Plan: 5 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `must not fail: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true,
+      'a position inside the full plan set is in range, whatever the live count is');
+    assert.strictEqual(output.current_plan, 6);
+  });
+
+  test('the boundary is inclusive: current_plan == the plan count still advances', () => {
+    // limit-1 / limit / limit+1 for the NEW predicate specifically. `12 of 12` is
+    // the ordinary last plan and must reach last_plan, not the divergence arm — an
+    // off-by-one in `currentPlan > planCountAll` would swallow every phase's final
+    // plan into a refusal.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 12 of 12');
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `must not fail: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'last_plan',
+      'the last plan is in range — it must reach last_plan, never position_diverged');
+  });
+
+  test('a diverged total does not complete a phase prematurely — the disk decides, and the divergence is announced', () => {
+    // Pre-fix this took the currentPlan >= totalPlans branch and declared
+    // ready_for_verification on a phase holding twelve plans of which seven were
+    // summarized. Post-#4067 that branch is decided from disk: five outstanding ->
+    // declined, byte-identical, and this check's warning still names `8 of 8` vs 12.
+    seedPhase('01-demo', 12, 7);
+    writeState('Plan: 8 of 8');
+    const before = stateText();
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.strictEqual(output.reason, 'plans_outstanding', `got ${result.stdout}`);
+    assert.strictEqual(output.status, undefined, 'must not claim ready_for_verification');
+    assert.strictEqual(stateText(), before, 'the declined write must be byte-identical');
+    assert.ok(!before.includes('Phase complete'), 'Status must not be moved to Phase complete');
+    assert.match(result.stderr, /8 of 8/, 'the warning must name the prose position');
+    assert.match(result.stderr, /12/, 'the warning must name the disk plan count');
+    assert.match(result.stderr, /did NOT trust the plan counter/);
+  });
+
+  test('a diverged total on a phase that IS complete on disk completes it, and says the counter was not trusted', () => {
+    // Same stale `8 of 8` over twelve plans, all twelve summarized. Refusing here
+    // would send the operator to fix a number in order to finish a finished phase;
+    // #4067 completes it and this check announces the stale line.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 8 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.strictEqual(output.reason, 'last_plan', `got ${result.stdout}`);
+    assert.strictEqual(output.status, 'ready_for_verification');
+    assert.deepStrictEqual(output.prose_diverged, {
+      prose: { current_plan: 8, total_plans: 8 },
+      disk: { phase: '01', plan_count: 12, plan_count_all: 12 },
+    });
+    assert.ok(stateText().includes('Phase complete'), 'Status moves: the phase is complete on disk');
+    assert.match(result.stderr, /did NOT trust the plan counter/);
+    assert.match(result.stderr, /matches neither count/, 'and it names which half of the line is wrong');
+    assert.match(result.stderr, /did not stop the workflow/);
+    assert.ok(!result.stderr.includes('before continuing'), 'a completed phase must not be told to stop');
+  });
+});
+
+// allow-test-rule: source-text-is-the-product (#3830)
+//
+// #3862 RV6.5 adversarial review: the two CLI regression tests above pin
+// `--pick reason`'s three outcomes, but they drive the BINARY — they would pass
+// unchanged against the pre-rework caller snippets, so nothing tested the
+// callers themselves. The deployed contract for a workflow/agent caller IS the
+// markdown text the runtime loads, so a source-text guard is the available
+// instrument, exactly as tests/no-bare-gsd-tools-command-position.test.cjs
+// argues for its own class.
+//
+// The caller set is DERIVED, not hardcoded: every agents/*.md and
+// gsd-core/workflows/*.md that actually invokes the verb is enumerated and each
+// must discriminate on the reason. A third caller added later is covered the
+// moment it lands — which matters, because this round's own review named
+// "the sole in-repo caller" when there were two.
+describe('#3830/#3862: every markdown caller of state.advance-plan discriminates on the reason', () => {
+  const ROOT = path.resolve(__dirname, '..');
+  const SCAN_ROOTS = [path.join(ROOT, 'agents'), path.join(ROOT, 'gsd-core', 'workflows')];
+
+  // RECURSIVE. gsd-core/workflows/ is a tree — execute-phase/steps/, autonomous/steps/
+  // and thirty-odd siblings — so a readdirSync of the top level alone is blind to
+  // most of the surface a future caller would land in.
+  const walk = (dir, out = []) => {
+    if (!fs.existsSync(dir)) return out;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(full, out);
+      else if (ent.name.endsWith('.md')) out.push(full);
+    }
+    return out;
+  };
+
+  // The invocation, in any spelling: `gsd_run query state.advance-plan`, and the
+  // bare `node .../gsd-tools.cjs query state.advance-plan` form the helper wraps.
+  const INVOKES = /query\s+state\.advance-plan/;
+
+  // Scope every structural assertion to the FENCED BLOCK that holds the call, not
+  // to the whole file. A whole-file search cannot tell a guard next to the call
+  // from a `position_diverged` mentioned four hundred lines away in prose.
+  //
+  // EVERY such block, not the first. An earlier draft returned on the first match
+  // and adversarial review broke it in one move: a file whose first fence is fully
+  // compliant and whose second fence invokes the verb unguarded passed every
+  // assertion here, because the second fence was never looked at. One record per
+  // BLOCK, so a caller with two invocations is two subjects.
+  //
+  // `\r?\n` deliberately: under Windows autocrlf these files arrive CRLF, a bare
+  // `\n` here would match no fence at all, and a guard that finds no block to scan
+  // reports PASS by vacuity. The sanity tests below are the backstop for exactly
+  // that failure; this is the fix for it.
+  // Each hit carries the fence's END offset as well as its body, because the halt
+  // instruction this guard also checks lives in the prose AFTER the fence, not in it.
+  const invocationBlocks = (text) => {
+    const out = [];
+    // Rule widened to tests/**/*.cjs by #3951 (15af0f553), so this pre-existing helper is
+    // linted now. stripFencedCode() is the wrong shape here: it REMOVES fenced blocks, and
+    // this needs to keep them with their end offsets so each assertion can be scoped to the
+    // invocation's own fence.
+    for (const m of text.matchAll(/^```bash\r?\n([\s\S]*?)^```/gm)) { // allow-adhoc-markdown: needs the fences kept + located, not stripped
+      if (INVOKES.test(m[1])) out.push({ block: m[1], end: m.index + m[0].length });
+    }
+    return out;
+  };
+
+  const countInvocations = (text) => (text.match(new RegExp(INVOKES.source, 'g')) || []).length;
+
+  // The window the halt instruction must appear in. Generous enough not to be a
+  // formatting trap, tight enough that prose three sections away cannot satisfy it.
+  const HALT_WINDOW = 900;
+
+  // One entry per invocation-bearing BLOCK. `name` carries the block's ordinal so a
+  // failure names which of a file's fences is at fault.
+  const callerFiles = () => {
+    const hits = [];
+    for (const root of SCAN_ROOTS) {
+      for (const full of walk(root)) {
+        const text = fs.readFileSync(full, 'utf-8');
+        if (!INVOKES.test(text)) continue;
+        const rel = path.relative(ROOT, full);
+        const blocks = invocationBlocks(text);
+        blocks.forEach(({ block, end }, i) => {
+          hits.push({
+            full, text, block,
+            after: text.slice(end, end + HALT_WINDOW),
+            name: blocks.length > 1 ? `${rel} [fence ${i + 1}]` : rel,
+          });
+        });
+      }
+    }
+    return hits;
+  };
+
+  test('sanity: at least two callers are found (else this guard is vacuous)', () => {
+    const found = callerFiles();
+    assert.ok(found.length >= 2,
+      `expected >=2 markdown callers of state.advance-plan, found ${found.length}: ${found.map((f) => f.name).join(', ')}`);
+  });
+
+  test('sanity: every invocation in the file lands in a scanned fence (none escapes the guard)', () => {
+    // The accounting check. A guard that inspects fences is blind to an invocation
+    // outside every fence, and blind to a SECOND fence if it stops at the first —
+    // adversarial review broke the earlier draft exactly that way. Requiring the
+    // whole-file invocation count to equal the count inside the scanned blocks
+    // closes both at once, and cannot itself pass vacuously: zero blocks against a
+    // non-zero file count fails.
+    const seen = new Set();
+    for (const { full, text } of callerFiles()) {
+      if (seen.has(full)) continue;
+      seen.add(full);
+      const inFile = countInvocations(text);
+      const inBlocks = invocationBlocks(text).reduce((n, b) => n + countInvocations(b.block), 0);
+      assert.strictEqual(inBlocks, inFile,
+        `${path.relative(ROOT, full)} invokes state.advance-plan ${inFile} time(s) but only ${inBlocks} are inside a scanned \`\`\`bash fence — the rest are unguarded and invisible to every assertion below`);
+    }
+  });
+
+  test('each caller invokes the verb BARE, so its answer keeps the shape the arms match', () => {
+    // #3862 RV6.5 pass 4 (CLAIM A). The arms match on `"advanced": true` in the
+    // verb's own JSON. `--raw` and `--pick advanced` are legal on this verb and
+    // make a genuine advance print bare `true` at exit 0 — which matches no arm, so
+    // the callers would stop recording on EVERY advance, forever, silently. That is
+    // strictly worse than the bug being fixed. Nothing stops a later edit adding
+    // one for terseness, so pin the bare form here rather than teaching the arms
+    // three output shapes.
+    for (const { name, block } of callerFiles()) {
+      const line = block.split(/\r?\n/).find((l) => INVOKES.test(l)) || '';
+      assert.ok(!/--raw\b|--pick\b|--json-errors\b/.test(line),
+        `${name} invokes state.advance-plan with an output-shaping flag (${line.trim()}) — it changes the payload the arms match on`);
+    }
+  });
+
+  test('each caller branches on position_diverged, never on `--pick advanced`', () => {
+    for (const { name, block } of callerFiles()) {
+      assert.ok(block.includes('position_diverged'),
+        `${name}'s invocation block must read the refusal reason and name position_diverged as what it stops on`);
+      assert.ok(/"error":/.test(block),
+        `${name}'s invocation block must also handle the exit-0 {"error": ...} shape — it is equally not an advance`);
+      // The regression this guard exists for: `advanced: false` is ALSO the
+      // ordinary last-plan answer, so branching on it skips the final plan's
+      // progress and metric write on every phase.
+      assert.ok(!/--pick advanced/.test(block),
+        `${name} must NOT branch on --pick advanced — last_plan is also advanced:false`);
+    }
+  });
+
+  test('each caller ALLOW-LISTS the answers that owe recording, rather than deny-listing', () => {
+    // #3862 RV6.5 pass 3 (MISSED) and its follow-through. The first shape here was
+    // a deny-list — stop on position_diverged, stop on {"error": ...}, and let the
+    // catch-all write. That writes on every shape it has not been taught about: a
+    // crashed or missing gsd_run leaving the capture EMPTY (verified against the
+    // pre-fix source — update-progress ran, no STOP printed), and equally any
+    // refusal reason the verb grows later. Three answers mean this plan's work is
+    // recorded — a real advance, the ordinary last plan, and #4067's
+    // `plans_outstanding` (this plan done, siblings still writing) — so exactly
+    // those three may record, and the arm names each one.
+    for (const { name, block } of callerFiles()) {
+      assert.ok(/^\s*\*'"advanced": true'\*\|\*'"reason": "last_plan"'\*\|\*'"reason": "plans_outstanding"'\*\)/m.test(block),
+        `${name} must open its writing arm on the three recording answers explicitly, not on a catch-all`);
+      const invIdx = block.search(INVOKES);
+      const preCase = block.slice(invIdx, block.indexOf('case "', invIdx));
+      assert.ok(/\$\?/.test(preCase),
+        `${name} must capture the exit status so the refusal it reports can name it`);
+    }
+  });
+
+  test('each caller CONTAINS its state writes in the advancing arm, and never in the catch-all', () => {
+    // Containment proved structurally — every write between the allow arm and its
+    // `;;`, and NONE between the bare `*)` catch-all and `esac` — rather than by a
+    // character-distance window past the first guard mention. Both writes are
+    // covered, not update-progress alone.
+    const WRITES = ['state.update-progress', 'state.record-metric'];
+    const allOccurrences = (hay, needle) => {
+      const out = [];
+      for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) out.push(i);
+      return out;
+    };
+    for (const { name, block } of callerFiles()) {
+      const allowIdx = block.search(/^\s*\*'"advanced": true'\*/m);
+      const allowEnd = block.indexOf(';;', allowIdx);
+      const guardIdx = block.indexOf('position_diverged', allowEnd);
+      const catchAll = block.search(/^\s*\*\)\s*$/m);
+      const esacIdx = block.search(/^\s*esac\s*$/m);
+      assert.ok(allowIdx >= 0 && allowEnd > allowIdx && guardIdx > allowEnd
+                && catchAll > guardIdx && esacIdx > catchAll,
+        `${name}: expected the allow arm, then the divergence arm, then a bare \`*)\` catch-all, then \`esac\``);
+      for (const write of WRITES) {
+        const at = allOccurrences(block, write);
+        assert.ok(at.length > 0, `${name}'s invocation block must contain the ${write} call it protects`);
+        for (const idx of at) {
+          assert.ok(idx > allowIdx && idx < allowEnd,
+            `${name} runs ${write} at offset ${idx}, outside the advancing arm (${allowIdx}..${allowEnd}) — it is unguarded`);
+        }
+      }
+      const catchAllBody = block.slice(catchAll, esacIdx);
+      for (const write of WRITES) {
+        assert.ok(!catchAllBody.includes(write),
+          `${name}'s catch-all arm runs ${write} — an unrecognized answer must never record state`);
+      }
+    }
+  });
+
+  test('each caller carries the HALT instruction the shell cannot enforce for it', () => {
+    // #3862 RV9 claim audit. The comment drafted for that round claimed every
+    // behavioural fix fails a named test on reversion; the auditor removed both
+    // callers' halt paragraphs, kept the case guards, and every test here stayed
+    // green. It was right — nothing pinned them.
+    //
+    // These paragraphs are behaviour, not commentary. A `case` arm suppresses only
+    // its own block: it cannot stop the FENCED BLOCK THAT FOLLOWS, and in both
+    // callers something follows that writes state (execute-plan's later steps,
+    // gsd-executor's ROADMAP/requirements block). The arm handles the writes it
+    // owns; the prose is the only thing that stops the rest. Delete it and the
+    // guard silently covers half of what it is documented to cover.
+    //
+    // Pinned as three agreeing parts rather than as a quoted sentence, so rewording
+    // is free and deleting is not.
+    for (const { name, block, after } of callerFiles()) {
+      // 1. The block emits a marker at all — otherwise the prose points at nothing.
+      const marker = block.match(/echo "(STOP:)/);
+      assert.ok(marker,
+        `${name}'s refusal arms must print a STOP: marker for the halt instruction below to key on`);
+
+      // 2. The prose after the fence refers to that same marker. This is what ties
+      //    the instruction to THIS block rather than to generic advice elsewhere.
+      assert.ok(after.includes('`STOP:`'),
+        `${name} must follow its invocation fence with an instruction naming the \`STOP:\` marker the block prints; found none within ${HALT_WINDOW} chars`);
+
+      // 3. It actually instructs a stop, and says WHY the shell did not do it —
+      //    the clause a later editor prunes as verbose, which is precisely the one
+      //    that makes the paragraph load-bearing rather than decorative.
+      assert.ok(/\b(halt|do not run|do not proceed|do not continue)\b/i.test(after),
+        `${name}'s halt instruction must tell the agent to stop, not merely describe the refusal`);
+      assert.ok(/cannot stop|suppresses only|never a later|not the shell/i.test(after),
+        `${name}'s halt instruction must say why the shell cannot enforce it — a \`case\` arm cannot stop a later fenced block, and that is the reason this prose exists`);
+    }
+  });
+
+  // #3862 review (Major 5): every assertion above is SOURCE-TEXT — they prove the
+  // arms exist and are shaped correctly, and prove nothing about whether they match
+  // what the verb actually prints. The arms glob on the literal bytes
+  // `"advanced": true`, with exactly one space, produced by serializeForOutput ->
+  // JSON.stringify(result, null, 2) (src/io.cts). Switch output() to compact JSON,
+  // add a space-stripping post-processor, or route this payload through a form the
+  // wrapper does not re-expand, and BOTH first-party callers fall into the
+  // catch-all on every successful advance — permanently, silently, and with no test
+  // red anywhere. That is strictly worse than the bug being fixed, and it is the
+  // same class the "invoke the verb BARE" test above was written to prevent: a
+  // constant shared across parallel surfaces with no parity assertion.
+  //
+  // So execute the pairing rather than asserting about it. Produce each answer
+  // shape from the REAL verb, then run each caller's OWN `case` block against that
+  // real stdout under a REAL shell. Re-implementing glob matching in JS would test
+  // this file's matcher instead of theirs; the arms are shell, so bash is the only
+  // faithful matcher available.
+  test('each caller\'s case arms match the verb\'s REAL output, shape by shape', () => {
+    const { execFileSync } = require('child_process');
+
+    const projectDir = createFixture();
+    const stateWith = (planLine) => [
+      '# Project State', '', '## Current Position', '',
+      'Phase: 01 (Demo Phase) — EXECUTING', planLine,
+      'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
+    ].join('\n');
+    const seed = (planCount, summaries = true) => {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-demo');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= planCount; i++) {
+        const id = String(i).padStart(2, '0');
+        fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+        if (summaries) {
+          fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+        }
+      }
+    };
+    const put = (planLine) =>
+      fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), stateWith(planLine));
+    const advanceOut = () => runGsdTools('state advance-plan', projectDir).output;
+
+    // Eighth shape, and the first one the callers are TAUGHT rather than fail closed
+    // on: #4292 (fix #4067) landed on next in round 7 and re-decides the completion
+    // branch from disk, declining `plans_outstanding` while sibling plans have no
+    // SUMMARY.md yet. That answer is the wave-parallel executor's ordinary end of a
+    // plan, so it owes the recording — arm 0, with `advanced: true` and `last_plan`.
+    // Produced FIRST, before seed() writes the summaries: seed only ever adds files.
+    seed(12, false);
+    put('Plan: 12 of 12'); const OUT_OUTSTANDING = advanceOut();
+
+    seed(12);
+
+    // The five shapes, each from the real binary except the non-answer, which is
+    // BY DEFINITION what a crashed `gsd_run` leaves in the capture.
+    put('Plan: 3 of 12');  const OUT_ADVANCED = advanceOut();
+    put('Plan: 12 of 12'); const OUT_LAST     = advanceOut();
+    put('Plan: 2 of 8');   const OUT_DIVERGED = advanceOut();
+    put('Status: no plan line at all'); const OUT_ERROR = advanceOut();
+
+    // Sixth shape, and it did not exist when this PR opened: #3807/#4028 landed on
+    // next while this branch was in review and gave advancePlanCore a NEW refusal
+    // (`ambiguous_position_phase`, for a Current Position carrying more than one
+    // `Phase:` entry). It is exactly the case the allow-list was chosen for — a
+    // reason the callers were never taught — so pin that it reaches the catch-all
+    // rather than assuming the property still holds.
+    fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), [
+      '# Project State', '', '## Current Position', '',
+      'Phase: 01 (Demo Phase) — EXECUTING',
+      'Phase: 02 (Second Phase) — EXECUTING',
+      'Plan: 3 of 12',
+      'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
+    ].join('\n'));
+    const OUT_AMBIGUOUS = advanceOut();
+
+    // Seventh shape, and it arrived the same way the sixth did: #3791 landed on next
+    // while this branch was in review and gave advancePlanCore ANOTHER new refusal
+    // (`ambiguous_plan_position`, for a STATE.md carrying the legacy `Current Plan: N`
+    // and the compound `Plan: X of Y` at DIFFERENT numbers). Pinned for the reason the
+    // sixth is: the allow-list's whole claim is that a reason the callers were never
+    // taught fails closed, and that claim is worth exactly as much as the number of
+    // untaught reasons actually driven against it.
+    fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), [
+      '# Project State', '', '## Current Position', '',
+      'Phase: 01 (Demo Phase) — EXECUTING',
+      'Current Plan: 3',
+      'Total Plans in Phase: 12',
+      'Plan: 5 of 12',
+      'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
+    ].join('\n'));
+    const OUT_AMBIGUOUS_PLAN = advanceOut();
+
+    const OUT_EMPTY = '';
+
+    // Sanity: the fixtures really did produce the shapes this test is about. Without
+    // this, a fixture that silently stopped producing (say) a divergence would make
+    // every arm assertion below pass against an empty string.
+    assert.match(OUT_ADVANCED, /"advanced":\s*true/, 'fixture did not produce a real advance');
+    assert.match(OUT_LAST, /"reason":\s*"last_plan"/, 'fixture did not produce last_plan');
+    assert.match(OUT_DIVERGED, /"reason":\s*"position_diverged"/, 'fixture did not produce a divergence');
+    assert.match(OUT_ERROR, /"error"/, 'fixture did not produce an exit-0 error object');
+    assert.match(OUT_AMBIGUOUS, /"reason":\s*"ambiguous_position_phase"/,
+      'fixture did not produce #4028\'s ambiguous-position refusal');
+    assert.match(OUT_AMBIGUOUS_PLAN, /"reason":\s*"ambiguous_plan_position"/,
+      'fixture did not produce #3791\'s ambiguous-plan refusal');
+    assert.match(OUT_OUTSTANDING, /"reason":\s*"plans_outstanding"/,
+      'fixture did not produce #4067\'s plans_outstanding decline');
+
+    // Lift the caller's own `case` block and replace each arm BODY with an echo of
+    // its index, leaving every PATTERN byte-identical to what ships.
+    const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+    const armPatterns = (block) => {
+      const m = block.match(/case\s+"\$\{ADVANCE_OUT\}"\s+in\r?\n([\s\S]*?)\r?\n\s*esac/);
+      assert.ok(m, 'could not locate the case block — the source-text guards above should have caught this first');
+      return m[1].split(';;')
+        .map((seg) => seg.split(/\r?\n/).map((l) => l.trim())
+          .find((l) => l && !l.startsWith('#') && l.endsWith(')')))
+        .filter(Boolean)
+        .map((l) => l.slice(0, -1));
+    };
+
+    // Arm 0 records (advance + last_plan + #4067's plans_outstanding); arm 1 is the
+    // named divergence stop; the final arm is the catch-all. An answer the callers
+    // were never taught must reach the catch-all — that is the allow-list property,
+    // checked against real bytes.
+    const EXPECT = [
+      ['a real advance',        OUT_ADVANCED, 0],
+      ['the last plan',         OUT_LAST,     0],
+      ['#4067 plans outstanding', OUT_OUTSTANDING, 0],
+      ['a divergence refusal',  OUT_DIVERGED, 1],
+      ['an exit-0 error object', OUT_ERROR,   'last'],
+      ['#4028 ambiguous position', OUT_AMBIGUOUS, 'last'],
+      ['#3791 ambiguous plan position', OUT_AMBIGUOUS_PLAN, 'last'],
+      ['a non-answer (crash)',  OUT_EMPTY,    'last'],
+    ];
+
+    for (const { name, block } of callerFiles()) {
+      const patterns = armPatterns(block);
+      assert.ok(patterns.length >= 3, `${name}: expected at least three arms, got ${patterns.length}`);
+      const script = 'case "$1" in\n'
+        + patterns.map((p, i) => `${p}) echo ${i};;`).join('\n')
+        + '\nesac\n';
+      for (const [label, payload, want] of EXPECT) {
+        const got = execFileSync('bash', ['-c', script, '_', payload],
+          { encoding: 'utf-8', timeout: PROBE_TIMEOUT_MS }).trim();
+        const expected = want === 'last' ? String(patterns.length - 1) : String(want);
+        assert.strictEqual(got, expected,
+          `${name}: ${label} matched arm ${got || '(none)'}, expected arm ${expected}. `
+          + `The caller's arms and the verb's real output have drifted apart.`);
+      }
+    }
+  });
+
+});
+
+describe('#3830 facet 2: state advance-plan rejects options instead of discarding them', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = createFixture(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const seedSimpleState = () =>
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\nPlan: 2 of 5 in current phase\nStatus: In progress\nLast activity: 2025-01-01\n',
+    );
+
+  test('--plan / --total are rejected rather than silently ignored', () => {
+    seedSimpleState();
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+
+    const result = runGsdTools('state advance-plan --plan 10 --total 10', tmpDir);
+    assert.ok(!result.success, 'unrecognized options must fail, not return a confident wrong answer');
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'a rejected invocation must not mutate STATE.md');
+  });
+
+  test('the rejection names the offending options', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --bogus', tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    assert.ok(combined.includes('--bogus'), `rejection should name --bogus; got: ${combined}`);
+  });
+
+  test('a structured error carries a reason code for --json-errors callers', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --bogus --json-errors', tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    const line = combined.split('\n').find((l) => l.trim().startsWith('{'));
+    assert.ok(line, `expected a JSON error object; got: ${combined}`);
+    const parsed = JSON.parse(line);
+    assert.strictEqual(parsed.ok, false);
+    assert.ok(typeof parsed.reason === 'string' && parsed.reason.length > 0);
+  });
+
+  test('--raw is not mistaken for a command option', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --raw', tmpDir);
+    assert.ok(result.success, `--raw must still work: ${result.error}`);
+    assert.strictEqual(result.output.trim(), 'true');
+  });
+
+  test('the other global flags are not mistaken for command options either', () => {
+    // main() splices each of these out of argv before any router runs, so the
+    // strict check must never see them. Exercised individually rather than
+    // asserted collectively — a false rejection on any one breaks its callers.
+    //
+    // #3862 review (Minor): this asserted ONLY the negative, so it passed if the
+    // command failed for any other reason at all. `result.success` is the
+    // assertion that actually pins "was accepted"; the message check now just
+    // localises a regression when it fires.
+    //
+    // The list is the whole splice set. It claimed to be that once before and was not:
+    // the #3862 RV6.5 review found `--project-dir`/`--project-dir=` and
+    // `--exit-contract=` also spliced by main() and covered by nothing here, so the
+    // "whole splice set" comment was asserting its own completeness while short of it.
+    // Now: --json-errors, --cwd, --cwd=, --default, --project-dir, --project-dir=,
+    // --exit-contract= in the loop; --raw and --pick in their own tests below;
+    // --ws/--ws= spliced by resolveActiveWorkstream. This test is the only guard that
+    // the router's strict index-2 rule cannot falsely reject one of them.
+    // #3862 RV6.5 review: `result.success` + "no rejection message" was VACUOUS, and
+    // the review demonstrated it on this very list. `--ws default` redirects the read
+    // to an unseeded workstream, so it exits 0 with `{"error":"STATE.md not found"}` —
+    // the flag was accepted, `advance-plan` never ran, and both old assertions passed.
+    // "Was not rejected" is not "did the work". Assert the ADVANCE.
+    for (const flag of ['--json-errors', `--cwd ${tmpDir}`, `--cwd=${tmpDir}`, '--default x',
+                        `--project-dir ${tmpDir}`, `--project-dir=${tmpDir}`, '--exit-contract=v1']) {
+      seedSimpleState();
+      const result = runGsdTools(`state advance-plan ${flag}`, tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(result.success, `${flag} must still be accepted; got: ${combined}`);
+      assert.ok(!/unknown flag|unexpected positional argument/.test(combined),
+        `${flag} must not be rejected as a command option; got: ${combined}`);
+      const parsed = JSON.parse(result.output);
+      assert.strictEqual(parsed.advanced, true,
+        `${flag} must be spliced out and let the verb actually RUN, not merely be accepted; got: ${result.output}`);
+    }
+  });
+
+  test('--ws and --ws= are spliced out, and the verb runs in the selected workstream', () => {
+    // Split from the loop above because these two do not read the project root: they
+    // redirect to .planning/workstreams/<name>/, which has to exist and carry its own
+    // STATE.md or the verb legitimately reports "STATE.md not found" — the exact shape
+    // that made the old assertion vacuous. Seed it, then assert the advance.
+    for (const form of ['--ws wsone', '--ws=wsone']) {
+      const dir = createFixture();
+      seedWorkstream(dir, {
+        name: 'wsone',
+        state: [
+          '# Project State', '', '## Current Position', '',
+          'Phase: 01 (Demo Phase)', 'Plan: 2 of 5', 'Status: Ready to execute',
+          'Last Activity: 2026-08-01', '',
+        ].join('\n'),
+      });
+
+      const result = runGsdTools(`state advance-plan ${form}`, dir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(result.success, `${form} must be accepted; got: ${combined}`);
+      assert.ok(!/unknown flag|unexpected positional argument/.test(combined),
+        `${form} must not be rejected as a command option; got: ${combined}`);
+      const parsed = JSON.parse(result.output);
+      assert.strictEqual(parsed.advanced, true,
+        `${form} must reach the workstream's own STATE.md and advance it; got: ${result.output}`);
+      assert.strictEqual(parsed.current_plan, 3);
+    }
+  });
+
+  // #3862 review (Blocker 1): the bespoke `--` carve-out is GONE, and with it the
+  // three tests that pinned it. #3884 landed `parseNamedArgsOrExit` and wired it
+  // through every other arm in src/state-command-router.cts, so this verb now
+  // shares their contract instead of shipping a second one: `--` is an unknown
+  // flag (`isFlagToken('--')` is true and its name is the empty string), and
+  // there is no end-of-options handling to honour. Accepting a bare `--` here
+  // while every sibling rejects it is the divergence the review named; if bare
+  // `--` should be legal it belongs in the owner, where all the arms agree.
+  test('`--` follows the canonical argv contract, like every sibling arm', () => {
+    for (const argv of [['--'], ['--', '--plan'], ['--', '--']]) {
+      seedSimpleState();
+      const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      const result = runGsdTools(['state', 'advance-plan', ...argv], tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(!result.success, `${argv.join(' ')} must be rejected; got: ${combined}`);
+      assert.ok(combined.includes('unknown flag'),
+        `the rejection must use the canonical owner's wording; got: ${combined}`);
+      assert.strictEqual(
+        fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'), before,
+        'a rejected invocation must not mutate STATE.md',
+      );
+    }
+  });
+
+  // #3862 review (Minor): operands and short options were silently discarded —
+  // the identical #3830-facet-2 defect at a token shape the `--`-prefix filter
+  // could not see. This verb takes no options and no operands, so each of these
+  // is unambiguously invalid input that used to return a confident answer it had
+  // not been asked for.
+  test('bare operands are rejected rather than silently discarded', () => {
+    for (const operand of ['5', '01']) {
+      seedSimpleState();
+      const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      const result = runGsdTools(['state', 'advance-plan', operand], tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(!result.success, `operand ${operand} must be rejected; got: ${combined}`);
+      assert.ok(combined.includes(operand), `the rejection should name ${operand}; got: ${combined}`);
+      assert.strictEqual(
+        fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'), before,
+        'a rejected invocation must not mutate STATE.md',
+      );
+    }
+  });
+
+  test('short options are rejected rather than silently discarded', () => {
+    for (const argv of [['-x'], ['-p', '10']]) {
+      seedSimpleState();
+      const result = runGsdTools(['state', 'advance-plan', ...argv], tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(!result.success, `${argv.join(' ')} must be rejected; got: ${combined}`);
+      assert.ok(combined.includes(argv[0]), `the rejection should name ${argv[0]}; got: ${combined}`);
+    }
+  });
+
+  test('--pick still projects a field', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --pick advanced', tmpDir);
+    assert.ok(result.success, `--pick must still work: ${result.error}`);
+    assert.strictEqual(result.output.trim(), 'true');
   });
 });
 

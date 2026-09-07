@@ -135,7 +135,26 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         }
         state.cmdStatePatch(cwd, patches, raw);
       },
-      'advance-plan': () => state.cmdStateAdvancePlan(cwd, raw),
+      'advance-plan': () => {
+        // #3830 facet 2: reject unrecognized options instead of discarding them.
+        //
+        // Routed to the canonical owner rather than hand-rolled. `parseNamedArgsOrExit`
+        // (#3884, src/command-arg-projection.cts) is what every other arm in this file
+        // uses, and `positionals: 2` states what this verb is: the two command words,
+        // then nothing. It rejects `--plan 10` as an unknown flag, `5` / `01` / `-x` /
+        // `-p 10` as unexpected positional arguments, and a bare `--` as an unknown flag
+        // — one usage contract and one `ERROR_REASON.USAGE` code across every arm here.
+        //
+        // Rejected rather than bound: this verb's defect is mutating on an unvalidated
+        // position, and an operator-supplied `--plan`/`--total` would be an unvalidated
+        // position arriving at a different port. To be useful as an escape hatch it
+        // would have to BYPASS the disk cross-check added above — i.e. ship a documented
+        // way to write a fabricated plan position. The repair path for a genuinely
+        // diverged STATE.md is the existing one: `state rebuild`, `state sync`, or
+        // `state patch`.
+        parseNamedArgsOrExit(args, { positionals: 2 }, error);
+        state.cmdStateAdvancePlan(cwd, raw);
+      },
       'record-metric': () => {
         const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'plan', 'duration', 'tasks', 'files'], positionals: 2 }, error);
         state.cmdStateRecordMetric(cwd, {

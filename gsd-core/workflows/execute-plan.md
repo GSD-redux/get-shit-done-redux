@@ -440,18 +440,35 @@ IS_WORKTREE=$([ -f .git ] && echo "true" || echo "false")
 
 # Skip in parallel mode — orchestrator handles STATE.md centrally
 if [ "$IS_WORKTREE" != "true" ]; then
-  # Advance plan counter (handles last-plan edge case)
-  gsd_run query state.advance-plan
+  # Advance the plan counter, then READ the answer (#3830: it can REFUSE at exit 0).
+  # ALLOW-LIST: only the first arm records — a real advance, the last plan, or #4067's
+  # `plans_outstanding` (this plan done, siblings still writing). Everything else
+  # stops, including an exit-0 {"error": ...}.
+  ADVANCE_OUT=$(gsd_run query state.advance-plan)
+  ADVANCE_RC=$?
+  case "${ADVANCE_OUT}" in
+    *'"advanced": true'*|*'"reason": "last_plan"'*|*'"reason": "plans_outstanding"'*)
+      # Recalculate progress bar from disk state
+      gsd_run query state.update-progress
 
-  # Recalculate progress bar from disk state
-  gsd_run query state.update-progress
-
-  # Record execution metrics
-  gsd_run query state.record-metric \
-    --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
-    --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+      # Record execution metrics
+      gsd_run query state.record-metric \
+        --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
+        --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+      ;;
+    *'"reason": "position_diverged"'*)
+      echo "STOP: advance-plan refused — Current Position disagrees with disk (see WARNING); do NOT record." >&2
+      ;;
+    *)
+      echo "STOP: no advance reported (exit ${ADVANCE_RC}) — counter did NOT move; do NOT record." >&2
+      printf '%s\n' "${ADVANCE_OUT}" >&2
+      ;;
+  esac
 fi
 ```
+**If the block above printed `STOP:`, halt this workflow here.** The counter did not move, so
+later steps would record a wrong position. (The guard suppresses this step's writes; it
+cannot stop later steps.)
 </step>
 
 <step name="extract_decisions_and_issues">

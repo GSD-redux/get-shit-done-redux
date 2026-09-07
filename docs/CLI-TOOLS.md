@@ -91,7 +91,8 @@ node gsd-tools.cjs state get [section]
 # Batch update multiple fields
 node gsd-tools.cjs state patch --field1 val1 --field2 val2
 
-# Increment plan counter
+# Increment plan counter. Takes no options and no arguments — see the refusal
+# contract below, since this verb can decline to advance.
 node gsd-tools.cjs state advance-plan
 # When no labeled plan position can be parsed (e.g. ## Current Position drifted
 # to pure narrative prose), declines with reason "plan_position_unreadable" plus
@@ -123,6 +124,57 @@ node gsd-tools.cjs state begin-phase --phase N --name SLUG --plans COUNT
 node gsd-tools.cjs state signal-waiting --type TYPE --question "..." --options "A|B" --phase P
 node gsd-tools.cjs state signal-resume
 ```
+
+### `state advance-plan` — the refusal contract
+
+Before advancing, the verb resolves the phase's real plan set from disk the same
+way `query phase-plan-index` does and compares it against the `## Current
+Position` prose. It **refuses to move the counter** when the two disagree, rather
+than incrementing a position it cannot trust (#3830); on the phase-complete
+branch the disagreement is reported and the plans on disk decide — see below.
+
+"The same way" is literal, and it is a property of the directory listing as much
+as of the matcher: both read the phases directory raw — no milestone window and
+no sentinel filter — and both select through `matchPhaseDirs`. So a phase the
+current ROADMAP does not declare, or one whose number is sentinel-shaped, is
+still checked; and a bare number matching several directories is undecidable for
+both, where this verb spends it as an abstention and `phase-plan-index` spends it
+as a refusal to answer.
+
+Seven answers a caller must tell apart, all at **exit 0**:
+
+| stdout | meaning | what a caller should do |
+|---|---|---|
+| `{"advanced": true, ...}` | the counter moved | proceed; record progress and metrics |
+| `{"advanced": false, "reason": "last_plan", ...}` | already on the phase's last plan, and every plan on disk is summarized | proceed; this is the ordinary end of a phase |
+| `{"advanced": false, "reason": "plans_outstanding", "outstanding_plans": [...], ...}` | the counter says last plan, but sibling plans have no SUMMARY.md yet (#4067) — the write was declined byte-identically | proceed; this caller's own plan is done, the phase is not. The last executor to finish completes it |
+| `{"advanced": false, "reason": "position_diverged", "prose": {...}, "disk": {...}}` | prose position disagrees with the plans on disk, and the verb was about to move it | **stop** — do not record progress or metrics against a position that did not move |
+| `{"error": ..., "reason": "ambiguous_position_phase", "phase_candidates": [...]}` | the `## Current Position` section carries more than one `Phase:` entry, so which entry is current is undecidable (#3807) | **stop** — resolve the section to a single entry and re-run |
+| `{"error": ..., "reason": "ambiguous_plan_position", "plan_candidates": [...]}` | the section carries the legacy `Current Plan: N` and the compound `Plan: X of Y` at different numbers, so which one is current is undecidable (#3791) | **stop** — resolve them to a single current plan and re-run |
+| `{"error": ...}` with no `reason` | STATE.md is missing, or `Current Plan` / `Total Plans` could not be parsed | **stop** — nothing was read, so nothing downstream is trustworthy |
+
+A divergence also prints a `[gsd-tools] WARNING:` line to **stderr** naming both
+positions and the repair path, so the refusal is visible to an operator who is
+not reading stdout. stdout stays clean JSON.
+
+The refusal fires only when the verb is about to **move** the counter. On the
+phase-complete branch (`Plan: N of M` with `N >= M`) a diverged counter is not
+trusted but not refused either: the phase-complete decision is taken from the
+plans on disk (#4067), so a stale `7 of 7` carried into a 3-plan phase declines
+as `plans_outstanding` while plans are still executing and completes the phase
+once every plan is summarized — and the stale line is announced on stderr with
+the same numbers and repair path (`did NOT trust the plan counter`). A
+`last_plan` answer reached that way carries the divergence as
+`"prose_diverged": {"prose": {...}, "disk": {...}}`; a `plans_outstanding`
+answer is #4067's own payload and does not.
+
+Because every answer exits 0, branch on the payload rather than the exit code —
+and branch as an **allow-list**: treat anything that is not one of the three
+shapes on the proceed side as a stop, so a reason added later, an
+`{"error": ...}` object, or an empty capture from a crashed invocation all fail
+closed. Reconcile a
+diverged STATE.md with `state rebuild`, `state sync`, or `state patch`;
+`query phase-plan-index` shows the real plan set.
 
 ### State Snapshot
 
