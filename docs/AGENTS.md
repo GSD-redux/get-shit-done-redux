@@ -377,6 +377,7 @@ Three further dimensions carry no number: **Verify Command Format Sanity**,
 | **Model (balanced)** | Sonnet |
 | **Color** | Pink |
 | **Produces** | `{phase}-UI-REVIEW.md` with scores |
+| **Interaction capture** | `workflow.ui_interaction_capture` (default `false`) |
 
 **6 Audit Pillars (scored 1-4):**
 1. Copywriting
@@ -385,6 +386,19 @@ Three further dimensions carry no number: **Verify Command Format Sanity**,
 4. Typography
 5. Spacing
 6. Experience Design
+
+**Interaction capture (default-off).** The static screenshots are three viewport captures of
+the first paint, taken with `npx playwright screenshot`, which has no interaction verb — so a
+hover state, an open menu, a focus ring or a form's validation state never appears in them.
+With `workflow.ui_interaction_capture` on, `/gsd-ui-review` passes `interaction_capture: true`
+in the auditor's `<config>` block and the auditor adds post-interaction captures through the
+`chrome-devtools` CLI (the second binary in the `chrome-devtools-mcp` package), driven from
+`Bash` against a throwaway `--isolated` profile: no MCP server, no `tools:` change. It needs an
+installed Chrome (`CHROME_BIN` overrides discovery). With the key off, or no Chrome resolved,
+the section prints one line and the Playwright-only path runs exactly as before. The report's
+`**Interaction captures:**` field carries the outcome — off, skipped with its reason, or the
+number of states captured — and an interaction state that was not captured is never reported as
+observed. See [Enable UI interaction capture](how-to/enable-ui-interaction-capture.md).
 
 ---
 
