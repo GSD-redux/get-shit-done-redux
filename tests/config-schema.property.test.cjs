@@ -154,7 +154,7 @@ describe('config-schema: isValidConfigKey properties', () => {
     assert.equal(
       isValidConfigKey('hooks.commit_types'),
       true,
-      'hooks.commit_types is a documented, hook-consumed key (docs/COMMANDS.md) and must be settable via config-set'
+      'hooks.commit_types is a documented, hook-consumed key (see the CLI reference) and must be settable via config-set'
     );
   });
 
