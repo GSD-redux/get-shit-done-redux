@@ -500,7 +500,7 @@ node scripts/ci-test-scope.cjs --base origin/next --head HEAD
 `scripts/run-tests.cjs` does not hand the whole selected file list to one
 `node --test` process. It packs the files into **chunks**, each spawned
 separately, because Windows caps a command line at 32,767 characters and because
-each chunk gets its own 800s timeout (`RUN_TESTS_CHUNK_TIMEOUT_MS`) and a fresh
+each chunk gets its own 600s timeout (`RUN_TESTS_CHUNK_TIMEOUT_MS`) and a fresh
 process, which bounds memory pressure.
 
 How files are distributed across those chunks decides whether the slowest chunk
@@ -517,7 +517,7 @@ mis-ranked files badly enough that the slowest chunk ran ~3.9x the lightest.
 | `RUN_TESTS_MAX_FILES_PER_CHUNK` | `60` | Per-chunk weight budget. Weights are normalized so an **average-cost** file weighs 1, so this still reads as "about 60 average files". |
 | `RUN_TESTS_MAX_CMDLINE_CHARS` | `28000` | argv ceiling per chunk, with headroom under the Windows 32,767 limit. |
 | `RUN_TESTS_TIMINGS_FILE` | `tests/test-timings.json` | Path to the timing table. Tests override it to inject a synthetic cost profile. |
-| `RUN_TESTS_CHUNK_TIMEOUT_MS` | `800000` | Per-chunk timeout. |
+| `RUN_TESTS_CHUNK_TIMEOUT_MS` | `600000` | Per-chunk timeout. |
 
 The timing table is **advisory and deliberately un-gated**. There is no `--check`
 mode and no CI lint that fails on staleness, because timing data legitimately

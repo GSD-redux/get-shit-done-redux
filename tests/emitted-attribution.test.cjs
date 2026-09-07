@@ -2516,7 +2516,7 @@ describe('#3271: emitted-runtime-bounds', () => {
     assert.equal(WORKTREE_TIMEOUT_MS, 60_000);
     assert.equal(BUILD_LIB_TIMEOUT_MS, 180_000);
     assert.equal(BUILD_TIMEOUT_MS, 360_000);
-    assert.equal(CHUNK_TIMEOUT_CEILING_MS, 800_000);
+    assert.equal(CHUNK_TIMEOUT_CEILING_MS, 600_000);
   });
 
   test('a failing step names itself and its elapsed time', () => {
