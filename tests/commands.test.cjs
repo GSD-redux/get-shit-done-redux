@@ -3093,7 +3093,18 @@ function isolateGlobalGitConfig() {
     const dir = createTempDir('gsd-3901-gitconfig-');
     const file = path.join(dir, 'global.gitconfig');
     fs.writeFileSync(file, '');
-    _gitConfigIsolation = { dir, file, prev: process.env.GIT_CONFIG_GLOBAL, refs: 1 };
+    // A --test-name-pattern filter can collect a suite without running its
+    // tests/after hook, leaving one reference unreleased. Keep normal cleanup
+    // reference-counted, with a process-exit fallback for that filtered run.
+    const cleanupOnExit = () => cleanup(dir);
+    _gitConfigIsolation = {
+      dir,
+      file,
+      prev: process.env.GIT_CONFIG_GLOBAL,
+      refs: 1,
+      cleanupOnExit,
+    };
+    process.once('exit', cleanupOnExit);
     process.env.GIT_CONFIG_GLOBAL = file;
   }
   let released = false;
@@ -3103,8 +3114,9 @@ function isolateGlobalGitConfig() {
     if (!_gitConfigIsolation) return;
     _gitConfigIsolation.refs -= 1;
     if (_gitConfigIsolation.refs > 0) return;
-    const { prev, dir } = _gitConfigIsolation;
+    const { prev, dir, cleanupOnExit } = _gitConfigIsolation;
     _gitConfigIsolation = null;
+    process.removeListener('exit', cleanupOnExit);
     if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL;
     else process.env.GIT_CONFIG_GLOBAL = prev;
     cleanup(dir);
