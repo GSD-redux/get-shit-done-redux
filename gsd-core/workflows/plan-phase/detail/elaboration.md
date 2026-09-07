@@ -6,7 +6,7 @@ Elaboration deferred from the `plan-phase.md` spine under ADR-4139 (Compact Cont
 
 ## § 9a — Filesystem Fallback (Planner)
 
-**Triggered when:** Agent() returns but the return contains no recognized marker (`## PLANNING COMPLETE`, `## PHASE SPLIT RECOMMENDED`, `## ⚠ Source Audit`, `## CHECKPOINT REACHED`, `## PLANNING INCONCLUSIVE`).
+This elaborates the spine's §9a trigger condition (above) — the recovery banner and its three options.
 
 ```bash
 # #3218: this asks "did the planner write files to disk at all" — a

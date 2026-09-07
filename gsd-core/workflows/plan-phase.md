@@ -968,7 +968,7 @@ If `section_manifest` is `null` or `"chunked-planning-mode"` is in its `included
 
 ## 9a. Filesystem Fallback (Planner)
 
-**Triggered when:** Agent() returns but the return contains no recognized marker.
+**Triggered when:** Agent() returns but the return contains no recognized marker (`## PLANNING COMPLETE`, `## PHASE SPLIT RECOMMENDED`, `## ⚠ Source Audit`, `## CHECKPOINT REACHED`, `## PLANNING INCONCLUSIVE`).
 
 ```bash
 DISK_PLANS=$(gsd_run query find-phase "${PHASE_NUMBER}" | jq -r '.plan_count_all // 0')
