@@ -500,7 +500,15 @@ function checkRegistration(splits, workflowsDir) {
     const referenced = new Set(spineContent.match(DETAIL_REFERENCE_PATTERN) || []);
     for (const referencedPath of referenced) {
       const resolved = path.join(repoRoot, referencedPath);
-      if (!fs.existsSync(resolved)) {
+      // Containment check: DETAIL_REFERENCE_PATTERN allows `.` and `/` freely, so
+      // spine prose shaped like `../../../etc/detail/passwd.md` would otherwise
+      // resolve outside repoRoot and turn this existence check into a path-traversal
+      // oracle (security review finding, #4403). A resolved path outside repoRoot
+      // can never be a real detail file this repo ships, so it is reported the same
+      // as any other dangling reference rather than probed on disk.
+      const relFromRoot = path.relative(repoRoot, resolved);
+      const escapesRoot = relFromRoot === '' || relFromRoot.startsWith('..') || path.isAbsolute(relFromRoot);
+      if (escapesRoot || !fs.existsSync(resolved)) {
         violations.push({ kind: 'dangling_reference', name: split.name, referencedPath });
       }
     }
@@ -540,6 +548,7 @@ module.exports = {
   extractProtectedBlocks,
   ACK_TRAILER_BOUNDARY_MOVE,
   readBoundaryMoveTrailers,
+  parseBoundaryMoveTrailerValues,
   checkDisjointness,
   checkRegistration,
   checkDetailFileSizeCap,

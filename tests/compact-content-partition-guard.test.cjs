@@ -41,17 +41,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const fc = require('fast-check');
 
 const { cleanup } = require('./helpers.cjs');
 const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
 const { runGit, OUTCOME } = require('./helpers/process-seam.cjs');
 const { REPO_ROOT, GIT_TIMEOUT_MS, safeDirArgs, resolveBase } = require('./helpers/emitted-runtime.cjs');
+const { ACK_TRAILER_DELIM } = require('./helpers/emitted-diff.cjs');
 const {
   DEFAULT_WORKFLOWS_DIR,
   discoverRegisteredSplits,
   normalizeNonTrivialLines,
   extractProtectedBlocks,
   readBoundaryMoveTrailers,
+  parseBoundaryMoveTrailerValues,
   checkDisjointness,
   checkRegistration,
   checkDetailFileSizeCap,
@@ -279,9 +282,26 @@ function runPrDiffScopedChecks() {
     );
   }
 
-  // Checks 4 + 5: every registered split (an untouched spine trivially produces zero
-  // violations either way, since old === new content — see the file header).
+  // Checks 4 + 5: every registered split NOT already counted as newly-split above (an
+  // untouched spine trivially produces zero violations either way, since old === new
+  // content — see the file header).
+  //
+  // A split in `newlySplitNames` is excluded here, not merely redundant with check 1.
+  // Checks 4/5 both premise an OLD spine that already carried the content in question —
+  // "did an EXISTING split shed protected content or move something undeclared". A
+  // split whose detail path did not exist at the resolved base has no such premise: it
+  // is brand new relative to that base, which is check 1's domain alone. This also
+  // makes checks 4/5 robust to a base ref that resolves further back than expected (a
+  // known class of gotcha `resolveBase()`'s own doc comment describes — no `origin/*`
+  // remote-tracking refs inside the gsd-test sandbox): a stale/older base makes an
+  // already-merged, already-reviewed split look "newly introduced" from that base's
+  // vantage point, and retroactively demanding a Boundary-Move-Declared trailer for a
+  // split that predates the trailer mechanism's own existence is exactly the false
+  // positive this exclusion prevents. Verified against the real repo: plan-phase's
+  // split (Phase 2, #4402) landed before this PR (#4403) introduces Boundary-Move-Declared
+  // at all, so it must never be checked against that requirement retroactively.
   for (const split of splits) {
+    if (newlySplitNames.has(split.name)) continue;
     const spineRel = toRepoRelative(split.spinePath);
     const oldSpineContent = showAtRefOrNull(mergeBaseSha, spineRel);
     if (oldSpineContent === null) continue; // no old spine to compare against at this ref
@@ -542,6 +562,30 @@ describe('failing-first fixture: check 3 (registration)', () => {
       cleanup(tmpRoot);
     }
   });
+
+  test('RED (size cap) — a new detail file one byte OVER NEW_FILE_CAP (the third boundary point)', () => {
+    // Boundary coverage requires limit-1 / limit / limit+1 (CLAUDE.md TEST RULES).
+    // The two tests above already cover limit-1 (GREEN) and limit exactly (RED,
+    // ">= NEW_FILE_CAP" boundary); this is the third point, proving the cap does
+    // not silently stop firing past its own threshold.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-partition-sizecap-over-'));
+    try {
+      const workflowsDir = path.join(tmpRoot, 'gsd-core', 'workflows');
+      fs.mkdirSync(path.join(workflowsDir, 'big', 'detail'), { recursive: true });
+      fs.writeFileSync(path.join(workflowsDir, 'big.md'), 'Spine.\n\ngsd-core/workflows/big/detail/part.md\n');
+      fs.writeFileSync(path.join(workflowsDir, 'big', 'detail', 'part.md'), 'x'.repeat(NEW_FILE_CAP + 1));
+
+      const splits = discoverRegisteredSplits(workflowsDir).filter((s) => s.spineExists);
+      const violations = checkDetailFileSizeCap(splits);
+      assert.ok(violations.length > 0, 'expected at least one size-cap violation');
+      assert.ok(
+        violations.some((v) => v.detailPath.endsWith(path.join('big', 'detail', 'part.md')) && v.size === NEW_FILE_CAP + 1),
+        `expected the oversized file to be named with its actual size: ${JSON.stringify(violations)}`,
+      );
+    } finally {
+      cleanup(tmpRoot);
+    }
+  });
 });
 
 describe('failing-first fixture: check 4 (protected content)', () => {
@@ -726,6 +770,69 @@ describe('failing-first fixture: check 5 (boundary moves declared)', () => {
       }),
       /./,
       'a genuinely uncomputable merge-base must throw, never return an empty result',
+    );
+  });
+});
+
+// ─── property tests (CLAUDE.md TEST RULES: parsers/bijective contracts need fast-check) ─
+
+describe('property: compact-content-split.cjs parsers', () => {
+  // Same alphabets as the ADR-3942 sibling this trailer mechanism ports from
+  // (tests/emitted-ack-trailer.test.cjs's KEY_ALPHABET/REASON_ALPHABET) — neither
+  // alphabet can produce ACK_TRAILER_DELIM itself, so a generated key/reason pair
+  // never accidentally embeds a second delimiter and corrupts its own round trip.
+  const KEY_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789_./-'.split('');
+  const REASON_ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ,.#-'.split('');
+
+  const keyArb = fc.array(fc.constantFrom(...KEY_ALPHABET), { minLength: 1, maxLength: 40 })
+    .map((chars) => chars.join(''));
+  const reasonArb = fc.array(fc.constantFrom(...REASON_ALPHABET), { minLength: 1, maxLength: 60 })
+    .map((chars) => chars.join('').trim())
+    .filter((s) => s.length > 0);
+
+  test('prop: Boundary-Move-Declared trailer render/parse is bijective', () => {
+    fc.assert(
+      fc.property(keyArb, reasonArb, (key, reason) => {
+        const rendered = `${key}${ACK_TRAILER_DELIM}${reason}`;
+        const { declarations, errors } = parseBoundaryMoveTrailerValues([rendered]);
+        assert.deepStrictEqual(errors, []);
+        assert.strictEqual(declarations.get(key)?.reason, reason);
+      }),
+      { seed: 4403, numRuns: 300 },
+    );
+  });
+
+  test('prop: two identical (key, reason) declarations always dedupe to exactly one entry, never an error', () => {
+    fc.assert(
+      fc.property(keyArb, reasonArb, (key, reason) => {
+        const rendered = `${key}${ACK_TRAILER_DELIM}${reason}`;
+        const { declarations, errors } = parseBoundaryMoveTrailerValues([rendered, rendered]);
+        assert.deepStrictEqual(errors, []);
+        assert.strictEqual(declarations.size, 1);
+        assert.strictEqual(declarations.get(key)?.reason, reason);
+      }),
+      { seed: 4403, numRuns: 200 },
+    );
+  });
+
+  // Body lines deliberately exclude anything sentinel-shaped or blank, so the
+  // generated fixture can never accidentally produce a SECOND sentinel or an
+  // early terminator inside what is meant to be one continuous protected span.
+  const bodyLineArb = fc.array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,'.split('')), { minLength: 1, maxLength: 30 })
+    .map((chars) => chars.join('').trim())
+    .filter((s) => s.length > 0 && !s.includes('gsd:protected'));
+
+  test('prop: any well-formed <!-- gsd:protected:start/end --> span round-trips through extractProtectedBlocks with zero malformed entries', () => {
+    fc.assert(
+      fc.property(fc.array(bodyLineArb, { minLength: 1, maxLength: 8 }), (lines) => {
+        const content = ['Intro prose.', '', '<!-- gsd:protected:start -->', ...lines, '<!-- gsd:protected:end -->', '', 'Closing prose.'].join('\n');
+        const { blocks, malformed } = extractProtectedBlocks(content);
+        assert.deepStrictEqual(malformed, []);
+        const paired = blocks.filter((b) => b.kind === 'paired');
+        assert.strictEqual(paired.length, 1);
+        assert.deepStrictEqual(paired[0].lines, lines);
+      }),
+      { seed: 4403, numRuns: 200 },
     );
   });
 });
