@@ -323,6 +323,11 @@ function stripComment(line) {
     if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
     if (c === '$' && line[i + 1] === "'") { out += c + line[i + 1]; i += 1; stack.push('ansi'); continue; }
     if (c === '$' && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
+    // Process substitution `<( )` / `>( )` and an extglob `@( )` `*( )` `+( )` `?( )` `!( )` are
+    // parenthesised INSIDE a word: their `)` ends the construct, not the word, so a `#` right
+    // after it is literal (`cat <(printf x)#c` prints `/dev/fd/63#c`). Same context as `$( )`.
+    // Round review, continuation 2.
+    if (/[<>@*+?!]/.test(c) && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
     // Nested parens inside `$( )`. A raw subshell — `$( (printf x); printf "%s" " # " )`
     // — closed the outer context at the INNER `)`, after which every quote was
     // misclassified and the trailing continuation was truncated away. Driven. Depth is
@@ -1449,6 +1454,13 @@ describe('#4176 — bash reader, units', () => {
     assert.strictEqual(stripComment('x=#y'), 'x=#y');
     assert.strictEqual(stripComment('echo ${x}#y'), 'echo ${x}#y');
     assert.strictEqual(stripComment('echo "a;" #b'), 'echo "a;"');
+    // A `)` that closes a construct INSIDE a word is not a word end: process substitution
+    // and extglob. Round review, continuation 2.
+    assert.strictEqual(stripComment('cat <(printf x)#c'), 'cat <(printf x)#c');
+    assert.strictEqual(stripComment('cat <(printf x) #c'), 'cat <(printf x)');
+    assert.strictEqual(stripComment('echo @(a)#c'), 'echo @(a)#c');
+    assert.strictEqual(stripComment('echo @(a) #c'), 'echo @(a)');
+    assert.strictEqual(stripComment('echo $(printf x)#c'), 'echo $(printf x)#c');
   });
 
   test('logicalLines joins only a backslash that is the LAST character of the line, in an odd run', () => {
