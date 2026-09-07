@@ -2308,8 +2308,24 @@ function pendingTodoLinkTarget(todo: Record<string, unknown>, projectRoot: strin
   return rel;
 }
 
+/**
+ * #4439: the stored `created:` frontmatter (and the JSON `todos[].created`
+ * field it round-trips through) is always a full ISO-8601 timestamp, by
+ * design — this is the display-only seam that reformats it to the
+ * date-only `[date]` bullet documented in docs/reference/state-md.md and
+ * docs/COMMANDS.md. A value that doesn't start with a well-formed
+ * `YYYY-MM-DD` (the 'unknown' fallback, or any other non-conforming
+ * string) passes through unchanged rather than being mangled.
+ */
+function pendingTodoDateOnly(value: string): string {
+  const match = value.match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : value;
+}
+
 function renderPendingTodoBullet(todo: Record<string, unknown>, projectRoot?: string): string {
-  const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
+  const date = pendingTodoDateOnly(
+    sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown')),
+  );
   let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
   let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
   // Strip trailing "." so the fixed "Needs ....` template below never
