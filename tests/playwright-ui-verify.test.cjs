@@ -2,10 +2,12 @@
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
 
-const { test, describe } = require('node:test');
+const { test, describe, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+const { cleanup } = require('./helpers.cjs');
 
 // #2994 fragmentization moved the automated_ui_verification step out of
 // verify-work.md into gsd-core/workflows/verify-work/steps/automated-ui-verification.md
@@ -59,4 +61,1683 @@ describe('Playwright-MCP UI verification integration', () => {
       verifyContent.includes('fall back');
     assert.ok(hasConditional, 'Playwright integration must be conditional with manual fallback');
   });
+});
+
+// #4176: the auditor's sole screenshot path had three defects — a 200-only
+// probe that misread a redirecting dev server as absent, an unconditional
+// "Screenshots captured" echo that survived total capture failure, and a
+// documented 3000 -> 5173 -> 8080 fallback the control flow never attempted.
+// These assert against the <screenshot_approach> BASH BLOCK specifically, not
+// the whole file: the pre-fix bug was precisely that the fallback existed as
+// a guidance sentence while the code hard-coded one port, so a whole-file
+// grep for "5173" passed on the broken version.
+const AUDITOR_PATH = path.join(__dirname, '..', 'agents', 'gsd-ui-auditor.md');
+
+// Line-based rather than a fence regex: an unbounded [\s\S]*? over readFileSync
+// content is a backtracking risk (local/no-unbounded-quantifier), a triple-fence
+// body regex is ad-hoc markdown parsing (local/no-adhoc-markdown-parsing), and a
+// bare \n split is CRLF-fragile on Windows checkouts (local/no-crlf-fragile-split).
+// splitLines() handles the line endings; the scan below handles the fence.
+function screenshotApproachLines() {
+  const lines = splitLines(fs.readFileSync(AUDITOR_PATH, 'utf-8'));
+  const FENCE = '`'.repeat(3);
+  const OPENER = FENCE + 'bash';
+  const body = [];
+  let inSection = false;
+  let inFence = false;
+  for (const line of lines) {
+    if (!inSection) {
+      if (line.includes('<screenshot_approach>')) inSection = true;
+      continue;
+    }
+    if (line.includes('</screenshot_approach>')) break;
+    if (!inFence) {
+      if (line.trim() === OPENER) inFence = true;
+      continue;
+    }
+    if (line.trim() === FENCE) break;
+    body.push(line);
+  }
+  assert.ok(body.length > 0, '<screenshot_approach> must contain a non-empty bash fence');
+  return body;
+}
+
+function screenshotApproachBlock() {
+  return screenshotApproachLines().join('\n');
+}
+
+// Join backslash continuations, so a capture invocation or an `if ... ; then` spread
+// over four physical lines is ONE logical line. Without this, a structural read of the
+// block sees `if npx playwright screenshot "$DEV_URL" \` — a header with no `then` —
+// and silently declines to open a scope.
+function logicalLines(lines) {
+  const joined = [];
+  let buf = null;
+  for (const raw of lines) {
+    // Leading whitespace only comes off a continuation line. A `.trim()` here also took
+    // its TRAILING whitespace, which is the very thing the test below has to see.
+    const piece = buf === null ? raw : `${buf} ${raw.replace(/^[\t ]+/, '')}`;
+    // A continuation is a backslash IMMEDIATELY before the newline. The first version
+    // trimmed trailing whitespace and then looked for the backslash, which is backwards
+    // from bash: in `echo a \ ` (backslash, space, newline) the backslash escapes the
+    // SPACE and the line ends there. And the run has to be ODD — `echo a \\` is an escaped
+    // backslash at the end of a complete line. Round-2 nit 7.
+    const run = /\\+$/.exec(piece);
+    if (run && run[0].length % 2 === 1) {
+      buf = piece.slice(0, -1).replace(/[\t ]+$/, '');
+      continue;
+    }
+    buf = null;
+    joined.push(piece);
+  }
+  if (buf !== null) joined.push(buf);
+  return joined;
+}
+
+// Every logical line paired with the shell conditions actually GOVERNING it — the
+// `if`/`elif`/`else` conditions of the enclosing scopes, innermost last. Loops and
+// `case` open a scope with no condition of their own, so a line inside one is still
+// correctly reported as ungoverned unless an `if` encloses it too.
+//
+// This is what a "the echo is gated" assertion has to read. Asking instead whether some
+// token appears EARLIER IN THE BLOCK TEXT than the echo answers a different question
+// entirely, and `CAPTURED=0` near the top of the block makes that question true forever:
+// moving the success echo back outside its `if [ "$CAPTURED" -eq 3 ]` branch — which is
+// precisely the #4176 bug — would not disturb it.
+//
+// IT FAILS CLOSED, and that is the whole difference between this and its first version.
+// A hand-written reader of a language it does not lex WILL meet a form it does not know;
+// what decides whether that is a defect is which way it errs. The first version erred
+// SILENTLY: an unrecognised line was pushed as an ordinary row, so a construct that
+// should have popped the scope stack left a stale condition on it, and the next line
+// inherited a guard that does not govern it — a FALSE PASS on exactly the regression
+// this test names. Three were driven against it:
+//   `fi # end capture-count branch`   -> `fi` not matched, stack never popped
+//   `if [ "$CAPTURED" -eq 3 ]` + a bare `then` on the NEXT line (legal bash)
+//   `if ...; then ...; fi; echo ...`  all on one logical line
+// So: comments are stripped before the walk (which is what the first form needed), the
+// two-line `then` form is recognised, and ANY residual line still carrying a bare
+// control keyword this walker did not consume THROWS. A test that cannot parse the
+// block fails loudly; it never reports on a stack it has lost track of.
+// Does this text carry a shell control keyword the walker did not consume?
+//
+// QUOTED TEXT IS REMOVED FIRST — `echo "we do work"` threw on the `do` inside a string,
+// and a guard that false-fires is a guard that gets deleted. The boundary set includes
+// the redirection and grouping characters, because `fi>/dev/null` was accepted (and so
+// silently failed to pop the scope stack) purely for want of `>` in it. `else` is in the
+// keyword list for the same reason: `else echo unparsed` reached neither the bare-`else`
+// branch nor this check. All three driven.
+function hasControlKeyword(text) {
+  return /(^|[\t ;&|(){}<>])(if|then|else|elif|fi|do|done|case|esac)([\t ;&|(){}<>]|$)/.test(blankQuoted(text));
+}
+
+// Replace the CONTENTS of quoted spans with spaces, walking the line once.
+//
+// Two independent regexes (`/'[^']*'/` then `/"..."/`) is not the same thing, and the
+// difference is a false PASS: an apostrophe inside a double-quoted string — legal, and
+// `test "'" = x` is the driven case — pairs with the next apostrophe several tokens
+// away, and the single-quote pass then erases the real `then`, `fi` and `if` between
+// them. The guard saw no control keyword and the walker kept a stale CAPTURED guard on a
+// hoisted success echo. Whichever regex runs first, the other one is wrong.
+function blankQuoted(text) {
+  let out = '';
+  let quote = null;
+  let ansi = false;        // inside $'...', where a backslash escapes the closing quote
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      // ANSI-C quoting processes backslash escapes, so `$'x\''` is ONE string whose
+      // content is `x'`. Treating that escaped quote as the terminator ended the span
+      // early, and the real `then`/`fi`/`if` after it were then blanked by the NEXT
+      // apparent quote — a stale guard with no throw. Driven, and the same asymmetry
+      // stripComment already models.
+      if (c === '\\' && (quote === '"' || ansi)) { out += '  '; i += 1; continue; }
+      if (c === quote) { quote = null; ansi = false; out += ' '; continue; }
+      out += ' ';
+      continue;
+    }
+    if (c === '$' && text[i + 1] === "'") { quote = "'"; ansi = true; out += '  '; i += 1; continue; }
+    if (c === '\\') { out += '  '; i += 1; continue; }
+    if (c === "'" || c === '"') { quote = c; out += ' '; continue; }
+    out += c;
+  }
+  return out;
+}
+
+function guardedLines(lines) {
+  const stack = [];
+  const rows = [];
+  let pendingIf = null;   // an `if <cond>` whose `then` is on a later line
+  for (const raw of logicalLines(lines.map(stripComment))) {
+    const t = raw.trim();
+    if (t === '') continue;
+    if (pendingIf !== null) {
+      // Only `then` may follow; anything else means we mis-read the `if` header.
+      if (t === 'then' || t.startsWith('then ')) {
+        const tail = t === 'then' ? '' : t.slice(5).trim();
+        // The compound check belongs on EVERY path that opens a scope, not just the
+        // one-line `if`. `if COND` + `then :; fi; if true; then` reached this branch and
+        // pushed a condition whose tail closed the scope and opened another — bash
+        // printed the success line with CAPTURED=0 while the walker reported the echo
+        // as governed. Driven.
+        if (hasControlKeyword(tail)) {
+          throw new Error(`bash reader: compound then-clause — ${JSON.stringify(t)}`);
+        }
+        stack.push(pendingIf);
+        pendingIf = null;
+        if (tail === '') continue;
+        rows.push({ line: tail, guards: stack.slice() });
+        continue;
+      }
+      throw new Error(`bash reader: '${pendingIf}' opened an if with no 'then' — got ${JSON.stringify(t)}`);
+    }
+    const ifMatch = /^if[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
+    if (ifMatch) {
+      // The lazy quantifier still spans `;`, so `if A; then :; fi; if true; then` matched
+      // as ONE header whose "condition" swallowed a complete if/fi and a second `if` —
+      // and the echo that followed inherited a guard mentioning CAPTURED that governed
+      // nothing. Driven: bash printed the success line with CAPTURED=0 while the
+      // structural assertion passed. A condition is not allowed to contain control
+      // keywords; if it does, this is a compound line the walker cannot model.
+      if (hasControlKeyword(ifMatch[1])) {
+        throw new Error(`bash reader: compound if header — ${JSON.stringify(t)}`);
+      }
+      stack.push(ifMatch[1]);
+      continue;
+    }
+    const ifPending = /^if[\t ]+(.{1,4000}?)[\t ]*$/.exec(t);
+    if (ifPending && !/;/.test(ifPending[1])) { pendingIf = ifPending[1]; continue; }
+    const elifMatch = /^elif[\t ]+(.{1,4000}?)[\t ]*;[\t ]*then$/.exec(t);
+    if (elifMatch) {
+      // Same omission as the `if` header carried, and the same false PASS: the lazy
+      // quantifier swallowed `:; fi; if true` into the stored condition.
+      if (hasControlKeyword(elifMatch[1])) {
+        throw new Error(`bash reader: compound elif header — ${JSON.stringify(t)}`);
+      }
+      if (stack.length) stack[stack.length - 1] = elifMatch[1];
+      continue;
+    }
+    if (t === 'else') { if (stack.length) stack[stack.length - 1] = `!(${stack[stack.length - 1]})`; continue; }
+    if (t === 'fi') { stack.pop(); continue; }
+    if (/^(for|while|until)\b/.test(t) && /;[\t ]*do$/.test(t)) { stack.push(''); continue; }
+    if (t === 'do') { stack.push(''); continue; }
+    if (t === 'done') { stack.pop(); continue; }
+    if (/^case\b/.test(t) && /\bin$/.test(t)) { stack.push(''); continue; }
+    if (t === 'esac') { stack.pop(); continue; }
+    // FAIL CLOSED. A control keyword this walker did not consume above means the block
+    // uses a form it cannot model, and continuing would report guards it no longer knows.
+    // Word-boundary matched so `elif`/`fi` inside a string or an identifier does not fire;
+    // an over-fire here costs a loud test failure, an under-fire costs a false clean.
+    if (hasControlKeyword(t)) {
+      throw new Error(`bash reader: unparsed control construct — ${JSON.stringify(t)}`);
+    }
+    rows.push({ line: t, guards: stack.slice() });
+  }
+  if (pendingIf !== null) throw new Error(`bash reader: dangling if — ${JSON.stringify(pendingIf)}`);
+  if (stack.length !== 0) throw new Error(`bash reader: ${stack.length} unclosed scope(s) at end of block`);
+  return rows;
+}
+
+// Strip a trailing `#` comment, QUOTE-AWARE.
+//
+// The first version was a single regex, `line.replace(/\s+#.*$/, '')`, and it carried a
+// comment admitting it was quote-blind. That admission was driven into a false PASS: a
+// line such as
+//     --user-agent="$DEV_URL # " \
+// has its quoted `#` read as a comment start, taking the real continuation backslash with
+// it, so the NEXT physical line — which in the constructed case carried a hard-coded
+// `http://localhost:3000` — vanished from the selection entirely and the ban that exists
+// to catch exactly that passed on an invocation that no longer included it. Documenting a
+// hole is not closing one.
+//
+// So this walks the line and tracks quoting. It is not a bash lexer and does not claim to
+// be: it knows single quotes (literal, no escapes inside), double quotes (backslash
+// escapes), and a backslash escape outside quotes. That is the quoting the block actually
+// uses, and it is what the false PASS above needed. A `#` starts a comment only when it is
+// outside quotes AND at the start of a word — `foo#bar` is one word to bash, not a comment.
+function stripComment(line) {
+  // A STACK, not a single quote flag. Three constructs defeated the flat scanner, all
+  // driven: `$'x\' # quoted'` (ANSI-C quoting, where a backslash-escaped quote is NOT the
+  // terminator the flat scanner took it for), `"$(printf "%s" " # ")"` (a command
+  // substitution restarts quoting inside an already-open double quote), and their
+  // combinations. A `#` opens a comment only with the stack EMPTY and at a word start.
+  const stack = [];
+  const top = () => stack[stack.length - 1];
+  let out = '';
+  // WORD START is tracked, not inferred from the previous character. `echo a \ # b` has a
+  // space before the `#`, but that space is ESCAPED — it belongs to the word ` #`, and bash
+  // prints `a  # b`. Reading `line[i - 1]` called it a comment. Driven by the round review.
+  let wordStart = true;
+  for (let i = 0; i < line.length; i += 1) {
+    const c = line[i];
+    const ctx = top();
+    const wasWordStart = wordStart;
+    // Unquoted whitespace OR an unquoted metacharacter ends the token, so the next
+    // character starts a word: `echo A;# fi` is a comment in bash. Found by the round review.
+    wordStart = stack.length === 0 && /[\t ;|&()<>]/.test(c);
+    if (ctx === 'sq') { out += c; if (c === "'") stack.pop(); continue; }
+    if (ctx === 'ansi') {                       // $'...' — backslash escapes ARE processed
+      if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
+      out += c; if (c === "'") stack.pop(); continue;
+    }
+    if (c === '\\' && i + 1 < line.length) { out += c + line[i + 1]; i += 1; continue; }
+    if (c === '$' && line[i + 1] === "'") { out += c + line[i + 1]; i += 1; stack.push('ansi'); continue; }
+    if (c === '$' && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
+    // Process substitution `<( )` / `>( )` and an extglob `@( )` `*( )` `+( )` `?( )` `!( )` are
+    // parenthesised INSIDE a word: their `)` ends the construct, not the word, so a `#` right
+    // after it is literal (`cat <(printf x)#c` prints `/dev/fd/63#c`). Same context as `$( )`.
+    // Round review, continuation 2.
+    // NOT inside double quotes, where these are literal text (`$(` is live there; these are not).
+    if (ctx !== 'dq' && /[<>@*+?!]/.test(c) && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
+    // Nested parens inside `$( )`. A raw subshell — `$( (printf x); printf "%s" " # " )`
+    // — closed the outer context at the INNER `)`, after which every quote was
+    // misclassified and the trailing continuation was truncated away. Driven. Depth is
+    // tracked on the stack itself: a bare `(` inside cmd pushes, its `)` pops.
+    if (c === '(' && ctx === 'cmd') { out += c; stack.push('cmd'); continue; }
+    if (c === ')' && ctx === 'cmd') { out += c; stack.pop(); continue; }
+    // `${var#pattern}` — the `#` there is a removal operator, not a comment, and the
+    // scanner truncated `echo ${value# #}` mid-expansion. Driven.
+    if (c === '$' && line[i + 1] === '{') { out += c + line[i + 1]; i += 1; stack.push('param'); continue; }
+    if (c === '}' && ctx === 'param') { out += c; stack.pop(); continue; }
+    // Backticks are command substitution too, and they reopened the hidden-continuation
+    // bypass the `$( )` handling had closed: `--user-agent="$DEV_URL""`printf "%s" " # "`"`
+    // truncated the line and hid the continuation carrying a hard-coded port. Driven.
+    if (c === '`' && ctx === 'btick') { out += c; stack.pop(); continue; }
+    if (c === '`') { out += c; stack.push('btick'); continue; }
+    if (c === '"' && ctx === 'dq') { out += c; stack.pop(); continue; }
+    if (c === '"') { out += c; stack.push('dq'); continue; }
+    if (c === "'" && ctx !== 'dq') { out += c; stack.push('sq'); continue; }
+    if (c === '#' && stack.length === 0 && wasWordStart) {
+      // Trailing backslashes before the comment STAY. Reaching this branch means the space
+      // before `#` was unescaped, so any backslash run ahead of it was even — escaped
+      // backslashes, literal, never a continuation. (`echo one \ # x` no longer arrives
+      // here at all: its space is escaped, the `#` is literal, and bash prints it.)
+      return out.replace(/[\t ]+$/, '');
+    }
+    out += c;
+  }
+  return out;
+}
+
+
+// The patterns of a `case` arm, or null when the line is not one.
+//
+// `line.split(')')[0].split('|')` was the first version and it is wrong on legal bash in
+// two ways, both driven. A leading `(` — `(401|403|407|511)` is valid — yields
+// `["(401","403",...]`, so `401` reads as MISSING and the assertion false-FAILS. And a `)`
+// inside an earlier pattern truncates the label. Strip an optional leading `(`, then take
+// up to the FIRST unquoted `)`; a quoted one is part of a pattern, not the terminator.
+function caseLabelOf(line) {
+  const t = line.trim().replace(/^\(/, '');
+  // Walk once, tracking quotes, splitting on `|` only OUTSIDE them, and recording
+  // activity PER CHARACTER rather than per pattern.
+  //
+  // One boolean per pattern cannot express either direction, and both were driven:
+  // `2\?\?` escapes the wildcards so bash matches them literally — an exact-match arm
+  // that read as a range (false PASS) — while `"2"??` quotes only the digit and IS a
+  // range, which a whole-pattern flag called quoted (false FAIL). What decides whether a
+  // `?` is a wildcard is whether THAT `?` was quoted or escaped, so that is what is kept.
+  const patterns = [];
+  let cur = '';
+  let active = [];        // per character: is this an ACTIVE (unquoted, unescaped) glob metachar
+  let quote = null;
+  let end = -1;
+  const push = (c, isActive) => { cur += c; active.push(isActive); };
+  // Finish a pattern by trimming `cur` and `active` IN LOCKSTEP, and only UNQUOTED
+  // whitespace. They are parallel arrays, so `cur.trim()` alone shifts every later index
+  // of `active` by the number of characters it removed — driven: ` 2?\?` (leading space,
+  // last `?` escaped) read as a RANGE, because the escaped `?` at index 2 was looked up at
+  // index 1, the wildcard's slot; and ` "2"??` read as NOT a range for the mirror reason.
+  // A quoted space is part of the pattern, not the separator, so it stays. Round-2
+  // finding 2 (`map_key_unchecked`).
+  const finish = () => {
+    let s0 = 0;
+    let e0 = cur.length;
+    while (s0 < e0 && /[\t ]/.test(cur[s0]) && active[s0]) s0 += 1;
+    while (e0 > s0 && /[\t ]/.test(cur[e0 - 1]) && active[e0 - 1]) e0 -= 1;
+    patterns.push({ text: cur.slice(s0, e0), active: active.slice(s0, e0) });
+  };
+  for (let i = 0; i < t.length; i += 1) {
+    const c = t[i];
+    if (quote) {
+      if (c === '\\' && quote === '"') { push(t[i + 1] ?? '', false); i += 1; continue; }
+      if (c === quote) { quote = null; continue; }
+      push(c, false);
+      continue;
+    }
+    if (c === '\\') { push(t[i + 1] ?? '', false); i += 1; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === '|') { finish(); cur = ''; active = []; continue; }
+    if (c === ')') { end = i; break; }
+    push(c, true);
+  }
+  if (end < 0) return null;
+  finish();
+  // Whitespace only disqualifies an UNQUOTED pattern: `"x y"` is one legal pattern, and
+  // rejecting the whole label for it false-FAILED an otherwise-valid arm. Driven.
+  if (patterns.length === 0
+      || patterns.some((x) => x.text === ''
+        || x.text.split('').some((ch, k) => /[\t ]/.test(ch) && x.active[k]))) return null;
+  return patterns;
+}
+
+
+// A pattern that actually matches a RANGE of 2xx statuses. A quoted `"2??"` matches the
+// three literal characters `2??` and no status at all, so its wildcards do not count.
+function isTwoXxRange(pattern) {
+  const { text, active } = pattern;
+  if (!/^2(\?\?|\[0-9\]\[0-9\]|\*)$/.test(text)) return false;
+  // Every metacharacter in the matched shape must be ACTIVE. `2\?\?` has the right text
+  // and no active wildcards, so it matches exactly the three characters `2??`.
+  return text.split('').every((ch, k) => !/[?*[\]]/.test(ch) || active[k]);
+}
+
+function captureInvocations(lines) {
+  return logicalLines(lines.map(stripComment).filter((l) => !/^[\t ]*#/.test(l) && l.trim() !== ''))
+    .map((l) => l.trim())
+    .filter((l) => l.includes('playwright screenshot'));
+}
+
+describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
+  // CODE, not prose. Every assertion below reads the comment-stripped block: the block
+  // documents its own flags in comments, and a regression that deletes `redirect:"follow"`
+  // while leaving the phrase in the paragraph above it would otherwise still pass. That is
+  // the same substring defect the review's finding 1 names, and it was DRIVEN against the
+  // previous version of this test with `{/* redirect:"follow" */ signal: ...}`.
+  // stripComment knows BASH comments. The probe's argument is a JavaScript program
+  // embedded in that bash, and a `/* redirect:"follow" */` left behind after the real key
+  // was deleted satisfied every regex below — driven, 15/15 green on a probe that had
+  // reverted to fetch's inherited default. Strip JS comments too. This is a belt: the
+  // authoritative check on the probe's redirect behaviour is the executed one further
+  // down, which runs the extracted program against a real redirecting server.
+  const stripJsComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const codeBlock = () => stripJsComments(screenshotApproachLines().map(stripComment).join('\n'));
+
+  test('dev-server probe follows redirects and is time-bounded', () => {
+    const block = codeBlock();
+    const usesCurlL = /curl[\t ]+(-[A-Za-z]{0,10}L|--location)\b/.test(block);
+    const usesFetch = /\bfetch\(/.test(block);
+    assert.ok(usesCurlL || usesFetch, 'probe must issue its request via curl or fetch()');
+    // Redirect-FOLLOWING is the property, and the bare presence of `fetch(` cannot
+    // express it: fetch's own default is already redirect:"follow", so a regression to
+    // redirect:"manual" — which reinstates the 307-read-as-absent bug #4176 is about —
+    // satisfies a `block.includes('fetch(')` check exactly as well as the fix does.
+    // Ban the non-following forms, and require the contract to be stated rather than
+    // inherited from a default a future runtime is free to change.
+    assert.ok(
+      !/redirect[\t ]*:[\t ]*["'](manual|error)["']/.test(block),
+      'probe must not disable redirect following — a redirecting dev server is not an absent one'
+    );
+    assert.ok(
+      usesCurlL || /redirect[\t ]*:[\t ]*["']follow["']/.test(block),
+      'a fetch()-based probe must state redirect:"follow" explicitly, so the redirect contract is pinned rather than inherited'
+    );
+    const timeBounded = /--max-time|AbortSignal\.timeout|run-with-timeout|--connect-timeout/.test(block);
+    assert.ok(timeBounded, 'probe must be time-bounded — an accepting-but-unresponsive port must not hang the audit');
+  });
+
+  test('probe accepts any 2xx rather than exact-matching 200', () => {
+    const block = codeBlock();
+    assert.ok(
+      !/=[\s]*"200"/.test(block),
+      'probe must not exact-match "200" — that misreads redirects and other 2xx as no-server'
+    );
+    // Banning one literal idiom is not the same as requiring a range. `case "$PROBE" in
+    // 200) ... ;; esac` carries no `=` at all, so it reintroduces the same
+    // 2xx-but-not-200 misread while passing the ban above. Assert positively that a 2xx
+    // RANGE is what the probe accepts.
+    // READ THE ARM THAT GOVERNS `DEV_URL=`, not the block. A block-wide search for a
+    // range idiom is satisfied by a range test that decides nothing — driven against the
+    // previous version of this test with
+    //     200) [ "$PROBE" -ge 200 ] && DEV_URL=...; break ;;
+    // which admits ONLY 200 at the case label, carries no `=` for the ban above to catch,
+    // and offers the `-ge 200` the range check was looking for. 15/15 passed on a block
+    // that had reinstated the exact-match bug.
+    const acceptArm = logicalLines(screenshotApproachLines().map(stripComment))
+      .map((l) => l.trim())
+      .find((l) => /DEV_URL=/.test(l) && !/^DEV_URL=""$/.test(l));
+    assert.ok(acceptArm, 'expected an arm that resolves DEV_URL from the probe status');
+    const armLabel = caseLabelOf(acceptArm);
+    // WHERE the range lives has to match where the DECISION is made. When a `case` label
+    // gates the arm, that label IS the acceptance test and a range check inside the arm
+    // body is vacuous — `200) [ "$PROBE" -ge 200 ] && DEV_URL=...` admits only 200 and the
+    // `-ge` never rejects anything. So the alternatives are mutually exclusive by
+    // construction: a case-gated arm is judged on its LABEL, and only an arm with no case
+    // label may earn acceptance from a comparison in its body.
+    const acceptsRange = armLabel !== null
+      ? armLabel.some(isTwoXxRange)
+      : (/-ge[\t ]+200\b/.test(acceptArm) || /\br\.ok\b/.test(block));
+    assert.ok(
+      acceptsRange,
+      armLabel !== null
+        ? `the case label that admits a status must be an UNQUOTED 2xx range (2?? / 2[0-9][0-9] / 2*), not an enumerated status and not a quoted literal — a range test inside an exact-match arm decides nothing: label was ${JSON.stringify(armLabel)}`
+        : `the arm that sets DEV_URL must accept a 2xx RANGE, not an enumerated status: ${acceptArm}`
+    );
+  });
+
+  test('capture success is checked, not assumed', () => {
+    const block = screenshotApproachBlock();
+    // `CAPTURED=` is deliberately NOT an alternative here. It matches the unconditional
+    // `CAPTURED=0` initialisation, so a future block that keeps the counter and drops every
+    // real outcome check would still satisfy this — the counter's EXISTENCE is not evidence
+    // that anything was observed. (It does not weaken the regression this test names: the
+    // pre-fix block declared no counter at all, so every alternative below is absent from it
+    // and the test fails there either way. Removing it costs nothing and closes the forward
+    // hole.) The remaining alternatives each name an actual observation: the captured file is
+    // non-empty, or the capture command's own exit status is consumed.
+    const checksOutcome = /\[ -s "?\$SCREENSHOT_DIR|\[ -s |if npx |\$\?/.test(block);
+    assert.ok(checksOutcome, 'an exit-status or file-existence check must gate the captured/not-captured signal');
+  });
+
+  // The structural half of the assertion above. A "captured" claim is a claim about an
+  // outcome, so what has to be true is that the branch printing it could only have been
+  // reached by observing that outcome — a property of the block's CONTROL FLOW, which a
+  // substring-proximity check cannot express and cannot fail on the regression it names.
+  test('every capture-success claim is governed by a conditional testing the capture count', () => {
+    const rows = guardedLines(screenshotApproachLines());
+    const CLAIM = /^echo "Screenshots (captured|PARTIALLY captured)\b/;
+    const claims = rows.filter((r) => CLAIM.test(r.line));
+    assert.ok(
+      claims.length > 0,
+      'expected the capture block to echo a success or partial-success claim'
+    );
+    for (const claim of claims) {
+      assert.ok(
+        claim.guards.some((cond) => /CAPTURED/.test(cond)),
+        'a capture-success claim must sit inside a conditional that tests the capture count; ' +
+          `governing conditions for ${JSON.stringify(claim.line)} were ${JSON.stringify(claim.guards)}`
+      );
+    }
+  });
+
+  test('all three documented ports are tried in the control flow', () => {
+    // Self-found, same class as finding 1: `block.includes(port)` is satisfied by a port
+    // named only in a comment. The pre-fix bug WAS a port documented in prose beside code
+    // that hard-coded 3000, so a whole-block substring check cannot distinguish the fix
+    // from the bug it replaced — it can only see that the digits exist somewhere. Read
+    // the iteration line itself.
+    // logicalLines, not guardedLines: a `for ... ; do` line OPENS a scope, so it is
+    // consumed by the guard walker and never appears among the governed lines.
+    const iteration = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .find((l) => /^for[\t ]+PORT[\t ]+in\b/i.test(l));
+    assert.ok(iteration, 'ports must be iterated, not hard-coded to one');
+    // And drop any trailing comment before reading it, or the check regresses to the
+    // whole-block substring form one line down: `for PORT in 3000; do # 5173, 8080 too`
+    // would otherwise satisfy it. (Measured — that mutation passed before this strip.)
+    const iterationCode = iteration.split(/[\t ]#/)[0];
+    for (const port of ['3000', '5173', '8080']) {
+      assert.ok(
+        iterationCode.includes(port),
+        `port ${port} must be in the port iteration itself, not only in guidance prose: ${iterationCode}`
+      );
+    }
+  });
+
+  test('the auth-gated port is recorded first-wins, matching the documented precedence', () => {
+    // The ports carry a documented ORDER, and the reported reason should name the same
+    // port that order would have picked. An unguarded assignment inside the loop reports
+    // whichever gated port was tried last.
+    const assignments = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
+    assert.ok(assignments.length > 0, 'expected the port loop to record an auth-gated server');
+    for (const line of assignments) {
+      // THE OPERATOR IS THE PROPERTY, not the presence of a test. Driven against the
+      // previous version: swapping `||` for `&&` leaves DEV_GATED permanently EMPTY —
+      // strictly worse than the last-wins bug this guards — and all 15 tests passed,
+      // because a `-n` test was still textually present. Accept exactly the two forms
+      // that mean "keep the first": `[ -n "$DEV_GATED" ] ||` and `[ -z "$DEV_GATED" ] &&`.
+      // The operator must gate THE ASSIGNMENT. `[ -n "$DEV_GATED" ] || :; DEV_GATED=...`
+      // satisfies a guard-anywhere-on-the-line regex and still reports the LAST gated
+      // port, because the `;` ends the conditional before the assignment runs. Driven.
+      assert.ok(
+        /\[[\t ]+-n[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*\|\|[\t ]*DEV_GATED=/.test(line)
+          || /\[[\t ]+-z[\t ]+"?\$DEV_GATED"?[\t ]+\][\t ]*&&[\t ]*DEV_GATED=/.test(line),
+        `the auth-gated port must be recorded first-wins — \`[ -n "$DEV_GATED" ] ||\` or \`[ -z "$DEV_GATED" ] &&\`; the operator is what makes it first-wins, not the test: ${line}`
+      );
+    }
+  });
+
+  // Self-found by the round's guard-shape census, not by the review: the case arm above
+  // FIXES A SET at author time (the statuses that count as auth-gated) while the domain it
+  // rules on — what a local dev server may answer — is owned by the server, so the set can
+  // fall behind without this code changing. 407 (proxy authentication required) and 511
+  // (network authentication required) each mean the server ANSWERED and demanded
+  // credentials; omitting them reports a PRESENT server as an absent one, which is the very
+  // defect #4176 names, one status family over.
+  // Read the case LABEL that governs the assignment, not the block text: `block.includes('407')`
+  // would be satisfied by the comment explaining it — the same substring defect as finding 1.
+  test('the whole auth-required status class is recorded as gated, not misreported as absent', () => {
+    const gatedArms = logicalLines(screenshotApproachLines())
+      .map((l) => l.trim())
+      .filter((l) => /DEV_GATED=/.test(l) && !/^DEV_GATED=""$/.test(l));
+    assert.ok(gatedArms.length > 0, 'expected a case arm recording an auth-gated server');
+    const labels = gatedArms.map((l) => (caseLabelOf(l) || []).map((x) => x.text));
+    for (const status of ['401', '403', '407', '511']) {
+      assert.ok(
+        labels.some((lab) => lab.includes(status)),
+        `HTTP ${status} means authentication is required, so a server answering it is PRESENT and gated — not absent: case labels were ${JSON.stringify(labels)}`
+      );
+    }
+  });
+
+  test('the resolved port — not a hard-coded 3000 — is what gets captured', () => {
+    const captureLines = captureInvocations(screenshotApproachLines());
+    assert.ok(captureLines.length > 0, 'expected at least one capture invocation');
+    for (const line of captureLines) {
+      // Negative-only was the hole, and it is the SAME defect class the test above names:
+      // banning the one literal `localhost:3000` leaves a hard-coded `localhost:5173` or
+      // `localhost:8080` passing, while the defect #4176 names is "the capture targets a
+      // hard-coded port", not "the capture targets 3000". Ban the shape, then require the
+      // resolved variable positively — a ban alone cannot say what the line SHOULD contain.
+      assert.ok(
+        !/localhost:\d+/.test(line),
+        `capture must not hard-code any port: ${line.trim()}`
+      );
+      assert.ok(
+        line.includes('$DEV_URL'),
+        `capture must use the resolved URL variable: ${line.trim()}`
+      );
+    }
+  });
+
+  test('capture invocations are time-bounded, as the probe is', () => {
+    // `playwright screenshot` forwards --timeout to context.setDefaultTimeout() and
+    // defaults it to 0, i.e. NO timeout — so this CLI path drops the bound the
+    // Playwright library applies by default. An unbounded capture reinstates the
+    // hang the probe's own time bound exists to prevent, one step later.
+    // captureInvocations, not a bare filter: the comment four lines above the call site names
+    // both `playwright screenshot` and `--timeout`, so a bare filter counted it as an invocation
+    // and it satisfied this assertion by quoting the flag rather than passing it.
+    const captures = captureInvocations(screenshotApproachLines());
+    assert.ok(captures.length > 0, 'expected at least one capture invocation');
+    for (const line of captures) {
+      // A VALUE, AND A POSITIVE ONE. `--timeout=0` is playwright's own spelling of NO
+      // timeout, so a presence check accepts the exact state this assertion exists to
+      // forbid — driven against the previous version, which passed 15/15 with every
+      // capture at `--timeout=0`.
+      // THE LAST occurrence, because a repeated option is last-wins in the real command:
+      // `--timeout=30000 --timeout=0` passed a first-match read while passing no timeout
+      // at all. (The executed suite reads real argument boundaries and is the stronger
+      // check; this one keeps the source-level assertion honest.)
+      const found = [...line.matchAll(/--timeout[= ]([0-9]+)\b/g)];
+      assert.ok(found.length > 0, `capture must be time-bounded — playwright screenshot defaults to no timeout: ${line}`);
+      assert.ok(
+        Number(found[found.length - 1][1]) > 0,
+        `--timeout=0 IS playwright's no-timeout setting — the effective bound must be positive: ${line}`
+      );
+    }
+  });
+
+  test('a failed viewport removes the file it may have written, by name', () => {
+    // rmdir alone cannot honour a "leaves nothing behind" claim: it succeeds only on a
+    // genuinely empty directory and its stderr is discarded, so a zero-byte or partial
+    // .png from a crashed browser — which `[ -s ]` correctly scores as a failure —
+    // would leave BOTH the file and the directory in place, silently.
+    //
+    // The removal lives in the capture loop's FAILURE arm, not in the all-failed branch,
+    // and that placement is the finding: scoped to the all-failed branch it left the
+    // PARTIAL case — two good shots and one stray file — still overclaimed by the docs.
+    // It is also BY NAME rather than a `*.png` glob. That is the narrower operation and
+    // leaves alone anything else in the directory; what keeps a CONCURRENT audit's
+    // captures safe is the atomic allocation, not this line.
+    const rows = guardedLines(screenshotApproachLines());
+    const removals = rows.filter((r) => /^rm -f\b/.test(r.line));
+    assert.ok(removals.length > 0, 'expected the capture loop to remove a failed viewport\u2019s stray file');
+    for (const row of removals) {
+      assert.ok(
+        !/\*/.test(row.line),
+        `stray-file removal must name the file, never glob the directory: ${row.line}`
+      );
+      assert.ok(
+        /\$SHOT_NAME/.test(row.line),
+        `stray-file removal must target the viewport that just failed: ${row.line}`
+      );
+    }
+    // The directory removal is `rm -rf`, not `rmdir`, and the atomic allocation is what
+    // licenses that: a directory won by this audit alone can be removed whole. `rmdir`
+    // could not honour the docs claim — it fails on any file the capture command wrote
+    // under a name this block never asked for, leaving both behind.
+    const removesDir = rows.filter((r) => /\brm -rf[\t ]+"?\$SCREENSHOT_DIR"?$/.test(r.line));
+    assert.ok(removesDir.length > 0, 'expected the all-failed branch to remove the review directory whole');
+    for (const row of removesDir) {
+      assert.ok(
+        row.guards.some((cond) => /CAPTURED/.test(cond)),
+        `directory removal must be confined to the capture-failure branch; governing conditions were ${JSON.stringify(row.guards)}`
+      );
+    }
+  });
+
+  test('report surfaces can express partial capture', () => {
+    // Was a whole-FILE substring check — the same defect class as the Major finding and as the
+    // port check above, and shipped by this PR rather than inherited. The template prose alone
+    // satisfied it, so deleting the block's partial branch outright would not have failed it.
+    // Pin both ends positively instead: the block must PRODUCE a partial status, and a report
+    // surface outside the block must CONSUME the variable — a status computed and never
+    // rendered is not a surface that can express anything.
+    const block = screenshotApproachBlock();
+    assert.ok(
+      /CAPTURE_STATUS=["']?partially captured/i.test(block),
+      'the capture block must PRODUCE a partial status — full/none alone cannot describe 2 of 3'
+    );
+    // Name the consuming surface POSITIVELY rather than subtracting the block from the file.
+    // `content.replace(block, '')` was two bugs in one: String#replace with a string argument
+    // drops only the FIRST occurrence, and the block is joined with '\n' by splitLines() while
+    // readFileSync returns the file's own '\r\n' on a Windows checkout — so the match fails
+    // outright, the block stays in the haystack, and the assertion is then satisfied by the
+    // block's own text. That is a false clean, and CRLF-fragility is a class this repo lints
+    // for (local/no-crlf-fragile-split). Assert on the Screenshots report field itself.
+    // HTML comments removed FIRST. Commenting out both real fields and adding a visible
+    // hard-coded `Screenshots: captured` line satisfied a scan of the raw source: the
+    // commented lines still matched, and the rendered text no longer carried the
+    // variable at all. Driven.
+    // Bounded quantifier: an unbounded `[\s\S]*?` over readFileSync content is a
+    // catastrophic-backtracking risk this repo lints for (local/no-unbounded-quantifier).
+    // 20k is far longer than any comment in this file and far short of the file itself.
+    const rendered = fs.readFileSync(AUDITOR_PATH, 'utf-8').replace(/<!--[\s\S]{0,20000}?-->/g, '');
+    const surfaces = splitLines(rendered)
+      .filter((l) => /^\*\*Screenshots:\*\*/.test(l.trim()));
+    assert.ok(surfaces.length > 0, 'expected a Screenshots report field in the agent output template');
+    // The field's VALUE, not a mention on the line. `**Screenshots:** captured
+    // <!-- $CAPTURE_STATUS -->` renders a hard-coded word while satisfying an
+    // includes() check — the status is computed, carried, and then dropped at the one
+    // place a reader sees it. Driven.
+    assert.ok(
+      surfaces.every((l) => /^\*\*Screenshots:\*\*[\t ]*\{?[\t ]*\$CAPTURE_STATUS\b/.test(l.trim())),
+      `every Screenshots report field must render $CAPTURE_STATUS as its value: ${JSON.stringify(surfaces)}`
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EXECUTED, not read. Everything above asserts over the block's TEXT, and a
+// cross-model adversarial pass over the first version of this file broke eight of
+// those assertions with legal shell and legal JavaScript — a `fi # comment` that
+// desynchronised the scope walker, a `--timeout=0`, an exact-match `case` label
+// carrying a vacuous range test, a `redirect:"follow"` surviving only inside a JS
+// comment. Each is fixed above, and each fix is one more regex standing between a
+// claim and its evidence.
+//
+// The durable answer to "your test parses a language it does not lex" is to stop
+// parsing and start running. These two suites do that: the first executes the probe
+// program against real local HTTP servers (which is exactly how the reviewing
+// maintainer verified it by hand), the second executes the whole bash fence against
+// stub `node`/`npx` binaries and reads what it actually prints and leaves on disk.
+// A textual bypass cannot survive either one, because neither reads the text.
+// ---------------------------------------------------------------------------
+
+const http = require('http');
+const os = require('os');
+const { spawnSync, execFile } = require('child_process');
+
+// The probe is `node -e '<program>' "<url>"`. Take the program out verbatim.
+function probeProgram() {
+  const line = logicalLines(screenshotApproachLines().map(stripComment))
+    .find((l) => /\bnode\b[\t ]+-e[\t ]+'/.test(l));
+  assert.ok(line, 'expected the block to probe with `node -e`');
+  const open = line.indexOf("-e ") + 3;
+  assert.strictEqual(line[open], "'", 'expected the probe program in single quotes');
+  const close = line.indexOf("'", open + 1);
+  assert.ok(close > open, 'unterminated probe program');
+  return line.slice(open + 1, close);
+}
+
+function listen(handler) {
+  return new Promise((resolve) => {
+    const server = http.createServer(handler);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+const close = (server) => new Promise((resolve) => server.close(resolve));
+const urlOf = (server) => `http://127.0.0.1:${server.address().port}`;
+
+// ASYNC, and that is not a style choice. The servers above live in THIS process, so a
+// spawnSync here blocks the very event loop that has to answer the probe: every request
+// hung, the probe's own AbortSignal fired at 5s, and three tests failed with '000' against
+// live servers while the two that "passed" passed vacuously. Measured while writing this
+// suite — a self-inflicted instance of the false-clean class the rest of this file is about.
+function runProbe(url) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, ['-e', probeProgram(), url], { timeout: 30000 },
+      // MODEL THE WHOLE SHELL EXPRESSION, not just the program. The fence runs
+      //   PROBE=$(node -e '…' "$url" 2>/dev/null || echo "000"); PROBE=${PROBE:-000}
+      // so a program that PRINTS 200 and then exits non-zero yields `200000` — which
+      // matches no arm and reads as absent. Ignoring the exit code here accepted exactly
+      // that mutant. `$( )` strips trailing newlines and nothing else: a blanket .trim()
+      // accepted " 200" (which the block's `case` rejects) and no trim at all rejected
+      // "200\n" (which it accepts). All three directions driven.
+      (err, stdout) => {
+        const code = err && typeof err.code === 'number' ? err.code : 0;
+        const raw = String(stdout) + (code !== 0 ? '000\n' : '');
+        const substituted = raw.replace(/\n+$/, '');
+        resolve(substituted === '' ? '000' : substituted);
+      });
+  });
+}
+
+describe('#4176 — the probe program, executed against real servers', () => {
+  test('a redirecting dev server resolves to its final 2xx, not to "absent"', async () => {
+    // The originating bug: `curl` without -L against a root that 307s read as no server.
+    // A regression to redirect:"manual" or a deleted redirect key cannot pass this,
+    // whatever the block's comments say — the program is RUN.
+    const target = await listen((req, res) => { res.writeHead(200); res.end('ok'); });
+    const redirector = await listen((req, res) => {
+      res.writeHead(307, { Location: `${urlOf(target)}/` });
+      res.end();
+    });
+    try {
+      assert.strictEqual(await runProbe(urlOf(redirector)), '200',
+        'a 307 to a live 2xx must probe as 200 — following redirects is the #4176 fix');
+    } finally { await close(redirector); await close(target); }
+  });
+
+  test('a 2xx that is not 200 is still a dev server', async () => {
+    const server = await listen((req, res) => { res.writeHead(204); res.end(); });
+    try {
+      assert.strictEqual(await runProbe(urlOf(server)), '204');
+    } finally { await close(server); }
+  });
+
+  test('an auth-gated server reports its status, not absence', async () => {
+    const server = await listen((req, res) => { res.writeHead(401); res.end(); });
+    try {
+      assert.strictEqual(await runProbe(urlOf(server)), '401');
+    } finally { await close(server); }
+  });
+
+  test('nothing listening probes as 000', async () => {
+    // A port this test HELD and then released, not a well-known one: node's fetch
+    // rejects port 1 as a bad port before it ever attempts a connection, so probing it
+    // exercises URL validation rather than an absent listener — the wrong mechanism,
+    // reaching the right answer. Driven. Binding first also removes the guesswork about
+    // what else on the host might be listening; the residual is the window between the
+    // close and the probe, which is why a rebind is retried rather than asserted through.
+    let observed = null;
+    for (let attempt = 0; attempt < 3 && observed !== '000'; attempt += 1) {
+      const server = await listen((req, res) => { res.writeHead(200); res.end(); });
+      const dead = urlOf(server);
+      await close(server);
+      observed = await runProbe(dead);
+    }
+    assert.strictEqual(observed, '000',
+      'a closed but valid port must probe as 000 through a real connection refusal');
+  });
+
+  test('a port that accepts but never answers is time-bounded, not a hang — and is named as a timeout', async () => {
+    // The issue's own third case. Without AbortSignal.timeout this never returns and the
+    // audit blocks forever; a presence check on the string "AbortSignal" cannot tell the
+    // difference between a bound that fires and one that does not.
+    // AND IT IS NOT "000". A port that accepted the connection has something listening on
+    // it; printing the same token as a refused connection reported that server as absent
+    // — the defect this issue names, reached through the timeout instead of a status.
+    const server = await listen(() => { /* accept, never respond */ });
+    try {
+      const started = Date.now();
+      assert.strictEqual(await runProbe(urlOf(server)), 'timeout');
+      assert.ok(Date.now() - started < 20000,
+        'the probe must abort a non-answering port rather than hang');
+    } finally { await close(server); }
+  });
+
+  test('a node without fetch() says so, instead of reporting every port absent', async () => {
+    // The program is run on the SAME node with the global deleted first — a Node 16 is not
+    // on hand, and what matters is the branch the program takes when `fetch` is not a
+    // function, not which release lacks it. Without this branch the program throws, the
+    // shell reads "000", and a live dev server is reported absent by a road that has
+    // nothing to do with the server. The version is carried so the report can name it.
+    const program = `delete globalThis.fetch; ${probeProgram()}`;
+    const out = await new Promise((resolve) => {
+      execFile(process.execPath, ['-e', program, 'http://127.0.0.1:1/'], { timeout: 30000 },
+        (err, stdout) => resolve({ code: err && typeof err.code === 'number' ? err.code : 0, stdout: String(stdout) }));
+    });
+    assert.strictEqual(out.code, 0, 'the nofetch branch must not throw');
+    assert.strictEqual(out.stdout, `nofetch ${process.version}`);
+  });
+
+  test('a server that answers something other than 2xx or an auth status still reports that status', async () => {
+    for (const status of [404, 500, 503]) {
+      const server = await listen((req, res) => { res.writeHead(status); res.end(); });
+      try {
+        assert.strictEqual(await runProbe(urlOf(server)), String(status));
+      } finally { await close(server); }
+    }
+  });
+});
+
+// The fence needs a POSIX shell. Windows CI has no bash on PATH by default, and the
+// repo's other fence-executing tests take the same platform gate.
+// The fence needs a POSIX shell. Gate on bash actually being RUNNABLE, not on the
+// platform: a `process.platform === 'win32'` gate also skips silently on any non-Windows
+// host without bash, and claims Windows has none when Git Bash is often present.
+const BASH_OK = (() => {
+  const r = spawnSync('bash', ['-c', 'exit 0'], { encoding: 'utf8', timeout: 15000 });
+  return r.status === 0;
+})();
+
+describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+  const tmpDirs = [];
+  // cleanup(), not a raw fs.rmSync: the helper carries the Windows-EBUSY retry budget, and
+  // these directories hold files a spawned bash was writing moments earlier.
+  after(() => { for (const d of tmpDirs) cleanup(d); });
+
+  // Stub `node` and `npx` on PATH, run the fence, and read what it printed, what it left
+  // on disk, what it passed to the capture binary, and what CAPTURE_STATUS ended up as.
+  //
+  // EXIT STATUS AND FILE CONTENT ARE INDEPENDENT KNOBS, and that independence is the
+  // whole point of this harness. The first version derived both from one `SHOT_FAIL`
+  // list: success always wrote a non-empty file, failure never did. Two different
+  // regressions then passed every fixture — deleting the `[ -s ... ]` check, and
+  // ignoring the capture command's exit status — because with the two signals perfectly
+  // correlated, either one alone reproduces the correct answer. Both were driven.
+  //   SHOT_EXIT   viewports whose capture command exits non-zero
+  //   SHOT_WRITE  viewports that write a NON-EMPTY file (regardless of exit status)
+  //   SHOT_EMPTY  viewports that write a ZERO-BYTE file (the crashed-browser artefact)
+  function runFence(env, sharedDir) {
+    const dir = sharedDir || fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-'));
+    if (!sharedDir) tmpDirs.push(dir);
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    // node's own argv contract: `node -e <program> <arg1>` puts arg1 at $3. Selecting the
+    // last `http*` argument instead made the stub tolerate an inserted argument that real
+    // node would have handed to the program as argv[1], so a probe invocation that is
+    // wrong in the real world passed here.
+    fs.writeFileSync(path.join(bin, 'node'),
+      '#!/bin/sh\n[ "$1" = "-e" ] || { echo "stub node: expected -e, got $1" >&2; exit 64; }\n'
+      // Real node accepts `-e PROGRAM -- URL` and still hands URL to the program as
+      // argv[1]; a stub that stopped at `$3` reported absence and false-FAILED eleven
+      // fence tests on a legal invocation.
+      + 'shift 2\n[ "$1" = "--" ] && shift\nurl="$1"\ncase "$url" in http*) ;; *) echo "stub node: argv[1] not a url: $url" >&2; exit 65;; esac\n'
+      + 'port=${url##*:}\nport=${port%%/*}\neval "s=\\$PROBE_$port"\nprintf %s "${s:-000}"\n', { mode: 0o755 });
+    // One argument per line, so an assertion can read argument BOUNDARIES. `$*` collapsed
+    // them, which let `--user-agent="--timeout=30000"` satisfy the timeout assertion while
+    // passing no timeout option at all.
+    fs.writeFileSync(path.join(bin, 'npx'),
+      // VERIFY THE COMMAND SELECTION. A stub that manufactures screenshots for whatever
+      // it is handed accepts `npx --version playwright screenshot ...`, which the real
+      // offline npx answers by printing its version and capturing nothing. Driven: that
+      // mutant passed every assertion here and failed against the real binary.
+      '#!/bin/sh\n[ "$1" = "playwright" ] && [ "$2" = "screenshot" ] || '
+      + '{ echo "stub npx: not invoked as `playwright screenshot`: $1 $2" >&2; exit 66; }\n'
+      + 'out=""\nfor a in "$@"; do case "$a" in *.png) out="$a";; esac; done\n'
+      + 'name=$(basename "$out" .png)\n'
+      // NUL-DELIMITED. A newline-delimited log splits an argument that CONTAINS a
+      // newline into two, so `--user-agent=$'audit\\n--timeout=30000'` — one argument
+      // passing no timeout option at all — read as two arguments, the second of which
+      // satisfied the timeout assertion. Driven.
+      + '{ printf "%s\\0" "--INVOCATION--"; for a in "$@"; do printf "%s\\0" "$a"; done; } >> "$ARGV_LOG"\n'
+      + 'case " $SHOT_WRITE " in *" $name "*) printf png > "$out";; esac\n'
+      + 'case " $SHOT_EMPTY " in *" $name "*) : > "$out";; esac\n'
+      + 'case " $SHOT_EXIT " in *" $name "*) exit 1;; esac\nexit 0\n', { mode: 0o755 });
+    // The `date` override is a SHELL FUNCTION, injected into the script below — never a
+    // file on PATH. Git Bash searches /usr/bin ahead of the converted Windows PATH, so a
+    // stub named after a coreutils binary is shadowed there: measured on the
+    // windows-latest runner, where the fence used the REAL clock, the collision could not
+    // be constructed, and both fixtures passed vacuously while the Linux shards were
+    // green. A function is looked up before PATH on every platform.
+    const argvLog = path.join(dir, 'argv.log');
+    const script = path.join(dir, 'fence.sh');
+    // No `set -u`: the agent does not run this block under it, and adding it changes the
+    // block's behaviour on an unset variable — a difference between the harness and the
+    // product is a finding the harness would then manufacture rather than detect.
+    // CAPTURE_STATUS is echoed because it, not the printed line, is what the report
+    // consumes: an unconditional `CAPTURE_STATUS="captured"` appended after the branches
+    // passed every assertion in the first version while making the final report lie.
+    // Capture the block's OWN status before the instrumentation runs: a trailing
+    // `printf` resets `$?`, so appending `false` to the fence exited 0 and the
+    // exit-status assertion passed on a fence that had failed. Driven.
+    // THE INSTRUMENTATION WRITES FILES, NOT STDOUT. Anything printed to stdout is
+    // forgeable by the block under test: a `CAPTURE_STATUS` whose VALUE contains a
+    // newline forged a second status line, and a `printf "FENCE_RC=0"` forged a clean
+    // exit — both passed a stdout-scraping reader, whether it took the first match or
+    // the last. A file the block never names cannot be forged by the block's own output.
+    const statusFile = path.join(dir, 'capture-status.out');
+    const rcFile = path.join(dir, 'fence-rc.out');
+    const dateOverride = env.FIXED_DATE
+      ? `date() { printf %s ${JSON.stringify(env.FIXED_DATE)}; }\n`
+      : '';
+    // Same mechanism, for COUNTING: a fixture that asserts the allocator gave up early
+    // needs to see how many times it asked, and a wrapper function that delegates to the
+    // real binary is the only observation point that does not change what mkdir does.
+    const mkdirLog = path.join(dir, 'mkdir.log');
+    const mkdirCounter = env.COUNT_MKDIR
+      ? `mkdir() { printf 'mkdir %s\\n' "$*" >> ${JSON.stringify(mkdirLog)}; command mkdir "$@"; }\n`
+      : '';
+    // RACE_MKDIR: the FIRST mkdir of a candidate (no -p) fails and creates nothing, as if the
+    // name had been taken and freed between the call and the checks that follow it. The
+    // second attempt runs for real. Constructs the two-syscall race deterministically.
+    const mkdirRace = env.RACE_MKDIR
+      ? `__raced=0\nmkdir() { if [ "$1" != -p ] && [ "$__raced" = 0 ]; then __raced=1; return 1; fi; command mkdir "$@"; }\n`
+      : '';
+    fs.writeFileSync(script,
+      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${dateOverride}${mkdirCounter}${mkdirRace}${screenshotApproachBlock()}\n`
+      + 'FENCE_RC=$?\n'
+      + `printf %s "$CAPTURE_STATUS" > ${JSON.stringify(statusFile)}\n`
+      + `printf %s "$FENCE_RC" > ${JSON.stringify(rcFile)}\n`);
+    const r = spawnSync('bash', [script], {
+      cwd: dir,
+      encoding: 'utf8',
+      timeout: 60000,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        ARGV_LOG: argvLog,
+        SHOT_EXIT: '', SHOT_WRITE: 'desktop mobile tablet', SHOT_EMPTY: '',
+        ...env,
+      },
+    });
+    const stdout = r.stdout || '';
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    // isDirectory, not existsSync: one fixture plants a FILE at this path, and readdir on it throws.
+    const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+    const shotDirs = isDir(reviews) ? fs.readdirSync(reviews).sort() : [];
+    const filesIn = (d) => fs.readdirSync(path.join(reviews, d)).sort();
+    const argvRaw = fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '';
+    const readOut = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null);
+    const status = readOut(statusFile);
+    const rcRead = readOut(rcFile);
+    const mkdirCalls = fs.existsSync(mkdirLog) ? splitLines(fs.readFileSync(mkdirLog, 'utf8')).filter(Boolean) : [];
+    return {
+      mkdirCalls,
+      stdout,
+      exitCode: rcRead !== null && rcRead !== '' ? Number(rcRead) : r.status,
+      stderr: r.stderr || '',
+      captureStatus: status,
+      dir,
+      // Each invocation as an array of its arguments — boundaries preserved.
+      invocations: argvRaw.split('--INVOCATION--\0').slice(1)
+        .map((b) => b.split('\0').filter((x) => x !== '')),
+      shotDirs,
+      filesIn,
+      files: shotDirs.length === 1 ? filesIn(shotDirs[0]) : [],
+    };
+  }
+
+  // The fence must not fail as a PROGRAM. Appending `exit 42` to it passed every
+  // assertion in the first version, because the runner discarded the exit status.
+  function ok(r) {
+    assert.strictEqual(r.exitCode, 0, `the fence must exit 0; stderr: ${r.stderr}`);
+    assert.ok(r.captureStatus !== null, 'the fence must leave CAPTURE_STATUS set');
+    return r;
+  }
+
+  test('no dev server on any port is reported as such, and nothing is created', () => {
+    const r = ok(runFence({}));
+    assert.match(r.stdout, /No dev server on ports 3000, 5173 or 8080/);
+    assert.strictEqual(r.captureStatus, 'not captured (no dev server on ports 3000, 5173 or 8080)');
+    assert.deepStrictEqual(r.shotDirs, [], 'no review directory may be created without a dev server');
+  });
+
+  test('a total capture failure NEVER claims success, in the message OR in the status', () => {
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
+      SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet' }));
+    assert.doesNotMatch(r.stdout, /Screenshots captured/, 'a failed capture must never claim success');
+    assert.doesNotMatch(r.stdout, /PARTIALLY captured/);
+    assert.match(r.stdout, /Screenshot capture FAILED for all 3 viewports/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed for all 3 viewports at http://localhost:3000)',
+      'the report reads CAPTURE_STATUS, not the printed line — both have to be honest');
+    assert.deepStrictEqual(r.shotDirs, [], 'the review directory must not survive a total failure');
+  });
+
+  test('a capture that exits 0 without writing anything is NOT a capture', () => {
+    // The `[ -s ... ]` half of the check, isolated. Deleting it passes every fixture in
+    // which exit status and file content agree — which is why they are separate knobs.
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_WRITE: '', SHOT_EXIT: '' }));
+    assert.doesNotMatch(r.stdout, /Screenshots captured/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed for all 3 viewports at http://localhost:3000)');
+  });
+
+  test('a capture that exits 0 leaving a ZERO-BYTE file is NOT a capture', () => {
+    // The `-s` in `[ -s ... ]` doing its own work. Relaxing it to `[ -e ]` — the file
+    // merely EXISTS — passed every fixture until this one, because no scenario paired a
+    // clean exit with an empty file. A crashed browser writing a zero-byte png and
+    // exiting 0 is precisely the shape #4176 is about.
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet',
+      SHOT_EXIT: '' }));
+    assert.doesNotMatch(r.stdout, /Screenshots captured/);
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed for all 3 viewports at http://localhost:3000)');
+  });
+
+  test('a capture that writes a real file but exits non-zero is NOT a capture, and its file goes', () => {
+    // The exit-status half, isolated. Dropping it counts a crashed run that happened to
+    // leave a plausible file.
+    // EVERY viewport, not just the first. A cleanup skipping one specific name
+    // (`if [ "$SHOT_NAME" != mobile ]`) passed a fixture set that only ever failed
+    // `desktop`, and the total-failure fixtures conceal it because the directory is
+    // removed wholesale. Driven.
+    const others = { desktop: ['mobile.png', 'tablet.png'], mobile: ['desktop.png', 'tablet.png'],
+      tablet: ['desktop.png', 'mobile.png'] };
+    for (const [failed, survivors] of Object.entries(others)) {
+      const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: failed,
+        SHOT_WRITE: 'desktop mobile tablet' }));
+      assert.match(r.stdout, new RegExp(`PARTIALLY captured .*\\(2/3\\).*failed: ?${failed}`));
+      // THE VALUE names the count and the failed viewport, as the agent catalogue in the docs tree already said it did.
+      assert.strictEqual(r.captureStatus, `partially captured (2/3 from http://localhost:3000; failed: ${failed})`);
+      // Restricting the cleanup to empty files only also passed every earlier fixture,
+      // because none paired a failure with a non-empty artefact — a plausible-looking
+      // png from a run that crashed after writing is the worst case to leave, not the least.
+      assert.deepStrictEqual(r.files, survivors,
+        `a failed ${failed} capture must take its file with it, empty or not`);
+    }
+  });
+
+  test('a partial capture keeps the shots that worked and removes the stray file', () => {
+    const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop',
+      SHOT_WRITE: 'mobile tablet', SHOT_EMPTY: 'desktop' }));
+    assert.match(r.stdout, /Screenshots PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
+    assert.strictEqual(r.captureStatus, 'partially captured (2/3 from http://localhost:3000; failed: desktop)');
+    assert.deepStrictEqual(r.files, ['mobile.png', 'tablet.png'],
+      'the failed viewport\u2019s zero-byte file must not survive alongside the real captures');
+  });
+
+  test('audits colliding on the same second get separate directories, and none destroys another', () => {
+    // CONSTRUCTED, not hoped for. `date` is overridden to a fixed value and all three
+    // audits share one working directory, so they genuinely contend for the same base
+    // name — the case a wall-clock test can never reach, and the case that matters: every
+    // audit writes exactly `desktop.png`, `mobile.png`, `tablet.png`, so no per-file rule
+    // can establish ownership. Ownership must come from winning the directory.
+    //
+    // TWO SURVIVING AUDITS, not one. Reading the directory list after a single failing
+    // second run cannot see whether that run contended at all: its directory is removed
+    // either way, so freezing only the FIRST audit left the second on the real clock and
+    // the fixture still passed. Driven. Both successful audits must therefore be present,
+    // distinct, and both under the frozen base name.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-race-'));
+    tmpDirs.push(dir);
+    const fixed = { FIXED_DATE: '20300101-000000', PADDED_PHASE: '07' };
+    const base = `07-${fixed.FIXED_DATE}`;
+    ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
+    const second = ok(runFence({ ...fixed, PROBE_3000: '200' }, dir));
+    assert.strictEqual(second.shotDirs.length, 2,
+      `two contending audits must hold two directories: ${JSON.stringify(second.shotDirs)}`);
+    for (const d of second.shotDirs) {
+      assert.ok(d.startsWith(base),
+        `every audit must be on the frozen base name or they never contend: ${JSON.stringify(second.shotDirs)}`);
+    }
+    assert.notStrictEqual(second.shotDirs[0], second.shotDirs[1],
+      'a contended base name must not be handed to two audits');
+    for (const d of second.shotDirs) {
+      assert.deepStrictEqual(second.filesIn(d), ['desktop.png', 'mobile.png', 'tablet.png'],
+        `each audit keeps its own three captures: ${d}`);
+    }
+    // And a third audit that fails everything removes only its own directory — under a
+    // shared one, its cleanup is what destroyed the neighbours' identically-named files.
+    const third = ok(runFence({ ...fixed, PROBE_3000: '200', SHOT_EXIT: 'desktop mobile tablet',
+      SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet' }, dir));
+    assert.match(third.stdout, /Screenshot capture FAILED for all 3 viewports/);
+    assert.strictEqual(third.shotDirs.length, 2,
+      `the failing audit must remove only its own directory: ${JSON.stringify(third.shotDirs)}`);
+    for (const d of third.shotDirs) {
+      assert.deepStrictEqual(third.filesIn(d), ['desktop.png', 'mobile.png', 'tablet.png'],
+        `a failing audit's cleanup must not touch another audit's captures: ${d}`);
+    }
+  });
+
+  test('an exhausted allocation is a capture failure, not a write outside the project', () => {
+    // The safety branch had NO fixture: replacing its guard with `if false; then` passed
+    // every assertion. With SCREENSHOT_DIR empty the capture would write to /desktop.png
+    // — outside the project entirely — so the branch that prevents it is exactly the kind
+    // that must not be taken on trust.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-full-'));
+    tmpDirs.push(dir);
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    fs.mkdirSync(reviews, { recursive: true });
+    // Occupy the base name and every suffix the loop will try.
+    fs.mkdirSync(path.join(reviews, '07-20300101-000000'));
+    for (let i = 1; i <= 99; i += 1) fs.mkdirSync(path.join(reviews, `07-20300101-000000-${i}`));
+    const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
+    // Same guard, same reason: without a frozen clock the run allocates a fresh name, the
+    // 100 occupied directories are never contended, and the exhaustion branch is not
+    // reached at all. Measured on windows-latest, where this fixture failed for that
+    // reason rather than for the reason it names.
+    assert.doesNotMatch(r.stdout, /Screenshots captured/,
+      'the date override did not take — the allocation was never exhausted');
+    // The MESSAGE, not just a generic failure. Dropping this line (it was lost when the
+    // vacuity guard above was added) let the fixture infer exhaustion from any capture
+    // failure with no invocations — an unfrozen clock plus a capture stub that fails
+    // early satisfied it while nothing was ever exhausted. Driven.
+    assert.match(r.stdout, /Could not allocate a review directory/,
+      'the exhaustion branch must be the one that ran, not merely some capture failure');
+    // Round-2 finding 4: this and "all three viewports failed" carried the SAME status
+    // string, while the block calls $CAPTURE_STATUS the single source of truth. The
+    // remedies differ (free a name or fix the directory, versus fix the browser), so the
+    // value has to.
+    assert.strictEqual(r.captureStatus, 'not captured (all 100 candidate names under .planning/ui-reviews/07-20300101-000000 are taken)');
+    assert.doesNotMatch(r.stdout, /Screenshots captured/);
+    assert.strictEqual(r.invocations.length, 0,
+      'nothing may be captured when no directory was allocated — the path would be outside the project');
+    assert.strictEqual(fs.readdirSync(reviews).length, 100,
+      'the exhausted run must not have created a directory of its own');
+  });
+
+  test('a structural mkdir failure gives up at once, with its own reason, instead of retrying 100 names', () => {
+    // Round-2 nit 6. A parent that is unwritable, missing, or — as here — a FILE fails
+    // every candidate for a reason no suffix cures, and the loop asked 100 times anyway.
+    // A file rather than a permission bit, because chmod is inert on the windows-latest
+    // runner and as root; ENOTDIR is structural everywhere. The count is observed through
+    // the harness's mkdir wrapper, so "gave up at once" is measured rather than inferred
+    // from the absence of directories.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-notdir-'));
+    tmpDirs.push(dir);
+    fs.mkdirSync(path.join(dir, '.planning'));
+    fs.writeFileSync(path.join(dir, '.planning', 'ui-reviews'), 'not a directory');
+    const r = ok(runFence({ PROBE_3000: '200', COUNT_MKDIR: '1' }, dir));
+    assert.strictEqual(r.captureStatus, 'not captured (could not create a review directory under .planning/ui-reviews)');
+    assert.match(r.stdout, /Could not allocate a review directory — could not create/);
+    assert.strictEqual(r.invocations.length, 0, 'nothing may be captured with no directory');
+    // One `mkdir -p` for the parent, one candidate, one re-try that tells a race from
+    // structure, then stop. Before the fix this was 101.
+    assert.ok(r.mkdirCalls.length <= 3,
+      `the allocator must not retry a structural failure: ${r.mkdirCalls.length} mkdir calls\n${r.mkdirCalls.slice(0, 5).join('\n')}`);
+    assert.strictEqual(fs.readFileSync(path.join(dir, '.planning', 'ui-reviews'), 'utf8'), 'not a directory',
+      'the file standing where the directory should be must be left alone');
+  });
+
+  test('a dangling symlink at the base name is a collision, retried under a suffix — not a structural stop', () => {
+    // Round-review refutation of the structural guard: a dangling symlink OCCUPIES the name
+    // (mkdir fails EEXIST) while `[ -e ]` follows the link and says nothing is there, so the
+    // guard read a collision as structural and gave up. `[ -L ]` is what sees the link.
+    // (The fixture also pins that the planted link is never adopted as the directory.)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-dangle-'));
+    tmpDirs.push(dir);
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    fs.mkdirSync(reviews, { recursive: true });
+    fs.symlinkSync(path.join(dir, 'nowhere'), path.join(reviews, '07-20300101-000000'));
+    const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
+    assert.match(r.stdout, /Screenshots captured/, 'a taken name must be retried, not treated as a structural failure');
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
+    assert.ok(fs.existsSync(path.join(reviews, '07-20300101-000000-1')), 'the run must have taken the first suffix');
+    assert.ok(fs.lstatSync(path.join(reviews, '07-20300101-000000')).isSymbolicLink(), 'the planted link must be left alone');
+  });
+
+  test('a name taken and freed between mkdir and the checks is won on the retry, not read as structural', () => {
+    // The round review's refutation of the structural guard: between `mkdir` failing and
+    // `[ -e ]`/`[ -L ]` running, another audit could have removed the name it had just won,
+    // and both tests then say "absent" — which the guard read as "unwritable" and gave up
+    // on. One more attempt separates the two. The harness's RACE_MKDIR wrapper makes the
+    // first candidate mkdir fail without creating anything, exactly that window.
+    const r = ok(runFence({ PROBE_3000: '200', RACE_MKDIR: '1', FIXED_DATE: '20300101-000000', PADDED_PHASE: '07' }));
+    assert.match(r.stdout, /Screenshots captured/, 'a freed name must be won on the retry');
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
+    assert.deepStrictEqual(r.shotDirs, ['07-20300101-000000'], 'the BASE name must be the one won, not a suffix');
+  });
+
+  test('the last candidate suffix is tried, not skipped', () => {
+    // The retry loop once incremented past the bound before forming the next candidate,
+    // so with the base and `-1`..`-98` taken it reported exhaustion while `-99` was free.
+    // That correction had no test of its own — reverting it passed the whole suite — and
+    // an off-by-one at the END of a bounded loop is exactly the shape a fixture that only
+    // exercises the empty and exhausted cases will never reach.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-last-'));
+    tmpDirs.push(dir);
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    fs.mkdirSync(reviews, { recursive: true });
+    fs.mkdirSync(path.join(reviews, '07-20300101-000000'));
+    for (let i = 1; i <= 98; i += 1) fs.mkdirSync(path.join(reviews, `07-20300101-000000-${i}`));
+    const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
+    assert.doesNotMatch(r.stdout, /Could not allocate a review directory/,
+      'the last free candidate must be used, not skipped');
+    assert.match(r.stdout, /Screenshots captured/);
+    assert.ok(fs.existsSync(path.join(reviews, '07-20300101-000000-99')),
+      `the run must have allocated the one free suffix: ${JSON.stringify(fs.readdirSync(reviews).slice(-3))}`);
+  });
+
+  test('all three captures succeeding is the only path that claims "captured"', () => {
+    const r = ok(runFence({ PROBE_3000: '200' }));
+    assert.match(r.stdout, /Screenshots captured to .* \(3\/3\) from http:\/\/localhost:3000/);
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
+    assert.deepStrictEqual(r.files, ['desktop.png', 'mobile.png', 'tablet.png']);
+  });
+
+  test('the resolved port is the one captured, not a hard-coded 3000', () => {
+    const r = ok(runFence({ PROBE_5173: '200' }));
+    assert.match(r.stdout, /from http:\/\/localhost:5173/);
+    for (const call of r.invocations) {
+      assert.ok(call.includes('http://localhost:5173'), `capture argv: ${JSON.stringify(call)}`);
+      assert.ok(!call.includes('http://localhost:3000'), `capture argv: ${JSON.stringify(call)}`);
+    }
+  });
+
+  test('any 2xx resolves a dev server, not an enumerated few', () => {
+    // 299 is the point: a mutant that swaps the `2??` glob for an enumeration wide
+    // enough to cover the statuses a test happens to use — `200|204` — passes a fixture
+    // set built from plausible statuses. A status no enumeration would think to list is
+    // what makes this a RANGE test rather than a longer list.
+    for (const status of ['200', '201', '204', '206', '299']) {
+      assert.match(ok(runFence({ PROBE_3000: status })).stdout, /Screenshots captured/,
+        `HTTP ${status} is a 2xx and must resolve a dev server`);
+    }
+  });
+
+  test('the FIRST auth-gated port is the one reported', () => {
+    const r = ok(runFence({ PROBE_3000: '401', PROBE_8080: '403' }));
+    assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 \(HTTP 401\) is auth-gated/);
+    assert.strictEqual(r.captureStatus, 'not captured (dev server auth-gated: http://localhost:3000 (HTTP 401))');
+  });
+
+  test('the whole auth-required class is reported as gated, not as absent', () => {
+    for (const status of ['401', '403', '407', '511']) {
+      const r = ok(runFence({ PROBE_3000: status }));
+      assert.ok(r.stdout.includes(`(HTTP ${status}) is auth-gated`),
+        `HTTP ${status} means the server answered and demanded credentials; it must not read as absent — got: ${r.stdout.trim()}`);
+    }
+  });
+
+  test('a server answering a status that is neither 2xx nor auth-gated is reported as PRESENT, with its port and status', () => {
+    // 404 from an API-only server, 500 from a dev server mid-crash, 503 while it compiles,
+    // 429 from a rate limiter: each ANSWERED. Before this fixture every one of them fell
+    // through the `case` and printed "No dev server", which is the claim #4176 exists to
+    // stop the auditor making about a server that is there.
+    for (const status of ['404', '429', '500', '503']) {
+      const r = ok(runFence({ PROBE_3000: status }));
+      assert.doesNotMatch(r.stdout, /No dev server/, `HTTP ${status} is an answer, not an absence`);
+      assert.match(r.stdout, new RegExp(`Dev server at http://localhost:3000 \\(HTTP ${status}\\) answered`));
+      assert.strictEqual(r.captureStatus, `not captured (dev server answered, not 2xx: http://localhost:3000 (HTTP ${status}))`);
+      assert.deepStrictEqual(r.shotDirs, [], 'nothing to capture from a server that is not serving a page');
+    }
+  });
+
+  test('a later port holding a real dev server outranks an earlier port that answered non-2xx', () => {
+    // The loop must NOT stop at the first answer of any kind: an API on 3000 answering 404
+    // beside Vite on 5173 is the everyday shape, and the capture belongs to 5173.
+    const r = ok(runFence({ PROBE_3000: '404', PROBE_5173: '200' }));
+    assert.match(r.stdout, /Screenshots captured .* from http:\/\/localhost:5173/);
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:5173)');
+  });
+
+  test('a port that accepts the connection but never answers is reported as present and hung, not absent', () => {
+    const r = ok(runFence({ PROBE_3000: 'timeout' }));
+    assert.doesNotMatch(r.stdout, /No dev server/);
+    assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 accepted the connection but did not answer within 5s/);
+    assert.strictEqual(r.captureStatus, 'not captured (dev server at http://localhost:3000 accepted the connection, no answer in 5s)');
+    assert.deepStrictEqual(r.shotDirs, []);
+  });
+
+  test('a node without fetch() is reported as "cannot probe", naming the version, and nothing is captured', () => {
+    // The stub prints what the real program prints on an old Node. The block must stop at
+    // the first port — three "nofetch" answers are not three absent servers — and the
+    // status must say the probe could not run, since that is the one outcome that says
+    // nothing about the ports at all.
+    const r = ok(runFence({ PROBE_3000: 'nofetch v16.20.2', PROBE_5173: '200' }));
+    assert.doesNotMatch(r.stdout, /No dev server/);
+    assert.doesNotMatch(r.stdout, /Screenshots captured/, 'no port was classified, so none may be captured from');
+    assert.match(r.stdout, /Cannot probe for a dev server: node v16\.20\.2 has no fetch\(\)/);
+    assert.strictEqual(r.captureStatus, 'not captured (cannot probe: node v16.20.2 has no fetch(); Node 18+ required)');
+    assert.strictEqual(r.invocations.length, 0);
+    assert.deepStrictEqual(r.shotDirs, []);
+  });
+
+  test('among present-but-unusable answers the precedence is gated, then any other status, then a timeout', () => {
+    // Each class records its own FIRST port; across classes the more actionable answer is
+    // reported. Both orderings of the ports are driven so the precedence is shown to be
+    // by CLASS and not an accident of which port was probed first.
+    const gatedFirst = ok(runFence({ PROBE_3000: '401', PROBE_5173: '500', PROBE_8080: 'timeout' }));
+    assert.strictEqual(gatedFirst.captureStatus, 'not captured (dev server auth-gated: http://localhost:3000 (HTTP 401))');
+    const gatedLast = ok(runFence({ PROBE_3000: 'timeout', PROBE_5173: '500', PROBE_8080: '403' }));
+    assert.strictEqual(gatedLast.captureStatus, 'not captured (dev server auth-gated: http://localhost:8080 (HTTP 403))');
+    assert.match(gatedLast.stdout, /http:\/\/localhost:8080 \(HTTP 403\) is auth-gated/);
+    const otherOverTimeout = ok(runFence({ PROBE_3000: 'timeout', PROBE_8080: '503' }));
+    assert.strictEqual(otherOverTimeout.captureStatus, 'not captured (dev server answered, not 2xx: http://localhost:8080 (HTTP 503))');
+    assert.match(otherOverTimeout.stdout, /http:\/\/localhost:8080 \(HTTP 503\) answered/);
+    // And the other order — the round review found this pair driven one way only, which
+    // is exactly the "by class, not by probe order" claim left unproven.
+    const otherFirst = ok(runFence({ PROBE_3000: '503', PROBE_8080: 'timeout' }));
+    assert.strictEqual(otherFirst.captureStatus, 'not captured (dev server answered, not 2xx: http://localhost:3000 (HTTP 503))');
+  });
+
+  test('every capture invocation passes a positive timeout as its own argument', () => {
+    // ARGUMENT BOUNDARIES, and the LAST occurrence. A text search over a collapsed
+    // command line accepted `--timeout=30000 --timeout=0` (bash keeps the last, i.e. no
+    // timeout) and `--user-agent="--timeout=30000"` (no timeout option at all). Both
+    // were driven against the first version of this assertion.
+    const r = ok(runFence({ PROBE_3000: '200' }));
+    assert.strictEqual(r.invocations.length, 3, `expected 3 capture invocations: ${JSON.stringify(r.invocations)}`);
+    for (const call of r.invocations) {
+      const values = [];
+      for (let i = 0; i < call.length; i += 1) {
+        // `--` ends option parsing; everything after it is a positional, so
+        // `-- --timeout=30000` passes NO timeout option. Driven against the first version.
+        if (call[i] === '--') break;
+        const inline = /^--timeout=(.*)$/.exec(call[i]);
+        if (inline) { values.push(inline[1]); continue; }
+        if (call[i] === '--timeout') values.push(call[i + 1]);
+      }
+      assert.ok(values.length > 0, `capture must pass --timeout as its own argument: ${JSON.stringify(call)}`);
+      const effective = values[values.length - 1];   // a repeated option: the last wins
+      assert.ok(/^[0-9]+$/.test(effective) && Number(effective) > 0,
+        `the effective --timeout must be a positive integer (0 IS playwright's no-timeout): ${JSON.stringify(call)}`);
+    }
+  });
+});
+
+describe('#4176 — bash reader, units', () => {
+  test('caseLabelOf keeps text and active aligned when a pattern carries unquoted edge whitespace', () => {
+    // Both polarities of the desync, each on a legal label bash accepts.
+    // ` 2?\?` — the last `?` is ESCAPED, so this admits `2?` + a literal `?`, not a range.
+    // With the text trimmed and `active` not, the escaped slot was read one index early.
+    const falsePass = caseLabelOf(' 2?\\?) DEV_URL=x ;;');
+    assert.ok(falsePass !== null);
+    assert.deepStrictEqual(falsePass.map((x) => x.text), ['2??']);
+    assert.strictEqual(falsePass.some(isTwoXxRange), false, 'an escaped ? is not a wildcard, whatever precedes the pattern');
+    // ` "2"??` — the digit is quoted, both `?` are live wildcards: a range.
+    const falseFail = caseLabelOf(' "2"??) DEV_URL=x ;;');
+    assert.ok(falseFail !== null);
+    assert.strictEqual(falseFail.some(isTwoXxRange), true, 'a quoted digit followed by two live wildcards is a 2xx range');
+    // Trailing whitespace, and whitespace around a `|` separator.
+    assert.strictEqual(caseLabelOf('2?? ) x').some(isTwoXxRange), true);
+    assert.deepStrictEqual(caseLabelOf('401 | 403 |407) x').map((x) => x.text), ['401', '403', '407']);
+    // A QUOTED space is pattern content and survives — it is not separator whitespace.
+    const quotedSpace = caseLabelOf('" 2"??) x');
+    assert.deepStrictEqual(quotedSpace.map((x) => x.text), [' 2??']);
+    assert.strictEqual(quotedSpace.some(isTwoXxRange), false);
+    // And every returned pattern keeps the invariant the range test relies on.
+    for (const lab of [falsePass, falseFail, quotedSpace]) {
+      for (const p of lab) assert.strictEqual(p.active.length, p.text.length, 'text and active must stay the same length');
+    }
+  });
+
+  test('stripComment opens a comment only at a WORD start — an escaped space is not one', () => {
+    // bash: `#` starts a comment only where a word could start. After `\ ` the `#` is the
+    // second character of the word ` #`, so it is literal. After `\\ ` (escaped backslash,
+    // then a real space) it IS a comment. Found by the round review, driven against bash.
+    assert.strictEqual(stripComment('echo a \\ # b'), 'echo a \\ # b');
+    assert.strictEqual(stripComment('echo a \\\\ # b'), 'echo a \\\\');
+    assert.strictEqual(stripComment('echo a # b'), 'echo a');
+    assert.strictEqual(stripComment('echo a#b'), 'echo a#b');
+    assert.strictEqual(stripComment('# whole line'), '');
+    assert.strictEqual(stripComment('echo "a # b" # c'), 'echo "a # b"');
+    // Operators end a token too — `#` right after one is at a word start. Round review.
+    assert.strictEqual(stripComment('echo A;# fi'), 'echo A;');
+    assert.strictEqual(stripComment('echo A|#fi'), 'echo A|');
+    assert.strictEqual(stripComment('echo A &&# fi'), 'echo A &&');
+    assert.strictEqual(stripComment('(echo A)#x'), '(echo A)');
+    assert.strictEqual(stripComment('echo A >#x'), 'echo A >');
+    assert.strictEqual(stripComment('x=#y'), 'x=#y');
+    assert.strictEqual(stripComment('echo ${x}#y'), 'echo ${x}#y');
+    assert.strictEqual(stripComment('echo "a;" #b'), 'echo "a;"');
+    // A `)` that closes a construct INSIDE a word is not a word end: process substitution
+    // and extglob. Round review, continuation 2.
+    assert.strictEqual(stripComment('cat <(printf x)#c'), 'cat <(printf x)#c');
+    assert.strictEqual(stripComment('cat <(printf x) #c'), 'cat <(printf x)');
+    assert.strictEqual(stripComment('echo @(a)#c'), 'echo @(a)#c');
+    assert.strictEqual(stripComment('echo @(a) #c'), 'echo @(a)');
+    assert.strictEqual(stripComment('echo $(printf x)#c'), 'echo $(printf x)#c');
+    // Inside double quotes those openers are literal text; an unmatched one must not
+    // poison the context and swallow a real comment. Round review, continuation 3.
+    assert.strictEqual(stripComment('echo "@(a" # fi'), 'echo "@(a"');
+    assert.strictEqual(stripComment('echo "<(x" # fi'), 'echo "<(x"');
+    assert.strictEqual(stripComment('echo "$(printf x)" # fi'), 'echo "$(printf x)"');
+  });
+
+  test('logicalLines joins only a backslash that is the LAST character of the line, in an odd run', () => {
+    // bash: `\` escapes the next character. Before a newline it joins the lines; before
+    // a space it escapes the space and the line ends; doubled, it is a literal backslash.
+    assert.deepStrictEqual(logicalLines(['echo a \\', 'b']), ['echo a b'], 'backslash-newline continues');
+    assert.deepStrictEqual(logicalLines(['echo a \\ ', 'b']), ['echo a \\ ', 'b'], 'backslash-SPACE-newline does not');
+    assert.deepStrictEqual(logicalLines(['echo a \\\\', 'b']), ['echo a \\\\', 'b'], 'an escaped backslash does not');
+    assert.deepStrictEqual(logicalLines(['echo a \\\\\\', 'b']), ['echo a \\\\ b'], 'three: one escaped pair, then a continuation');
+    // The trailing whitespace has to survive on a CONTINUATION line too, or the second
+    // physical line of a joined command could never end a line by this rule.
+    assert.deepStrictEqual(logicalLines(['echo a \\', '  b \\ ', 'c']), ['echo a b \\ ', 'c']);
+  });
+
+  test('logicalLines agrees with bash on how many commands a continuation-bearing script runs',
+    { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+    const script = ['echo one \\ ', 'echo two', 'echo three \\\\', 'echo four \\', '  five'].join('\n');
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 15000 });
+    const printed = splitLines(r.stdout).filter(Boolean);
+    const modelled = logicalLines(splitLines(script)).map((l) => l.trim());
+    assert.strictEqual(printed.length, modelled.length,
+      `bash ran ${printed.length} commands, the reader modelled ${modelled.length}: ${JSON.stringify(modelled)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PROPERTY TESTS for the bash reader (TESTING-STANDARDS.md § Property-based testing tier:
+// a module that parses must carry at least one fast-check property asserting a domain
+// invariant). The reader above is a real parser of shell quoting and control flow, and
+// the 19-category mutant battery that hardened it is example-based: every fixture was
+// written by the same author with the same model of bash, which CONTRIBUTING.md's
+// fixture-provenance rule (#2371) names as the limit of what such a fixture can find.
+//
+// DOCUMENT-SHAPED, NOT WRITER-SEEDED. The generator below produces bash from a grammar of
+// the constructs the block uses — nested if/elif/else, loops, case, two-line `then`,
+// continuations, comments, quoted strings carrying control keywords — and it knows, for
+// every payload line it emits, which conditions enclose it. It is seeded from nothing the
+// reader produces, so it can generate scripts the reader's author never thought to write.
+//
+// TWO ORACLES, and the second is the one that matters. Property 1 checks the reader against
+// the generator's own knowledge of the structure it emitted. Property 2 checks it against
+// BASH: the same script is executed with a random truth assignment for every condition, and
+// a payload must print exactly when the reader says its governing conditions all hold. A
+// reader that agrees with the generator but not with bash is modelling the wrong language.
+// Property 3 puts `caseLabelOf` + `isTwoXxRange` — the pair that decides whether the probe's
+// accept arm is a RANGE — against bash's own `case` matching: a label the pair calls a 2xx
+// range must, when bash runs it, admit 200, 250 and 299 and refuse 199, 300 and 500.
+//
+// Deterministic, per CONTRIBUTING.md: the seed is pinned, the run count is bounded, and
+// fast-check prints the seed, path and counterexample on failure so a run can be replayed.
+// ---------------------------------------------------------------------------
+
+const fc = require('fast-check');
+
+const FC_SEED = 4176;
+
+// The grammar. `payload` is an `echo` carrying a marker `M<id>`; blocks carry bodies. Depth
+// is bounded by the recursion itself (tie: fc.letrec with a depth-limited `oneof`).
+const scriptGen = fc.letrec((tie) => ({
+  payload: fc.record({
+    kind: fc.constant('payload'),
+    // What surrounds the marker: a plain echo, a quoted string carrying control keywords
+    // (the `echo "we do work"` false-fire class), a trailing comment that itself carries
+    // keywords (the `fi # comment` desync class), or a continuation across two lines.
+    dress: fc.constantFrom('plain', 'dq-keywords', 'sq-keywords', 'comment', 'continued', 'hash-in-quotes', 'backslash-space', 'escaped-backslash', 'operator-comment', 'quoted-opener-comment'),
+  }),
+  ifBlock: fc.record({
+    kind: fc.constant('if'),
+    twoLine: fc.boolean(),                 // `if COND` / `then` on the next line
+    thenTail: fc.boolean(),                // `then :` — a command on the then line itself
+    // minLength 1: bash rejects an empty then/elif/else body and an empty loop body
+    // (`if x; then fi` is a syntax error). A case arm may be empty, so it is not bounded.
+    thenBody: fc.array(tie('node'), { minLength: 1, maxLength: 3 }),
+    elifBody: fc.option(fc.array(tie('node'), { minLength: 1, maxLength: 2 }), { nil: null }),
+    elseBody: fc.option(fc.array(tie('node'), { minLength: 1, maxLength: 2 }), { nil: null }),
+  }),
+  loop: fc.record({ kind: fc.constant('loop'), keyword: fc.constantFrom('for', 'while', 'until'), body: fc.array(tie('node'), { minLength: 1, maxLength: 3 }) }),
+  caseBlock: fc.record({ kind: fc.constant('case'), body: fc.array(tie('node'), { maxLength: 3 }) }),
+  node: fc.oneof({ depthSize: 'small', maxDepth: 3, withCrossShrink: true },
+    tie('payload'), tie('ifBlock'), tie('loop'), tie('caseBlock')),
+  script: fc.array(tie('node'), { minLength: 1, maxLength: 5 }),
+}));
+
+// Render a generated tree to bash lines, recording for each marker the guard stack the
+// reader is expected to report — `''` for a loop or case scope, the condition text for an
+// `if`, the elif's own text for an elif body, and `!(cond)` for an else body. This mirrors
+// the reader's MODEL of governance (which condition text governs a line), which is not the
+// same as bash's execution semantics for elif; property 2 therefore generates no elif.
+function render(tree, opts) {
+  const lines = [];
+  const expect = [];   // { id, guards, exec } — exec: does bash run this line under `truth`?
+  let nextCond = 0;
+  let nextId = 0;
+  let nextLoop = 0;
+  const conds = [];    // condition text per index, so property 2 can assign truth values
+  const emit = (depth, text) => lines.push(`${'  '.repeat(depth)}${text}`);
+  const walk = (node, depth, guards, exec) => {
+    if (node.kind === 'payload') {
+      const id = nextId++;
+      const m = `M${id}`;
+      switch (node.dress) {
+        case 'plain': emit(depth, `echo "${m}"`); break;
+        case 'dq-keywords': emit(depth, `echo "if then else fi do done case esac ${m}"`); break;
+        case 'sq-keywords': emit(depth, `echo 'fi; done; esac ${m}'`); break;
+        case 'comment': emit(depth, `echo "${m}" # fi done esac if then`); break;
+        case 'hash-in-quotes': emit(depth, `echo "${m} # not a comment"`); break;
+        case 'continued': emit(depth, `echo \\`); emit(depth + 1, `"${m}"`); break;
+        // Backslash, SPACE, newline: escapes the space, ends the line. A reader that trims
+        // before it looks for the backslash joins the NEXT line into this echo.
+        case 'backslash-space': emit(depth, `echo "${m}" \\ `); break;
+        // An escaped backslash at the end of a complete line.
+        case 'escaped-backslash': emit(depth, `echo "${m}" \\\\`); break;
+        // A comment opened right after an operator, no space — bash ends the word at `;`.
+        case 'operator-comment': emit(depth, `echo "${m}";# fi done esac`); break;
+        // Opener-like text inside quotes, then a real comment carrying keywords.
+        case 'quoted-opener-comment': emit(depth, `echo "${m} <(x @(y" # fi done`); break;
+        default: throw new Error(`unknown dress ${node.dress}`);
+      }
+      expect.push({ id, guards: guards.slice(), exec });
+      return;
+    }
+    if (node.kind === 'loop') {
+      // Every loop runs its body exactly ONCE, on a variable of its own: a shared one
+      // would let an outer loop's termination stop an inner loop before its first pass.
+      const v = `L${nextLoop++}`;
+      const header = node.keyword === 'for' ? 'for x in 1; do'
+        : node.keyword === 'while' ? `while [ "\${${v}:-0}" = 0 ]; do`
+          : `until [ "\${${v}:-0}" = 1 ]; do`;
+      emit(depth, header);
+      if (node.keyword !== 'for') emit(depth + 1, `${v}=1`);
+      for (const child of node.body) walk(child, depth + 1, [...guards, ''], exec);
+      emit(depth, 'done');
+      return;
+    }
+    if (node.kind === 'case') {
+      emit(depth, 'case x in');
+      emit(depth + 1, '*)');
+      for (const child of node.body) walk(child, depth + 2, [...guards, ''], exec);
+      emit(depth + 1, ';;');
+      emit(depth, 'esac');
+      return;
+    }
+    // if
+    const ci = nextCond++;
+    const cond = `[ "$C${ci}" = 1 ]`;
+    conds.push(cond);
+    const truth = opts.truth ? Boolean(opts.truth[ci]) : true;
+    if (node.twoLine) { emit(depth, `if ${cond}`); emit(depth, node.thenTail ? 'then :' : 'then'); }
+    else emit(depth, `if ${cond}; then`);
+    for (const child of node.thenBody) walk(child, depth + 1, [...guards, cond], exec && truth);
+    let taken = truth;
+    let top = cond;   // what the reader's stack holds for this scope when `else` arrives
+    if (node.elifBody !== null && !opts.noElif) {
+      const ei = nextCond++;
+      const econd = `[ "$C${ei}" = 1 ]`;
+      conds.push(econd);
+      const etruth = opts.truth ? Boolean(opts.truth[ei]) : true;
+      emit(depth, `elif ${econd}; then`);
+      for (const child of node.elifBody) walk(child, depth + 1, [...guards, econd], exec && !taken && etruth);
+      taken = taken || etruth;
+      top = econd;    // the elif's OWN condition — not whatever a nested `if` pushed last
+    }
+    if (node.elseBody !== null) {
+      // The reader models `else` as the negation of whatever condition is on top of its
+      // stack at that point — the elif's when one was emitted, the if's otherwise.
+      emit(depth, 'else');
+      for (const child of node.elseBody) walk(child, depth + 1, [...guards, `!(${top})`], exec && !taken);
+    }
+    emit(depth, 'fi');
+  };
+  for (const node of tree) walk(node, 0, [], true);
+  return { lines, expect, conds };
+}
+
+const markerOf = (line) => { const m = /\bM(\d+)\b/.exec(line); return m ? Number(m[1]) : null; };
+
+describe('#4176 — bash reader, property-based (fast-check)', () => {
+  test('property: the guards the reader reports are the guards the generator wrote', () => {
+    fc.assert(
+      fc.property(scriptGen.script, (tree) => {
+        const { lines, expect } = render(tree, {});
+        const rows = guardedLines(lines);
+        const seen = new Map();
+        for (const row of rows) {
+          const id = markerOf(row.line);
+          if (id !== null) seen.set(id, row.guards);
+        }
+        for (const e of expect) {
+          assert.ok(seen.has(e.id), `marker M${e.id} was not reported as a governed line\n${lines.join('\n')}`);
+          assert.deepStrictEqual(seen.get(e.id), e.guards,
+            `marker M${e.id}: reader guards ${JSON.stringify(seen.get(e.id))} != expected ${JSON.stringify(e.guards)}\n${lines.join('\n')}`);
+        }
+        assert.strictEqual(seen.size, expect.length, `reader reported ${seen.size} markers for ${expect.length} payloads`);
+      }),
+      { seed: FC_SEED, numRuns: 200 }
+    );
+  });
+
+  test('property: a payload prints under bash exactly when the reader says its guards all hold',
+    { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+      fc.assert(
+        fc.property(scriptGen.script, fc.array(fc.boolean(), { maxLength: 64 }), (tree, truth) => {
+          const { lines, expect, conds } = render(tree, { truth, noElif: true });
+          const rows = guardedLines(lines);
+          // Evaluate the reader's guards under the same truth assignment.
+          const evalGuard = (g) => {
+            if (g === '') return true;
+            const neg = /^!\((.*)\)$/.exec(g);
+            const body = neg ? neg[1] : g;
+            const m = /\$C(\d+)/.exec(body);
+            assert.ok(m, `unrecognised guard ${JSON.stringify(g)}`);
+            const v = Boolean(truth[Number(m[1])]);
+            return neg ? !v : v;
+          };
+          const predicted = new Set();
+          for (const row of rows) {
+            const id = markerOf(row.line);
+            if (id !== null && row.guards.every(evalGuard)) predicted.add(id);
+          }
+          const env = {};
+          conds.forEach((c, i) => { env[`C${i}`] = truth[i] ? '1' : '0'; });
+          const r = spawnSync('bash', ['-c', lines.join('\n')], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 15000 });
+          assert.strictEqual(r.status, 0, `bash rejected a generated script — the generator is wrong, not the reader:\n${lines.join('\n')}\n${r.stderr}`);
+          const printed = new Set([...r.stdout.matchAll(/\bM(\d+)\b/g)].map((m) => Number(m[1])));
+          assert.deepStrictEqual([...predicted].sort((a, b) => a - b), [...printed].sort((a, b) => a - b),
+            `reader predicted ${JSON.stringify([...predicted])} but bash printed ${JSON.stringify([...printed])}\n${lines.join('\n')}`);
+          // And the expectation is consistent with bash too — a check on the oracle's oracle.
+          const expected = expect.filter((e) => e.exec).map((e) => e.id).sort((a, b) => a - b);
+          assert.deepStrictEqual([...printed].sort((a, b) => a - b), expected, 'generator exec model disagrees with bash');
+        }),
+        { seed: FC_SEED, numRuns: 60 }
+      );
+    });
+
+  test('property: the reader and bash agree on whether a case label admits the 2xx range',
+    { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+      // SHAPE-AWARE, because a character-soup alphabet almost never produces a label the
+      // reader calls a range, and a property that never reaches its oracle is vacuous —
+      // the first version of this test ran 300 cases in 2ms and killed no mutant. Every
+      // piece here is legal bash on its own (balanced quotes), so the composition is a
+      // label bash can run, and the interesting ones — an escaped `?`, a quoted digit, a
+      // leading `(`, whitespace at either edge, a second pattern — are the majority.
+      const ws = fc.constantFrom('', ' ', '\t', '  ');
+      const lead = fc.constantFrom('2', '"2"', "'2'", '\\2', '3', '"3"', '20');
+      const tail = fc.constantFrom('??', '\\?\\?', '?\\?', '\\??', '"??"', '"?"?', '?"?"', '[0-9][0-9]', '"[0-9]"[0-9]', '*', '"*"', '\\*', '', '?');
+      const extra = fc.constantFrom('', '|3??', '|401', '| 401 ', '|"x y"', '|2??', '|"2"??');
+      const labelGen = fc.tuple(fc.constantFrom('', '('), ws, lead, tail, ws, extra).map((parts) => parts.join(''));
+      let reached = 0;
+      fc.assert(
+        fc.property(labelGen, (labelText) => {
+          const label = caseLabelOf(`${labelText}) DEV_URL=x ;;`);
+          assert.ok(label !== null, `every generated label is legal bash, so the reader must parse it: ${JSON.stringify(labelText)}`);
+          const claimed = label.some(isTwoXxRange);
+          const script = 'for s in 200 250 299 199 300 500; do case "$s" in ' + labelText + ') printf Y;; *) printf N;; esac; done';
+          const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 15000 });
+          assert.strictEqual(r.status, 0, `bash cannot run the generated label ${JSON.stringify(labelText)}: ${r.stderr}`);
+          reached += 1;
+          const admitsAll2xx = r.stdout.slice(0, 3) === 'YYY';
+          const refusesOthers = r.stdout.slice(3) === 'NNN';
+          // SOUNDNESS, every label: a claimed range admits the whole 2xx range under bash.
+          if (claimed) assert.ok(admitsAll2xx, `the reader called ${JSON.stringify(labelText)} a 2xx range; bash matched 200,250,299 as ${r.stdout.slice(0, 3)}`);
+          // The full agreement, single-pattern labels: on these shapes the reader's verdict
+          // IS bash's verdict, in both directions. A second pattern is excluded only because
+          // `some(isTwoXxRange)` deliberately says nothing about what the OTHER pattern admits.
+          if (label.length === 1) {
+            assert.strictEqual(claimed, admitsAll2xx && refusesOthers,
+              `${JSON.stringify(labelText)}: reader says ${claimed ? 'range' : 'not a range'}, bash matched 200,250,299,199,300,500 as ${r.stdout}`);
+          }
+        }),
+        { seed: FC_SEED, numRuns: 250 }
+      );
+      assert.ok(reached >= 200, `the property reached its bash oracle only ${reached} times — vacuous`);
+    });
 });

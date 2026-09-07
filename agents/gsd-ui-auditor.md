@@ -109,37 +109,143 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 ## Screenshot Capture (CLI only — no MCP, no persistent browser)
 
 ```bash
-# Check for running dev server
-DEV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || echo "000")
+# Probe the documented ports. Follows redirects, accepts any 2xx, time-bounded; fetch()
+# for cross-platform parity with gsd-core/references/checkpoints.md.
+# EVERY answer is recorded: "no dev server" means nothing listened. A 404/500/503, or a
+# port that accepts and never answers, is a PRESENT server the auditor cannot use — say so.
+# PRECONDITION: Node 18+ on the AUDITED project's PATH (fetch is global from 18); an older
+# node prints "nofetch" rather than throwing, which would read as "000" on every port.
+DEV_URL=""
+DEV_GATED=""
+DEV_OTHER=""
+DEV_TIMEOUT=""
+DEV_NOFETCH=""
+for PORT in 3000 5173 8080; do
+  # process.stdout.write, never console.log: console.log colourises a NUMBER under a TTY
+  # or FORCE_COLOR, and "\033[33m200\033[39m" matches no arm. Measured.
+  # An abort can only be this program's own 5s signal (TimeoutError, or the generic
+  # AbortError older fetch builds raise), so it prints "timeout"; anything else is "000". No process.exit()
+  # after the nofetch write: a pipe write is async on Windows and an exit can drop it.
+  PROBE=$(node -e 'typeof fetch==="function"?fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(e=>process.stdout.write(e&&(e.name==="TimeoutError"||e.name==="AbortError")?"timeout":"000")):process.stdout.write("nofetch "+process.version)' "http://localhost:$PORT" 2>/dev/null || echo "000")
+  PROBE=${PROBE:-000}
+  case "$PROBE" in
+    2??)     DEV_URL="http://localhost:$PORT"; break ;;
+    # No working probe: nothing can be classified, so stop rather than record three 000s.
+    nofetch*) DEV_NOFETCH="${PROBE#nofetch }"; break ;;
+    # The WHOLE auth-required class (407 proxy, 511 captive portal too). First gated port
+    # wins — an unguarded assignment would name the LAST one tried.
+    401|403|407|511) [ -n "$DEV_GATED" ] || DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
+    # Any other status ANSWERED. Keep looping: a later port may hold the real 2xx server.
+    [1-9]??) [ -n "$DEV_OTHER" ] || DEV_OTHER="http://localhost:$PORT (HTTP $PROBE)" ;;
+    # Accepted the connection, never answered within the bound: present, hung.
+    timeout) [ -n "$DEV_TIMEOUT" ] || DEV_TIMEOUT="http://localhost:$PORT" ;;
+  esac
+done
 
-if [ "$DEV_STATUS" = "200" ]; then
-  SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$SCREENSHOT_DIR"
+if [ -n "$DEV_URL" ]; then
+  # ALLOCATE ATOMICALLY: `mkdir` without `-p` fails on an existing name, so exactly one
+  # audit wins it. Phase + whole-second timestamp is not unique, both audits write the
+  # same three filenames, and a PID suffix does not help ($$ is the shell, not the run).
+  mkdir -p .planning/ui-reviews 2>/dev/null
+  SCREENSHOT_BASE=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
+  SCREENSHOT_DIR="$SCREENSHOT_BASE"
+  SUFFIX=1
+  ALLOC_FAILURE=""
+  until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
+    # Retry ONLY a name collision. A candidate that failed and is still absent (-L too: a
+    # dangling symlink occupies the name but -e follows it) either failed structurally —
+    # parent unwritable/missing/a file, ENOSPC — or lost a race to a name taken and freed
+    # between the two calls. One more attempt tells them apart: a race is won, structure
+    # fails again, and no suffix cures the latter.
+    if [ ! -e "$SCREENSHOT_DIR" ] && [ ! -L "$SCREENSHOT_DIR" ]; then
+      if mkdir "$SCREENSHOT_DIR" 2>/dev/null; then
+        break
+      fi
+      ALLOC_FAILURE="could not create a review directory under .planning/ui-reviews"
+      SCREENSHOT_DIR=""
+      break
+    fi
+    if [ "$SUFFIX" -gt 99 ]; then
+      ALLOC_FAILURE="all 100 candidate names under $SCREENSHOT_BASE are taken"
+      SCREENSHOT_DIR=""
+      break
+    fi
+    SCREENSHOT_DIR="$SCREENSHOT_BASE-$SUFFIX"
+    SUFFIX=$((SUFFIX + 1))
+  done
 
-  # Desktop
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/desktop.png" \
-    --viewport-size=1440,900 2>/dev/null
+  if [ -z "$SCREENSHOT_DIR" ]; then
+    # Never fall through: with SCREENSHOT_DIR empty the capture would write to /desktop.png.
+    # Its own status — no capture was attempted, and the remedy differs from "capture failed".
+    CAPTURE_STATUS="not captured ($ALLOC_FAILURE)"
+    echo "Could not allocate a review directory — $ALLOC_FAILURE — code-only audit"
+  else
+    # Capture from the RESOLVED port; believe only the exit status and the file on disk.
+    CAPTURED=0
+    FAILED_SHOTS=""
+    for SHOT in "desktop:1440,900" "mobile:375,812" "tablet:768,1024"; do
+      SHOT_NAME="${SHOT%%:*}"
+      SHOT_VIEWPORT="${SHOT##*:}"
+      # --timeout is load-bearing: this CLI defaults context.setDefaultTimeout() to 0 (none),
+      # so a hung navigation would block the audit forever.
+      if npx playwright screenshot "$DEV_URL" \
+           "$SCREENSHOT_DIR/$SHOT_NAME.png" \
+           --viewport-size="$SHOT_VIEWPORT" \
+           --timeout=30000 >/dev/null 2>&1 \
+         && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
+        CAPTURED=$((CAPTURED + 1))
+      else
+        # Remove what THIS viewport may have written (a crashed browser leaves a zero-byte or
+        # partial png), by name, here — so a PARTIAL capture leaves only real shots behind.
+        rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
+        FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
+      fi
+    done
 
-  # Mobile
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/mobile.png" \
-    --viewport-size=375,812 2>/dev/null
-
-  # Tablet
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/tablet.png" \
-    --viewport-size=768,1024 2>/dev/null
-
-  echo "Screenshots captured to $SCREENSHOT_DIR"
+    # The VALUE carries what the echo carries: the report template renders $CAPTURE_STATUS
+    # and nothing else.
+    if [ "$CAPTURED" -eq 3 ]; then
+      CAPTURE_STATUS="captured (3/3 from $DEV_URL)"
+      echo "Screenshots captured to $SCREENSHOT_DIR (3/3) from $DEV_URL"
+    elif [ "$CAPTURED" -gt 0 ]; then
+      CAPTURE_STATUS="partially captured ($CAPTURED/3 from $DEV_URL; failed:$FAILED_SHOTS)"
+      echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
+    else
+      CAPTURE_STATUS="not captured (capture failed for all 3 viewports at $DEV_URL)"
+      # `rm -rf`, licensed by the atomic allocation: this directory is shared with nobody.
+      # rmdir cannot honour the claim — it fails on any file written under an unasked name.
+      rm -rf "$SCREENSHOT_DIR"
+      echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
+    fi
+  fi
+elif [ -n "$DEV_NOFETCH" ]; then
+  # Above the answer classes: with no working probe there is no answer to rank.
+  CAPTURE_STATUS="not captured (cannot probe: node $DEV_NOFETCH has no fetch(); Node 18+ required)"
+  echo "Cannot probe for a dev server: node $DEV_NOFETCH has no fetch() — Node 18+ is required — code-only audit"
+elif [ -n "$DEV_GATED" ]; then
+  CAPTURE_STATUS="not captured (dev server auth-gated: $DEV_GATED)"
+  echo "Dev server at $DEV_GATED is auth-gated — code-only audit"
+elif [ -n "$DEV_OTHER" ]; then
+  # Precedence by CLASS: gated, then any other status, then timeout — each its own FIRST port.
+  CAPTURE_STATUS="not captured (dev server answered, not 2xx: $DEV_OTHER)"
+  echo "Dev server at $DEV_OTHER answered but is not serving a page — code-only audit"
+elif [ -n "$DEV_TIMEOUT" ]; then
+  CAPTURE_STATUS="not captured (dev server at $DEV_TIMEOUT accepted the connection, no answer in 5s)"
+  echo "Dev server at $DEV_TIMEOUT accepted the connection but did not answer within 5s — code-only audit"
 else
-  echo "No dev server at localhost:3000 — code-only audit"
+  CAPTURE_STATUS="not captured (no dev server on ports 3000, 5173 or 8080)"
+  echo "No dev server on ports 3000, 5173 or 8080 — code-only audit"
 fi
 ```
 
-If dev server not detected: audit runs on code review only (Tailwind class audit, string audit for generic labels, state handling check). Note in output that visual screenshots were not captured.
+Ports are tried in order — 3000, then 5173 (Vite default), then 8080 — and the
+first one that answers 2xx is the port every capture command uses.
 
-Try port 3000 first, then 5173 (Vite default), then 8080.
+`$CAPTURE_STATUS` is the single source of truth for the `**Screenshots:**` field
+of both the UI-REVIEW.md report and the structured return. Report what it holds
+— never assume capture succeeded because the block ran.
+
+If no dev server is detected, or capture fails: the audit runs on code review only (Tailwind class audit, string audit for generic labels, state handling check). Note in output that visual screenshots were not captured, and say why.
 
 </screenshot_approach>
 
@@ -299,7 +405,7 @@ Write to: `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`
 
 **Audited:** {date}
 **Baseline:** {UI-SPEC.md / abstract standards}
-**Screenshots:** {captured / not captured (no dev server)}
+**Screenshots:** {$CAPTURE_STATUS — captured / partially captured (N/3, list the failures) / not captured, with the reason}
 
 ---
 
@@ -366,7 +472,7 @@ Run the gitignore gate from `<gitignore_gate>`. This MUST happen before step 3.
 
 ## Step 3: Detect Dev Server and Capture Screenshots
 
-Run the screenshot approach from `<screenshot_approach>`. Record whether screenshots were captured.
+Run the screenshot approach from `<screenshot_approach>`. Carry `$CAPTURE_STATUS` forward and record it verbatim — full, partial, or none with its reason.
 
 ## Step 4: Scan Implemented Files
 
@@ -406,7 +512,7 @@ Use output format from `<output_format>`. If registry audit produced flags, add 
 
 **Phase:** {phase_number} - {phase_name}
 **Overall Score:** {total}/24
-**Screenshots:** {captured / not captured}
+**Screenshots:** {$CAPTURE_STATUS — captured / partially captured (N/3) / not captured, with the reason}
 
 ### Pillar Summary
 | Pillar | Score |
@@ -440,7 +546,7 @@ UI audit is complete when:
 - [ ] All `<required_reading>` loaded before any action
 - [ ] .gitignore gate executed before any screenshot capture
 - [ ] Dev server detection attempted
-- [ ] Screenshots captured (or noted as unavailable)
+- [ ] Capture outcome recorded from `$CAPTURE_STATUS` — full, partial, or none with its reason
 - [ ] All 6 pillars scored with evidence
 - [ ] Registry safety audit executed (if shadcn + third-party registries present)
 - [ ] Top 3 priority fixes identified with concrete solutions

@@ -386,6 +386,33 @@ Three further dimensions carry no number: **Verify Command Format Sanity**,
 5. Spacing
 6. Experience Design
 
+**Screenshot capture.** Capture is CLI-only — the agent shells out to
+`npx playwright screenshot`, taking no MCP grant. It probes `localhost:3000`,
+then `5173`, then `8080`, following redirects and accepting any 2xx, and every
+capture runs against the port that answered. The reported `**Screenshots:**`
+field is derived from the observed exit statuses and the files on disk, so it
+distinguishes three outcomes — captured (3/3), partially captured (N/3, naming
+the viewports that failed), and not captured with its reason (no dev server,
+auth-gated, a server that answered something other than 2xx, a port that
+accepted the connection but never answered, or capture failure). "No dev
+server" means nothing was listening on any port: a server that answered 404 or
+500, or that hung, is reported as present, with its port and status, because
+the auditor could not use it — never as absent. The probe is `node -e` with
+`fetch()`, so it needs **Node 18+ on the audited project's PATH** — the
+project's runtime, not gsd-core's; an older Node is reported as its own outcome
+("cannot probe"), not as a missing server. A failed capture never reports as a successful
+one, and takes its own artifacts with it: each viewport that fails has the
+partial or zero-byte file it may have written removed, so a partial capture
+leaves only the shots that actually succeeded, and a total failure removes the
+review directory outright. The directory is allocated atomically — `mkdir`
+without `-p`, retried under a fresh suffix when the name is taken — so exactly one
+audit wins a given name: two audits of the same phase in the same second, or one
+shell running the audit twice, would otherwise share a directory and write the
+same three filenames, and no per-file rule could then tell whose capture it was
+deleting. The guarantee is over creation, not over the pathname for all time —
+nothing here defends against another process substituting a parent directory
+mid-audit.
+
 ---
 
 ### gsd-dom-verifier
