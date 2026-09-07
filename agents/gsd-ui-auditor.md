@@ -109,94 +109,51 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 ## Screenshot Capture (CLI only — no MCP, no persistent browser)
 
 ```bash
-# Detect a running dev server across the documented ports. The probe follows
-# redirects, accepts any 2xx, and is time-bounded, so a root path that
-# redirects (Next.js middleware/i18n, trailing-slash normalization) is not
-# misread as "no dev server", and a port that accepts but never answers is
-# reported as exactly that instead of hanging the audit. fetch() rather than
-# curl, for cross-platform parity with gsd-core/references/checkpoints.md.
-#
-# EVERY answer is recorded, not only the two the capture can use. "No dev
-# server" is a claim about the PORT — nothing listening — and a server that
-# answered 404 (an API-only server on 3000), 500 (a dev server mid-crash) or
-# 503 (still compiling), or that accepted the connection and never answered,
-# is present. Reporting any of those as absent is #4176's own defect, one
-# status family over; the auditor cannot screenshot them, but it can say why.
-#
-# PRECONDITION: Node 18+, on the AUDITED project's PATH — this block runs on
-# whatever `node` that shell resolves, not on gsd-core's own runtime. fetch()
-# is global from 18; on an older Node the program below says so ("nofetch")
-# instead of throwing, because a thrown probe reads "000" on every port and
-# reports a present dev server as absent by yet another road. (`npx playwright`
-# below needs a current Node as well, so the bound is not new — only stated.)
+# Probe the documented ports. Follows redirects, accepts any 2xx, time-bounded; fetch()
+# for cross-platform parity with gsd-core/references/checkpoints.md.
+# EVERY answer is recorded: "no dev server" means nothing listened. A 404/500/503, or a
+# port that accepts and never answers, is a PRESENT server the auditor cannot use — say so.
+# PRECONDITION: Node 18+ on the AUDITED project's PATH (fetch is global from 18); an older
+# node prints "nofetch" rather than throwing, which would read as "000" on every port.
 DEV_URL=""
 DEV_GATED=""
 DEV_OTHER=""
 DEV_TIMEOUT=""
 DEV_NOFETCH=""
 for PORT in 3000 5173 8080; do
-  # process.stdout.write(String(...)), never console.log(r.status): console.log
-  # CAN colorize a NUMBER — whenever node emits color, i.e. a TTY or FORCE_COLOR — so
-  # the probe would emit "\033[33m200\033[39m" and every 2xx would fall through to the
-  # no-dev-server branch. Measured: piped and uncoloured it prints "200\n"; with
-  # FORCE_COLOR=1 it prints the escapes. Writing the string is unconditional, which is
-  # why it is the fix rather than relying on the caller's colour state.
-  # The timeout is named in the output. The program owns the ONLY AbortSignal in play,
-  # so an abort — TimeoutError on current Node, the older AbortError spelling on early
-  # 18.x — can only be the 5s bound firing; every other rejection (refused, reset,
-  # a redirect loop) still reads "000".
-  # No process.exit() after the nofetch write: stdout to a pipe is asynchronous on
-  # Windows, and an exit right behind the write can drop it. The process ends on
-  # its own once the write drains.
+  # process.stdout.write, never console.log: console.log colourises a NUMBER under a TTY
+  # or FORCE_COLOR, and "\033[33m200\033[39m" matches no arm. Measured.
+  # An abort can only be this program's own 5s signal (TimeoutError; AbortError on early
+  # 18.x), so it prints "timeout"; every other rejection prints "000". No process.exit()
+  # after the nofetch write: a pipe write is async on Windows and an exit can drop it.
   PROBE=$(node -e 'typeof fetch==="function"?fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(e=>process.stdout.write(e&&(e.name==="TimeoutError"||e.name==="AbortError")?"timeout":"000")):process.stdout.write("nofetch "+process.version)' "http://localhost:$PORT" 2>/dev/null || echo "000")
   PROBE=${PROBE:-000}
   case "$PROBE" in
     2??)     DEV_URL="http://localhost:$PORT"; break ;;
-    # This node cannot probe at all, so no port can be classified: stop rather
-    # than record three "000"s and call the dev server absent.
+    # No working probe: nothing can be classified, so stop rather than record three 000s.
     nofetch*) DEV_NOFETCH="${PROBE#nofetch }"; break ;;
-    # The WHOLE auth-required class, not just its two common members: 407 (proxy)
-    # and 511 (captive portal) also mean a server ANSWERED and demanded credentials,
-    # so leaving them out reports a present server as an absent one — which is
-    # #4176's own defect, one status family over.
-    # First gated port wins, matching the documented port PRECEDENCE below. An
-    # unguarded assignment here reports whichever gated port was tried LAST, so
-    # with 3000 and 8080 both auth-gated the reason would name 8080.
+    # The WHOLE auth-required class (407 proxy, 511 captive portal too). First gated port
+    # wins — an unguarded assignment would name the LAST one tried.
     401|403|407|511) [ -n "$DEV_GATED" ] || DEV_GATED="http://localhost:$PORT (HTTP $PROBE)" ;;
-    # Any other status is a server that ANSWERED. The loop keeps going, because a
-    # later port may hold the real dev server (an API on 3000 answering 404, Vite
-    # on 5173), and a 2xx there still wins via the `break` above. First-wins, as
-    # the gated arm is, so the reported port follows the documented precedence.
+    # Any other status ANSWERED. Keep looping: a later port may hold the real 2xx server.
     [1-9]??) [ -n "$DEV_OTHER" ] || DEV_OTHER="http://localhost:$PORT (HTTP $PROBE)" ;;
-    # Accepted the connection, never answered within the bound: hung, mid-start,
-    # or stopped at a debugger — present, whichever it is.
+    # Accepted the connection, never answered within the bound: present, hung.
     timeout) [ -n "$DEV_TIMEOUT" ] || DEV_TIMEOUT="http://localhost:$PORT" ;;
   esac
 done
 
 if [ -n "$DEV_URL" ]; then
-  # ALLOCATE THE DIRECTORY ATOMICALLY. `mkdir` WITHOUT `-p` fails when the directory
-  # already exists, so exactly one caller can win it; `-p` succeeds for both and hands
-  # two audits the same directory. That matters because phase plus a whole-second
-  # timestamp is not unique — two audits of the same phase in one second collide, and
-  # so does the same shell running this block twice — and from a shared directory no
-  # cleanup can be safe, since both audits write exactly `desktop.png`, `mobile.png`
-  # and `tablet.png`. A filename can never establish whose it is; winning the mkdir can.
-  # A PID suffix does NOT solve this: `$$` names the shell, not the invocation, so it is
-  # identical across two runs in one shell and inside command substitution.
+  # ALLOCATE ATOMICALLY: `mkdir` without `-p` fails on an existing name, so exactly one
+  # audit wins it. Phase + whole-second timestamp is not unique, both audits write the
+  # same three filenames, and a PID suffix does not help ($$ is the shell, not the run).
   mkdir -p .planning/ui-reviews 2>/dev/null
   SCREENSHOT_BASE=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
   SCREENSHOT_DIR="$SCREENSHOT_BASE"
   SUFFIX=1
   ALLOC_FAILURE=""
   until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
-    # Retry ONLY a name collision. mkdir also fails when the parent is unwritable,
-    # missing, or a file, or the disk is full — and no suffix cures any of those.
-    # A candidate that failed and still does not exist failed for one of them, so
-    # stop at once instead of asking the same question 99 more times. (An audit
-    # that won this exact name and removed it again between the two calls would
-    # be read as structural too; the outcome on that race is a give-up, never a
-    # shared directory, and the window is two syscalls wide.)
+    # Retry ONLY a name collision. A candidate that failed and still does not exist failed
+    # structurally (parent unwritable/missing/a file, ENOSPC) — no suffix cures that.
     if [ ! -e "$SCREENSHOT_DIR" ]; then
       ALLOC_FAILURE="could not create a review directory under .planning/ui-reviews"
       SCREENSHOT_DIR=""
@@ -212,27 +169,19 @@ if [ -n "$DEV_URL" ]; then
   done
 
   if [ -z "$SCREENSHOT_DIR" ]; then
-    # The allocation loop above gave up. Never fall through: with SCREENSHOT_DIR empty
-    # the capture below would write to /desktop.png, outside the project entirely.
-    # Its own status, not "capture failed": no capture was attempted, and the two
-    # have different remedies (free a name or fix the directory, versus fix the
-    # browser). The report renders $CAPTURE_STATUS, so the distinction has to
-    # live in the VALUE — a detail carried only by this echo never reaches it.
+    # Never fall through: with SCREENSHOT_DIR empty the capture would write to /desktop.png.
+    # Its own status — no capture was attempted, and the remedy differs from "capture failed".
     CAPTURE_STATUS="not captured ($ALLOC_FAILURE)"
     echo "Could not allocate a review directory — $ALLOC_FAILURE — code-only audit"
   else
-    # Capture each viewport from the RESOLVED port, and believe only what the
-    # exit status and the file on disk actually say.
+    # Capture from the RESOLVED port; believe only the exit status and the file on disk.
     CAPTURED=0
     FAILED_SHOTS=""
     for SHOT in "desktop:1440,900" "mobile:375,812" "tablet:768,1024"; do
       SHOT_NAME="${SHOT%%:*}"
       SHOT_VIEWPORT="${SHOT##*:}"
-      # --timeout is not belt-and-braces here: `playwright screenshot` passes it to
-      # context.setDefaultTimeout() and defaults it to 0 — NO timeout — so this CLI path
-      # drops the 30s bound the Playwright library applies everywhere else. Without it a
-      # hung navigation blocks the audit forever, which is the same failure the probe's
-      # AbortSignal.timeout(5000) closes one step earlier.
+      # --timeout is load-bearing: this CLI defaults context.setDefaultTimeout() to 0 (none),
+      # so a hung navigation would block the audit forever.
       if npx playwright screenshot "$DEV_URL" \
            "$SCREENSHOT_DIR/$SHOT_NAME.png" \
            --viewport-size="$SHOT_VIEWPORT" \
@@ -240,26 +189,16 @@ if [ -n "$DEV_URL" ]; then
          && [ -s "$SCREENSHOT_DIR/$SHOT_NAME.png" ]; then
         CAPTURED=$((CAPTURED + 1))
       else
-        # Remove what THIS viewport may have written before scoring it a failure. A
-        # crashed browser commonly leaves a zero-byte or partial .png, which the
-        # `[ -s ]` above correctly refuses to count and which would otherwise sit in
-        # the review directory looking like evidence. Doing it here rather than in
-        # the all-failed branch below is what makes the claim true of a PARTIAL
-        # capture too — two good shots and one stray file was the gap.
-        # By name rather than a `*.png` glob. For this audit's own files the two are
-        # equivalent; the name form additionally leaves alone anything else that happens
-        # to be in the directory. What keeps a CONCURRENT audit's captures safe is the
-        # atomic allocation above, never this line.
+        # Remove what THIS viewport may have written (a crashed browser leaves a zero-byte or
+        # partial png), by name, here — so a PARTIAL capture leaves only real shots behind.
         rm -f "$SCREENSHOT_DIR/$SHOT_NAME.png"
         FAILED_SHOTS="$FAILED_SHOTS $SHOT_NAME"
       fi
     done
 
+    # The VALUE carries what the echo carries: the report template renders $CAPTURE_STATUS
+    # and nothing else.
     if [ "$CAPTURED" -eq 3 ]; then
-      # The VALUE carries what the echo carries — count, failed viewports, port and
-      # status — because the report template renders $CAPTURE_STATUS and nothing else.
-      # docs/AGENTS.md already described the field as naming the viewports that failed;
-      # until this line, only the transient echo did.
       CAPTURE_STATUS="captured (3/3 from $DEV_URL)"
       echo "Screenshots captured to $SCREENSHOT_DIR (3/3) from $DEV_URL"
     elif [ "$CAPTURED" -gt 0 ]; then
@@ -267,28 +206,21 @@ if [ -n "$DEV_URL" ]; then
       echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
     else
       CAPTURE_STATUS="not captured (capture failed for all 3 viewports at $DEV_URL)"
-      # `rm -rf`, not `rmdir`, and the atomic allocation above is what licenses it: this
-      # directory was won by this audit and shared with nobody, so removing it whole
-      # cannot destroy another audit's work. rmdir could not honour the claim — it fails
-      # on any file the capture command wrote under a name this block did not ask for,
-      # leaving both that file and the directory behind while the docs said otherwise.
+      # `rm -rf`, licensed by the atomic allocation: this directory is shared with nobody.
+      # rmdir cannot honour the claim — it fails on any file written under an unasked name.
       rm -rf "$SCREENSHOT_DIR"
       echo "Screenshot capture FAILED for all 3 viewports at $DEV_URL — code-only audit"
     fi
   fi
 elif [ -n "$DEV_NOFETCH" ]; then
-  # Above the answer classes deliberately: with no working probe there IS no
-  # answer to rank, and this is the one outcome that says nothing about the ports.
+  # Above the answer classes: with no working probe there is no answer to rank.
   CAPTURE_STATUS="not captured (cannot probe: node $DEV_NOFETCH has no fetch(); Node 18+ required)"
   echo "Cannot probe for a dev server: node $DEV_NOFETCH has no fetch() — Node 18+ is required — code-only audit"
 elif [ -n "$DEV_GATED" ]; then
   CAPTURE_STATUS="not captured (dev server auth-gated: $DEV_GATED)"
   echo "Dev server at $DEV_GATED is auth-gated — code-only audit"
 elif [ -n "$DEV_OTHER" ]; then
-  # Precedence among the present-but-unusable outcomes: gated, then any other
-  # answer, then a timeout. Each records its own FIRST port; across the three
-  # the more informative answer is reported, since "401" says what to do and
-  # "no answer in 5s" only says something is there.
+  # Precedence by CLASS: gated, then any other status, then timeout — each its own FIRST port.
   CAPTURE_STATUS="not captured (dev server answered, not 2xx: $DEV_OTHER)"
   echo "Dev server at $DEV_OTHER answered but is not serving a page — code-only audit"
 elif [ -n "$DEV_TIMEOUT" ]; then
