@@ -961,8 +961,15 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const dateOverride = env.FIXED_DATE
       ? `date() { printf %s ${JSON.stringify(env.FIXED_DATE)}; }\n`
       : '';
+    // Same mechanism, for COUNTING: a fixture that asserts the allocator gave up early
+    // needs to see how many times it asked, and a wrapper function that delegates to the
+    // real binary is the only observation point that does not change what mkdir does.
+    const mkdirLog = path.join(dir, 'mkdir.log');
+    const mkdirCounter = env.COUNT_MKDIR
+      ? `mkdir() { printf 'mkdir %s\\n' "$*" >> ${JSON.stringify(mkdirLog)}; command mkdir "$@"; }\n`
+      : '';
     fs.writeFileSync(script,
-      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${dateOverride}${screenshotApproachBlock()}\n`
+      `PADDED_PHASE=${env.PADDED_PHASE || '07'}\n${dateOverride}${mkdirCounter}${screenshotApproachBlock()}\n`
       + 'FENCE_RC=$?\n'
       + `printf %s "$CAPTURE_STATUS" > ${JSON.stringify(statusFile)}\n`
       + `printf %s "$FENCE_RC" > ${JSON.stringify(rcFile)}\n`);
@@ -980,13 +987,17 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     });
     const stdout = r.stdout || '';
     const reviews = path.join(dir, '.planning', 'ui-reviews');
-    const shotDirs = fs.existsSync(reviews) ? fs.readdirSync(reviews).sort() : [];
+    // isDirectory, not existsSync: one fixture plants a FILE at this path, and readdir on it throws.
+    const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+    const shotDirs = isDir(reviews) ? fs.readdirSync(reviews).sort() : [];
     const filesIn = (d) => fs.readdirSync(path.join(reviews, d)).sort();
     const argvRaw = fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '';
     const readOut = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null);
     const status = readOut(statusFile);
     const rcRead = readOut(rcFile);
+    const mkdirCalls = fs.existsSync(mkdirLog) ? splitLines(fs.readFileSync(mkdirLog, 'utf8')).filter(Boolean) : [];
     return {
+      mkdirCalls,
       stdout,
       exitCode: rcRead !== null && rcRead !== '' ? Number(rcRead) : r.status,
       stderr: r.stderr || '',
@@ -1150,12 +1161,34 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // string, while the block calls $CAPTURE_STATUS the single source of truth. The
     // remedies differ (free a name or fix the directory, versus fix the browser), so the
     // value has to.
-    assert.strictEqual(r.captureStatus, 'not captured (could not allocate a review directory under .planning/ui-reviews)');
+    assert.strictEqual(r.captureStatus, 'not captured (all 100 candidate names under .planning/ui-reviews/07-20300101-000000 are taken)');
     assert.doesNotMatch(r.stdout, /Screenshots captured/);
     assert.strictEqual(r.invocations.length, 0,
       'nothing may be captured when no directory was allocated — the path would be outside the project');
     assert.strictEqual(fs.readdirSync(reviews).length, 100,
       'the exhausted run must not have created a directory of its own');
+  });
+
+  test('a structural mkdir failure gives up at once, with its own reason, instead of retrying 100 names', () => {
+    // Round-2 nit 6. A parent that is unwritable, missing, or — as here — a FILE fails
+    // every candidate for a reason no suffix cures, and the loop asked 100 times anyway.
+    // A file rather than a permission bit, because chmod is inert on the windows-latest
+    // runner and as root; ENOTDIR is structural everywhere. The count is observed through
+    // the harness's mkdir wrapper, so "gave up at once" is measured rather than inferred
+    // from the absence of directories.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-notdir-'));
+    tmpDirs.push(dir);
+    fs.mkdirSync(path.join(dir, '.planning'));
+    fs.writeFileSync(path.join(dir, '.planning', 'ui-reviews'), 'not a directory');
+    const r = ok(runFence({ PROBE_3000: '200', COUNT_MKDIR: '1' }, dir));
+    assert.strictEqual(r.captureStatus, 'not captured (could not create a review directory under .planning/ui-reviews)');
+    assert.match(r.stdout, /Could not allocate a review directory — could not create/);
+    assert.strictEqual(r.invocations.length, 0, 'nothing may be captured with no directory');
+    // One `mkdir -p` for the parent, one candidate, then stop. Before the fix this was 101.
+    assert.ok(r.mkdirCalls.length <= 2,
+      `the allocator must not retry a structural failure: ${r.mkdirCalls.length} mkdir calls\n${r.mkdirCalls.slice(0, 5).join('\n')}`);
+    assert.strictEqual(fs.readFileSync(path.join(dir, '.planning', 'ui-reviews'), 'utf8'), 'not a directory',
+      'the file standing where the directory should be must be left alone');
   });
 
   test('the last candidate suffix is tried, not skipped', () => {

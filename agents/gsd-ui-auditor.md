@@ -184,12 +184,26 @@ if [ -n "$DEV_URL" ]; then
   # and `tablet.png`. A filename can never establish whose it is; winning the mkdir can.
   # A PID suffix does NOT solve this: `$$` names the shell, not the invocation, so it is
   # identical across two runs in one shell and inside command substitution.
-  mkdir -p .planning/ui-reviews
+  mkdir -p .planning/ui-reviews 2>/dev/null
   SCREENSHOT_BASE=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
   SCREENSHOT_DIR="$SCREENSHOT_BASE"
   SUFFIX=1
+  ALLOC_FAILURE=""
   until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
+    # Retry ONLY a name collision. mkdir also fails when the parent is unwritable,
+    # missing, or a file, or the disk is full — and no suffix cures any of those.
+    # A candidate that failed and still does not exist failed for one of them, so
+    # stop at once instead of asking the same question 99 more times. (An audit
+    # that won this exact name and removed it again between the two calls would
+    # be read as structural too; the outcome on that race is a give-up, never a
+    # shared directory, and the window is two syscalls wide.)
+    if [ ! -e "$SCREENSHOT_DIR" ]; then
+      ALLOC_FAILURE="could not create a review directory under .planning/ui-reviews"
+      SCREENSHOT_DIR=""
+      break
+    fi
     if [ "$SUFFIX" -gt 99 ]; then
+      ALLOC_FAILURE="all 100 candidate names under $SCREENSHOT_BASE are taken"
       SCREENSHOT_DIR=""
       break
     fi
@@ -204,8 +218,8 @@ if [ -n "$DEV_URL" ]; then
     # have different remedies (free a name or fix the directory, versus fix the
     # browser). The report renders $CAPTURE_STATUS, so the distinction has to
     # live in the VALUE — a detail carried only by this echo never reaches it.
-    CAPTURE_STATUS="not captured (could not allocate a review directory under .planning/ui-reviews)"
-    echo "Could not allocate a review directory under .planning/ui-reviews — code-only audit"
+    CAPTURE_STATUS="not captured ($ALLOC_FAILURE)"
+    echo "Could not allocate a review directory — $ALLOC_FAILURE — code-only audit"
   else
     # Capture each viewport from the RESOLVED port, and believe only what the
     # exit status and the file on disk actually say.
