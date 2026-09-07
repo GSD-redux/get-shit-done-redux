@@ -22,8 +22,10 @@ const stateTestProcessSeam = require('./helpers/process-seam.cjs');
 function runToolsWithStderr(args, cwd, env = {}) {
   return stateTestProcessSeam.runNode([stateTestHelpers.TOOLS_PATH, ...args], {
     cwd,
+    // No `timeoutMs`: tests/helpers/process-seam.cjs owns this policy — omitting it
+    // is that module's documented way to take its bounded DEFAULT_TIMEOUT_MS, and a
+    // local copy would be a second place for the same value to drift.
     env: { ...process.env, ...stateTestHelpers.TEST_ENV_BASE, ...env },
-    timeoutMs: 60000,
   });
 }
 const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
@@ -3380,6 +3382,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
 
     // Lift the caller's own `case` block and replace each arm BODY with an echo of
     // its index, leaving every PATTERN byte-identical to what ships.
+    const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
     const armPatterns = (block) => {
       const m = block.match(/case\s+"\$\{ADVANCE_OUT\}"\s+in\r?\n([\s\S]*?)\r?\n\s*esac/);
       assert.ok(m, 'could not locate the case block — the source-text guards above should have caught this first');
@@ -3413,7 +3416,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
         + '\nesac\n';
       for (const [label, payload, want] of EXPECT) {
         const got = execFileSync('bash', ['-c', script, '_', payload],
-          { encoding: 'utf-8', timeout: 30_000 }).trim();
+          { encoding: 'utf-8', timeout: PROBE_TIMEOUT_MS }).trim();
         const expected = want === 'last' ? String(patterns.length - 1) : String(want);
         assert.strictEqual(got, expected,
           `${name}: ${label} matched arm ${got || '(none)'}, expected arm ${expected}. `
