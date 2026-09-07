@@ -381,3 +381,58 @@ test('runtime config writers expose the exact configured entrypoints they emit',
     ['gsd-node-runner.sh', 'gsd-context-monitor.js'],
   );
 });
+
+test('a Codex rollback restores every manifest-tracked GSD file byte-for-byte (#4249 CodeRabbit)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-rollback-'));
+  t.after(() => helpers.cleanup(root));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    const first = install(true, 'codex');
+    const manifestPath = path.join(first.configDir, 'gsd-file-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    // A managed file OUTSIDE the surfaces #3245's snapshot covers (config.toml,
+    // hooks.json, skills/gsd-*, agents/gsd-*, gsd-core/VERSION) — the gap the
+    // manifest-driven snapshot closes.
+    const managedRel = 'gsd-core/CHANGELOG.md';
+    assert.ok(manifest.files[managedRel], `the installer must track ${managedRel} in its manifest`);
+    const managedPath = path.join(first.configDir, managedRel);
+
+    // Stand in for "the bytes the previous install left on disk".
+    const priorBytes = '# bytes only this test wrote\n';
+    fs.writeFileSync(managedPath, priorBytes);
+    const priorManifestBytes = fs.readFileSync(manifestPath);
+
+    const second = install(true, 'codex');
+    assert.notEqual(
+      fs.readFileSync(managedPath, 'utf8'),
+      priorBytes,
+      'the second install must overwrite the managed file, or this test proves nothing',
+    );
+
+    // The exact closure installAllRuntimes invokes (bin/install.js
+    // rollbackFinalizedInstallerMigrations) when assertConfiguredEntrypoints throws.
+    assert.equal(typeof second.rollbackInstallerMigrations, 'function');
+    second.rollbackInstallerMigrations();
+
+    assert.equal(
+      fs.readFileSync(managedPath, 'utf8'),
+      priorBytes,
+      'rollback must restore a manifest-tracked GSD file byte-for-byte, not leave the new payload behind',
+    );
+    assert.deepEqual(
+      fs.readFileSync(manifestPath),
+      priorManifestBytes,
+      'rollback must also restore the manifest itself',
+    );
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    restoreConfigLocationEnv();
+  }
+});
