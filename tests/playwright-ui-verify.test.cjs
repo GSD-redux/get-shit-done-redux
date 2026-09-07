@@ -1091,7 +1091,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: failed,
         SHOT_WRITE: 'desktop mobile tablet' }));
       assert.match(r.stdout, new RegExp(`PARTIALLY captured .*\\(2/3\\).*failed: ?${failed}`));
-      // THE VALUE names the count and the failed viewport, as docs/AGENTS.md said it did.
+      // THE VALUE names the count and the failed viewport, as the agent catalogue in the docs tree already said it did.
       assert.strictEqual(r.captureStatus, `partially captured (2/3 from http://localhost:3000; failed: ${failed})`);
       // Restricting the cleanup to empty files only also passed every earlier fixture,
       // because none paired a failure with a non-empty artefact — a plausible-looking
@@ -1403,4 +1403,250 @@ describe('#4176 — bash reader, units', () => {
     assert.strictEqual(printed.length, modelled.length,
       `bash ran ${printed.length} commands, the reader modelled ${modelled.length}: ${JSON.stringify(modelled)}`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// PROPERTY TESTS for the bash reader (TESTING-STANDARDS.md § Property-based testing tier:
+// a module that parses must carry at least one fast-check property asserting a domain
+// invariant). The reader above is a real parser of shell quoting and control flow, and
+// the 19-category mutant battery that hardened it is example-based: every fixture was
+// written by the same author with the same model of bash, which CONTRIBUTING.md's
+// fixture-provenance rule (#2371) names as the limit of what such a fixture can find.
+//
+// DOCUMENT-SHAPED, NOT WRITER-SEEDED. The generator below produces bash from a grammar of
+// the constructs the block uses — nested if/elif/else, loops, case, two-line `then`,
+// continuations, comments, quoted strings carrying control keywords — and it knows, for
+// every payload line it emits, which conditions enclose it. It is seeded from nothing the
+// reader produces, so it can generate scripts the reader's author never thought to write.
+//
+// TWO ORACLES, and the second is the one that matters. Property 1 checks the reader against
+// the generator's own knowledge of the structure it emitted. Property 2 checks it against
+// BASH: the same script is executed with a random truth assignment for every condition, and
+// a payload must print exactly when the reader says its governing conditions all hold. A
+// reader that agrees with the generator but not with bash is modelling the wrong language.
+// Property 3 puts `caseLabelOf` + `isTwoXxRange` — the pair that decides whether the probe's
+// accept arm is a RANGE — against bash's own `case` matching: a label the pair calls a 2xx
+// range must, when bash runs it, admit 200, 250 and 299 and refuse 199, 300 and 500.
+//
+// Deterministic, per CONTRIBUTING.md: the seed is pinned, the run count is bounded, and
+// fast-check prints the seed, path and counterexample on failure so a run can be replayed.
+// ---------------------------------------------------------------------------
+
+const fc = require('fast-check');
+
+const FC_SEED = 4176;
+
+// The grammar. `payload` is an `echo` carrying a marker `M<id>`; blocks carry bodies. Depth
+// is bounded by the recursion itself (tie: fc.letrec with a depth-limited `oneof`).
+const scriptGen = fc.letrec((tie) => ({
+  payload: fc.record({
+    kind: fc.constant('payload'),
+    // What surrounds the marker: a plain echo, a quoted string carrying control keywords
+    // (the `echo "we do work"` false-fire class), a trailing comment that itself carries
+    // keywords (the `fi # comment` desync class), or a continuation across two lines.
+    dress: fc.constantFrom('plain', 'dq-keywords', 'sq-keywords', 'comment', 'continued', 'hash-in-quotes', 'backslash-space', 'escaped-backslash'),
+  }),
+  ifBlock: fc.record({
+    kind: fc.constant('if'),
+    twoLine: fc.boolean(),                 // `if COND` / `then` on the next line
+    thenTail: fc.boolean(),                // `then :` — a command on the then line itself
+    // minLength 1: bash rejects an empty then/elif/else body and an empty loop body
+    // (`if x; then fi` is a syntax error). A case arm may be empty, so it is not bounded.
+    thenBody: fc.array(tie('node'), { minLength: 1, maxLength: 3 }),
+    elifBody: fc.option(fc.array(tie('node'), { minLength: 1, maxLength: 2 }), { nil: null }),
+    elseBody: fc.option(fc.array(tie('node'), { minLength: 1, maxLength: 2 }), { nil: null }),
+  }),
+  loop: fc.record({ kind: fc.constant('loop'), keyword: fc.constantFrom('for', 'while', 'until'), body: fc.array(tie('node'), { minLength: 1, maxLength: 3 }) }),
+  caseBlock: fc.record({ kind: fc.constant('case'), body: fc.array(tie('node'), { maxLength: 3 }) }),
+  node: fc.oneof({ depthSize: 'small', maxDepth: 3, withCrossShrink: true },
+    tie('payload'), tie('ifBlock'), tie('loop'), tie('caseBlock')),
+  script: fc.array(tie('node'), { minLength: 1, maxLength: 5 }),
+}));
+
+// Render a generated tree to bash lines, recording for each marker the guard stack the
+// reader is expected to report — `''` for a loop or case scope, the condition text for an
+// `if`, the elif's own text for an elif body, and `!(cond)` for an else body. This mirrors
+// the reader's MODEL of governance (which condition text governs a line), which is not the
+// same as bash's execution semantics for elif; property 2 therefore generates no elif.
+function render(tree, opts) {
+  const lines = [];
+  const expect = [];   // { id, guards, exec } — exec: does bash run this line under `truth`?
+  let nextCond = 0;
+  let nextId = 0;
+  let nextLoop = 0;
+  const conds = [];    // condition text per index, so property 2 can assign truth values
+  const emit = (depth, text) => lines.push(`${'  '.repeat(depth)}${text}`);
+  const walk = (node, depth, guards, exec) => {
+    if (node.kind === 'payload') {
+      const id = nextId++;
+      const m = `M${id}`;
+      switch (node.dress) {
+        case 'plain': emit(depth, `echo "${m}"`); break;
+        case 'dq-keywords': emit(depth, `echo "if then else fi do done case esac ${m}"`); break;
+        case 'sq-keywords': emit(depth, `echo 'fi; done; esac ${m}'`); break;
+        case 'comment': emit(depth, `echo "${m}" # fi done esac if then`); break;
+        case 'hash-in-quotes': emit(depth, `echo "${m} # not a comment"`); break;
+        case 'continued': emit(depth, `echo \\`); emit(depth + 1, `"${m}"`); break;
+        // Backslash, SPACE, newline: escapes the space, ends the line. A reader that trims
+        // before it looks for the backslash joins the NEXT line into this echo.
+        case 'backslash-space': emit(depth, `echo "${m}" \\ `); break;
+        // An escaped backslash at the end of a complete line.
+        case 'escaped-backslash': emit(depth, `echo "${m}" \\\\`); break;
+        default: throw new Error(`unknown dress ${node.dress}`);
+      }
+      expect.push({ id, guards: guards.slice(), exec });
+      return;
+    }
+    if (node.kind === 'loop') {
+      // Every loop runs its body exactly ONCE, on a variable of its own: a shared one
+      // would let an outer loop's termination stop an inner loop before its first pass.
+      const v = `L${nextLoop++}`;
+      const header = node.keyword === 'for' ? 'for x in 1; do'
+        : node.keyword === 'while' ? `while [ "\${${v}:-0}" = 0 ]; do`
+          : `until [ "\${${v}:-0}" = 1 ]; do`;
+      emit(depth, header);
+      if (node.keyword !== 'for') emit(depth + 1, `${v}=1`);
+      for (const child of node.body) walk(child, depth + 1, [...guards, ''], exec);
+      emit(depth, 'done');
+      return;
+    }
+    if (node.kind === 'case') {
+      emit(depth, 'case x in');
+      emit(depth + 1, '*)');
+      for (const child of node.body) walk(child, depth + 2, [...guards, ''], exec);
+      emit(depth + 1, ';;');
+      emit(depth, 'esac');
+      return;
+    }
+    // if
+    const ci = nextCond++;
+    const cond = `[ "$C${ci}" = 1 ]`;
+    conds.push(cond);
+    const truth = opts.truth ? Boolean(opts.truth[ci]) : true;
+    if (node.twoLine) { emit(depth, `if ${cond}`); emit(depth, node.thenTail ? 'then :' : 'then'); }
+    else emit(depth, `if ${cond}; then`);
+    for (const child of node.thenBody) walk(child, depth + 1, [...guards, cond], exec && truth);
+    let taken = truth;
+    let top = cond;   // what the reader's stack holds for this scope when `else` arrives
+    if (node.elifBody !== null && !opts.noElif) {
+      const ei = nextCond++;
+      const econd = `[ "$C${ei}" = 1 ]`;
+      conds.push(econd);
+      const etruth = opts.truth ? Boolean(opts.truth[ei]) : true;
+      emit(depth, `elif ${econd}; then`);
+      for (const child of node.elifBody) walk(child, depth + 1, [...guards, econd], exec && !taken && etruth);
+      taken = taken || etruth;
+      top = econd;    // the elif's OWN condition — not whatever a nested `if` pushed last
+    }
+    if (node.elseBody !== null) {
+      // The reader models `else` as the negation of whatever condition is on top of its
+      // stack at that point — the elif's when one was emitted, the if's otherwise.
+      emit(depth, 'else');
+      for (const child of node.elseBody) walk(child, depth + 1, [...guards, `!(${top})`], exec && !taken);
+    }
+    emit(depth, 'fi');
+  };
+  for (const node of tree) walk(node, 0, [], true);
+  return { lines, expect, conds };
+}
+
+const markerOf = (line) => { const m = /\bM(\d+)\b/.exec(line); return m ? Number(m[1]) : null; };
+
+describe('#4176 — bash reader, property-based (fast-check)', () => {
+  test('property: the guards the reader reports are the guards the generator wrote', () => {
+    fc.assert(
+      fc.property(scriptGen.script, (tree) => {
+        const { lines, expect } = render(tree, {});
+        const rows = guardedLines(lines);
+        const seen = new Map();
+        for (const row of rows) {
+          const id = markerOf(row.line);
+          if (id !== null) seen.set(id, row.guards);
+        }
+        for (const e of expect) {
+          assert.ok(seen.has(e.id), `marker M${e.id} was not reported as a governed line\n${lines.join('\n')}`);
+          assert.deepStrictEqual(seen.get(e.id), e.guards,
+            `marker M${e.id}: reader guards ${JSON.stringify(seen.get(e.id))} != expected ${JSON.stringify(e.guards)}\n${lines.join('\n')}`);
+        }
+        assert.strictEqual(seen.size, expect.length, `reader reported ${seen.size} markers for ${expect.length} payloads`);
+      }),
+      { seed: FC_SEED, numRuns: 200 }
+    );
+  });
+
+  test('property: a payload prints under bash exactly when the reader says its guards all hold',
+    { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+      fc.assert(
+        fc.property(scriptGen.script, fc.array(fc.boolean(), { maxLength: 64 }), (tree, truth) => {
+          const { lines, expect, conds } = render(tree, { truth, noElif: true });
+          const rows = guardedLines(lines);
+          // Evaluate the reader's guards under the same truth assignment.
+          const evalGuard = (g) => {
+            if (g === '') return true;
+            const neg = /^!\((.*)\)$/.exec(g);
+            const body = neg ? neg[1] : g;
+            const m = /\$C(\d+)/.exec(body);
+            assert.ok(m, `unrecognised guard ${JSON.stringify(g)}`);
+            const v = Boolean(truth[Number(m[1])]);
+            return neg ? !v : v;
+          };
+          const predicted = new Set();
+          for (const row of rows) {
+            const id = markerOf(row.line);
+            if (id !== null && row.guards.every(evalGuard)) predicted.add(id);
+          }
+          const env = {};
+          conds.forEach((c, i) => { env[`C${i}`] = truth[i] ? '1' : '0'; });
+          const r = spawnSync('bash', ['-c', lines.join('\n')], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 15000 });
+          assert.strictEqual(r.status, 0, `bash rejected a generated script — the generator is wrong, not the reader:\n${lines.join('\n')}\n${r.stderr}`);
+          const printed = new Set([...r.stdout.matchAll(/\bM(\d+)\b/g)].map((m) => Number(m[1])));
+          assert.deepStrictEqual([...predicted].sort((a, b) => a - b), [...printed].sort((a, b) => a - b),
+            `reader predicted ${JSON.stringify([...predicted])} but bash printed ${JSON.stringify([...printed])}\n${lines.join('\n')}`);
+          // And the expectation is consistent with bash too — a check on the oracle's oracle.
+          const expected = expect.filter((e) => e.exec).map((e) => e.id).sort((a, b) => a - b);
+          assert.deepStrictEqual([...printed].sort((a, b) => a - b), expected, 'generator exec model disagrees with bash');
+        }),
+        { seed: FC_SEED, numRuns: 60 }
+      );
+    });
+
+  test('property: the reader and bash agree on whether a case label admits the 2xx range',
+    { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+      // SHAPE-AWARE, because a character-soup alphabet almost never produces a label the
+      // reader calls a range, and a property that never reaches its oracle is vacuous —
+      // the first version of this test ran 300 cases in 2ms and killed no mutant. Every
+      // piece here is legal bash on its own (balanced quotes), so the composition is a
+      // label bash can run, and the interesting ones — an escaped `?`, a quoted digit, a
+      // leading `(`, whitespace at either edge, a second pattern — are the majority.
+      const ws = fc.constantFrom('', ' ', '\t', '  ');
+      const lead = fc.constantFrom('2', '"2"', "'2'", '\\2', '3', '"3"', '20');
+      const tail = fc.constantFrom('??', '\\?\\?', '?\\?', '\\??', '"??"', '"?"?', '?"?"', '[0-9][0-9]', '"[0-9]"[0-9]', '*', '"*"', '\\*', '', '?');
+      const extra = fc.constantFrom('', '|3??', '|401', '| 401 ', '|"x y"', '|2??', '|"2"??');
+      const labelGen = fc.tuple(fc.constantFrom('', '('), ws, lead, tail, ws, extra).map((parts) => parts.join(''));
+      let reached = 0;
+      fc.assert(
+        fc.property(labelGen, (labelText) => {
+          const label = caseLabelOf(`${labelText}) DEV_URL=x ;;`);
+          assert.ok(label !== null, `every generated label is legal bash, so the reader must parse it: ${JSON.stringify(labelText)}`);
+          const claimed = label.some(isTwoXxRange);
+          const script = 'for s in 200 250 299 199 300 500; do case "$s" in ' + labelText + ') printf Y;; *) printf N;; esac; done';
+          const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 15000 });
+          assert.strictEqual(r.status, 0, `bash cannot run the generated label ${JSON.stringify(labelText)}: ${r.stderr}`);
+          reached += 1;
+          const admitsAll2xx = r.stdout.slice(0, 3) === 'YYY';
+          const refusesOthers = r.stdout.slice(3) === 'NNN';
+          // SOUNDNESS, every label: a claimed range admits the whole 2xx range under bash.
+          if (claimed) assert.ok(admitsAll2xx, `the reader called ${JSON.stringify(labelText)} a 2xx range; bash matched 200,250,299 as ${r.stdout.slice(0, 3)}`);
+          // The full agreement, single-pattern labels: on these shapes the reader's verdict
+          // IS bash's verdict, in both directions. A second pattern is excluded only because
+          // `some(isTwoXxRange)` deliberately says nothing about what the OTHER pattern admits.
+          if (label.length === 1) {
+            assert.strictEqual(claimed, admitsAll2xx && refusesOthers,
+              `${JSON.stringify(labelText)}: reader says ${claimed ? 'range' : 'not a range'}, bash matched 200,250,299,199,300,500 as ${r.stdout}`);
+          }
+        }),
+        { seed: FC_SEED, numRuns: 250 }
+      );
+      assert.ok(reached >= 200, `the property reached its bash oracle only ${reached} times — vacuous`);
+    });
 });
