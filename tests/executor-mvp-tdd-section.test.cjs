@@ -343,6 +343,11 @@ describe('bug #4254: sequential executor supplied-root pin', () => {
       const primaryName = escapeRegex(path.basename(primary));
       assert.match(res.stderr, new RegExp(`Actual root:[^\\n]*${primaryName}`), 'FATAL must name the actual (wrong) root');
       assert.doesNotMatch(res.stderr, new RegExp(`Actual root:[^\\n]*orchestrator-wt`), 'the actual root must NOT be the pinned lane');
+      // The FATAL self-describes its stage (and, on capture failures, git's own
+      // stderr) — the discriminator whose absence let this class of failure read
+      // as "capture returns empty" when the form gate was what fired on Windows.
+      assert.match(res.stderr, /Guard stage: root-mismatch/, 'drifted cwd is a root mismatch, not a capture or form failure');
+      assert.match(res.stderr, /Diagnostic: actual=.*pinned=.*superproject=<none>/, 'the mismatch diagnostic names both roots and the absent superproject');
     } finally {
       cleanup(primary);
     }
@@ -369,11 +374,13 @@ describe('bug #4254: sequential executor supplied-root pin', () => {
         interpreter: 'bash', cwd: lane, timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
       });
       assert.equal(unexpanded.exitCode, 1, 'an unexpanded {PINNED_ROOT} must halt');
+      assert.match(unexpanded.stderr, /Guard stage: pin-unbound/, 'an unexpanded pin halts at the pin-unbound stage');
       // Empty: substituted to nothing — indistinguishable from a forgotten transplant.
       const empty = runHook('-c', [composeGuard("''") + `\nprintf 'W' > ${shellQuote(marker)}`], {
         interpreter: 'bash', cwd: lane, timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
       });
       assert.equal(empty.exitCode, 1, 'an empty pin must halt');
+      assert.match(empty.stderr, /Guard stage: pin-unbound/, 'an empty pin halts at the pin-unbound stage');
       assert.equal(fs.existsSync(marker), false);
     } finally {
       cleanup(primary);
@@ -461,28 +468,43 @@ describe('bug #4254: sequential executor supplied-root pin', () => {
     }
   });
 
-  test('#4254: relative pin is rejected; git-emitted Windows drive-letter form passes the form gate', () => {
+  test('#4254: relative pin is rejected; Windows drive-letter forms pass the form gate and fail only at the git lookup', () => {
     const { primary, lane } = makeOrchestratorLane('gsd-4254-forms-');
     try {
-      // Relative pins are never trustworthy across cwds — rejected outright.
-      assert.equal(runPinGuard(lane, 'relative/path').exitCode, 1);
-      // The drive-letter forms Windows produces must pass the guard's
-      // absolute-form gate (shell `case` semantics, exercised filesystem-free)
-      // and then fail only on the git lookup — never on the form rejection:
-      // the forward-slash form git EMITS (C:/…) and the backslash form Node's
-      // path.join and cmd.exe PRODUCE (C:\…, including RUNNER~1-style short
-      // names). #4296 review precedent (Minor 2) + the CI-found defect where a
-      // backslash pin was rejected before the actual root was ever computed.
-      for (const driveForm of ['C:/Users/runneradmin/repo', 'C:\\Users\\RUNNER~1\\repo']) {
-        const formGate = runHook(
-          '-c',
-          [`case '${driveForm.replace(/'/g, `'\\''`)}' in /*|[A-Za-z]:/*|[A-Za-z]:\\\\*) echo FORM_OK;; *) echo FORM_REJECT;; esac`],
-          { interpreter: 'bash', cwd: lane, timeoutMs: HOOK_FANOUT_TIMEOUT_MS },
+      // Relative pins are never trustworthy across cwds — rejected outright,
+      // and the FATAL says so at the form-gate stage.
+      const rel = runPinGuard(lane, 'relative/path');
+      assert.equal(rel.exitCode, 1);
+      assert.match(rel.stderr, /Guard stage: form-gate/, 'a relative pin must halt at the form gate');
+      // The drive-letter forms Windows produces must be ACCEPTED by the shipped
+      // guard's absolute-form gate and then fail only on the git lookup — never
+      // on the form rejection: the forward-slash form git EMITS (C:/…) and the
+      // backslash form Node's path.join and cmd.exe PRODUCE (C:\…, including
+      // RUNNER~1-style short names). The Guard stage line is the discriminator:
+      // pinned-capture means the form passed and `git -C` spoke (its stderr rides
+      // the Diagnostic line), form-gate means the gate ate the pin — the exact
+      // CI defect where every backslash pin died before the actual root was ever
+      // computed. Driving the SHIPPED guard also removes the hand-rolled
+      // duplicate `case` this row used to carry (the #4296 Minor 1 duplication
+      // smell, and itself a transit-fragile copy of the broken pattern).
+      for (const driveForm of ['C:/definitely/not/a/repo', 'C:\\definitely\\not\\a\\repo']) {
+        const res = runPinGuard(lane, driveForm);
+        assert.equal(res.exitCode, 1, `nonexistent drive-letter pin must fail closed (${driveForm})`);
+        assert.match(
+          res.stderr, /Guard stage: pinned-capture/,
+          `drive form ${driveForm} must pass the form gate and halt at the pinned-capture stage, got:\n${res.stderr}`,
         );
-        assert.equal(formGate.stdout.trim(), 'FORM_OK', `drive form ${driveForm} must pass the form gate`);
+        assert.match(res.stderr, /Diagnostic: git -C <pinned root> rev-parse --show-toplevel failed:/, 'the capture failure carries git stderr');
       }
-      assert.equal(runPinGuard(lane, 'C:/definitely/not/a/repo').exitCode, 1, 'nonexistent drive-letter pin must fail closed');
-      assert.equal(runPinGuard(lane, 'C:\\definitely\\not\\a\\repo').exitCode, 1, 'nonexistent backslash drive pin must fail closed');
+      // Transit hardening, pinned on the shipped text itself: the guard must
+      // generate its backslash comparator at RUNTIME (printf octal) and must not
+      // contain a doubled backslash anywhere — a backslash written twice does
+      // not survive the Windows command-line round-trip into bash (it arrives
+      // halved, rewriting any escape pattern that relies on it). Two earlier
+      // pattern spellings failed the Windows CI leg on exactly this.
+      const guardBody = extractPinGuard();
+      assert.doesNotMatch(guardBody, /\\\\/, 'the shipped guard must contain no doubled backslash (Windows transit halves it)');
+      assert.match(guardBody, /printf '\\134'/, 'the drive-form gate must generate its backslash comparator at runtime');
     } finally {
       cleanup(primary);
     }
