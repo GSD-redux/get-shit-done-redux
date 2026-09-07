@@ -73,6 +73,51 @@ for (const scenario of cases) {
 }
 ```
 
+## Named Timeout Constants, Not Ad Hoc Literals
+
+A bare numeric `timeout`/`timeoutMs` guessed per call site can silently drift from — or worse,
+exactly collide with — an unrelated timeout somewhere else. That collision is not hypothetical: a
+test's outer subprocess-wait timeout once matched a worker's own inner `npm view` timeout exactly
+(both hardcoded to `15000`), so a slow response raced two SIGKILLs at the same instant and lost —
+only on Windows CI, only intermittently. See [`TESTING-STANDARDS.md` — "No ad hoc timeout
+literals"](TESTING-STANDARDS.md#no-ad-hoc-timeout-literals) for the full incident and
+`local/no-adhoc-timeout-literal` for the lint rule that now catches this.
+
+**Non-compliant — a guessed literal with no relationship to what it's actually bounding:**
+
+```javascript
+test('worker run leaves a valid cache', (t) => {
+  const r = runHookSeam(WORKER_PATH, [], { timeoutMs: 15000 }); // why 15000? nobody knows
+  assert.equal(r.exitCode, 0);
+});
+```
+
+**Compliant — reuse a shared class-norm constant when the call is the same class of subprocess:**
+
+```javascript
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+test('gsd-tools reports the resolved config', (t) => {
+  const r = runNode([TOOLS_PATH, 'config', '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+  assert.equal(r.exitCode, 0);
+});
+```
+
+**Compliant — a genuinely distinct class: name it, and size it relative to what it wraps:**
+
+```javascript
+const { NPM_VIEW_TIMEOUT_MS } = require('../gsd-core/bin/check-latest-version.cjs');
+
+// Real headroom beyond the inner timeout the worker itself is bounded by — not a
+// second independent guess. See TESTING-STANDARDS.md's "No ad hoc timeout literals".
+const WORKER_TEARDOWN_MARGIN_MS = 10_000;
+
+test('worker run leaves a valid cache', (t) => {
+  const r = runHookSeam(WORKER_PATH, [], { timeoutMs: NPM_VIEW_TIMEOUT_MS + WORKER_TEARDOWN_MARGIN_MS });
+  assert.equal(r.exitCode, 0);
+});
+```
+
 ## Parser Adversarial Fixtures
 
 Parser tests should cover malformed input and real-world file messiness. Prefer named fixtures under `tests/fixtures/adversarial/<type>/` when the input is reusable.
