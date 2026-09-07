@@ -1245,7 +1245,7 @@ Code review found issues. Consider running:
 
 **Error handling:** If the Skill invocation fails or throws, catch the error, display "Code review encountered an error (non-blocking): {error}" and proceed to gate dispatch. Review failures must never block execution.
 
-**Execute:post gate hook dispatch.** After code review, dispatch all active gate hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "gate"`. ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`. For each, run the form below, or — for a `predicate` gate (ADR-2008 / #2008) — `gsd_run check predicate --predicate '<predicate JSON>' --phase-number "${PHASE_NUMBER}" --raw`:
+**Execute:post gate hook dispatch.** After code review, dispatch all active gate hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "gate"`. ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`. For each, run the form below, or — for a `predicate` gate (ADR-2008 / #2008) — `gsd_run check predicate --predicate '<predicate JSON>' --phase-number "${PHASE_NUMBER}" --phase-dir "${PHASE_DIR}" --raw`:
 
 ```bash
 GATE_RESULT=$(gsd_run check ${hook.check.query} "${PHASE_NUMBER}" --raw)
