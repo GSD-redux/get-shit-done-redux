@@ -1283,6 +1283,55 @@ describe('init plan-phase zero-padded phase number (bug #2391)', () => {
     assert.strictEqual(output.branch_name, 'gsd/phase-01-foundation',
       'branch_name must use normalized phase number (strip project_code prefix, zero-pad), not raw phase_number');
   });
+
+  // ── #4126: an empty phase_slug must not degrade branch_name to the literal "phase" ──
+  // Two independent routes reach an empty slug. Route 2: the name resolves but
+  // lies outside transliterateForSlug's Cyrillic scope (CJK → ''). Route 1: the
+  // directory has no name segment at all (`07` → phase_name null, phase_slug
+  // null). Both used to render `gsd/phase-NN-phase` beside `phase_slug: null`
+  // in the same payload; both now drop the {slug} segment instead.
+  test('#4126: branch_name drops the {slug} segment for a CJK-named phase whose slug is empty', () => {
+    seedPhase(tmpDir, '08-日本語のテスト', { '08-01-PLAN.md': '# Plan' });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        git: {
+          branching_strategy: 'phase',
+          phase_branch_template: 'gsd/phase-{phase}-{slug}',
+        },
+      }, null, 2)
+    );
+
+    const result = runGsdTools('init execute-phase 8', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_name, '日本語のテスト');
+    assert.strictEqual(output.phase_slug, null);
+    assert.strictEqual(output.branch_name, 'gsd/phase-08',
+      'branch_name must carry no slug when phase_slug is null — never the placeholder "phase"');
+  });
+
+  test('#4126: branch_name drops the {slug} segment for a phase directory with no name segment', () => {
+    seedPhase(tmpDir, '07', { '07-01-PLAN.md': '# Plan' });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        git: {
+          branching_strategy: 'phase',
+          phase_branch_template: 'gsd/phase-{phase}-{slug}',
+        },
+      }, null, 2)
+    );
+
+    const result = runGsdTools('init execute-phase 7', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_found, true);
+    assert.strictEqual(output.phase_slug, null);
+    assert.strictEqual(output.branch_name, 'gsd/phase-07');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

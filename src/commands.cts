@@ -23,7 +23,7 @@ import coreUtilsMod = require('./core-utils.cjs');
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId, renderPhaseBranchName } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
@@ -1648,9 +1648,17 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       if (phaseNum && !isSentinelPhaseId(phaseNum)) {
         const phaseInfo = findPhaseInternal(cwd, phaseNum) as Record<string, unknown> | null;
         if (phaseInfo) {
-          branchName = (config['phase_branch_template'] as string)
-            .replace('{phase}', normalizePhaseName(phaseInfo['phase_number']))
-            .replace('{slug}', (phaseInfo['phase_slug'] as string) || 'phase');
+          // #4126: shared renderer (phase-id.cts) — the same call init.cts's
+          // `branch_name` makes, so `query commit` and `init execute-phase`
+          // compute one name for one phase. An empty slug drops the `{slug}`
+          // segment (`gsd/phase-08`) instead of substituting the literal
+          // 'phase'; null (nothing left to name) falls through to no branch,
+          // exactly as a not-found phase does above.
+          branchName = renderPhaseBranchName(
+            config['phase_branch_template'] as string,
+            phaseInfo['phase_number'],
+            phaseInfo['phase_slug'],
+          );
         }
       }
     } else if (branchingStrategy === 'milestone') {

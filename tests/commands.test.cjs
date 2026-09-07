@@ -1688,6 +1688,72 @@ describe('commit command', () => {
     assert.ok(committedFile.includes('# Context'), 'phase commit must land on the phase branch');
   });
 
+  test('#4126: a CJK-named phase (empty slug) commits onto gsd/phase-08, never the literal gsd/phase-08-phase', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    // The name resolves (the tool displays it back) but lies entirely outside
+    // transliterateForSlug's Cyrillic scope, so generateSlugInternal yields ''.
+    const phaseDir = '08-日本語のテスト';
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', phaseDir), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', phaseDir, '08-CONTEXT.md'), '# Context\n');
+
+    const result = runGsdTools(
+      ['commit', 'docs(08): add context', '--files', `.planning/phases/${phaseDir}/08-CONTEXT.md`],
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).committed, true, 'should have committed');
+
+    const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(branch, 'gsd/phase-08',
+      '#4126: the {slug} segment is dropped, not replaced with the placeholder "phase"');
+    assert.ok(!/-phase$/.test(branch), `branch must not end in the literal placeholder: ${branch}`);
+  });
+
+  test('#4126: query commit and init execute-phase compute the SAME branch name for an empty-slug phase', () => {
+    // Parity: the two call sites used to inline the same expression; they now
+    // share one renderer. Assert the JSON-reported branch_name equals the
+    // branch the commit actually created, and that the payload is consistent
+    // (phase_slug null beside a branch_name that carries no slug).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    const phaseDir = '08-日本語のテスト';
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', phaseDir), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', phaseDir, '08-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# state\n');
+
+    const init = runGsdTools('init execute-phase 08', tmpDir);
+    assert.ok(init.success, `init execute-phase failed: ${init.error}`);
+    const initOut = JSON.parse(init.output);
+    assert.strictEqual(initOut.phase_found, true);
+    assert.strictEqual(initOut.phase_name, '日本語のテスト', 'the name resolved — the tool displays it back');
+    assert.strictEqual(initOut.phase_slug, null, 'the producer honestly reports no slug');
+    assert.strictEqual(initOut.branch_name, 'gsd/phase-08',
+      'branch_name must not imply a slug the same payload reports as null');
+
+    const commit = runGsdTools(
+      ['commit', 'docs(08): add plan', '--files', `.planning/phases/${phaseDir}/08-01-PLAN.md`],
+      tmpDir
+    );
+    assert.ok(commit.success, `commit failed: ${commit.error}`);
+    assert.strictEqual(JSON.parse(commit.output).committed, true);
+    const created = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(created, initOut.branch_name,
+      '#4126: query commit must create exactly the branch init execute-phase reported');
+  });
+
   test('decimal phase numbers are captured correctly in branching strategy', () => {
     // Configure phase branching strategy
     fs.writeFileSync(

@@ -370,6 +370,64 @@ function normalizePhaseName(phase: unknown): string {
   return str;
 }
 
+// #4126: the single owner of `{phase}` / `{slug}` substitution into a
+// phase-branch template. `cmdCommit`'s phase-branching arm (commands.cts) and
+// `cmdInitExecutePhase`'s `branch_name` (init.cts) used to inline the same two
+// `.replace()` calls with `|| 'phase'` as the empty-slug fallback, so a phase
+// whose slug could not be derived — a directory with no name segment (`07`),
+// or a name entirely outside `transliterateForSlug`'s Cyrillic scope (CJK,
+// Greek, Arabic, Hebrew, Devanagari all collapse to '') — was branched onto the
+// literal `gsd/phase-07-phase`: non-identifying, indistinguishable from a
+// phase genuinely named "Phase", and self-contradictory beside the honest
+// `phase_slug: null` the same `init execute-phase` payload reports.
+// `generateSlugInternal` (#3896 / ADR-3473 §8.3) returns that falsy value on
+// purpose to say "no slug"; this renderer carries the answer through instead
+// of papering over it.
+//
+// Empty slug → the `{slug}` token is DROPPED together with ONE adjacent
+// separator, so the default template renders `gsd/phase-08`: still unique per
+// phase, visibly nameless rather than falsely named, and still a string — the
+// execute-phase workflow's handle_branching step feeds `branch_name` straight
+// into `git checkout -b` and has no null arm, so refusing outright would trade
+// a misleading name for a broken checkout. Which separator goes: the one
+// BEFORE the token, unless that one is a `/` and a non-slash separator follows
+// — `/` is a ref-hierarchy boundary, not a word joiner, so
+// `feature/{slug}-phase-{phase}` must render `feature/phase-08`, never
+// `feature-phase-08` (adversarial review of this fix, 2026-09-03). A `/` is
+// still dropped when it is the only candidate (`gsd/phase-{phase}/{slug}` →
+// `gsd/phase-08`), because a trailing slash is not a valid ref — and a run of
+// slashes the drop leaves behind (`feature/{slug}-/{phase}` → `feature//08`)
+// is collapsed to one for the same reason. Only the FIRST `{slug}` is
+// substituted, matching the `.replace(string, …)` semantics both call sites
+// had; a truthy number is stringified, as `.replace` did (`phase_slug` is only
+// ever a string or null in practice — the coercion exists so the helper never
+// SILENTLY widens the empty-slug arm).
+// Returns null only when nothing is left to name (a template that was `{slug}`
+// alone) — the same "do not branch" signal a not-found phase already yields at
+// both sites. `{project}` is deliberately NOT handled here: only init.cts
+// substitutes it (#904), and that asymmetry is that site's own, not part of
+// the shared seam.
+const BRANCH_TEMPLATE_SLUG_TOKEN = '{slug}';
+const BRANCH_TEMPLATE_SEPARATOR_RE = /[-_./]/;
+
+function renderPhaseBranchName(template: string, phaseNumber: unknown, phaseSlug: unknown): string | null {
+  const withPhase = template.replace('{phase}', normalizePhaseName(phaseNumber));
+  const slug = typeof phaseSlug === 'string' ? phaseSlug : (typeof phaseSlug === 'number' && phaseSlug ? String(phaseSlug) : '');
+  if (slug) return withPhase.replace(BRANCH_TEMPLATE_SLUG_TOKEN, slug) || null;
+  const at = withPhase.indexOf(BRANCH_TEMPLATE_SLUG_TOKEN);
+  if (at === -1) return withPhase || null;
+  let before = withPhase.slice(0, at);
+  let after = withPhase.slice(at + BRANCH_TEMPLATE_SLUG_TOKEN.length);
+  const prevSep = before && BRANCH_TEMPLATE_SEPARATOR_RE.test(before[before.length - 1]) ? before[before.length - 1] : '';
+  const nextSep = after && BRANCH_TEMPLATE_SEPARATOR_RE.test(after[0]) ? after[0] : '';
+  if (prevSep && (prevSep !== '/' || !nextSep)) {
+    before = before.slice(0, -1);
+  } else if (nextSep) {
+    after = after.slice(1);
+  }
+  return (before + after).replace(/\/{2,}/g, '/') || null;
+}
+
 function getMilestoneFromPhaseId(phaseId: unknown, convention?: string): string | null {
   // READING-B (#612): under the bracket convention the milestone comes from the
   // `[PROJECT.MM]` / `{CODE}.{MM}-` prefix, never the phase-token leading
@@ -1507,6 +1565,7 @@ export = {
   bracketQualifiedKey,
   stripProjectCodePrefix,
   normalizePhaseName,
+  renderPhaseBranchName,
   getMilestoneFromPhaseId,
   getPhaseDirFromPhaseId,
   parsePhaseId,

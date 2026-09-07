@@ -97,7 +97,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
+const { comparePhaseNum, normalizePhaseName, renderPhaseBranchName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -971,10 +971,18 @@ function cmdInitExecutePhase(
 
     branch_name:
       config.branching_strategy === 'phase' && phaseInfo
-        ? (config.phase_branch_template as string)
-            .replace('{project}', (config.project_code as string) || '')
-            .replace('{phase}', normalizePhaseName(phaseInfo['phase_number']))
-            .replace('{slug}', (phaseInfo['phase_slug'] as string) || 'phase')
+        // #4126: shared renderer (phase-id.cts) — the same call cmdCommit's
+        // phase-branching arm makes, so this field and the branch `query
+        // commit` actually creates agree by construction. An empty slug drops
+        // the `{slug}` segment (`gsd/phase-08`) instead of the literal 'phase'
+        // that contradicted the `phase_slug: null` emitted two fields above.
+        // `{project}` stays substituted here, at this site only (#904).
+        ? renderPhaseBranchName(
+            (config.phase_branch_template as string)
+              .replace('{project}', (config.project_code as string) || ''),
+            phaseInfo['phase_number'],
+            phaseInfo['phase_slug'],
+          )
         : config.branching_strategy === 'milestone'
           ? (config.milestone_branch_template as string)
               .replace('{milestone}', (milestone['version'] as string | undefined) ?? '')
