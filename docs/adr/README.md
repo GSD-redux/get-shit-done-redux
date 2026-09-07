@@ -286,8 +286,8 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-3646](3646-per-task-content-resolution-seam.md) | Per-task external-tracker content-resolution seam | Proposed | — |
 | [ADR-3889](3889-process-exit-contract.md) | One exit-code registry — 0 and 1 are free, everything else is allocated | Proposed | — |
 | [ADR-3942](3942-emitted-drift-ack-commit-trailer.md) | The emitted-drift acknowledgment is PR-lifetime data — it belongs in a commit trailer, not the working tree | Proposed | — |
-| [ADR-4139](4139-compact-content-seam.md) | The compact-content seam — shrink the eager window, never the guarantee | Proposed | — |
 | [ADR-4030](4030-typed-loop-invocation-context.md) | Typed invocation context on `loop render-hooks` | Proposed | — |
+| [ADR-4139](4139-compact-content-seam.md) | The compact-content seam — shrink the eager window, never the guarantee | Proposed | — |
 
 ### Superseded, Retired, and Legacy
 
