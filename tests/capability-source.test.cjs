@@ -1991,3 +1991,165 @@ describe('#3514 F21b — non-https tarball spec fails with a named reason', () =
     assert.strictEqual(calls, 0, 'the transport is never called for a plaintext URL');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3929 — install-time cross-capability validation seeding
+//
+// `stageValidated` used to seed the cross-capability suite with a map holding ONLY the candidate
+// (`new Map([[id, cap]])`), so every invariant resolved by map membership was either unsatisfiable
+// (`requires`, concrete `runtimeCompat` ids) or vacuous (ownership, cycles, tier-monotone). The
+// loader (`loadRegistry`) seeds first-party ∪ accepted overlays; these cases pin install-time
+// validation to that same universe. All fixtures use tier `full` because `tdd` is tier `full` and
+// tier-monotone — now actually reachable — forbids a lower tier requiring a higher one.
+// ---------------------------------------------------------------------------
+
+describe('regressions — #3929 install-time cross-capability validation set', () => {
+  let gsdHome = '';
+  let globalHome = '';
+  let priorGsdHome;
+  const capDirs = [];
+
+  /** A tier-`full` feature manifest, the tier a capability requiring `tdd` must declare. */
+  function fullCap(id, extra = {}) {
+    return featureCap(id, { tier: 'full', ...extra });
+  }
+
+  /** Install `cap` into `scopeHome`'s overlay root as an already-present bundle. */
+  function seedInstalled(id, contents, scopeHome = gsdHome) {
+    const dir = path.join(scopeHome, '.gsd', 'capabilities', id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'capability.json'), contents, 'utf8');
+    return dir;
+  }
+
+  /** Write a `scopeHome` ledger marking `ids` as COMMITTED installs. */
+  function seedLedger(ids, scopeHome = gsdHome) {
+    const entries = {};
+    for (const id of ids) {
+      entries[id] = {
+        id, version: '1.0.0', source: './' + id, integrity: 'sha512-x', files: [], sharedEdits: [],
+      };
+    }
+    fs.writeFileSync(
+      path.join(scopeHome, '.gsd-capabilities.json'),
+      JSON.stringify({ version: '1', updatedAt: '2026-01-01T00:00:00.000Z', entries }),
+      'utf8',
+    );
+  }
+
+  beforeEach(() => {
+    gsdHome = createTempDir('gsd-home-');
+    // The seed also walks the GLOBAL overlay root, resolved as `GSD_HOME` else the user's home —
+    // point it at an empty temp scope so these cases never read the developer's real installs.
+    globalHome = createTempDir('gsd-global-home-');
+    priorGsdHome = process.env.GSD_HOME;
+    process.env.GSD_HOME = globalHome;
+  });
+  afterEach(() => {
+    if (priorGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = priorGsdHome;
+    cleanup(gsdHome);
+    cleanup(globalHome);
+    while (capDirs.length) cleanup(capDirs.pop());
+  });
+
+  /** makeLocalCap + track for cleanup. */
+  function localCap(cap) {
+    const dir = makeLocalCap(cap);
+    capDirs.push(dir);
+    return dir;
+  }
+
+  test('requires naming an installed FIRST-PARTY capability installs cleanly', async () => {
+    const dir = localCap(fullCap('requires-first-party-cap', { requires: ['tdd'] }));
+    const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(result.id, 'requires-first-party-cap');
+    assert.ok(
+      fs.existsSync(path.join(gsdHome, '.gsd', 'capabilities', 'requires-first-party-cap')),
+      'the bundle must be promoted — `tdd` is first-party and must resolve at install time',
+    );
+  });
+
+  test('requires naming a genuinely missing id still fails with the accurate message', async () => {
+    const dir = localCap(fullCap('requires-missing-cap', { requires: ['no-such-cap-xyz'] }));
+    await assert.rejects(
+      () => resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' }),
+      /requires "no-such-cap-xyz" which does not exist/,
+    );
+    assert.ok(
+      !fs.existsSync(path.join(gsdHome, '.gsd', 'capabilities', 'requires-missing-cap')),
+      'a rejected candidate must leave nothing behind',
+    );
+  });
+
+  test('runtimeCompat naming a first-party runtime installs; an unknown runtime still fails', async () => {
+    const okDir = localCap(fullCap('runtime-known-cap', {
+      runtimeCompat: { supported: ['claude'], unsupported: [] },
+    }));
+    const okResult = await resolveCapabilitySource(okDir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(okResult.id, 'runtime-known-cap');
+
+    const badDir = localCap(fullCap('runtime-unknown-cap', {
+      runtimeCompat: { supported: ['no-such-runtime'], unsupported: [] },
+    }));
+    await assert.rejects(
+      () => resolveCapabilitySource(badDir, { gsdHome, hostVersion: '1.11.0' }),
+      /references unknown runtime "no-such-runtime"/,
+    );
+  });
+
+  test('requires naming a COMMITTED third-party capability in the target scope installs cleanly', async () => {
+    seedInstalled('dep-cap', JSON.stringify(fullCap('dep-cap')));
+    seedLedger(['dep-cap']);
+    const dir = localCap(fullCap('dependent-cap', { requires: ['dep-cap'] }));
+    const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(result.id, 'dependent-cap');
+  });
+
+  test('an overlay with NO committed ledger entry does not satisfy requires (load-time parity)', async () => {
+    // Load-time skips a bundle that was never committed to the ledger, so install-time must not
+    // let it satisfy a dependency either — otherwise install succeeds and the loader then drops it.
+    seedInstalled('uncommitted-cap', JSON.stringify(fullCap('uncommitted-cap')));
+    const dir = localCap(fullCap('needs-uncommitted-cap', { requires: ['uncommitted-cap'] }));
+    await assert.rejects(
+      () => resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' }),
+      /requires "uncommitted-cap" which does not exist/,
+    );
+  });
+
+  test('a malformed installed bundle is skipped, not fatal, for an unrelated install', async () => {
+    seedInstalled('broken-cap', '{ this is not json');
+    seedLedger(['broken-cap']);
+    const dir = localCap(fullCap('unrelated-cap', { requires: ['tdd'] }));
+    const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(result.id, 'unrelated-cap', 'a broken neighbour must not block an install');
+  });
+
+  test('a project-scope install resolves requires against a GLOBALLY installed capability', async () => {
+    // The loader composes global ∪ project, so a project-scope install must see the global scope too.
+    seedInstalled('global-dep-cap', JSON.stringify(fullCap('global-dep-cap')), globalHome);
+    seedLedger(['global-dep-cap'], globalHome);
+    const dir = localCap(fullCap('project-needs-global-cap', { requires: ['global-dep-cap'] }));
+    const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(result.id, 'project-needs-global-cap');
+  });
+
+  test('an UNCOMMITTED global bundle does not satisfy a project-scope requires', async () => {
+    seedInstalled('global-uncommitted-cap', JSON.stringify(fullCap('global-uncommitted-cap')), globalHome);
+    const dir = localCap(fullCap('needs-global-uncommitted-cap', { requires: ['global-uncommitted-cap'] }));
+    await assert.rejects(
+      () => resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' }),
+      /requires "global-uncommitted-cap" which does not exist/,
+    );
+  });
+
+  test('reinstalling over an existing bundle validates the CANDIDATE, not the installed copy', async () => {
+    // The same-id bundle already on disk is REPLACED by the candidate, so it must be excluded from
+    // the seed — otherwise its own declarations collide with the candidate's (self-ownership).
+    seedInstalled('self-replace-cap', JSON.stringify(fullCap('self-replace-cap', { skills: ['sr-skill'] })));
+    seedLedger(['self-replace-cap']);
+    const dir = localCap(fullCap('self-replace-cap', { version: '2.0.0', skills: ['sr-skill'] }));
+    const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(result.version, '2.0.0');
+  });
+});
