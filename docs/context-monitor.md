@@ -28,6 +28,25 @@ breadcrumb bookkeeping.
 | WARNING | <= 35% | Wrap up current task, avoid starting new complex work |
 | CRITICAL | <= 25% | Stop immediately, save state (`/gsd-pause-work`) |
 
+Both fire-points are configurable per project in `.planning/config.json`. The
+values are *remaining* context percentages, so the warning threshold must sit
+above the critical one:
+
+```json
+{
+  "hooks": {
+    "context_warnings": true,
+    "context_warning_threshold": 35,
+    "context_critical_threshold": 25
+  }
+}
+```
+
+Either key may be omitted, in which case the default above applies. A pair that
+is non-numeric, outside `0`-`100`, or inverted (`warning <= critical`) is
+ignored as a pair and both defaults are used — the hook never blocks the tool
+call it rides in on, so it degrades rather than failing on bad config.
+
 ## Debounce
 
 To avoid spamming the agent with repeated warnings:

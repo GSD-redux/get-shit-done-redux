@@ -11,9 +11,11 @@
 // 3. When remaining context drops below thresholds, it injects a warning
 //    as additionalContext, which the agent sees in its conversation
 //
-// Thresholds:
+// Thresholds (defaults; both are REMAINING context percentages):
 //   WARNING  (remaining <= 35%): Agent should wrap up current task
 //   CRITICAL (remaining <= 25%): Agent should stop immediately and save state
+// Overridable per project via `hooks.context_warning_threshold` and
+// `hooks.context_critical_threshold` in .planning/config.json (#4285).
 //
 // Debounce: 5 tool uses between warnings to avoid spam
 // Severity escalation bypasses debounce (WARNING -> CRITICAL fires immediately)
@@ -30,10 +32,45 @@ const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
 // context warning is far cheaper than stalling the agent's work (#3911).
 const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
-const WARNING_THRESHOLD = 35;  // remaining_percentage <= 35%
-const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
+const DEFAULT_WARNING_THRESHOLD = 35;  // remaining_percentage <= 35%
+const DEFAULT_CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
 const STALE_SECONDS = 60;      // ignore metrics older than 60s
 const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
+
+/**
+ * Resolve the two fire-points from the `hooks` block of .planning/config.json (#4285).
+ *
+ * Both keys are REMAINING context percentages -- the same unit the bridge file
+ * reports -- so a valid pair has warning ABOVE critical, not below it.
+ *
+ * A pair that is non-numeric, outside 0-100, or inverted is ignored WHOLESALE
+ * and the defaults stand. Two reasons: this hook must never block the tool call
+ * it rides in on (ON_CRASH above), so it cannot throw on operator config; and a
+ * half-applied pair (custom warning, default critical) is a worse failure than
+ * an ignored one -- it would fire at a boundary nobody asked for.
+ *
+ * @param {object} [hooks] - the `hooks` object from .planning/config.json, if any
+ * @returns {{ warning: number, critical: number }}
+ */
+function resolveThresholds(hooks) {
+  const defaults = {
+    warning: DEFAULT_WARNING_THRESHOLD,
+    critical: DEFAULT_CRITICAL_THRESHOLD,
+  };
+  if (!hooks || typeof hooks !== 'object') return defaults;
+
+  const warning = hooks.context_warning_threshold === undefined
+    ? DEFAULT_WARNING_THRESHOLD
+    : hooks.context_warning_threshold;
+  const critical = hooks.context_critical_threshold === undefined
+    ? DEFAULT_CRITICAL_THRESHOLD
+    : hooks.context_critical_threshold;
+
+  const inRange = v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
+  if (!inRange(warning) || !inRange(critical) || warning <= critical) return defaults;
+
+  return { warning, critical };
+}
 // How long after a PreCompact readings stay suspect. The watermark records the
 // compaction's START; the compaction keeps running after it, and a statusline
 // render during it stamps the PRE-compaction reading with a CURRENT timestamp
@@ -270,12 +307,16 @@ process.stdin.on('end', () => {
     // Collapsed existsSync+readFileSync into a single read guarded by try/catch
     // (ENOENT or parse error → use defaults, same as old "planningDir absent" branch).
     const cwd = data.cwd || process.cwd();
+    let thresholds = resolveThresholds(null);
     try {
       const configPath = path.join(cwd, '.planning', 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (config.hooks?.context_warnings === false) {
         allow(undefined);
       }
+      // #4285: the same read also resolves the two fire-points, so an operator
+      // never has to edit this managed file to move them.
+      thresholds = resolveThresholds(config.hooks);
     } catch (e) {
       // Missing or unparseable config → proceed with defaults (context warnings enabled)
     }
@@ -352,7 +393,7 @@ process.stdin.on('end', () => {
     const usedPct = metrics.used_pct;
 
     // No warning needed
-    if (remaining > WARNING_THRESHOLD) {
+    if (remaining > thresholds.warning) {
       allow(undefined);
     }
 
@@ -389,7 +430,7 @@ process.stdin.on('end', () => {
 
     warnData.callsSinceWarn = (warnData.callsSinceWarn || 0) + 1;
 
-    const isCritical = remaining <= CRITICAL_THRESHOLD;
+    const isCritical = remaining <= thresholds.critical;
     const currentLevel = isCritical ? 'critical' : 'warning';
 
     // Emit immediately on first warning, then debounce subsequent ones

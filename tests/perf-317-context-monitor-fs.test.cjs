@@ -14,6 +14,7 @@
  *   - #2289 — output-envelope allowlist; side effects still run on silent events
  *   - #1974 — one-time critical-session breadcrumb
  *   - #3709 — PreCompact clears the warn sentinel AND the metrics bridge
+ *   - #4285 — WARNING/CRITICAL thresholds read from .planning/config.json
  * Extend this list when folding in the next one.
  */
 
@@ -2492,4 +2493,115 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
     }
   });
 
+});
+
+
+// ─── 5. #4285: thresholds configurable via .planning/config.json ─────────────
+
+describe('#4285: context-monitor thresholds read from .planning/config.json', () => {
+  /**
+   * Run the monitor against a project whose `.planning/config.json` holds the
+   * given `hooks` block. Returns the parsed severity, or null when the hook
+   * stayed silent (i.e. `remaining` was above the resolved warning threshold).
+   *
+   * @param {object|null} hooks - the `hooks` block to write, or null to omit config
+   * @param {number} remaining  - remaining_percentage in the bridge file
+   * @returns {'critical'|'warning'|null}
+   */
+  function severityFor(hooks, remaining) {
+    const sessionId = `test-4285-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const testCwd = fs.mkdtempSync(path.join(tmpDir, 'gsd-4285-'));
+    const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
+    const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
+
+    if (hooks !== null) {
+      const planningDir = path.join(testCwd, '.planning');
+      fs.mkdirSync(planningDir, { recursive: true });
+      fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ hooks }));
+    }
+
+    fs.writeFileSync(metricsPath, JSON.stringify({
+      session_id: sessionId,
+      remaining_percentage: remaining,
+      used_pct: 100 - remaining,
+      timestamp: Math.floor(Date.now() / 1000),
+    }));
+
+    let stdout = '';
+    try {
+      stdout = execFileSync(process.execPath, [MONITOR_PATH], {
+        input: JSON.stringify({ session_id: sessionId, cwd: testCwd, hook_event_name: 'PostToolUse' }),
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+    } catch (e) {
+      stdout = e.stdout || '';
+    } finally {
+      try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
+      try { fs.unlinkSync(warnPath); } catch { /* already absent */ }
+      cleanup(testCwd);
+    }
+
+    if (stdout === '') return null;
+    const text = JSON.parse(stdout)?.hookSpecificOutput?.additionalContext ?? '';
+    if (text.includes('CONTEXT CRITICAL')) return 'critical';
+    if (text.includes('CONTEXT WARNING')) return 'warning';
+    return null;
+  }
+
+  test('absent keys keep the shipped 35/25 fire-points', () => {
+    // The compatibility lock: every project without the new keys must behave
+    // exactly as before. 40 is above 35, 30 is between, 20 is below 25.
+    assert.strictEqual(severityFor({ context_warnings: true }, 40), null);
+    assert.strictEqual(severityFor({ context_warnings: true }, 30), 'warning');
+    assert.strictEqual(severityFor({ context_warnings: true }, 20), 'critical');
+  });
+
+  test('a configured warning threshold moves the warning fire-point', () => {
+    // 45 is silent by default (above 35) and must warn once the threshold moves
+    // above it — the assertion the default-only test cannot make.
+    assert.strictEqual(severityFor({ context_warning_threshold: 50 }, 45), 'warning');
+    assert.strictEqual(severityFor({ context_warning_threshold: 50 }, 55), null);
+  });
+
+  test('a configured critical threshold moves the escalation point', () => {
+    // 30 warns by default; raising critical past it must escalate instead.
+    assert.strictEqual(severityFor({ context_critical_threshold: 32 }, 30), 'critical');
+    assert.strictEqual(severityFor({ context_critical_threshold: 32 }, 34), 'warning');
+  });
+
+  test('both keys together are honored', () => {
+    const hooks = { context_warning_threshold: 60, context_critical_threshold: 50 };
+    assert.strictEqual(severityFor(hooks, 65), null);
+    assert.strictEqual(severityFor(hooks, 55), 'warning');
+    assert.strictEqual(severityFor(hooks, 45), 'critical');
+  });
+
+  test('an invalid pair falls back to BOTH defaults, never a half-applied pair', () => {
+    // Each case pins a distinct rejection reason. The probe is remaining=30:
+    // 'warning' proves the 35/25 defaults are in force, because every invalid
+    // pair below would have produced a different verdict had it been applied.
+    const invalid = [
+      { context_warning_threshold: 'thirty', label: 'non-numeric' },
+      { context_warning_threshold: 150, label: 'above 100' },
+      { context_critical_threshold: -5, label: 'below 0' },
+      { context_warning_threshold: 20, context_critical_threshold: 40, label: 'inverted' },
+      { context_warning_threshold: 25, context_critical_threshold: 25, label: 'equal' },
+      { context_warning_threshold: NaN, label: 'NaN (arrives as null through JSON)' },
+      // Half-applied risk: a valid critical beside an invalid warning must not
+      // be adopted on its own — 40 would escalate at remaining=30 if it were.
+      { context_warning_threshold: null, context_critical_threshold: 40, label: 'one invalid, one valid' },
+    ];
+    for (const { label, ...hooks } of invalid) {
+      assert.strictEqual(severityFor(hooks, 30), 'warning', `${label} must fall back to 35/25`);
+    }
+  });
+
+  test('context_warnings=false still wins over configured thresholds', () => {
+    // The off switch is evaluated before the thresholds are resolved.
+    assert.strictEqual(
+      severityFor({ context_warnings: false, context_warning_threshold: 90 }, 80),
+      null,
+    );
+  });
 });

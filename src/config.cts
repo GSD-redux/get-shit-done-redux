@@ -372,6 +372,8 @@ function buildNewProjectConfig(userChoices: Record<string, unknown>): Record<str
     },
     hooks: {
       context_warnings: true,
+      context_warning_threshold: 35,
+      context_critical_threshold: 25,
     },
     project_code: null,
     phase_naming: 'sequential',

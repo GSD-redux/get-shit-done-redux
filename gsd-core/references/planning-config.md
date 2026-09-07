@@ -361,6 +361,8 @@ Set via `hooks.*` namespace (e.g., `"hooks": { "context_warnings": true }`).
 | Key | Type | Default | Allowed Values | Description |
 |-----|------|---------|----------------|-------------|
 | `hooks.context_warnings` | boolean | `true` | `true`, `false` | Show warnings when context budget is exceeded |
+| `hooks.context_warning_threshold` | number | `35` | `0`-`100`, above `context_critical_threshold` | Remaining-context percentage at or below which CONTEXT WARNING fires |
+| `hooks.context_critical_threshold` | number | `25` | `0`-`100`, below `context_warning_threshold` | Remaining-context percentage at or below which CONTEXT CRITICAL fires |
 
 ### Learnings Fields
 

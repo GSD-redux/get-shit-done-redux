@@ -79,6 +79,8 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
   },
   "hooks": {
     "context_warnings": true,
+    "context_warning_threshold": 35,
+    "context_critical_threshold": 25,
     "workflow_guard": false
   },
   "statusline": {
@@ -803,6 +805,8 @@ for a worked example.
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `hooks.context_warnings` | boolean | `true` | Show context window usage warnings via context monitor hook |
+| `hooks.context_warning_threshold` | number | `35` | Remaining-context percentage at or below which the context monitor emits CONTEXT WARNING. Must be greater than `hooks.context_critical_threshold`; a non-numeric, out-of-range (outside 0-100) or inverted pair is ignored and both defaults apply (#4285) |
+| `hooks.context_critical_threshold` | number | `25` | Remaining-context percentage at or below which the context monitor escalates to CONTEXT CRITICAL. Must be less than `hooks.context_warning_threshold`; see the note above for how an invalid pair is handled (#4285) |
 | `hooks.workflow_guard` | boolean | `false` | Warn when file edits happen outside GSD workflow context (advises using `/gsd-quick` or `/gsd-fast`). When enabled, the hook's one hard block — `git add -f` on `agent-*`/`worktree-agent-*` branches — also fails closed on internal error (see `docs/explanation/security-model.md`, #3504) |
 | `statusline.show_last_command` | boolean | `false` | Append `last: /<cmd>` suffix to the statusline showing the most recently invoked slash command. Opt-in; reads the active session transcript to extract the latest `<command-name>` tag (closes #2538) |
 | `statusline.context_position` | string | `"end"` | Position of the context-window meter. `"end"` (default) renders at line tail; `"front"` renders immediately after the model name so the meter stays visible in narrow terminals. Closes #2937 |
