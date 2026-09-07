@@ -214,7 +214,6 @@
       "checkpoints.md",
       "common-bug-patterns.md",
       "compact-content-gate.md",
-      "compact-content-protected-content.md",
       "context-budget.md",
       "continuation-format.md",
       "debugger-bug-taxonomy.md",
@@ -670,6 +669,13 @@
       "update/steps/channel-banner.md",
       "verify-work/steps/automated-ui-verification.md",
       "verify-work/steps/mvp-uat-framing.md"
+    ],
+    "workflow_detail": [
+      "plan-phase/detail/elaboration.md"
+    ],
+    "workflow_templates": [
+      "discuss-phase/templates/context.md",
+      "discuss-phase/templates/discussion-log.md"
     ]
   }
 }
