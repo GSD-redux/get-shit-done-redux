@@ -172,8 +172,13 @@ if [ -z "$CHROME_BIN" ] && [ -x "${PROGRAMFILES:-/nonexistent}/Google/Chrome/App
 fi
 
 # The driver, resolved at a documented floor rather than a pin; -y answers the npx
-# consent prompt, which otherwise blocks a non-interactive audit.
-CDT="npx -y -p chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION:-^1.8.0} chrome-devtools"
+# consent prompt, which otherwise blocks a non-interactive audit. --sessionId keys the
+# daemon socket: `start` restarts whatever daemon shares its session, and --isolated
+# isolates only the browser profile, so without a per-run id two concurrent audits
+# (or an audit beside an operator's own CLI daemon) would stop each other. Hex and
+# dashes only.
+CDT_SESSION="$(date +%s)-$$"
+CDT="npx -y -p chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION:-^1.8.0} chrome-devtools --sessionId $CDT_SESSION"
 
 if [ "$INTERACTION_CAPTURE" != "true" ]; then
   echo "Interaction capture: off (workflow.ui_interaction_capture is false) — static captures only"
@@ -211,16 +216,28 @@ else
   # `start` succeeded — the daemon does not self-reap.
   if $CDT start -e "$CHROME_BIN" --isolated --allowUnrestrictedPaths --usageStatistics=false >/dev/null 2>&1; then
     # new_page lists every open page and marks the new one `[selected]`; that number is
-    # the pageId every later command takes as its first argument.
-    PAGE_ID=$($CDT new_page "$DEV_URL" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1)
+    # the pageId every later command takes as its first argument. --timeout bounds the
+    # navigation (ms); the CLI's other verbs carry no timeout, so a hung page is caught
+    # here, before any of them run.
+    PAGE_ID=$($CDT new_page "$DEV_URL" --timeout 30000 2>/dev/null | sed -n 's/^\([0-9][0-9]*\): .*\[selected\]$/\1/p' | head -1)
     if [ -n "$PAGE_ID" ]; then
       $CDT resize_page "$PAGE_ID" 1440 900 >/dev/null 2>&1
       # The snapshot lists every element with the uid that click/hover/fill/drag take.
       # uids are per-snapshot: re-take it after each interaction before the next one.
-      $CDT take_snapshot "$PAGE_ID" --filePath "$INTERACTION_DIR/snapshot.txt" >/dev/null 2>&1
+      # A failed snapshot is a failed step — without uids the interactions below cannot
+      # be driven — so it counts, rather than letting two clean screenshots read as 0 failed.
+      if ! $CDT take_snapshot "$PAGE_ID" --filePath "$INTERACTION_DIR/snapshot.txt" >/dev/null 2>&1; then
+        IFAILED=$((IFAILED + 1))
+        echo "  interaction step FAILED: take_snapshot"
+      fi
       ishot baseline
       # Focus ring on the first focusable element — the one interaction every page has.
-      $CDT press_key "$PAGE_ID" Tab >/dev/null 2>&1 && ishot focus-first
+      if $CDT press_key "$PAGE_ID" Tab >/dev/null 2>&1; then
+        ishot focus-first
+      else
+        IFAILED=$((IFAILED + 1))
+        echo "  interaction step FAILED: press_key Tab (focus-first not captured)"
+      fi
       # --- Drive each interactive component UI-SPEC.md declares (or the snapshot shows) and
       #     capture the state it produces. Each line is a real invocation with the uid read
       #     from the latest snapshot; name every capture after the state it shows:

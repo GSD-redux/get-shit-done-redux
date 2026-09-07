@@ -207,6 +207,7 @@ describe('<screenshot_approach> keeps the two paths apart', () => {
     assert.ok(text.includes('--isolated'), 'a throwaway profile, never the shared chrome-devtools-mcp one');
     assert.ok(text.includes('--allowUnrestrictedPaths'), 'without it every --filePath under .planning/ fails');
     assert.ok(text.includes('--usageStatistics=false'));
+    assert.ok(text.includes('--sessionId $CDT_SESSION'), 'a per-run daemon session, so audits never stop each other');
   });
 });
 
@@ -229,11 +230,12 @@ function coreutilPaths() {
 }
 
 const STUB_NPX = `#!/bin/sh
-# argv: -y -p chrome-devtools-mcp@<range> chrome-devtools <cmd> [args...]
+# argv: -y -p chrome-devtools-mcp@<range> chrome-devtools --sessionId <hex-id> <cmd> [args...]
 printf '%s\\n' "$*" >> "$STUB_LOG"
-[ "$1" = "-y" ] && [ "$2" = "-p" ] && [ "$4" = "chrome-devtools" ] || { echo "stub npx: unexpected argv: $*" >&2; exit 66; }
-cmd="$5"
-shift 5
+[ "$1" = "-y" ] && [ "$2" = "-p" ] && [ "$4" = "chrome-devtools" ] && [ "$5" = "--sessionId" ] || { echo "stub npx: unexpected argv: $*" >&2; exit 66; }
+case "$6" in *[!0-9a-fA-F-]*|"") echo "stub npx: sessionId not hex/dashes: $6" >&2; exit 68 ;; esac
+cmd="$7"
+shift 7
 case "$cmd" in
   start)
     [ "\${STUB_FAIL_START:-0}" = 1 ] && exit 1
@@ -241,11 +243,15 @@ case "$cmd" in
   new_page)
     if [ "\${STUB_FAIL_NEWPAGE:-0}" = 1 ]; then printf '## Pages\\n1: about:blank\\n'; exit 0; fi
     printf '## Pages\\n1: about:blank\\n2: %s [selected]\\n' "$1"; exit 0 ;;
+  press_key)
+    [ "\${STUB_FAIL_PRESS:-0}" = 1 ] && exit 1
+    exit 0 ;;
   take_screenshot|take_snapshot)
     f=""
     while [ $# -gt 0 ]; do [ "$1" = "--filePath" ] && f="$2"; shift; done
     [ -n "$f" ] || { echo "stub: $cmd without --filePath" >&2; exit 67; }
     if [ "$cmd" = take_screenshot ] && [ "\${STUB_FAIL_SCREENSHOT:-0}" = 1 ]; then : > "$f"; exit 1; fi
+    if [ "$cmd" = take_snapshot ] && [ "\${STUB_FAIL_SNAPSHOT:-0}" = 1 ]; then exit 1; fi
     printf 'STUB' > "$f"; exit 0 ;;
   *) exit 0 ;;
 esac
@@ -356,12 +362,15 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
       env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: dir, DEV_URL: 'http://localhost:3999/' },
     });
     assert.equal(out.r.status, 0, out.r.stderr);
-    const verbs = out.calls.map((c) => c.split(' ')[4]);
+    const verbs = out.calls.map((c) => c.split(' ')[6]);
     assert.equal(verbs[0], 'start', 'the daemon starts first');
     assert.equal(verbs[verbs.length - 1], 'stop', 'and is stopped last — it does not self-reap');
     assert.ok(out.calls[0].includes('--isolated --allowUnrestrictedPaths --usageStatistics=false'), out.calls[0]);
     assert.ok(out.calls[0].includes('-p chrome-devtools-mcp@^1.8.0 '), 'documented floor by default');
-    assert.ok(out.calls.some((c) => c.includes(' new_page http://localhost:3999/')), 'navigates to the resolved dev URL');
+    assert.ok(out.calls.some((c) => c.includes(' new_page http://localhost:3999/ --timeout 30000')), 'navigates to the resolved dev URL, time-bounded');
+    const sessions = new Set(out.calls.map((c) => c.split(' ')[5]));
+    assert.equal(sessions.size, 1, `every call must address one daemon session: ${[...sessions].join(',')}`);
+    assert.match([...sessions][0], /^[0-9a-f-]+$/, 'the CLI accepts hex and dashes only');
     // Every later command addresses the page new_page marked [selected].
     for (const c of out.calls.filter((x) => / (resize_page|take_snapshot|take_screenshot|press_key|list_console_messages) /.test(x))) {
       assert.ok(/ (resize_page|take_snapshot|take_screenshot|press_key|list_console_messages) 2( |$)/.test(c), `pageId 2 expected: ${c}`);
@@ -394,11 +403,31 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
       chrome: true,
       env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: dir, STUB_FAIL_SCREENSHOT: '1' },
     });
-    const verbs = out.calls.map((c) => c.split(' ')[4]);
+    const verbs = out.calls.map((c) => c.split(' ')[6]);
     assert.equal(verbs[verbs.length - 1], 'stop');
     assert.equal(out.status, 'not captured (driver or capture failure)');
     assert.ok(!fs.existsSync(path.join(dir, 'interaction', 'baseline.png')), 'a zero-byte capture is removed, not counted');
     assert.match(out.stdout, /interaction capture FAILED: baseline/);
+  });
+
+  test('snapshotFailureCountsAsAFailedStep', (t) => {
+    const out = runInteractionFence(t, {
+      chrome: true,
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_FAIL_SNAPSHOT: '1' },
+    });
+    assert.match(out.stdout, /interaction step FAILED: take_snapshot/);
+    assert.match(out.status, /^captured \(2 state\(s\), 1 failed\)/, 'two clean screenshots must not read as 0 failed');
+  });
+
+  test('pressKeyFailureCountsAndSkipsTheFocusCapture', (t) => {
+    const dir = shotsDir(t);
+    const out = runInteractionFence(t, {
+      chrome: true,
+      env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: dir, STUB_FAIL_PRESS: '1' },
+    });
+    assert.match(out.stdout, /interaction step FAILED: press_key Tab/);
+    assert.ok(!fs.existsSync(path.join(dir, 'interaction', 'focus-first.png')));
+    assert.match(out.status, /^captured \(1 state\(s\), 1 failed\)/);
   });
 
   test('newPageWithoutASelectedPageStopsTheDaemonAndCapturesNothing', (t) => {
@@ -406,7 +435,7 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
       chrome: true,
       env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_FAIL_NEWPAGE: '1' },
     });
-    const verbs = out.calls.map((c) => c.split(' ')[4]);
+    const verbs = out.calls.map((c) => c.split(' ')[6]);
     assert.deepEqual(verbs, ['start', 'new_page', 'stop'], verbs.join(','));
     assert.match(out.stdout, /new_page FAILED/);
     assert.equal(out.status, 'not captured (driver or capture failure)');
@@ -417,7 +446,7 @@ describe('interaction fence (bash, stub driver)', { skip: HAS_BASH ? false : 'ba
       chrome: true,
       env: { INTERACTION_CAPTURE: 'true', SCREENSHOT_DIR: shotsDir(t), STUB_FAIL_START: '1' },
     });
-    const verbs = out.calls.map((c) => c.split(' ')[4]);
+    const verbs = out.calls.map((c) => c.split(' ')[6]);
     assert.deepEqual(verbs, ['start'], 'stop only follows a start that succeeded');
     assert.match(out.stdout, /start FAILED/);
     assert.equal(out.status, 'not captured (driver or capture failure)');
