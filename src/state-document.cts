@@ -400,8 +400,8 @@ export function stateFieldContinuation(content: string, fieldName: string): stri
 
 export function stateExtractField(content: string, fieldName: string): string | null {
   const escaped = escapeRegex(fieldName);
-  // Bold inline format: **FieldName:** value
-  const boldPattern = new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i');
+  // Bold line-start format: **FieldName:** value
+  const boldPattern = new RegExp(`^\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'im');
   const boldMatch = content.match(boldPattern);
   if (boldMatch)
     return boldMatch[1].trim();

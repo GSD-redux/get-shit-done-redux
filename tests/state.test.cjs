@@ -3893,6 +3893,42 @@ Progress: [..........] 0%
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #4481 — field reads agree with line-anchored field writes
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4481: stateExtractField ignores mid-sentence bold lookalikes', () => {
+  const documentWithLookalikes = [
+    '# Project State',
+    '',
+    'A note cites **Progress:** dashboards, **Total Plans in Phase:** aggregation, and **Last Activity:** retention.',
+    '',
+    '**Progress:** [█░░░░░░░░░] 10%',
+    '**Total Plans in Phase:** 2',
+    '**Last Activity:** 2026-01-01',
+    '',
+  ].join('\n');
+
+  test('returns the real line-start value for every sync field', () => {
+    assert.strictEqual(stateDocument.stateExtractField(documentWithLookalikes, 'Progress'), '[█░░░░░░░░░] 10%');
+    assert.strictEqual(stateDocument.stateExtractField(documentWithLookalikes, 'Total Plans in Phase'), '2');
+    assert.strictEqual(stateDocument.stateExtractField(documentWithLookalikes, 'Last Activity'), '2026-01-01');
+  });
+
+  test('sync change advisories name the same old values the writer replaces', () => {
+    const result = stateTransitionMod.transitionCore(
+      documentWithLookalikes,
+      { kind: 'sync', totalPlansInPhase: 3, percent: 20 },
+      { clock: { localToday: () => '2026-09-07' } },
+    );
+    const changes = result.data.changes;
+
+    assert.ok(changes.includes('Total Plans in Phase: 2 -> 3'));
+    assert.ok(changes.some((change) => change.startsWith('Progress: [█░░░░░░░░░] 10% -> ')));
+    assert.ok(changes.includes('Last Activity: 2026-01-01 -> 2026-09-07'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #4243 — begin-phase: prose bold-lookalikes stay untouched (anchored bold
 // form in stateReplaceField) and frontmatter round-trips unknown keys
 // ─────────────────────────────────────────────────────────────────────────────
