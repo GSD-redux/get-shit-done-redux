@@ -1525,3 +1525,225 @@ describe('#2702: workstream config-get inherits from root config', () => {
     }
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// #4262 — `--default` must emit the JSON VALUE, not a JSON string.
+//
+// cmdConfigGet has two ways to produce a value. When the key is PRESENT,
+// `current` is a value JSON.parse produced from config.json — a real
+// array/number/boolean by the time it reaches output(). When the key is
+// ABSENT and --default was supplied, the raw argv string used to reach the
+// same output() un-parsed, so the JSON path faithfully encoded a STRING:
+// `--default '[]'` emitted the 4 bytes `"[]"` while a configured `[]`
+// emitted `[]`. The victim: workflows/code-review.md's resolve_depth step
+// JSON.parses DEPTH_OVERRIDES and Array.isArray-validates it, so every
+// project that never set workflow.code_review_depth_overrides hard-stopped
+// before agent spawn. The fix parses --default with the SAME grammar
+// config-set uses (shared parseConfigCliValue), so the two paths agree for
+// every JSON type; --raw keeps rendering the original argv bytes.
+// ────────────────────────────────────────────────────────────────────────
+describe('config-get --default emits value-form JSON (#4262)', () => {
+  let tmpDir;
+  let planningDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-config-4262-'));
+    planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(planningDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function run(...args) {
+    const { keyPath, raw, defaultValue } = parseConfigGetArgs(args);
+    const out = captureFdWrite(1, () => {
+      config.cmdConfigGet(tmpDir, keyPath, raw, defaultValue);
+    });
+    return out.trim();
+  }
+
+  function runRaw(...args) {
+    return run(...args, '--raw');
+  }
+
+  function writeConfig(obj) {
+    fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify(obj));
+  }
+
+  // Row 1 — the issue's headline, failing-first regression.
+  test("Row 1: --default '[]' emits the empty array, not the string \"[]\"", () => {
+    writeConfig({ workflow: {} });
+    const out = run('config-get', 'workflow.code_review_depth_overrides', '--default', '[]');
+    assert.equal(out, '[]', `must emit the JSON value; got ${JSON.stringify(out)}`);
+    const parsed = JSON.parse(out);
+    assert.equal(Array.isArray(parsed), true, 'JSON.parse(output) must be an array');
+    assert.deepEqual(parsed, []);
+  });
+
+  // Rows 2-10 — the parity lattice: for every JSON type, the present-key
+  // read and the --default twin must emit BYTE-IDENTICAL output (the
+  // regression shape the issue itself asks for: "Nothing currently holds
+  // the two paths together, which is how they drifted.").
+  const PARITY_LATTICE = [
+    ['empty array', [], '[]'],
+    ['array of objects (issue second repro)', [{ path: 'src/', depth: 'deep' }], '[{"path":"src/","depth":"deep"}]'],
+    ['object', { a: 1 }, '{"a":1}'],
+    ['integer', 5, '5'],
+    ['float', 1.5, '1.5'],
+    ['boolean true', true, 'true'],
+    ['boolean false', false, 'false'],
+    ['null', null, 'null'],
+    // A genuinely-string default is a string per the config-set grammar and
+    // MUST keep emitting a JSON string — "keeps --default standard working
+    // unchanged" (issue). This row guards the fix against over-eager
+    // unquoting of string defaults.
+    ['string', 'standard', 'standard'],
+  ];
+  for (const [label, value, defaultSpelling] of PARITY_LATTICE) {
+    test(`parity: ${label} — present key and --default twin emit byte-identical output`, () => {
+      writeConfig({ workflow: { configured: value } });
+      const present = run('config-get', 'workflow.configured');
+      const viaDefault = run('config-get', 'workflow.absent', '--default', defaultSpelling);
+      assert.strictEqual(
+        viaDefault,
+        present,
+        `--default ${JSON.stringify(defaultSpelling)} must emit the same bytes as a configured ${JSON.stringify(value)}`
+          + ` (present=${JSON.stringify(present)}, default=${JSON.stringify(viaDefault)})`,
+      );
+      assert.deepStrictEqual(JSON.parse(viaDefault), value);
+    });
+  }
+
+  // Row 8's quiet half, explicit: the "quieter case" from the issue — a
+  // boolean flag read via JSON.parse must not come back truthy-on-unset.
+  test('the quieter case: --default false parses to boolean false, not a truthy string', () => {
+    writeConfig({ workflow: {} });
+    const out = run('config-get', 'workflow.absent_flag', '--default', 'false');
+    const v = JSON.parse(out);
+    assert.strictEqual(typeof v, 'boolean');
+    assert.strictEqual(v, false);
+    assert.strictEqual(!!v, false, 'a false default must be falsy after JSON.parse');
+  });
+
+  // Rows 13-17 — raw-path preservation: --raw renders the ORIGINAL argv
+  // bytes. Parsing must not leak into the raw render (String(['main']) is
+  // 'main', which would corrupt every --raw consumer of a JSON-shaped
+  // default, e.g. the pinned git.protected_branches fallback above).
+  test("raw: --default '[\"main\"]' --raw keeps the original argv bytes", () => {
+    writeConfig({ workflow: {} });
+    assert.equal(runRaw('config-get', 'git.protected_branches', '--default', '["main"]'), '["main"]');
+  });
+
+  test('raw: boolean default renders the literal token', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(runRaw('config-get', 'workflow.absent', '--default', 'false'), 'false');
+  });
+
+  test('raw: numeric default renders the literal token', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(runRaw('config-get', 'workflow.absent', '--default', '200000'), '200000');
+  });
+
+  test('raw: leading-zero numeric-string keeps its typed bytes (JSON path coerces per grammar)', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(runRaw('config-get', 'workflow.absent', '--default', '007'), '007');
+    assert.equal(run('config-get', 'workflow.absent2', '--default', '007'), '7');
+  });
+
+  test('raw: string default renders unquoted', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(runRaw('config-get', 'workflow.absent', '--default', 'standard'), 'standard');
+  });
+
+  // Rows 18-23 — JSON-path grammar edges, inherited verbatim from the
+  // config-set parser the fix shares.
+  test('grammar: empty-string default stays a JSON string (#2350 shape)', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(run('config-get', 'workflow.absent', '--default', ''), '""');
+  });
+
+  test('grammar: Infinity stays a string (#1581 inherited)', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(run('config-get', 'workflow.absent', '--default', 'Infinity'), '"Infinity"');
+  });
+
+  test('grammar: malformed JSON literal falls back to the string form', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(run('config-get', 'workflow.absent', '--default', '[not json'), '"[not json"');
+  });
+
+  test('grammar: exponent-notation number parses as a number', () => {
+    writeConfig({ workflow: {} });
+    assert.equal(run('config-get', 'workflow.absent', '--default', '1e3'), '1000');
+  });
+
+  // Rows 11-12 — consumer parity end-to-end, through the REAL CLI and the
+  // REAL resolver, in the exact capture shape workflows/code-review.md uses.
+  test('consumer parity: code-review.md resolve_depth pipeline reaches DEPTH_OK=true (subprocess)', () => {
+    const { execFileSync } = require('node:child_process');
+    writeConfig({ workflow: {} }); // code_review_depth_overrides deliberately unset — shipped default state
+    const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+    // The workflow's exact capture: $(... config-get ... --default '[]' 2>/dev/null || echo '[]')
+    const depthOverrides = execFileSync(
+      process.execPath,
+      [GSD_TOOLS, 'config-get', 'workflow.code_review_depth_overrides', '--default', '[]', '--cwd', tmpDir],
+      { encoding: 'utf-8', timeout: 15000, env: { ...process.env, HOME: tmpDir } },
+    ).trim();
+    // And the workflow's exact consumption: JSON.parse then resolveCodeReviewDepth.
+    const { resolveCodeReviewDepth } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'code-review-depth.cjs'));
+    const verdict = resolveCodeReviewDepth({
+      flagDepth: '',
+      configDepth: '',
+      overrides: JSON.parse(depthOverrides || '[]'),
+      files: ['src/foo.ts'],
+      repoRoot: tmpDir,
+    });
+    assert.strictEqual(verdict.ok, true, `resolver must accept the emitted default; got ${JSON.stringify(verdict)}`);
+    // DEPTH_OK is String(verdict.ok) in the workflow; the guard's then-branch runs.
+    assert.strictEqual(String(verdict.ok), 'true');
+  });
+
+  test("consumer parity: ship.md CUSTOM_PR_SECTIONS default emits an array", () => {
+    writeConfig({ workflow: {} });
+    const out = run('config-get', 'ship.pr_body_sections', '--default', '[]');
+    assert.equal(out, '[]');
+    assert.equal(Array.isArray(JSON.parse(out)), true);
+  });
+
+  // Row 28 — round-trip through config-set: the SAME parser now backs both
+  // verbs, so what config-set persists and what --default spells must render
+  // identically. git.protected_branches is a real validated array key.
+  test('round-trip: config-set git.protected_branches and --default of the same spelling agree', () => {
+    const spelling = '["main","develop"]';
+    captureFdWrite(1, () => {
+      config.cmdConfigSet(tmpDir, 'git.protected_branches', spelling, true);
+    });
+    const present = run('config-get', 'git.protected_branches');
+    // Fresh project, key absent, same spelling as --default.
+    const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-config-4262b-'));
+    try {
+      fs.mkdirSync(path.join(tmp2, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(tmp2, '.planning', 'config.json'), JSON.stringify({}));
+      const viaDefault = captureFdWrite(1, () => {
+        config.cmdConfigGet(tmp2, 'git.protected_branches', false, spelling);
+      }).trim();
+      assert.strictEqual(viaDefault, present, 'set-persisted and --default-spelled must render identically');
+      assert.deepStrictEqual(JSON.parse(viaDefault), ['main', 'develop']);
+    } finally {
+      cleanup(tmp2);
+    }
+  });
+
+  // Row 30 — set/unset boundary: removing the key from config.json flips
+  // resolution to the --default arm WITHOUT changing the emitted bytes.
+  test('set/unset boundary: deleting the key restores --default-arm parity bytes', () => {
+    writeConfig({ workflow: { configured: [] } });
+    const present = run('config-get', 'workflow.configured');
+    writeConfig({ workflow: {} }); // key removed
+    const viaDefault = run('config-get', 'workflow.configured', '--default', '[]');
+    assert.strictEqual(viaDefault, present);
+    assert.equal(viaDefault, '[]');
+  });
+});
