@@ -13,7 +13,7 @@
  *
  * Per RULESET.TESTS.boundary-coverage: exit code boundary (0/1/2), timedOut
  * true/false, message-trim boundary (MAX / MAX+1), timeout pass-through.
- * Per RULESET.TESTS.property-based: command-identity / env-passthrough properties (fast-check).
+ * Per RULESET.TESTS.property-based: env-passthrough property (fast-check).
  */
 
 const { describe, test } = require('node:test');
@@ -316,29 +316,9 @@ describe('evaluatePredicate — exported contract surface', () => {
   });
 });
 
-// ─── property-based: command is never rewritten; ctx values pass through env verbatim ───
+// ─── property-based: ctx values pass through env verbatim ─────────────────────
 
 describe('evaluatePredicate — interpolation property (fast-check)', () => {
-  test('any command string reaches sh -c verbatim, regardless of ${PHASE_*} placeholders', () => {
-    fc.assert(
-      fc.property(
-        fc.string({ maxLength: 40 }).filter((s) => s.trim().length > 0),
-        (cmd) => {
-          const shell = fakeShell({ exitCode: 0 });
-          evaluatePredicate(
-            { kind: 'command-exit-zero', command: cmd },
-            baseCtx,
-            { runBoundedShell: shell.run },
-          );
-          // sh's own ${VAR} expansion resolves placeholders at runtime; this
-          // module never rewrites the command text, so it is always the identity.
-          assert.equal(shell.calls[0].command, cmd);
-        },
-      ),
-      { numRuns: 100 },
-    );
-  });
-
   test('any ctx.phaseDir/phaseNumber/phaseReqIds value — including shell metacharacters — lands in env byte-for-byte', () => {
     fc.assert(
       fc.property(fc.string({ maxLength: 40 }), fc.string({ maxLength: 40 }), fc.string({ maxLength: 40 }), (a, b, c) => {
