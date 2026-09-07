@@ -5316,8 +5316,24 @@ describe('#4377 relative rewrites preserve every runtime launcher shell default'
       path.join(__dirname, '..', 'gsd-core', 'workflows', '_runtime-launcher.snippet.sh'),
       'utf8',
     );
-    const defaults = [...launcher.matchAll(/\$\{[A-Za-z_][A-Za-z0-9_]*:-[^}]*\}/g)]
-      .map((match) => match[0]);
+    const defaults = [];
+    for (let start = launcher.indexOf('${'); start !== -1; start = launcher.indexOf('${', start + 2)) {
+      let depth = 1;
+      let end = start + 2;
+      while (end < launcher.length && depth > 0) {
+        if (launcher.startsWith('${', end)) {
+          depth += 1;
+          end += 2;
+        } else {
+          if (launcher[end] === '}') depth -= 1;
+          end += 1;
+        }
+      }
+      if (depth !== 0) break;
+      const expansion = launcher.slice(start, end);
+      if (/^\$\{[A-Za-z_][A-Za-z0-9_]*:-/.test(expansion)) defaults.push(expansion);
+      start = end - 2;
+    }
     assert.ok(defaults.length > 0, 'the launcher fixture must contain shell-default probes');
 
     for (const runtime of ['claude', ...conversion.NON_CLAUDE_RUNTIMES]) {
