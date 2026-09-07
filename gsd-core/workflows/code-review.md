@@ -623,22 +623,10 @@ elif [ ${#EXPLICIT_REVIEWER_SLUGS[@]} -gt 0 ]; then
   # $TMPDIR entry is cheaper than a cleanup mechanism (e.g. a trap) that could fire before a
   # later step reads it. Not a regression to fix; matches established precedent.
   LANE_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gsd-review-lanes-XXXXXX")
-  # #4209 review: guarded like CODE_REVIEW_POINT/EXPLICIT_JOINED above — an unguarded failing
-  # substitution here would halt the step under errexit with no warning, and the reducer below
-  # would only ever see the generic unparseable_dispatch_output reason, discarding the command's
-  # own diagnostic (stderr).
-  DISPATCH_JSON_STDERR=$(mktemp)
   DISPATCH_JSON=$(printf '%s\n' "${REVIEW_FILES[@]}" | gsd_run review-lane dispatch-step \
     --repo-root "$REPO_ROOT" --depth "$REVIEW_DEPTH" --base-sha "$DIFF_BASE" \
     --run-dir "$LANE_RUN_DIR" --explicit "$EXPLICIT_JOINED" \
-    --cap-id code-review --point "$CODE_REVIEW_POINT" --raw 2>"$DISPATCH_JSON_STDERR") || {
-    echo "Warning: external reviewer dispatch command failed ($(head -1 "$DISPATCH_JSON_STDERR")) — no lane ran (SAFE-07)." >&2
-  }
-  rm -f "$DISPATCH_JSON_STDERR"
-  # DISPATCH_JSON is empty/partial here on failure (the warning above already carries the real
-  # diagnostic) — no need to fabricate a JSON stub: the reducer below already falls back to
-  # reason unparseable_dispatch_output on anything JSON.parse can't read, so it still reports a
-  # rejection, just under that existing generic reason instead of a bespoke one.
+    --cap-id code-review --point "$CODE_REVIEW_POINT" --raw)
 
   # Unwrap the @file: overflow protocol (io.cjs writes a payload over 50000 chars to a temp
   # file and returns its path instead) before parsing, exactly like the `INIT` handling above —
