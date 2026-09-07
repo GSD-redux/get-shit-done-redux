@@ -34,7 +34,7 @@ const UNIVERSAL_SECTIONS = [
 const NAMED_MODELS = {
   'debug': ['Fault Tree Analysis', 'Hypothesis-Driven Investigation', 'Occam\'s Razor', 'Counterfactual Thinking'],
   'execution': ['Circle of Concern vs Circle of Control', 'Forcing Function', 'First Principles Thinking', 'Occam\'s Razor', 'Chesterton\'s Fence'],
-  'planning': ['Pre-Mortem Analysis', 'MECE Decomposition', 'Constraint Analysis', 'Reversibility Test'],
+  'planning': ['Pre-Mortem Analysis', 'MECE Decomposition', 'Constraint Analysis', 'Reversibility Test', 'Occam\'s Razor'],
   'research': ['First Principles Thinking', 'Simpson\'s Paradox Awareness', 'Survivorship Bias', 'Confirmation Bias Counter', 'Steel Man'],
   'verification': ['Inversion', 'Chesterton\'s Fence', 'Confirmation Bias Counter', 'Planning Fallacy Calibration', 'Counterfactual Thinking'],
 };
@@ -156,6 +156,62 @@ describe('thinking model reference files contain named reasoning models', () => 
       });
     });
   }
+});
+
+// ─── Planning Minimum-Solution Contract ──────────────────────────────────────
+
+describe('thinking-models-planning.md defines the minimum-solution check', () => {
+  const filePath = path.join(REFERENCES_DIR, 'thinking-models-planning.md');
+  const content = fs.readFileSync(filePath, 'utf-8');
+
+  test('orders sufficient options from existing behavior through minimal new implementation', () => {
+    const orderedOptions = [
+      'Existing project behavior, helper, or established pattern',
+      'Standard-library capability',
+      'Native platform capability',
+      'Already-installed dependency',
+      'Minimum new implementation',
+    ];
+    let previousIndex = -1;
+
+    for (const option of orderedOptions) {
+      const optionIndex = content.indexOf(option);
+      assert.ok(optionIndex >= 0, `planning Occam check missing option: ${option}`);
+      assert.ok(optionIndex > previousIndex, `planning Occam check has option out of order: ${option}`);
+      previousIndex = optionIndex;
+    }
+  });
+
+  test('distinguishes the check from adjacent planning and execution guidance', () => {
+    for (const existingGuidance of [
+      'dont_hand_roll',
+      'Dimension 12 (Pattern Compliance)',
+      'thinking-models-execution.md',
+    ]) {
+      assert.ok(content.includes(existingGuidance), `missing cross-reference to ${existingGuidance}`);
+    }
+  });
+
+  test('cannot reduce scope or override required planning constraints', () => {
+    for (const boundary of [
+      'locked user decisions',
+      'requirement coverage',
+      'security',
+      'validation',
+      'accessibility',
+      'error handling',
+      'verification',
+    ]) {
+      assert.ok(content.includes(boundary), `planning Occam check missing boundary: ${boundary}`);
+    }
+    assert.ok(content.includes('must never reduce requested scope'));
+  });
+
+  test('asks the plan checker to flag avoidable new surface only when a higher rung is sufficient', () => {
+    assert.ok(content.includes('plan checker'));
+    assert.ok(content.includes('demonstrably sufficient'));
+    assert.ok(content.includes('abstraction or dependency'));
+  });
 });
 
 // ─── Gap Closure Mode (planning only) ────────────────────────────────────────
