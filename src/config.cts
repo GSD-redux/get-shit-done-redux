@@ -148,19 +148,46 @@ function resolveSchemaDefault(cwd: string, kp: string): { found: boolean; value:
 }
 
 /**
+ * Parse a CLI-supplied config value: the grammar `config-set <key> <value>`
+ * and `config-get <key> --default <value>` share (#4262). 'true'/'false'/
+ * 'null' map to their JSON scalars, finite numerics coerce (#1581 keeps
+ * 'Infinity' a string — it must not become a JSON-null-rendering non-finite
+ * number), and a leading '['/'{' JSON.parse's with keep-as-string on parse
+ * failure. Everything else is the literal string. Sharing ONE parser is what
+ * keeps the two verbs in agreement: what `config-set k '[{"a":1}]'` persists
+ * and what `config-get k --default '[{"a":1}]'` emits are the same value.
+ */
+function parseConfigCliValue(val: string): unknown {
+  if (val === 'true') return true;
+  if (val === 'false') return false;
+  if (val === 'null') return null;
+  if (Number.isFinite(Number(val)) && val !== '') return Number(val);
+  if (val.startsWith('[') || val.startsWith('{')) {
+    try { return JSON.parse(val); } catch { /* keep as string */ }
+  }
+  return val;
+}
+
+/**
  * Emit a schema-resolved default (#2256), applying the same secret-masking
  * invariant the found-key path applies. getCapabilityConfigSchema is a
  * federated, third-party-extensible surface (ADR-1244) — a future key-name
  * collision with a secret key must not leak a declared default in plaintext.
  * Centralizing emission here means masking can't be missed at a call site.
+ *
+ * `rawArg` (#4262) is the ORIGINAL argv bytes of a `--default` whose `value`
+ * has been run through parseConfigCliValue: `--raw` must keep rendering what
+ * the user typed (`--default '["main"]' --raw` prints `["main"]`, not the
+ * parsed array's String() form `main`). Root-inheritance and schema-default
+ * callers pass real values and omit it.
  */
-function emitResolvedDefault(kp: string, value: unknown, raw: boolean): void {
+function emitResolvedDefault(kp: string, value: unknown, raw: boolean, rawArg?: string): void {
   if (isSecretKey(kp)) {
     const masked = maskSecret(value as Parameters<typeof maskSecret>[0]);
     output(masked, raw, masked);
     return;
   }
-  output(value, raw, String(value));
+  output(value, raw, rawArg !== undefined ? rawArg : String(value));
 }
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
@@ -783,20 +810,13 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
     error(`Unknown config key: "${kp}". Valid keys: ${[...VALID_CONFIG_KEYS].sort().join(', ')}, agent_skills.<agent-type>, features.<feature_name>, phase_commit_docs.<phase-id>`, ERROR_REASON.CONFIG_INVALID_KEY);
   }
 
-  // Parse value (handle booleans, numbers, and JSON arrays/objects)
-  let parsedValue: unknown = val;
-  if (val === 'true') parsedValue = true;
-  else if (val === 'false') parsedValue = false;
-  else if (val === 'null') parsedValue = null;
-  // #1581: Number.isFinite (not !isNaN) so 'Infinity'/'-Infinity' are NOT
-  // coerced to non-finite numbers that JSON.stringify later renders as `null`
-  // (disk=null while the CLI echoed 'Infinity'). They fall through to the
-  // JSON branch (which rejects them) and stay strings, then per-key validators
-  // reject them with a non-zero exit.
-  else if (Number.isFinite(Number(val)) && val !== '') parsedValue = Number(val);
-  else if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
-    try { parsedValue = JSON.parse(val); } catch { /* keep as string */ }
-  }
+  // Parse value (handle booleans, numbers, and JSON arrays/objects) with the
+  // shared CLI-value grammar — #1581's Number.isFinite guard (Infinity stays
+  // a string, never a JSON.stringify null) and the keep-as-string JSON
+  // fallback live in parseConfigCliValue, which config-get's --default also
+  // uses (#4262) so the two verbs can't drift apart again. `let` because
+  // per-key overrides below (e.g. project_code) may reassign it.
+  let parsedValue: unknown = parseConfigCliValue(val);
 
   // #2046: a bare `null` unsets (deletes) the key — the documented "Clear" action.
   // Short-circuits before every typed per-key validator so clearing a typed key
@@ -1042,6 +1062,20 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
   const configPath = path.join(planningDir(cwd), 'config.json');
   const hasDefault = defaultValue !== undefined;
 
+  // #4262: --default arrives as a raw argv element (spliced by gsd-tools's
+  // main()) — at runtime always a string. Parse it with the SAME grammar
+  // config-set uses so the JSON output path emits the VALUE the default
+  // spells, byte-identical to the same value configured in config.json
+  // (previously the string reached output() un-parsed and JSON-encoding it
+  // double-encoded: --default '[]' emitted the 4 bytes "[]" while a
+  // configured [] emitted []). The typeof guard keeps a future non-string
+  // programmatic caller pass-through. rawDefault carries the ORIGINAL argv
+  // bytes so --raw keeps rendering exactly what the user typed.
+  const parsedDefault = hasDefault && typeof defaultValue === 'string'
+    ? parseConfigCliValue(defaultValue)
+    : defaultValue;
+  const rawDefault = typeof defaultValue === 'string' ? defaultValue : undefined;
+
   if (!keyPath) {
     error('Usage: config-get <key.path> [--default <value>]');
   }
@@ -1061,7 +1095,7 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
       // (When no workstream is active, resolveFromRootConfig is a no-op: same file.)
       const rootVal = resolveFromRootConfig(cwd, kp);
       if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
-      if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
+      if (hasDefault) { emitResolvedDefault(kp, parsedDefault, raw, rawDefault); return; }
       const sd = resolveSchemaDefault(cwd, kp);
       if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
       error('No config.json found at ' + configPath, ERROR_REASON.CONFIG_NO_FILE);
@@ -1088,7 +1122,7 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
       // #2702: root-config inheritance before --default / schema default (see above).
       const rootVal = resolveFromRootConfig(cwd, kp);
       if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
-      if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
+      if (hasDefault) { emitResolvedDefault(kp, parsedDefault, raw, rawDefault); return; }
       const sd = resolveSchemaDefault(cwd, kp);
       if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
       error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
@@ -1111,7 +1145,7 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
     // #2702: root-config inheritance before --default / schema default (see above).
     const rootVal = resolveFromRootConfig(cwd, kp);
     if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
-    if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
+    if (hasDefault) { emitResolvedDefault(kp, parsedDefault, raw, rawDefault); return; }
     const sd = resolveSchemaDefault(cwd, kp);
     if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
     error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);

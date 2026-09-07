@@ -553,9 +553,14 @@ node gsd-tools.cjs config-set <key> <value>
 # Get a config value
 node gsd-tools.cjs config-get <key>
 
+# Get a config value with a fallback for when the key is absent
+node gsd-tools.cjs config-get <key> --default <value>
+
 # Set model profile
 node gsd-tools.cjs config-set-model-profile <profile>
 ```
+
+`--default <value>` accepts the same value grammar as `config-set`: `true` / `false` / `null` literals, finite numbers, and JSON arrays or objects; anything else is a literal string. The two verbs share one parser, so a default spells the same value `config-set` would have persisted. Without `--raw` the output is the JSON-encoded value — `--default '[]'` emits `[]`, byte-identical to reading the same value from `config.json`. With `--raw` the argument's literal bytes are printed. A present key always wins: `--default` applies only when the key is absent from the project (and root) config and has no schema default.
 
 ---
 
