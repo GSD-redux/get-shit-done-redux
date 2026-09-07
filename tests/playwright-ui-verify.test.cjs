@@ -327,7 +327,8 @@ function stripComment(line) {
     // parenthesised INSIDE a word: their `)` ends the construct, not the word, so a `#` right
     // after it is literal (`cat <(printf x)#c` prints `/dev/fd/63#c`). Same context as `$( )`.
     // Round review, continuation 2.
-    if (/[<>@*+?!]/.test(c) && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
+    // NOT inside double quotes, where these are literal text (`$(` is live there; these are not).
+    if (ctx !== 'dq' && /[<>@*+?!]/.test(c) && line[i + 1] === '(') { out += c + line[i + 1]; i += 1; stack.push('cmd'); continue; }
     // Nested parens inside `$( )`. A raw subshell — `$( (printf x); printf "%s" " # " )`
     // — closed the outer context at the INNER `)`, after which every quote was
     // misclassified and the trailing continuation was truncated away. Driven. Depth is
@@ -1461,6 +1462,11 @@ describe('#4176 — bash reader, units', () => {
     assert.strictEqual(stripComment('echo @(a)#c'), 'echo @(a)#c');
     assert.strictEqual(stripComment('echo @(a) #c'), 'echo @(a)');
     assert.strictEqual(stripComment('echo $(printf x)#c'), 'echo $(printf x)#c');
+    // Inside double quotes those openers are literal text; an unmatched one must not
+    // poison the context and swallow a real comment. Round review, continuation 3.
+    assert.strictEqual(stripComment('echo "@(a" # fi'), 'echo "@(a"');
+    assert.strictEqual(stripComment('echo "<(x" # fi'), 'echo "<(x"');
+    assert.strictEqual(stripComment('echo "$(printf x)" # fi'), 'echo "$(printf x)"');
   });
 
   test('logicalLines joins only a backslash that is the LAST character of the line, in an odd run', () => {
@@ -1525,7 +1531,7 @@ const scriptGen = fc.letrec((tie) => ({
     // What surrounds the marker: a plain echo, a quoted string carrying control keywords
     // (the `echo "we do work"` false-fire class), a trailing comment that itself carries
     // keywords (the `fi # comment` desync class), or a continuation across two lines.
-    dress: fc.constantFrom('plain', 'dq-keywords', 'sq-keywords', 'comment', 'continued', 'hash-in-quotes', 'backslash-space', 'escaped-backslash', 'operator-comment'),
+    dress: fc.constantFrom('plain', 'dq-keywords', 'sq-keywords', 'comment', 'continued', 'hash-in-quotes', 'backslash-space', 'escaped-backslash', 'operator-comment', 'quoted-opener-comment'),
   }),
   ifBlock: fc.record({
     kind: fc.constant('if'),
@@ -1575,6 +1581,8 @@ function render(tree, opts) {
         case 'escaped-backslash': emit(depth, `echo "${m}" \\\\`); break;
         // A comment opened right after an operator, no space — bash ends the word at `;`.
         case 'operator-comment': emit(depth, `echo "${m}";# fi done esac`); break;
+        // Opener-like text inside quotes, then a real comment carrying keywords.
+        case 'quoted-opener-comment': emit(depth, `echo "${m} <(x @(y" # fi done`); break;
         default: throw new Error(`unknown dress ${node.dress}`);
       }
       expect.push({ id, guards: guards.slice(), exec });
