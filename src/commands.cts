@@ -49,7 +49,7 @@ import { parseCodexAgentToml, renderCodexAgentToml, stripModel, stripReasoningEf
 import hostIntegrationMod = require('./host-integration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, planningPaths } = planningWorkspace;
+const { planningDir, planningPaths, todosDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar } = frontmatter;
@@ -239,7 +239,10 @@ function cmdCurrentTimestamp(format: string | undefined, raw: boolean): void {
 }
 
 function cmdListTodos(cwd: string, area: string | undefined, raw: boolean): void {
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
+  // #4256: todos are root-scoped shared state — resolve via todosDir(cwd),
+  // never planningDir(cwd) (workstream-scoped), or the listing goes empty
+  // under a workstream.
+  const pendingDir = path.join(todosDir(cwd), 'pending');
 
   let count = 0;
   const todos: Array<{ file: string; created: string; title: string; area: string; path: string; severity?: string }> = [];
@@ -2778,7 +2781,8 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
 function cmdTodoMatchPhase(cwd: string, phase: string | undefined, raw: boolean): void {
   if (!phase) { error('phase required for todo match-phase'); }
 
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
+  // #4256: root-scoped todos read — see cmdListTodos.
+  const pendingDir = path.join(todosDir(cwd), 'pending');
   const todos: Array<{
     file: string;
     title: string;
@@ -2945,8 +2949,12 @@ function cmdTodoComplete(cwd: string, filename: string | undefined, options: Tod
     error('filename required for todo complete');
   }
 
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
-  const completedDir = path.join(planningDir(cwd), 'todos', 'completed');
+  // #4256: root-scoped todos read/write — see cmdListTodos. The pending and
+  // completed halves of the move must resolve from the SAME root or the
+  // completion would strand files where no reader looks.
+  const todosRoot = todosDir(cwd);
+  const pendingDir = path.join(todosRoot, 'pending');
+  const completedDir = path.join(todosRoot, 'completed');
   const sourcePath = path.join(pendingDir, filename as string);
 
   if (!fs.existsSync(sourcePath)) {
