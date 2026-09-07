@@ -114,10 +114,17 @@ function logicalLines(lines) {
   const joined = [];
   let buf = null;
   for (const raw of lines) {
-    const piece = buf === null ? raw : `${buf} ${raw.trim()}`;
-    const trimmedEnd = piece.replace(/[\t ]+$/, '');
-    if (trimmedEnd.endsWith('\\')) {
-      buf = trimmedEnd.slice(0, -1).replace(/[\t ]+$/, '');
+    // Leading whitespace only comes off a continuation line. A `.trim()` here also took
+    // its TRAILING whitespace, which is the very thing the test below has to see.
+    const piece = buf === null ? raw : `${buf} ${raw.replace(/^[\t ]+/, '')}`;
+    // A continuation is a backslash IMMEDIATELY before the newline. The first version
+    // trimmed trailing whitespace and then looked for the backslash, which is backwards
+    // from bash: in `echo a \ ` (backslash, space, newline) the backslash escapes the
+    // SPACE and the line ends there. And the run has to be ODD — `echo a \\` is an escaped
+    // backslash at the end of a complete line. Round-2 nit 7.
+    const run = /\\+$/.exec(piece);
+    if (run && run[0].length % 2 === 1) {
+      buf = piece.slice(0, -1).replace(/[\t ]+$/, '');
       continue;
     }
     buf = null;
@@ -726,33 +733,6 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       surfaces.every((l) => /^\*\*Screenshots:\*\*[\t ]*\{?[\t ]*\$CAPTURE_STATUS\b/.test(l.trim())),
       `every Screenshots report field must render $CAPTURE_STATUS as its value: ${JSON.stringify(surfaces)}`
     );
-  });
-});
-
-describe('#4176 — bash reader, units', () => {
-  test('caseLabelOf keeps text and active aligned when a pattern carries unquoted edge whitespace', () => {
-    // Both polarities of the desync, each on a legal label bash accepts.
-    // ` 2?\?` — the last `?` is ESCAPED, so this admits `2?` + a literal `?`, not a range.
-    // With the text trimmed and `active` not, the escaped slot was read one index early.
-    const falsePass = caseLabelOf(' 2?\\?) DEV_URL=x ;;');
-    assert.ok(falsePass !== null);
-    assert.deepStrictEqual(falsePass.map((x) => x.text), ['2??']);
-    assert.strictEqual(falsePass.some(isTwoXxRange), false, 'an escaped ? is not a wildcard, whatever precedes the pattern');
-    // ` "2"??` — the digit is quoted, both `?` are live wildcards: a range.
-    const falseFail = caseLabelOf(' "2"??) DEV_URL=x ;;');
-    assert.ok(falseFail !== null);
-    assert.strictEqual(falseFail.some(isTwoXxRange), true, 'a quoted digit followed by two live wildcards is a 2xx range');
-    // Trailing whitespace, and whitespace around a `|` separator.
-    assert.strictEqual(caseLabelOf('2?? ) x').some(isTwoXxRange), true);
-    assert.deepStrictEqual(caseLabelOf('401 | 403 |407) x').map((x) => x.text), ['401', '403', '407']);
-    // A QUOTED space is pattern content and survives — it is not separator whitespace.
-    const quotedSpace = caseLabelOf('" 2"??) x');
-    assert.deepStrictEqual(quotedSpace.map((x) => x.text), [' 2??']);
-    assert.strictEqual(quotedSpace.some(isTwoXxRange), false);
-    // And every returned pattern keeps the invariant the range test relies on.
-    for (const lab of [falsePass, falseFail, quotedSpace]) {
-      for (const p of lab) assert.strictEqual(p.active.length, p.text.length, 'text and active must stay the same length');
-    }
   });
 });
 
@@ -1373,5 +1353,54 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       assert.ok(/^[0-9]+$/.test(effective) && Number(effective) > 0,
         `the effective --timeout must be a positive integer (0 IS playwright's no-timeout): ${JSON.stringify(call)}`);
     }
+  });
+});
+
+describe('#4176 — bash reader, units', () => {
+  test('caseLabelOf keeps text and active aligned when a pattern carries unquoted edge whitespace', () => {
+    // Both polarities of the desync, each on a legal label bash accepts.
+    // ` 2?\?` — the last `?` is ESCAPED, so this admits `2?` + a literal `?`, not a range.
+    // With the text trimmed and `active` not, the escaped slot was read one index early.
+    const falsePass = caseLabelOf(' 2?\\?) DEV_URL=x ;;');
+    assert.ok(falsePass !== null);
+    assert.deepStrictEqual(falsePass.map((x) => x.text), ['2??']);
+    assert.strictEqual(falsePass.some(isTwoXxRange), false, 'an escaped ? is not a wildcard, whatever precedes the pattern');
+    // ` "2"??` — the digit is quoted, both `?` are live wildcards: a range.
+    const falseFail = caseLabelOf(' "2"??) DEV_URL=x ;;');
+    assert.ok(falseFail !== null);
+    assert.strictEqual(falseFail.some(isTwoXxRange), true, 'a quoted digit followed by two live wildcards is a 2xx range');
+    // Trailing whitespace, and whitespace around a `|` separator.
+    assert.strictEqual(caseLabelOf('2?? ) x').some(isTwoXxRange), true);
+    assert.deepStrictEqual(caseLabelOf('401 | 403 |407) x').map((x) => x.text), ['401', '403', '407']);
+    // A QUOTED space is pattern content and survives — it is not separator whitespace.
+    const quotedSpace = caseLabelOf('" 2"??) x');
+    assert.deepStrictEqual(quotedSpace.map((x) => x.text), [' 2??']);
+    assert.strictEqual(quotedSpace.some(isTwoXxRange), false);
+    // And every returned pattern keeps the invariant the range test relies on.
+    for (const lab of [falsePass, falseFail, quotedSpace]) {
+      for (const p of lab) assert.strictEqual(p.active.length, p.text.length, 'text and active must stay the same length');
+    }
+  });
+
+  test('logicalLines joins only a backslash that is the LAST character of the line, in an odd run', () => {
+    // bash: `\` escapes the next character. Before a newline it joins the lines; before
+    // a space it escapes the space and the line ends; doubled, it is a literal backslash.
+    assert.deepStrictEqual(logicalLines(['echo a \\', 'b']), ['echo a b'], 'backslash-newline continues');
+    assert.deepStrictEqual(logicalLines(['echo a \\ ', 'b']), ['echo a \\ ', 'b'], 'backslash-SPACE-newline does not');
+    assert.deepStrictEqual(logicalLines(['echo a \\\\', 'b']), ['echo a \\\\', 'b'], 'an escaped backslash does not');
+    assert.deepStrictEqual(logicalLines(['echo a \\\\\\', 'b']), ['echo a \\\\ b'], 'three: one escaped pair, then a continuation');
+    // The trailing whitespace has to survive on a CONTINUATION line too, or the second
+    // physical line of a joined command could never end a line by this rule.
+    assert.deepStrictEqual(logicalLines(['echo a \\', '  b \\ ', 'c']), ['echo a b \\ ', 'c']);
+  });
+
+  test('logicalLines agrees with bash on how many commands a continuation-bearing script runs',
+    { skip: BASH_OK ? false : 'no runnable bash on this host' }, () => {
+    const script = ['echo one \\ ', 'echo two', 'echo three \\\\', 'echo four \\', '  five'].join('\n');
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 15000 });
+    const printed = splitLines(r.stdout).filter(Boolean);
+    const modelled = logicalLines(splitLines(script)).map((l) => l.trim());
+    assert.strictEqual(printed.length, modelled.length,
+      `bash ran ${printed.length} commands, the reader modelled ${modelled.length}: ${JSON.stringify(modelled)}`);
   });
 });
