@@ -123,8 +123,8 @@ DEV_NOFETCH=""
 for PORT in 3000 5173 8080; do
   # process.stdout.write, never console.log: console.log colourises a NUMBER under a TTY
   # or FORCE_COLOR, and "\033[33m200\033[39m" matches no arm. Measured.
-  # An abort can only be this program's own 5s signal (TimeoutError; AbortError on early
-  # 18.x), so it prints "timeout"; every other rejection prints "000". No process.exit()
+  # An abort can only be this program's own 5s signal (TimeoutError, or the generic
+  # AbortError older fetch builds raise), so it prints "timeout"; anything else is "000". No process.exit()
   # after the nofetch write: a pipe write is async on Windows and an exit can drop it.
   PROBE=$(node -e 'typeof fetch==="function"?fetch(process.argv[1],{redirect:"follow",signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(e=>process.stdout.write(e&&(e.name==="TimeoutError"||e.name==="AbortError")?"timeout":"000")):process.stdout.write("nofetch "+process.version)' "http://localhost:$PORT" 2>/dev/null || echo "000")
   PROBE=${PROBE:-000}
@@ -154,7 +154,8 @@ if [ -n "$DEV_URL" ]; then
   until mkdir "$SCREENSHOT_DIR" 2>/dev/null; do
     # Retry ONLY a name collision. A candidate that failed and still does not exist failed
     # structurally (parent unwritable/missing/a file, ENOSPC) — no suffix cures that.
-    if [ ! -e "$SCREENSHOT_DIR" ]; then
+    # -L as well as -e: a dangling symlink occupies the name but -e follows it and says no.
+    if [ ! -e "$SCREENSHOT_DIR" ] && [ ! -L "$SCREENSHOT_DIR" ]; then
       ALLOC_FAILURE="could not create a review directory under .planning/ui-reviews"
       SCREENSHOT_DIR=""
       break

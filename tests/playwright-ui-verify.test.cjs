@@ -1212,6 +1212,23 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       'the file standing where the directory should be must be left alone');
   });
 
+  test('a dangling symlink at the base name is a collision, retried under a suffix — not a structural stop', () => {
+    // Round-review refutation of the structural guard: a dangling symlink OCCUPIES the name
+    // (mkdir fails EEXIST) while `[ -e ]` follows the link and says nothing is there, so the
+    // guard read a collision as structural and gave up. `[ -L ]` is what sees the link.
+    // (The fixture also pins that the planted link is never adopted as the directory.)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4176-dangle-'));
+    tmpDirs.push(dir);
+    const reviews = path.join(dir, '.planning', 'ui-reviews');
+    fs.mkdirSync(reviews, { recursive: true });
+    fs.symlinkSync(path.join(dir, 'nowhere'), path.join(reviews, '07-20300101-000000'));
+    const r = ok(runFence({ FIXED_DATE: '20300101-000000', PADDED_PHASE: '07', PROBE_3000: '200' }, dir));
+    assert.match(r.stdout, /Screenshots captured/, 'a taken name must be retried, not treated as a structural failure');
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
+    assert.ok(fs.existsSync(path.join(reviews, '07-20300101-000000-1')), 'the run must have taken the first suffix');
+    assert.ok(fs.lstatSync(path.join(reviews, '07-20300101-000000')).isSymbolicLink(), 'the planted link must be left alone');
+  });
+
   test('the last candidate suffix is tried, not skipped', () => {
     // The retry loop once incremented past the bound before forming the next candidate,
     // so with the base and `-1`..`-98` taken it reported exhaustion while `-99` was free.
