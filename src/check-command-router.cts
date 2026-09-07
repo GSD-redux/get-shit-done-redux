@@ -1227,12 +1227,10 @@ interface RouteCheckCommandOptions {
 /**
  * Production subprocess binding for the gate-predicate evaluator. Wraps the
  * bounded `execTool` seam (shell-command-projection) as a `runBoundedShell`
- * the pure evaluator consumes. `sh -c` runs the declared command VERBATIM
- * (never textually pre-substituted — see `buildInterpolationEnv` in
- * gate-predicate-evaluator.cts for why); `opts.env` carries PHASE_NUMBER/
- * PHASE_DIR/PHASE_REQ_IDS so sh's own `${VAR}` expansion resolves any
- * `${PHASE_*}` placeholders in the command as inert data. The subprocess
- * otherwise inherits the process env and is killed (SIGTERM) on timeout.
+ * the pure evaluator consumes, forwarding `opts.env` (see
+ * `buildInterpolationEnv` in gate-predicate-evaluator.cts) so `sh -c` resolves
+ * `${PHASE_*}` itself. The subprocess otherwise inherits the process env and
+ * is killed (SIGTERM) on timeout.
  *
  * `timedOut` is derived from `isSpawnTimeout` (shell-command-projection.cts),
  * which checks `error.code === 'ETIMEDOUT'` — the flag Node sets on the
@@ -1351,11 +1349,8 @@ function parsePredicateFlags(args: string[]): Record<string, string> {
  *     [--phase-dir <dir>] [--phase-number <n>] [--phase-req-ids <ids>] --raw
  *
  * The subprocess runs at the runtime project root (the `cwd` passed to this
- * router), inheriting the process env. `${PHASE_NUMBER}`/`${PHASE_DIR}`/
- * `${PHASE_REQ_IDS}` in a `command-exit-zero` command are resolved from the
- * flags as REAL env vars on that subprocess (see `buildInterpolationEnv` in
- * gate-predicate-evaluator.cts) — never textually pre-substituted, so a flag
- * value containing shell metacharacters cannot inject into the command.
+ * router), inheriting the process env plus the `${PHASE_*}` flags (see
+ * `buildPredicateDeps` above for how).
  */
 function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): void {
   const flags = parsePredicateFlags(args);
@@ -1371,25 +1366,16 @@ function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): vo
     error('predicate --predicate value must be valid JSON', ERROR_REASON.USAGE);
     return;
   }
-  // SECURITY (path confinement, #4354): `--phase-dir` reaches here from the
-  // workflow gate-dispatch on behalf of a capability-declared gate, and was
-  // previously used verbatim. `findPhaseArtifact` below confines the artifact
-  // SUFFIX under phaseDir but nothing confined phaseDir itself, so an
-  // out-of-project directory (or an in-project symlink resolving out of it)
-  // could source a BLOCKING gate's `block:false` verdict; the same value also
-  // reaches `${PHASE_DIR}` for the `command-exit-zero` kind (as a real env var,
-  // not a text substitution — see gate-predicate-evaluator.cts). Confine it at
-  // this seam — cmdCheckPredicate is the ONLY caller of evaluatePredicate, so
-  // ctx.phaseDir cannot be produced anywhere else — and forward the
-  // realpath-canonical form so the env var carries the same verified path the
-  // check saw.
-  //
-  // Blank is NOT an error: `--phase-dir "${PHASE_DIR}"` with PHASE_DIR unset is
-  // the workflow's documented "no phase context" shape, which the evaluator
-  // already treats as absent (falling back to the project root).
-  const rawPhaseDir = flags['phase-dir'];
+  // SECURITY (path confinement, #4354): `findPhaseArtifact` below confines
+  // only the artifact SUFFIX under phaseDir, never phaseDir itself, so a
+  // raw `--phase-dir` could source a BLOCKING gate's `block:false` verdict
+  // from outside the project. Confine it here — cmdCheckPredicate is the
+  // ONLY caller of evaluatePredicate — and forward the realpath-canonical
+  // form. Blank is NOT an error: it's the workflow's "no phase context"
+  // shape, which the evaluator already falls back on.
+  const rawPhaseDir = (flags['phase-dir'] ?? '').trim();
   let phaseDir: string | undefined;
-  if (typeof rawPhaseDir === 'string' && rawPhaseDir.trim().length > 0) {
+  if (rawPhaseDir.length > 0) {
     const confined = validatePath(rawPhaseDir, projectDir, { allowAbsolute: true });
     if (!confined.safe) {
       error(`predicate --phase-dir must resolve inside the project: ${confined.error}`, ERROR_REASON.USAGE);

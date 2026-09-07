@@ -61,8 +61,9 @@ contract documented in ADR-0894 (capability declaration format) and the
 
 `--phase-dir` is the only directory path supplied to predicate evaluation, and
 both built-in kinds read it: `artifact-frontmatter-equals` searches it for the
-artifact, and `command-exit-zero` interpolates it as `${PHASE_DIR}`. It is
-therefore resolved against the project root and rejected if it escapes:
+artifact, and `command-exit-zero` exposes it as `${PHASE_DIR}` (see
+**Interpolation** below). It is therefore resolved against the project root
+and rejected if it escapes:
 
 - A relative value resolves against the project root, never the process cwd.
 - The value is canonicalized with `realpath`, so a symlink whose target lands
@@ -116,7 +117,13 @@ undefined placeholder resolves to the empty string.
 **Quote it with double quotes**, e.g. `"${PHASE_DIR}"` (every example above
 does). Single quotes suppress ALL shell parameter expansion (standard POSIX
 `sh` behavior, not specific to this evaluator) — `'${PHASE_DIR}'` stays the
-literal text `${PHASE_DIR}`, unexpanded.
+literal text `${PHASE_DIR}`, which never matches a real path, so `test -f
+'${PHASE_DIR}/x'` always fails (`block: true`). **In a NEGATED command this
+fails OPEN, not closed**: `! test -f '${PHASE_DIR}/x'` always exits 0
+(`block: false`), since the always-failing `test` always negates to success —
+silently skipping the check it declares. This is an authoring mistake in the
+capability's own trusted command, not an attacker-reachable path (ADR-2008
+"Trust model"), but it fails in the dangerous direction, so double-quote it.
 
 **Sandbox.** cwd = project root; env = inherited from the GSD process plus
 the three `PHASE_*` vars above; killed (SIGTERM) on timeout. The command runs

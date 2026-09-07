@@ -48,8 +48,9 @@ re-parsed as command syntax. Anything else (`${HOME}`, `$VAR`, etc.) is left
 for `sh` to interpret against the inherited env.
 
 Always double-quote the placeholder, e.g. `"${PHASE_DIR}"` (see the example
-below) — single quotes suppress shell expansion entirely, so `'${PHASE_DIR}'`
-never resolves.
+below) — single quotes suppress shell expansion entirely and can fail your
+gate open in a negated command. See [Reference: gate
+predicates](../reference/gate-predicates.md#command-exit-zero) for why.
 
 ## Step 2 — declare the gate
 

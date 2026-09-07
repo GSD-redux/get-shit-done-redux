@@ -40,9 +40,6 @@ const COMMAND_MAX_LENGTH = 4096;
 /** Predicate kinds this evaluator recognises (extensible — add to KIND_TABLE). */
 const EVALUATOR_KINDS = Object.freeze(['command-exit-zero', 'artifact-frontmatter-equals']);
 
-/** Env vars exported to the subprocess so `${VAR}` in a declared command resolves them. */
-const INTERPOLATION_VAR_NAMES = Object.freeze(['PHASE_NUMBER', 'PHASE_DIR', 'PHASE_REQ_IDS']);
-
 // ─── Types (internal; runtime API is the `export =` block) ────────────────────
 
 interface PredicateContext {
@@ -76,22 +73,10 @@ interface PredicateResult {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Build the PHASE_* env passed to the `sh -c` subprocess so `${PHASE_DIR}` etc.
- * in a declared command are resolved by sh's OWN parameter expansion — never by
- * our own text substitution. A declared value (e.g. `ctx.phaseDir`, confined to
- * the project by the CLI caller but otherwise arbitrary path text) can contain
- * shell metacharacters (`$()`, backticks, `;`); pre-substituting it into the
- * command STRING would hand those characters to sh for re-parsing — a shell
- * injection distinct from (and worse than) #4354's path-confinement gap.
- * Passing it as a real env var sidesteps that: sh's `${VAR}` expansion inserts
- * the value as inert data — never re-parsed for `$()`/backtick/`;`/`|` — in an
- * unquoted OR double-quoted command template. CAVEAT: sh suppresses ALL
- * parameter expansion inside SINGLE quotes (POSIX, not specific to this
- * mechanism); a capability author who single-quotes `'${PHASE_DIR}'` gets the
- * literal placeholder text, not the value — same rule as any other `${VAR}`
- * in a shell script. Author guidance: double-quote it, as every example in
- * docs/reference/gate-predicates.md and docs/how-to/command-exit-zero-gate.md
- * already does.
+ * PHASE_* env for the `sh -c` subprocess: sh's own `${VAR}` expansion resolves
+ * them, never our text substitution, so a metacharacter-laden value can't
+ * inject (see docs/reference/gate-predicates.md § Interpolation for the full
+ * contract, including the single-quote caveat).
  */
 function buildInterpolationEnv(ctx: PredicateContext): Record<string, string> {
   return {
@@ -271,10 +256,8 @@ function evaluatePredicate(predicate: unknown, context: unknown, deps: unknown):
 export = {
   evaluatePredicate,
   evaluateCommandExitZero,
-  buildInterpolationEnv,
   COMMAND_EXIT_ZERO_DEFAULT_TIMEOUT_MS,
   COMMAND_MAX_OUTPUT_CHARS,
   COMMAND_MAX_LENGTH,
   EVALUATOR_KINDS,
-  INTERPOLATION_VAR_NAMES,
 };

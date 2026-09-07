@@ -26,32 +26,38 @@ describe('buildPredicateDeps — real bounded sh -c subprocess', () => {
   const cwd = process.cwd();
 
   test('`true` => exitCode 0, not timed out', () => {
-    const r = deps.runBoundedShell({ command: 'true', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'true', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 0);
     assert.equal(r.timedOut, false);
   });
 
   test('`false` => exitCode 1, not timed out', () => {
-    const r = deps.runBoundedShell({ command: 'false', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'false', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 1);
     assert.equal(r.timedOut, false);
   });
 
   test('`exit 3` => exitCode 3', () => {
-    const r = deps.runBoundedShell({ command: 'exit 3', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'exit 3', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 3);
   });
 
   test('stderr is captured from the subprocess', () => {
-    const r = deps.runBoundedShell({ command: 'echo oops >&2; exit 4', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'echo oops >&2; exit 4', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 4);
     assert.match(r.stderr, /oops/);
   });
 
   test('timeout kills the subprocess (SIGTERM => timedOut:true)', () => {
-    const r = deps.runBoundedShell({ command: 'sleep 1', cwd, timeoutMs: 100 });
+    const r = deps.runBoundedShell({ command: 'sleep 1', cwd, timeoutMs: 100, env: {} });
     assert.equal(r.timedOut, true);
     assert.equal(r.signal, 'SIGTERM');
+  });
+
+  test('a supplied env var reaches the real child process', () => {
+    const r = deps.runBoundedShell({ command: 'echo "$FOO"', cwd, timeoutMs: 5000, env: { FOO: 'bar123' } });
+    assert.equal(r.exitCode, 0);
+    assert.match(r.stdout, /bar123/);
   });
 });
 
@@ -157,17 +163,10 @@ describe('partitionPredicateArgs (#4130 follow-up)', () => {
 // ─── #4354: --phase-dir confinement (the flag → ctx seam) ─────────────────────
 
 /**
- * DEFECT (#4354): `cmdCheckPredicate` built `ctx.phaseDir` from `--phase-dir`
- * verbatim. `findPhaseArtifact` confines the artifact *suffix* under phaseDir
- * (`validatePath(artifactSuffix, phaseDir)`) but nothing confined phaseDir
- * itself, so a BLOCKING capability-declared gate could source a `block:false`
- * verdict from any directory on the machine — and the same unconfined value
- * interpolated into `${PHASE_DIR}` for the `command-exit-zero` kind.
- *
- * These drive the real CLI because the defect lived in the flag -> ctx seam,
- * not in the pure evaluator: only the CLI wrapper knows the project root to
- * confine against, and only it can map a rejection to the non-zero exit the
- * two-step gate contract routes per `onError`.
+ * DEFECT (#4354): `cmdCheckPredicate` used `--phase-dir` verbatim, so a
+ * BLOCKING gate could source `block:false` from outside the project. These
+ * drive the real CLI, not the pure evaluator — only the CLI wrapper knows
+ * the project root to confine against.
  */
 describe('check predicate — --phase-dir project confinement (#4354)', () => {
   const fs = require('node:fs');
@@ -255,11 +254,6 @@ describe('check predicate — --phase-dir project confinement (#4354)', () => {
     assertRejected(runPredicate(fx, traversal), 'bare relative traversal');
   });
 
-  test('[negative] ${PHASE_DIR} interpolation cannot reach outside the project', (t) => {
-    const fx = makeFixture(t);
-    assertRejected(runPredicate(fx, fx.outside, COMMAND_PREDICATE), 'command-exit-zero interpolation');
-  });
-
   test('[happy] an in-project phase dir still resolves its artifact and passes', (t) => {
     const fx = makeFixture(t);
     const result = runPredicate(fx, fx.inside);
@@ -284,21 +278,9 @@ describe('check predicate — --phase-dir project confinement (#4354)', () => {
   });
 
   /**
-   * RESIDUAL FINDING (adversarial review of #4414, pre-merge): #4354 confined
-   * `--phase-dir` to the project root but did nothing about the CONTENT of a
-   * confined-but-attacker-influenced path. Because `command-exit-zero` used to
-   * splice `ctx.phaseDir` into the declared command's TEXT before handing it to
-   * `sh -c`, a phase-dir segment containing shell metacharacters would be
-   * re-parsed by sh — a shell-injection vector strictly worse than the
-   * `block:false` bypass #4354 fixed, and reachable through the exact same
-   * `${PHASE_DIR}` path. The fix (gate-predicate-evaluator.cts
-   * `buildInterpolationEnv`) exports PHASE_DIR as a real subprocess env var
-   * instead, so sh's own `${VAR}` expansion inserts it as inert data.
-   *
-   * This directory never needs to exist on disk — `validatePath`'s
-   * ancestor-walk fallback confines a not-yet-created leaf under an existing
-   * ancestor (`.planning/phases`), so the metacharacters are exercised purely
-   * as path TEXT, never as a real filename subject to OS filename rules.
+   * A confined phase-dir can still contain shell metacharacters (residual
+   * finding on #4414's review). The leaf below never needs to exist on
+   * disk — `validatePath`'s ancestor-walk fallback confines it anyway.
    */
   test('[security] $() and backtick command substitution in --phase-dir cannot inject through the documented "${PHASE_DIR}" (double-quoted) pattern', (t) => {
     const fx = makeFixture(t);
