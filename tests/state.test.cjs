@@ -4142,6 +4142,200 @@ describe('#4243: begin-phase leaves prose lookalikes untouched, preserves unknow
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #4243 follow-up — update-progress: the bold branch of
+// stateReplaceProgressPercent is anchored to line start (same fix as #4453's
+// stateReplaceField anchoring), so prose bold-percent lookalikes stay
+// untouched and the real Progress line takes the machine-segment rewrite.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#4243 follow-up: update-progress leaves prose **Progress:** lookalikes untouched', () => {
+  const PROSE_LINE =
+    '- [2026-07-15] Progress dashboard: the **Progress:** field is machine-managed by state update-progress; do not hand-edit.';
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+    // Same #3217 free-form ROADMAP as the update-progress block above: a
+    // no-version ROADMAP is COMPLETE scope, so the percent is computed rather
+    // than withheld.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function seedOnePhaseTwoPlans() {
+    // 1 of 2 plans summarized, no *-VERIFICATION.md → min-capped 0% (the
+    // existing update-progress rows' derivation; exact value is incidental —
+    // what matters is WHERE the rewrite lands).
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan\n');
+  }
+
+  // The repro verbatim: the real status line in the plain template form, the
+  // lookalike quoted mid-sentence inside an Accumulated Context bullet whose
+  // value has no percent (the pre-fix whole-value replacement shape).
+  test('issue repro: prose lookalike is byte-identical, real plain line updates, surfaces agree', () => {
+    writeState(tmpDir, [
+      '# Project State',
+      '',
+      '## Current Position',
+      'Phase: 1 of 1',
+      'Plan: 2 of 2',
+      'Status: Executing Phase 1',
+      'Last activity: 2026-08-01 — did a thing',
+      '',
+      'Progress: [█████░░░░░] 50% (1/2 plans done)',
+      '',
+      '## Accumulated Context',
+      '',
+      '### Decisions',
+      '',
+      PROSE_LINE,
+      '',
+    ].join('\n'));
+    seedOnePhaseTwoPlans();
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `update-progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.updated, true, 'the real plain Progress line must still match');
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(
+      content.includes(PROSE_LINE),
+      `prose lookalike must survive update-progress byte-identically, got:\n${content}`,
+    );
+    // The whole-document Progress extractor (stateExtractField) is itself
+    // bold-anywhere on the read side — with a bold lookalike in prose it
+    // extracts the PROSE value, so it cannot witness this write. Assert on
+    // the Current Position section body instead (#4453's precedent for
+    // prose-lookalike fixtures), plus the frontmatter surface for agreement.
+    const pos = sectionMatchOf(content, 'Current Position');
+    assert.ok(pos, 'Current Position section should exist');
+    assert.match(
+      pos[1],
+      new RegExp(`^Progress: \\[${'░'.repeat(10)}\\] ${out.percent}% \\(1/2 plans done\\)$`, 'm'),
+      'the real plain line takes the machine-segment rewrite with its suffix intact',
+    );
+    const fm = frontmatterLib.extractFrontmatter(content);
+    assert.strictEqual(
+      Number(fm.progress && fm.progress.percent),
+      out.percent,
+      'frontmatter percent must agree with the reported percent (#4213 surfaces-agree)',
+    );
+  });
+
+  // Corruption shape 2: lookalike section ordered BEFORE the status line,
+  // real field in the line-start bold form.
+  test('lookalike before Current Position: prose survives, real line-start bold line updates', () => {
+    writeState(tmpDir, [
+      '# Project State',
+      '',
+      '## Accumulated Context',
+      '',
+      PROSE_LINE,
+      '',
+      '## Current Position',
+      '',
+      '**Progress:** [█████░░░░░] 50% (2/4 plans done; blocked on API keys)',
+      '',
+    ].join('\n'));
+    seedOnePhaseTwoPlans();
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `update-progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.updated, true);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(
+      content.includes(PROSE_LINE),
+      `prose lookalike must survive update-progress byte-identically, got:\n${content}`,
+    );
+    // Read-side extractor is bold-anywhere (see C1 note): assert on the
+    // Current Position section body instead.
+    const pos = sectionMatchOf(content, 'Current Position');
+    assert.ok(pos, 'Current Position section should exist');
+    assert.match(
+      pos[1],
+      new RegExp(`^\\*\\*Progress:\\*\\* \\[${'░'.repeat(10)}\\] ${out.percent}% \\(2/4 plans done; blocked on API keys\\)$`, 'm'),
+      'the real line-start bold line takes the machine-segment rewrite with its suffix intact',
+    );
+  });
+
+  // Honest absence: with only a prose lookalike (no line-start Progress line
+  // at all), the command must report updated:false with the #3957 body-layer
+  // reason — not a false success that corrupts the prose.
+  test('lookalike only, no body Progress line: updated:false, file unchanged', () => {
+    const before = [
+      '# Project State',
+      '',
+      '## Accumulated Context',
+      '',
+      PROSE_LINE,
+      '',
+    ].join('\n');
+    writeState(tmpDir, before);
+    seedOnePhaseTwoPlans();
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `update-progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.updated, false, 'a prose lookalike is not a Progress line');
+    assert.strictEqual(
+      out.reason,
+      'no Progress: line found in STATE.md body to update (frontmatter progress data is unaffected)',
+    );
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(content.includes(PROSE_LINE), 'the prose must be untouched');
+  });
+
+  // #2177 priority restated at CLI level among LINE-START forms: an earlier
+  // free-text plain `Progress:` line must not capture the rewrite ahead of
+  // the real bold status line.
+  test('free-text plain Progress: line above the real bold line stays byte-identical (#2177)', () => {
+    const freeText = 'Progress: tracked in the weekly thread, do not edit this line by hand';
+    writeState(tmpDir, [
+      '# Project State',
+      '',
+      freeText,
+      '',
+      '**Progress:** [█████░░░░░] 50%',
+      '',
+      '## Accumulated Context',
+      '',
+      PROSE_LINE,
+      '',
+    ].join('\n'));
+    seedOnePhaseTwoPlans();
+
+    const result = runGsdTools('state update-progress', tmpDir);
+    assert.ok(result.success, `update-progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.updated, true);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(content.includes(freeText), 'the free-text plain line must stay byte-identical');
+    assert.ok(content.includes(PROSE_LINE), 'the prose lookalike must stay byte-identical');
+    // Read-side extractor is bold-anywhere (see the C1 note above); the free-
+    // text plain line and the prose lookalike both precede nothing relevant —
+    // assert on the top-of-body region between the title and the first ##.
+    const beforeFirstSection = content.split(/\n## /)[0];
+    assert.match(
+      beforeFirstSection,
+      new RegExp(`^\\*\\*Progress:\\*\\* \\[${'░'.repeat(10)}\\] ${out.percent}%$`, 'm'),
+      'the line-start bold status line is the one rewritten',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Bug #1589 — progress counters not updated during plan execution
 // ─────────────────────────────────────────────────────────────────────────────
 
