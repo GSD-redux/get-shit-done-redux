@@ -102,6 +102,8 @@ describe('config-field-docs', () => {
       api_coverage_gate: 'workflow.api_coverage_gate',
       text_mode: 'workflow.text_mode',
       compact_content: 'workflow.compact_content',
+      context_warning_threshold: 'hooks.context_warning_threshold',
+      context_critical_threshold: 'hooks.context_critical_threshold',
       subagent_timeout: 'workflow.subagent_timeout',
       branching_strategy: 'git.branching_strategy',
       phase_branch_template: 'git.phase_branch_template',

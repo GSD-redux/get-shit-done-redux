@@ -109,6 +109,11 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // single source of truth, matching workflow.smart_zone_tokens /
   // planning.pr_strict / workflow.inline_plan_threshold below.
   'workflow.compact_content': CONFIG_DEFAULTS.compact_content,
+  // #4285: context-monitor fire-points, in REMAINING context percent. Derived
+  // from the defaults manifest via CONFIG_DEFAULTS so the manifest stays the
+  // single source of truth, matching workflow.compact_content above.
+  'hooks.context_warning_threshold': CONFIG_DEFAULTS.context_warning_threshold,
+  'hooks.context_critical_threshold': CONFIG_DEFAULTS.context_critical_threshold,
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,

@@ -70,6 +70,8 @@
   },
   "hooks": {
     "context_warnings": true,
+    "context_warning_threshold": 35,
+    "context_critical_threshold": 25,
     "workflow_guard": false
   },
   "ship": {

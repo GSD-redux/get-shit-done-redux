@@ -145,6 +145,8 @@ const CONFIG_DEFAULTS = {
   exa_search: _getConfigDefault('exa_search'),
   text_mode: _getNestedConfigDefault('workflow', 'text_mode'),
   compact_content: _getNestedConfigDefault('workflow', 'compact_content'),
+  context_warning_threshold: _getNestedConfigDefault('hooks', 'context_warning_threshold'),
+  context_critical_threshold: _getNestedConfigDefault('hooks', 'context_critical_threshold'),
   sub_repos: _getNestedConfigDefault('planning', 'sub_repos'),
   pr_strict: _getNestedConfigDefault('planning', 'pr_strict'),
   resolve_model_ids: _getConfigDefault('resolve_model_ids'),
