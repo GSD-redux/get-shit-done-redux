@@ -476,7 +476,7 @@ describe('bug #4254: sequential executor supplied-root pin', () => {
       for (const driveForm of ['C:/Users/runneradmin/repo', 'C:\\Users\\RUNNER~1\\repo']) {
         const formGate = runHook(
           '-c',
-          [`case '${driveForm.replace(/'/g, `'\\''`)}' in /*|[A-Za-z]:[\\\\/]*) echo FORM_OK;; *) echo FORM_REJECT;; esac`],
+          [`case '${driveForm.replace(/'/g, `'\\''`)}' in /*|[A-Za-z]:/*|[A-Za-z]:\\\\*) echo FORM_OK;; *) echo FORM_REJECT;; esac`],
           { interpreter: 'bash', cwd: lane, timeoutMs: HOOK_FANOUT_TIMEOUT_MS },
         );
         assert.equal(formGate.stdout.trim(), 'FORM_OK', `drive form ${driveForm} must pass the form gate`);

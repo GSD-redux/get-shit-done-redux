@@ -56,7 +56,7 @@ gsd_pin_fail() {
 }
 case "$PINNED_ROOT" in
   ''|'{PINNED_ROOT}') gsd_pin_fail ;;     # empty or unexpanded pin — fail closed, never warn-and-proceed
-  /*|[A-Za-z]:[\\/]*) ;;                  # absolute POSIX / MSYS / Windows drive form, either separator
+  /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;         # absolute POSIX / MSYS / Windows drive form, either separator
   *) gsd_pin_fail ;;                      # relative pin — never trustworthy across cwds
 esac
 ACTUAL_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || gsd_pin_fail
