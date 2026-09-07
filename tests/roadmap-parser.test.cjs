@@ -3580,7 +3580,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
   const TABLE_ROADMAP = [
     '# Roadmap: Table Repro', '',
     '## Milestone v2.0', '',
-    '| Phase | Focus | Requirements | Success criteria (preview) |',
+    '| Phase | Name | Requirements | Success criteria (preview) |',
     '| --- | --- | --- | --- |',
     '| 20 | Alpha focus | R1 | Works |',
     '| 21 | Beta focus | R2 | Works too |',
@@ -3633,6 +3633,44 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
       a3.ok(out.phases.some((p) => /Alpha focus/.test(p.phase_name || p.name || '')), 'phase 20 named from column 2');
     });
 
+    t3('#4480: table phase names are resolved by a recognized header', () => {
+      const nameRows = rp3.collectTablePhaseRows([
+        '| Phase | Status | Name |',
+        '| --- | --- | --- |',
+        '| 1 | done | First Thing |',
+      ].join('\n'));
+      const phaseNameRows = rp3.collectTablePhaseRows([
+        '| Phase | Phase Name | Status |',
+        '| --- | --- | --- |',
+        '| 2 | Second Thing | pending |',
+      ].join('\n'));
+      a3.deepStrictEqual(nameRows.map(({ id, name }) => ({ id, name })), [
+        { id: '1', name: 'First Thing' },
+      ]);
+      a3.deepStrictEqual(phaseNameRows.map(({ id, name }) => ({ id, name })), [
+        { id: '2', name: 'Second Thing' },
+      ]);
+    });
+
+    t3('#4480: a status table cannot hide missing phase details', () => {
+      writeRoadmap3(tmpDir, [
+        '# Roadmap', '',
+        '## Phases', '',
+        '- [x] **Phase 1: First Thing** — shipped',
+        '- [ ] **Phase 2: Second Thing** — not started', '',
+        '## Progress', '',
+        '| Phase | Status |',
+        '| --- | --- |',
+        '| 1 | done |',
+        '',
+      ].join('\n'));
+      const r = rgt3(['roadmap', 'analyze', 'json'], tmpDir);
+      a3.ok(r.success, `analyze failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      a3.strictEqual(out.phase_count, 0, `status rows are not declarations; got ${r.output}`);
+      a3.deepStrictEqual(out.missing_phase_details, ['1', '2']);
+    });
+
     t3('#3577: the canonical progress table is not a phase listing; fenced examples excluded', () => {
       writeRoadmap3(tmpDir, [
         '# Roadmap', '', '## v1.0', '',
@@ -3642,7 +3680,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
         '| 3 | 1/2 | In Progress | |',
         '',
         '```md',
-        '| Phase | Focus |',
+        '| Phase | Name |',
         '| --- | --- |',
         '| 77 | fenced example |',
         '```',
@@ -3664,7 +3702,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
       writeRoadmap3(tmpDir, [
         '# Roadmap', '', '## v1.0', '',
         '### Phase 1: Heading Form', '**Goal:** g', '',
-        '| Phase | Focus |',
+        '| Phase | Name |',
         '| --- | --- |',
         '| 1 | heading dup guard |',
         '| 2.5 | decimal row |',
