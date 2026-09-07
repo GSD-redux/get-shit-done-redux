@@ -53,6 +53,15 @@ Both keys are optional and both are percentages of context window **remaining**,
 so a *larger* number fires *earlier*. Absent keys resolve to the defaults above,
 which is what every existing project gets.
 
+**Both keys require an installed monitor.** They are read by
+`hooks/gsd-context-monitor.js` and by nothing else, so on a runtime where that
+hook is not installed they are inert — `config-set` still stores them and still
+validates them, but no hook consumes them. Codex is that case today: the hook is
+deliberately not staged for it, because the metrics bridge it reads is written
+only by `hooks/gsd-statusline.js`, which Codex never installs (#2586). Storing a
+value is therefore not evidence that a fire-point moved; check that the monitor
+is installed for the runtime first.
+
 The hook never blocks a tool call, so it never throws on a bad value — it
 degrades:
 

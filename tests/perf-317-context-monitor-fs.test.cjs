@@ -2954,7 +2954,13 @@ describe('#4285 properties: resolveThresholds holds its domain invariants for ar
     fc.assert(
       fc.property(
         fc.double({ min: 26, max: 100, noNaN: true }),
-        fc.oneof(fc.string(), fc.boolean(), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant(Infinity), fc.double({ min: 100.001, max: 1e6, noNaN: true })),
+        // The negative arm is not decoration: without it a resolver that
+        // reverts BOTH keys whenever critical is negative passes every other
+        // property (verified — it answers 35/25 for {45, -5} where the
+        // resolver answers 45/25). Found by Codex review of this round; the
+        // mirrored property below already carried its negative arm, and the
+        // asymmetry between the two is exactly what hid the gap.
+        fc.oneof(fc.string(), fc.boolean(), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant(Infinity), fc.double({ min: 100.001, max: 1e6, noNaN: true }), fc.double({ min: -1e6, max: -0.001, noNaN: true })),
         (warning, junkCritical) => {
           const r = resolveThresholds({
             context_warning_threshold: warning,
