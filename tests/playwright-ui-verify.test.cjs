@@ -362,6 +362,20 @@ function caseLabelOf(line) {
   let quote = null;
   let end = -1;
   const push = (c, isActive) => { cur += c; active.push(isActive); };
+  // Finish a pattern by trimming `cur` and `active` IN LOCKSTEP, and only UNQUOTED
+  // whitespace. They are parallel arrays, so `cur.trim()` alone shifts every later index
+  // of `active` by the number of characters it removed — driven: ` 2?\?` (leading space,
+  // last `?` escaped) read as a RANGE, because the escaped `?` at index 2 was looked up at
+  // index 1, the wildcard's slot; and ` "2"??` read as NOT a range for the mirror reason.
+  // A quoted space is part of the pattern, not the separator, so it stays. Round-2
+  // finding 2 (`map_key_unchecked`).
+  const finish = () => {
+    let s0 = 0;
+    let e0 = cur.length;
+    while (s0 < e0 && /[\t ]/.test(cur[s0]) && active[s0]) s0 += 1;
+    while (e0 > s0 && /[\t ]/.test(cur[e0 - 1]) && active[e0 - 1]) e0 -= 1;
+    patterns.push({ text: cur.slice(s0, e0), active: active.slice(s0, e0) });
+  };
   for (let i = 0; i < t.length; i += 1) {
     const c = t[i];
     if (quote) {
@@ -372,12 +386,12 @@ function caseLabelOf(line) {
     }
     if (c === '\\') { push(t[i + 1] ?? '', false); i += 1; continue; }
     if (c === "'" || c === '"') { quote = c; continue; }
-    if (c === '|') { patterns.push({ text: cur.trim(), active }); cur = ''; active = []; continue; }
+    if (c === '|') { finish(); cur = ''; active = []; continue; }
     if (c === ')') { end = i; break; }
     push(c, true);
   }
   if (end < 0) return null;
-  patterns.push({ text: cur.trim(), active });
+  finish();
   // Whitespace only disqualifies an UNQUOTED pattern: `"x y"` is one legal pattern, and
   // rejecting the whole label for it false-FAILED an otherwise-valid arm. Driven.
   if (patterns.length === 0
@@ -712,6 +726,33 @@ describe('#4176 — gsd-ui-auditor screenshot capture is honest', () => {
       surfaces.every((l) => /^\*\*Screenshots:\*\*[\t ]*\{?[\t ]*\$CAPTURE_STATUS\b/.test(l.trim())),
       `every Screenshots report field must render $CAPTURE_STATUS as its value: ${JSON.stringify(surfaces)}`
     );
+  });
+});
+
+describe('#4176 — bash reader, units', () => {
+  test('caseLabelOf keeps text and active aligned when a pattern carries unquoted edge whitespace', () => {
+    // Both polarities of the desync, each on a legal label bash accepts.
+    // ` 2?\?` — the last `?` is ESCAPED, so this admits `2?` + a literal `?`, not a range.
+    // With the text trimmed and `active` not, the escaped slot was read one index early.
+    const falsePass = caseLabelOf(' 2?\\?) DEV_URL=x ;;');
+    assert.ok(falsePass !== null);
+    assert.deepStrictEqual(falsePass.map((x) => x.text), ['2??']);
+    assert.strictEqual(falsePass.some(isTwoXxRange), false, 'an escaped ? is not a wildcard, whatever precedes the pattern');
+    // ` "2"??` — the digit is quoted, both `?` are live wildcards: a range.
+    const falseFail = caseLabelOf(' "2"??) DEV_URL=x ;;');
+    assert.ok(falseFail !== null);
+    assert.strictEqual(falseFail.some(isTwoXxRange), true, 'a quoted digit followed by two live wildcards is a 2xx range');
+    // Trailing whitespace, and whitespace around a `|` separator.
+    assert.strictEqual(caseLabelOf('2?? ) x').some(isTwoXxRange), true);
+    assert.deepStrictEqual(caseLabelOf('401 | 403 |407) x').map((x) => x.text), ['401', '403', '407']);
+    // A QUOTED space is pattern content and survives — it is not separator whitespace.
+    const quotedSpace = caseLabelOf('" 2"??) x');
+    assert.deepStrictEqual(quotedSpace.map((x) => x.text), [' 2??']);
+    assert.strictEqual(quotedSpace.some(isTwoXxRange), false);
+    // And every returned pattern keeps the invariant the range test relies on.
+    for (const lab of [falsePass, falseFail, quotedSpace]) {
+      for (const p of lab) assert.strictEqual(p.active.length, p.text.length, 'text and active must stay the same length');
+    }
   });
 });
 
