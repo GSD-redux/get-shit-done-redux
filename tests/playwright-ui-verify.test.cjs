@@ -1012,7 +1012,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
   test('no dev server on any port is reported as such, and nothing is created', () => {
     const r = ok(runFence({}));
     assert.match(r.stdout, /No dev server on ports 3000, 5173 or 8080/);
-    assert.strictEqual(r.captureStatus, 'not captured (no dev server)');
+    assert.strictEqual(r.captureStatus, 'not captured (no dev server on ports 3000, 5173 or 8080)');
     assert.deepStrictEqual(r.shotDirs, [], 'no review directory may be created without a dev server');
   });
 
@@ -1022,7 +1022,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     assert.doesNotMatch(r.stdout, /Screenshots captured/, 'a failed capture must never claim success');
     assert.doesNotMatch(r.stdout, /PARTIALLY captured/);
     assert.match(r.stdout, /Screenshot capture FAILED for all 3 viewports/);
-    assert.strictEqual(r.captureStatus, 'not captured (capture failed)',
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed for all 3 viewports at http://localhost:3000)',
       'the report reads CAPTURE_STATUS, not the printed line — both have to be honest');
     assert.deepStrictEqual(r.shotDirs, [], 'the review directory must not survive a total failure');
   });
@@ -1032,7 +1032,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // which exit status and file content agree — which is why they are separate knobs.
     const r = ok(runFence({ PROBE_3000: '200', SHOT_WRITE: '', SHOT_EXIT: '' }));
     assert.doesNotMatch(r.stdout, /Screenshots captured/);
-    assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed for all 3 viewports at http://localhost:3000)');
   });
 
   test('a capture that exits 0 leaving a ZERO-BYTE file is NOT a capture', () => {
@@ -1043,7 +1043,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const r = ok(runFence({ PROBE_3000: '200', SHOT_WRITE: '', SHOT_EMPTY: 'desktop mobile tablet',
       SHOT_EXIT: '' }));
     assert.doesNotMatch(r.stdout, /Screenshots captured/);
-    assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
+    assert.strictEqual(r.captureStatus, 'not captured (capture failed for all 3 viewports at http://localhost:3000)');
   });
 
   test('a capture that writes a real file but exits non-zero is NOT a capture, and its file goes', () => {
@@ -1059,7 +1059,8 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: failed,
         SHOT_WRITE: 'desktop mobile tablet' }));
       assert.match(r.stdout, new RegExp(`PARTIALLY captured .*\\(2/3\\).*failed: ?${failed}`));
-      assert.strictEqual(r.captureStatus, 'partially captured');
+      // THE VALUE names the count and the failed viewport, as docs/AGENTS.md said it did.
+      assert.strictEqual(r.captureStatus, `partially captured (2/3 from http://localhost:3000; failed: ${failed})`);
       // Restricting the cleanup to empty files only also passed every earlier fixture,
       // because none paired a failure with a non-empty artefact — a plausible-looking
       // png from a run that crashed after writing is the worst case to leave, not the least.
@@ -1072,7 +1073,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     const r = ok(runFence({ PROBE_3000: '200', SHOT_EXIT: 'desktop',
       SHOT_WRITE: 'mobile tablet', SHOT_EMPTY: 'desktop' }));
     assert.match(r.stdout, /Screenshots PARTIALLY captured .*\(2\/3\).*failed: ?desktop/);
-    assert.strictEqual(r.captureStatus, 'partially captured');
+    assert.strictEqual(r.captureStatus, 'partially captured (2/3 from http://localhost:3000; failed: desktop)');
     assert.deepStrictEqual(r.files, ['mobile.png', 'tablet.png'],
       'the failed viewport\u2019s zero-byte file must not survive alongside the real captures');
   });
@@ -1145,7 +1146,11 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // early satisfied it while nothing was ever exhausted. Driven.
     assert.match(r.stdout, /Could not allocate a review directory/,
       'the exhaustion branch must be the one that ran, not merely some capture failure');
-    assert.strictEqual(r.captureStatus, 'not captured (capture failed)');
+    // Round-2 finding 4: this and "all three viewports failed" carried the SAME status
+    // string, while the block calls $CAPTURE_STATUS the single source of truth. The
+    // remedies differ (free a name or fix the directory, versus fix the browser), so the
+    // value has to.
+    assert.strictEqual(r.captureStatus, 'not captured (could not allocate a review directory under .planning/ui-reviews)');
     assert.doesNotMatch(r.stdout, /Screenshots captured/);
     assert.strictEqual(r.invocations.length, 0,
       'nothing may be captured when no directory was allocated — the path would be outside the project');
@@ -1176,7 +1181,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
   test('all three captures succeeding is the only path that claims "captured"', () => {
     const r = ok(runFence({ PROBE_3000: '200' }));
     assert.match(r.stdout, /Screenshots captured to .* \(3\/3\) from http:\/\/localhost:3000/);
-    assert.strictEqual(r.captureStatus, 'captured');
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:3000)');
     assert.deepStrictEqual(r.files, ['desktop.png', 'mobile.png', 'tablet.png']);
   });
 
@@ -1203,7 +1208,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
   test('the FIRST auth-gated port is the one reported', () => {
     const r = ok(runFence({ PROBE_3000: '401', PROBE_8080: '403' }));
     assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 \(HTTP 401\) is auth-gated/);
-    assert.strictEqual(r.captureStatus, 'not captured (dev server auth-gated)');
+    assert.strictEqual(r.captureStatus, 'not captured (dev server auth-gated: http://localhost:3000 (HTTP 401))');
   });
 
   test('the whole auth-required class is reported as gated, not as absent', () => {
@@ -1223,7 +1228,7 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
       const r = ok(runFence({ PROBE_3000: status }));
       assert.doesNotMatch(r.stdout, /No dev server/, `HTTP ${status} is an answer, not an absence`);
       assert.match(r.stdout, new RegExp(`Dev server at http://localhost:3000 \\(HTTP ${status}\\) answered`));
-      assert.strictEqual(r.captureStatus, 'not captured (dev server answered, not 2xx)');
+      assert.strictEqual(r.captureStatus, `not captured (dev server answered, not 2xx: http://localhost:3000 (HTTP ${status}))`);
       assert.deepStrictEqual(r.shotDirs, [], 'nothing to capture from a server that is not serving a page');
     }
   });
@@ -1233,14 +1238,14 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // beside Vite on 5173 is the everyday shape, and the capture belongs to 5173.
     const r = ok(runFence({ PROBE_3000: '404', PROBE_5173: '200' }));
     assert.match(r.stdout, /Screenshots captured .* from http:\/\/localhost:5173/);
-    assert.strictEqual(r.captureStatus, 'captured');
+    assert.strictEqual(r.captureStatus, 'captured (3/3 from http://localhost:5173)');
   });
 
   test('a port that accepts the connection but never answers is reported as present and hung, not absent', () => {
     const r = ok(runFence({ PROBE_3000: 'timeout' }));
     assert.doesNotMatch(r.stdout, /No dev server/);
     assert.match(r.stdout, /Dev server at http:\/\/localhost:3000 accepted the connection but did not answer within 5s/);
-    assert.strictEqual(r.captureStatus, 'not captured (dev server accepted the connection, no answer in 5s)');
+    assert.strictEqual(r.captureStatus, 'not captured (dev server at http://localhost:3000 accepted the connection, no answer in 5s)');
     assert.deepStrictEqual(r.shotDirs, []);
   });
 
@@ -1263,12 +1268,12 @@ describe('#4176 — the capture fence, executed', { skip: BASH_OK ? false : 'no 
     // reported. Both orderings of the ports are driven so the precedence is shown to be
     // by CLASS and not an accident of which port was probed first.
     const gatedFirst = ok(runFence({ PROBE_3000: '401', PROBE_5173: '500', PROBE_8080: 'timeout' }));
-    assert.strictEqual(gatedFirst.captureStatus, 'not captured (dev server auth-gated)');
+    assert.strictEqual(gatedFirst.captureStatus, 'not captured (dev server auth-gated: http://localhost:3000 (HTTP 401))');
     const gatedLast = ok(runFence({ PROBE_3000: 'timeout', PROBE_5173: '500', PROBE_8080: '403' }));
-    assert.strictEqual(gatedLast.captureStatus, 'not captured (dev server auth-gated)');
+    assert.strictEqual(gatedLast.captureStatus, 'not captured (dev server auth-gated: http://localhost:8080 (HTTP 403))');
     assert.match(gatedLast.stdout, /http:\/\/localhost:8080 \(HTTP 403\) is auth-gated/);
     const otherOverTimeout = ok(runFence({ PROBE_3000: 'timeout', PROBE_8080: '503' }));
-    assert.strictEqual(otherOverTimeout.captureStatus, 'not captured (dev server answered, not 2xx)');
+    assert.strictEqual(otherOverTimeout.captureStatus, 'not captured (dev server answered, not 2xx: http://localhost:8080 (HTTP 503))');
     assert.match(otherOverTimeout.stdout, /http:\/\/localhost:8080 \(HTTP 503\) answered/);
   });
 

@@ -200,7 +200,11 @@ if [ -n "$DEV_URL" ]; then
   if [ -z "$SCREENSHOT_DIR" ]; then
     # The allocation loop above gave up. Never fall through: with SCREENSHOT_DIR empty
     # the capture below would write to /desktop.png, outside the project entirely.
-    CAPTURE_STATUS="not captured (capture failed)"
+    # Its own status, not "capture failed": no capture was attempted, and the two
+    # have different remedies (free a name or fix the directory, versus fix the
+    # browser). The report renders $CAPTURE_STATUS, so the distinction has to
+    # live in the VALUE — a detail carried only by this echo never reaches it.
+    CAPTURE_STATUS="not captured (could not allocate a review directory under .planning/ui-reviews)"
     echo "Could not allocate a review directory under .planning/ui-reviews — code-only audit"
   else
     # Capture each viewport from the RESOLVED port, and believe only what the
@@ -238,13 +242,17 @@ if [ -n "$DEV_URL" ]; then
     done
 
     if [ "$CAPTURED" -eq 3 ]; then
-      CAPTURE_STATUS="captured"
+      # The VALUE carries what the echo carries — count, failed viewports, port and
+      # status — because the report template renders $CAPTURE_STATUS and nothing else.
+      # docs/AGENTS.md already described the field as naming the viewports that failed;
+      # until this line, only the transient echo did.
+      CAPTURE_STATUS="captured (3/3 from $DEV_URL)"
       echo "Screenshots captured to $SCREENSHOT_DIR (3/3) from $DEV_URL"
     elif [ "$CAPTURED" -gt 0 ]; then
-      CAPTURE_STATUS="partially captured"
+      CAPTURE_STATUS="partially captured ($CAPTURED/3 from $DEV_URL; failed:$FAILED_SHOTS)"
       echo "Screenshots PARTIALLY captured to $SCREENSHOT_DIR ($CAPTURED/3) from $DEV_URL — failed:$FAILED_SHOTS"
     else
-      CAPTURE_STATUS="not captured (capture failed)"
+      CAPTURE_STATUS="not captured (capture failed for all 3 viewports at $DEV_URL)"
       # `rm -rf`, not `rmdir`, and the atomic allocation above is what licenses it: this
       # directory was won by this audit and shared with nobody, so removing it whole
       # cannot destroy another audit's work. rmdir could not honour the claim — it fails
@@ -260,20 +268,20 @@ elif [ -n "$DEV_NOFETCH" ]; then
   CAPTURE_STATUS="not captured (cannot probe: node $DEV_NOFETCH has no fetch(); Node 18+ required)"
   echo "Cannot probe for a dev server: node $DEV_NOFETCH has no fetch() — Node 18+ is required — code-only audit"
 elif [ -n "$DEV_GATED" ]; then
-  CAPTURE_STATUS="not captured (dev server auth-gated)"
+  CAPTURE_STATUS="not captured (dev server auth-gated: $DEV_GATED)"
   echo "Dev server at $DEV_GATED is auth-gated — code-only audit"
 elif [ -n "$DEV_OTHER" ]; then
   # Precedence among the present-but-unusable outcomes: gated, then any other
   # answer, then a timeout. Each records its own FIRST port; across the three
   # the more informative answer is reported, since "401" says what to do and
   # "no answer in 5s" only says something is there.
-  CAPTURE_STATUS="not captured (dev server answered, not 2xx)"
+  CAPTURE_STATUS="not captured (dev server answered, not 2xx: $DEV_OTHER)"
   echo "Dev server at $DEV_OTHER answered but is not serving a page — code-only audit"
 elif [ -n "$DEV_TIMEOUT" ]; then
-  CAPTURE_STATUS="not captured (dev server accepted the connection, no answer in 5s)"
+  CAPTURE_STATUS="not captured (dev server at $DEV_TIMEOUT accepted the connection, no answer in 5s)"
   echo "Dev server at $DEV_TIMEOUT accepted the connection but did not answer within 5s — code-only audit"
 else
-  CAPTURE_STATUS="not captured (no dev server)"
+  CAPTURE_STATUS="not captured (no dev server on ports 3000, 5173 or 8080)"
   echo "No dev server on ports 3000, 5173 or 8080 — code-only audit"
 fi
 ```
