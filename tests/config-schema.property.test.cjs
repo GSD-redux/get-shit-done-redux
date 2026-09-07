@@ -24,6 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   isValidConfigKey,
@@ -1262,7 +1263,7 @@ describe('config-set: hooks.commit_types end-to-end (#4443)', () => {
     const result = spawnSync(
       process.execPath,
       [gsdTools, 'config-set', 'hooks.commit_types', '["enhance"]'],
-      { cwd: dir, encoding: 'utf8', timeout: 15000 },
+      { cwd: dir, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS },
     );
 
     assert.equal(result.status, 0, `config-set failed: ${result.stderr || result.stdout}`);
@@ -1282,7 +1283,7 @@ describe('config-set: hooks.commit_types end-to-end (#4443)', () => {
     const result = spawnSync(
       process.execPath,
       [gsdTools, 'config-set', 'hooks.community', 'true'],
-      { cwd: dir, encoding: 'utf8', timeout: 15000 },
+      { cwd: dir, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS },
     );
 
     assert.equal(result.status, 0, `config-set failed: ${result.stderr || result.stdout}`);
