@@ -2871,10 +2871,15 @@ describe('#4285 properties: resolveThresholds holds its domain invariants for ar
   });
 
   test('ordering: the resolved pair always satisfies critical < warning', () => {
-    // The reason the pair falls back TOGETHER. A resolver that honoured one
-    // usable half of an inconsistent pair would fail here on the first
-    // generated pair with c >= w — which the table-driven rows sample at
-    // exactly one point (20/25).
+    // This property enforces ORDERING only, and nothing more. It is NOT the
+    // one that catches a half-honoured pair: a resolver that "repaired" 45/50
+    // by resetting only critical returns 45/25, which is perfectly ordered and
+    // sails through here. `togetherness` below is what pins simultaneous
+    // reversion. (Both claims corrected after Codex review of this round — the
+    // comment previously credited this property with catching that case, and
+    // also claimed the behavioural rows sample an inconsistent pair at exactly
+    // one point, which is stale: they cover 20/25, 45/50 and the 45/45
+    // equality boundary.)
     fc.assert(
       fc.property(anyThreshold, anyThreshold, (w, c) => {
         const r = resolveThresholds({ context_warning_threshold: w, context_critical_threshold: c });
@@ -2956,6 +2961,32 @@ describe('#4285 properties: resolveThresholds holds its domain invariants for ar
             context_critical_threshold: junkCritical,
           });
           return r.warning === warning && r.critical === CRITICAL_THRESHOLD;
+        },
+      ),
+    );
+  });
+
+  test('per-key fallback, mirrored: one unusable WARNING does not discard a usable critical', () => {
+    // The mirror of the property above, and NOT redundant with it: without
+    // this, a resolver that reverts BOTH keys the moment warning is unusable
+    // passes all seven other properties. Verified against exactly that mutant
+    // — it answers 35/25 for {warning: 150, critical: 30} where the real
+    // resolver answers 35/30, and the suite stayed green at 125/0 until this
+    // row existed. (Found by Codex review of this round.)
+    //
+    // critical is generated strictly below the DEFAULT warning (35), so the
+    // resolved pair {35, critical} stays ordered and the honoured half is
+    // observable rather than swallowed by the pair check.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 34.999, noNaN: true }),
+        fc.oneof(fc.string(), fc.boolean(), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant(Infinity), fc.double({ min: 100.001, max: 1e6, noNaN: true }), fc.double({ min: -1e6, max: -0.001, noNaN: true })),
+        (critical, junkWarning) => {
+          const r = resolveThresholds({
+            context_warning_threshold: junkWarning,
+            context_critical_threshold: critical,
+          });
+          return r.warning === WARNING_THRESHOLD && r.critical === critical;
         },
       ),
     );
