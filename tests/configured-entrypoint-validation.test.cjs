@@ -436,3 +436,76 @@ test('a Codex rollback restores every manifest-tracked GSD file byte-for-byte (#
     restoreConfigLocationEnv();
   }
 });
+
+test('a minimal-profile Codex install snapshots its managed files too (#4249 CodeRabbit)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-minimal-'));
+  t.after(() => helpers.cleanup(root));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    const first = install(true, 'codex');
+    const managedPath = path.join(first.configDir, 'gsd-core', 'CHANGELOG.md');
+    // Marker-driven core profile — the `gsd update` path into minimal mode
+    // (resolveEffectiveProfile), reachable without a --minimal argv.
+    fs.writeFileSync(path.join(first.configDir, '.gsd-profile'), 'core\n');
+
+    const priorBytes = '# bytes only this test wrote\n';
+    fs.writeFileSync(managedPath, priorBytes);
+
+    const second = install(true, 'codex');
+    assert.notEqual(
+      fs.readFileSync(managedPath, 'utf8'),
+      priorBytes,
+      'a minimal Codex install must still overwrite gsd-core/, or this test proves nothing',
+    );
+
+    second.rollbackInstallerMigrations();
+    assert.equal(
+      fs.readFileSync(managedPath, 'utf8'),
+      priorBytes,
+      'a minimal Codex install must snapshot and restore its managed files, not just a full one',
+    );
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    restoreConfigLocationEnv();
+  }
+});
+
+test('a malformed prior manifest degrades the Codex rollback instead of deleting the payload (#4249 CodeRabbit)', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'configured-entrypoint-codex-badmanifest-'));
+  t.after(() => helpers.cleanup(root));
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  process.env.HOME = root;
+  process.env.USERPROFILE = root;
+  const restoreConfigLocationEnv = helpers.scrubConfigLocationEnv();
+  try {
+    const first = install(true, 'codex');
+    const managedPath = path.join(first.configDir, 'gsd-core', 'CHANGELOG.md');
+    // An unparseable manifest leaves the pre-install GSD-owned set UNKNOWN.
+    // Treating that as "fresh install" would let the removal pass delete every
+    // file the new manifest lists — i.e. the user's whole prior payload.
+    fs.writeFileSync(path.join(first.configDir, 'gsd-file-manifest.json'), '{ not json');
+
+    const second = install(true, 'codex');
+    second.rollbackInstallerMigrations();
+
+    assert.equal(
+      fs.existsSync(managedPath),
+      true,
+      'an unreadable prior manifest must not let rollback delete the managed payload',
+    );
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    restoreConfigLocationEnv();
+  }
+});

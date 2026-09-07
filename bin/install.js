@@ -10811,21 +10811,46 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   //
   // Captured BEFORE runInstallerMigrations so the bytes are the true pre-install
   // state; a migrated file's pre-migration bytes are what a rollback must land.
+  //
+  // Not gated on install mode: a `core`/`--minimal` Codex install writes
+  // gsd-core/, hooks/, scripts/ and the manifest exactly like a full one, and
+  // restoreCodexSnapshot is reachable in that mode too (#2695).
   const codexPreInstallManagedFiles = new Map();
   let codexPreInstallManifestBytes = null;
-  if (_hostBehaviors(runtime).tomlConfigInstall && !isMinimalMode(_effectiveInstallMode)) {
+  // False whenever the pre-install GSD-owned set is UNKNOWN rather than known-
+  // empty. The rollback's removal pass deletes what the snapshot does not
+  // claim, so guessing here would delete a real prior payload.
+  let codexManagedSnapshotUsable = false;
+  if (_hostBehaviors(runtime).tomlConfigInstall) {
     try {
       codexPreInstallManifestBytes = fs.readFileSync(path.join(targetDir, MANIFEST_NAME));
-      const _preManifest = JSON.parse(codexPreInstallManifestBytes.toString('utf8'));
-      for (const relPath of Object.keys((_preManifest && _preManifest.files) || {})) {
-        // Confine to targetDir: a hand-edited manifest must not turn rollback
-        // into an arbitrary-path write.
-        const resolved = resolveInstallRelativePath(targetDir, relPath);
-        if (!resolved) continue;
-        try { codexPreInstallManagedFiles.set(resolved.relPath, fs.readFileSync(resolved.fullPath)); }
-        catch (_) { /* listed but absent/unreadable — nothing to restore */ }
+    } catch (error) {
+      // ENOENT is the only readable "no prior install" signal: the pre-install
+      // GSD-owned set is genuinely empty, so rollback may remove everything
+      // this install wrote. Any other read error (EACCES, EISDIR, ...) leaves
+      // the prior set unknown.
+      codexManagedSnapshotUsable = !!(error && error.code === 'ENOENT');
+    }
+    if (codexPreInstallManifestBytes !== null) {
+      try {
+        const _preManifest = JSON.parse(codexPreInstallManifestBytes.toString('utf8'));
+        for (const relPath of Object.keys((_preManifest && _preManifest.files) || {})) {
+          // Confine to targetDir: a hand-edited manifest must not turn rollback
+          // into an arbitrary-path write.
+          const resolved = resolveInstallRelativePath(targetDir, relPath);
+          if (!resolved) continue;
+          try { codexPreInstallManagedFiles.set(resolved.relPath, fs.readFileSync(resolved.fullPath)); }
+          catch (_) { /* listed but absent/unreadable — nothing to restore */ }
+        }
+        codexManagedSnapshotUsable = true;
+      } catch (_) {
+        // Malformed manifest: which files predate this install is unknowable,
+        // so degrade to #3245's narrower rollback. Deliberately not fatal — a
+        // corrupt manifest must stay repairable by reinstalling over it.
+        codexPreInstallManagedFiles.clear();
+        codexPreInstallManifestBytes = null;
       }
-    } catch (_) { /* no prior manifest (fresh install) — nothing GSD-owned yet */ }
+    }
   }
 
   /**
@@ -10835,6 +10860,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
    * runtime, where the snapshot above is empty.
    */
   const restoreManagedFileSnapshot = () => {
+    if (!codexManagedSnapshotUsable) return;
     for (const [relPath, bytes] of codexPreInstallManagedFiles) {
       const resolved = resolveInstallRelativePath(targetDir, relPath);
       if (!resolved) continue;
