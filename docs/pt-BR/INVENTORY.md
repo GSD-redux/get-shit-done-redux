@@ -302,7 +302,7 @@ Registro completo em `gsd-core/references/*.md`. Referências são documentos de
 | `scout-codebase.md` | Tabela de seleção de tipo de fase → mapa de base de código para a etapa de scout da discuss-phase (extraída via a divisão progressiva discuss-phase/modes, #717). |
 | `revision-loop.md` | Padrões de iteração de revisão de plano. |
 | `universal-anti-patterns.md` | Antipadrões universais a detectar e evitar. |
-| `worktree-path-safety.md` | Suite de guarda do worktree: asserção de HEAD, sentinela de drift de cwd (etapa 0a, #3097) e guarda de caminho absoluto (etapa 0b, #3099) — carregados nos prompts de spawn do executor via `<execution_context>`. |
+| `worktree-path-safety.md` | Guardas de caminho do executor: pin de raiz fornecida (etapa 0p, #4254 — todo modo; o execute-phase.md binda a raiz validada pelo orquestrador em dispatches sequenciais como `<project_root_pin>`), sentinela de drift de cwd (etapa 0a, #3097) e guarda de caminho absoluto (etapa 0b, #3099) — carregados nos prompts de spawn do executor via `<execution_context>`. |
 | `artifact-types.md` | Definições de tipos de artefato de planejamento. |
 | `phase-argument-parsing.md` | Convenções de análise de argumentos de fase. |
 | `decimal-phase-calculation.md` | Regras de numeração de subfases decimais. |

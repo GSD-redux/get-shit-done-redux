@@ -6502,11 +6502,30 @@ describe('execute-phase.md dispatch wires USE_WORKTREES_FOR_PLAN (#2772)', () =>
   });
 
   test('"Worktrees disabled" sequential rule is documented per-plan, not project-level', () => {
+    // #4254 moved the wave-serialization rules into the sequential-root-pin step
+    // fragment (ADR-857 Phase 6 frozen ceiling — the host step cannot grow), so the
+    // rule is asserted where it now lives AND that the host step still wires the
+    // fragment in at the Sequential mode branch.
+    const pinFragmentPath = path.join(
+      __dirname,
+      '..',
+      'gsd-core',
+      'workflows',
+      'execute-phase',
+      'steps',
+      'sequential-root-pin.md'
+    );
+    const frag = fs.readFileSync(pinFragmentPath, 'utf-8');
+    assert.match(
+      frag,
+      /worktrees are disabled for a plan/i,
+      'sequential-execution rule must be expressed per-plan (in the sequential-root-pin fragment)'
+    );
     const md = fs.readFileSync(workflowPath, 'utf-8');
     assert.match(
       md,
-      /worktrees are disabled for a plan/i,
-      'sequential-execution rule must be expressed per-plan'
+      /execute-phase\/steps\/sequential-root-pin\.md/,
+      'execute-phase.md must wire the sequential-root-pin fragment at the Sequential mode branch'
     );
   });
 
