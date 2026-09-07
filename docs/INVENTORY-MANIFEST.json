@@ -213,6 +213,8 @@
       "autonomous-ui-design-contract.md",
       "checkpoints.md",
       "common-bug-patterns.md",
+      "compact-content-gate.md",
+      "compact-content-protected-content.md",
       "context-budget.md",
       "continuation-format.md",
       "debugger-bug-taxonomy.md",
