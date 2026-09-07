@@ -119,6 +119,11 @@ test('renderPendingTodosMarkdown: a malformed non-padded date is passed through 
   assert.match(line, /^- \[2026-9-1\] \[api\]/);
 });
 
+test('renderPendingTodosMarkdown: a non-4-digit year is not mis-sliced (near-miss YYYY-MM-DD shape)', () => {
+  const line = renderPendingTodosMarkdown([makeTodo({ created: '202-09-01T00:00:00.000Z', needs: undefined })]);
+  assert.match(line, /^- \[202-09-01T00:00:00\.000Z\] \[api\]/);
+});
+
 test('renderPendingTodosMarkdown: boundary — 241 chars (limit+1) truncates, needs dropped first', () => {
   const base = makeTodo({ needs: 'x', title: 'X' });
   const probe = renderPendingTodosMarkdown([base]);
