@@ -1,7 +1,77 @@
 # Worktree Path Safety
 
-Guards for executor agents running inside Claude Code worktrees. Three checks
-must run before any staging, Edit, or Write operation in worktree mode.
+Guards for executor agents running inside Claude Code worktrees. The
+supplied-root pin (step 0p) runs in EVERY mode; the remaining checks run before
+any staging, Edit, or Write operation in worktree mode.
+
+---
+
+## Supplied-root pin — step 0p (#4254, EVERY mode)
+
+Sequential-mode dispatch (no `isolation="worktree"`) gives the executor no
+spawn-time cwd guarantee, and the worktree-only guards below do not apply — so
+a sequential executor whose process cwd resolved to a different checkout of
+the same repo would self-derive that checkout as its root and commit there,
+silently. Step 0p closes that hole by comparing the executor's actual root
+against a root the ORCHESTRATOR already validated — never against anything the
+executor derives itself.
+
+**Runtime contract (executor):** if your prompt contains a `<project_root_pin>`
+block, run its guard script verbatim before your first Edit/Write and again
+before every commit, in the same cwd as that write or commit. On FATAL, halt
+and report — recovery (moving commits between checkouts) is an
+orchestrator/human decision, never agent self-repair. If your prompt contains
+NO `<project_root_pin>` block (worktree/isolated dispatch, or a legacy
+orchestrator), emit one warning line and continue with steps 0a/0b below — do
+not fail closed on dispatches that never carried a pin. **Never bind
+`{PINNED_ROOT}` yourself**: if this template reaches you unbound it is
+reference prose, not your pin — only the orchestrator's build-time
+substitution produces a valid guard.
+
+**Composition contract (orchestrator — build time, NOT a sub-agent runtime
+step):** copy the guard below into the dispatched prompt inside a
+`<project_root_pin>` block, substituting `{PINNED_ROOT}` with the literal value
+of `$ORCHESTRATOR_WT` captured at execute_waves entry, shell-single-quoted:
+wrap the path in `'…'` and escape any embedded `'` as `'\''`. A path that
+cannot be quoted this way must halt the phase (surface a blocker) rather than
+ship a pin that could mis-parse. The comparison is git-vs-git on BOTH sides —
+`git -C` resolves the pinned path to its repo's canonical toplevel in git's
+own path representation, so symlink aliases, trailing slashes, `/var` vs
+`/private/var` spellings, and Windows drive-letter forms compare equal by
+construction (shell `pwd -P` normalization does NOT match git's emission on
+Windows — do not re-introduce it).
+
+```bash
+# gsd:guard=supplied-root-pin (#4254) — run before the first Edit/Write and before every commit.
+PINNED_ROOT='{PINNED_ROOT}'  # orchestrator build-time substitution — the only valid source of this value
+gsd_pin_fail() {
+  echo "FATAL: executor root does not match the orchestrator-supplied PROJECT_ROOT pin (#4254)." >&2
+  echo "  Pinned root: ${PINNED_ROOT:-<empty or unexpanded>}" >&2
+  echo "  Actual root: ${ACTUAL_ROOT:-<none>}" >&2
+  echo "  No writes or commits are permitted from this checkout. HALT and report; recovery is an" >&2
+  echo "  orchestrator/human decision. Only the IMMEDIATE submodule of the pinned checkout is a" >&2
+  echo "  legitimate other cwd — nested submodules must surface as a blocker, not self-route." >&2
+  exit 1
+}
+case "$PINNED_ROOT" in
+  ''|'{PINNED_ROOT}') gsd_pin_fail ;;  # empty or unexpanded pin — fail closed, never warn-and-proceed
+  /*|[A-Za-z]:/*) ;;                   # absolute POSIX / MSYS / git-emitted Windows drive form
+  *) gsd_pin_fail ;;                   # relative pin — never trustworthy across cwds
+esac
+ACTUAL_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || gsd_pin_fail
+[ -n "$ACTUAL_ROOT" ] || gsd_pin_fail
+PINNED_TL=$(git -C "$PINNED_ROOT" rev-parse --show-toplevel 2>/dev/null) || gsd_pin_fail
+[ -n "$PINNED_TL" ] || gsd_pin_fail
+if [ "$ACTUAL_ROOT" != "$PINNED_TL" ]; then
+  # Registered-submodule allowance: sub_repos plans legitimately commit inside an
+  # immediate submodule of the pinned checkout. The superproject working tree is
+  # git-emitted in the same representation as PINNED_TL, so the equality is
+  # representation-safe on every platform.
+  SUPER_TL=$(git rev-parse --show-superproject-working-tree 2>/dev/null)
+  [ -n "$SUPER_TL" ] || gsd_pin_fail
+  [ "$SUPER_TL" = "$PINNED_TL" ] || gsd_pin_fail
+fi
+```
 
 ---
 
