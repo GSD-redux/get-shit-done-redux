@@ -103,7 +103,9 @@ if [ -n "$PHASE_START" ]; then
   if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
     UNDO_RANGE="${PHASE_START}^..HEAD"
   else
-    UNDO_RANGE="${PHASE_START}..HEAD"
+    # PHASE_START is the root commit — it has no parent to exclude. `${PHASE_START}..HEAD`
+    # would drop PHASE_START ITSELF, refusing a legitimate revert of the first commit.
+    UNDO_RANGE="HEAD"
   fi
 fi
 ```
@@ -121,7 +123,9 @@ reverted, because reverting a commit that is not in the current branch's history
 change the branch never received.
 
 ```bash
-git log --oneline --no-merges "${UNDO_RANGE}" | grep -E "\(0*${TARGET_PHASE}(-[0-9]+)?\):"
+# `|| true`: grep exits 1 on no match. The former `| head -50` masked that rc; the empty
+# case is handled by the Empty check step below, so the pipeline must not abort here.
+git log --oneline --no-merges "${UNDO_RANGE}" | grep -E "\(0*${TARGET_PHASE}(-[0-9]+)?\):" || true
 ```
 
 Use matching commits as COMMITS.
@@ -151,7 +155,9 @@ if [ -n "$PHASE_START" ]; then
   if git rev-parse "${PHASE_START}^" >/dev/null 2>&1; then
     UNDO_RANGE="${PHASE_START}^..HEAD"
   else
-    UNDO_RANGE="${PHASE_START}..HEAD"
+    # PHASE_START is the root commit — it has no parent to exclude. `${PHASE_START}..HEAD`
+    # would drop PHASE_START ITSELF, refusing a legitimate revert of the first commit.
+    UNDO_RANGE="HEAD"
   fi
 fi
 ```
@@ -160,12 +166,36 @@ Apply the same fail-closed rule as MODE=phase when `PHASE_DIR` or `UNDO_RANGE` i
 then select within the window:
 
 ```bash
-git log --oneline --no-merges "${UNDO_RANGE}" | grep -E "\(${TARGET_PLAN}\):"
+# `|| true` for the same reason as MODE=phase: an empty selection is not an error here.
+git log --oneline --no-merges "${UNDO_RANGE}" | grep -E "\(${TARGET_PLAN}\):" || true
 ```
 
 Use matching commits as COMMITS.
 
+**Report truncation, never truncate silently** — the same rule as MODE=phase. If the
+selection exceeds 50 commits, show the count and stop rather than capping:
+```
+Plan ${TARGET_PLAN} selects ${N} commits (>50). Refusing to revert a partial plan.
+Use /gsd:undo --last N and select commits explicitly.
+```
+
 ---
+
+**Known residual — a revision range is ancestry, not chronology.** `PHASE_START^..HEAD`
+excludes everything reachable from `PHASE_START^`, which is the right bound for the
+ordinary linear case. It is not a *chronological* lower bound: a long-lived side branch
+created before the phase, carrying matching scopes, and merged in **after** `PHASE_START`
+is reachable from `HEAD` without being an ancestor of `PHASE_START^`, so it stays
+selectable. This is strictly narrower than the unbounded search it replaces, not a new
+exposure — but it is not zero.
+
+**Known residual — an archived or renamed phase directory under-selects.** The anchor is
+`--diff-filter=A` on the phase directory's *current* path and does not follow renames, so
+for a phase whose directory has since moved (milestone archival moves it under
+`milestones/v<X.Y>-phases/`) the oldest add at that path is the **move** commit, and the
+phase's real work commits — which predate it — fall outside the window. The failure is
+under-selection: the undo reverts too little or refuses, never too much. Prefer
+`/gsd:undo --last N` for a phase whose directory has been archived.
 
 **Known residual — concurrent workstreams.** The window above is scoped to the target
 phase's own directory, which is workstream-correct, but the commit subjects it filters

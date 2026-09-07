@@ -83,9 +83,49 @@ describe('#4465: undo commit selection is bounded', () => {
       /UNDO_RANGE="\$\{PHASE_START\}\^\.\.HEAD"/.test(bash),
       'the selection range must be bounded at HEAD (#4465)',
     );
+  });
+
+  test('J: the root-commit branch does not drop PHASE_START itself', () => {
+    // `${PHASE_START}..HEAD` EXCLUDES PHASE_START. When PHASE_START is the root commit
+    // there is no parent to exclude, so that spelling silently drops a legitimate first
+    // phase commit and the undo refuses work it should do.
     assert.ok(
-      /UNDO_RANGE="\$\{PHASE_START\}\.\.HEAD"/.test(bash),
-      'the root-commit case must still bound at HEAD (#4465)',
+      !/UNDO_RANGE="\$\{PHASE_START\}\.\.HEAD"/.test(bash),
+      'the root-commit branch must not use ${PHASE_START}..HEAD — it drops the root commit (#4465)',
+    );
+    assert.ok(
+      /UNDO_RANGE="HEAD"/.test(bash),
+      'the root-commit branch must select over HEAD so PHASE_START itself stays in range (#4465)',
+    );
+  });
+
+  test('K: selection pipelines tolerate an empty match', () => {
+    // grep exits 1 on no match. The removed `| head -50` used to mask that rc, so the
+    // pipelines must not now abort before the workflow's own Empty check runs.
+    const selectionBlocks = extractBashBlocks(content).filter(
+      (b) => /git log --oneline --no-merges "\$\{UNDO_RANGE\}"/.test(b),
+    );
+    assert.equal(selectionBlocks.length, 2, 'expected one bounded selection pipeline per mode');
+    for (const block of selectionBlocks) {
+      assert.ok(
+        /\|\| true/.test(block),
+        `every selection pipeline must tolerate grep's no-match exit (#4465). Block:\n${block}`,
+      );
+    }
+  });
+
+  test('L: both modes stop rather than silently capping a >50 selection', () => {
+    const stops = (content.match(/Report truncation, never truncate silently/g) || []).length;
+    assert.equal(stops, 2, 'both --phase and --plan must document the >50 stop (#4465)');
+    // Executable lines only: the fix's own comment explains what `| head -50` used to mask,
+    // and a comment naming the removed cap is not the cap.
+    const code = bash
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+    assert.ok(
+      !/\| head -50/.test(code),
+      'no selection pipeline may silently cap at 50 (#4465)',
     );
   });
 
