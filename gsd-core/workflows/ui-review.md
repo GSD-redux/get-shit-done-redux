@@ -21,6 +21,10 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --raw --default "
 INIT=$(gsd_run query init.phase-op "${PHASE_ARG}")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS_UI_REVIEWER=$(gsd_run query agent-skills gsd-ui-auditor)
+# workflow.ui_interaction_capture (default false): read here and handed to the auditor
+# through its <config> block — the agent carries no gsd_run resolver of its own.
+INTERACTION_CAPTURE=$(gsd_run query config-get workflow.ui_interaction_capture --raw 2>/dev/null || echo "false")
+[ "$INTERACTION_CAPTURE" = "true" ] || INTERACTION_CAPTURE="false"
 ```
 
 **If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
@@ -94,10 +98,13 @@ ${AGENT_SKILLS_UI_REVIEWER}
 <config>
 phase_dir: {phase_dir}
 padded_phase: {padded_phase}
+interaction_capture: {INTERACTION_CAPTURE}
 </config>
 ```
 
-Omit null file paths.
+Omit null file paths. `interaction_capture` is always present — `true` only when
+`workflow.ui_interaction_capture` is on; the auditor's `<screenshot_approach>` branches on it and
+falls back to its Playwright-only static capture when it is `false` or no Chrome binary resolves.
 
 <!-- #2508 runtime-aware-dispatch -->
 
