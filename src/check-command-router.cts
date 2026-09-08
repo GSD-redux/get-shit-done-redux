@@ -1227,25 +1227,29 @@ interface RouteCheckCommandOptions {
 /**
  * Production subprocess binding for the gate-predicate evaluator. Wraps the
  * bounded `execTool` seam (shell-command-projection) as a `runBoundedShell`
- * the pure evaluator consumes. `sh -c` runs the interpolated command; the
- * subprocess inherits the process env and is killed (SIGTERM) on timeout.
+ * the pure evaluator consumes, forwarding `opts.env` (see
+ * `buildInterpolationEnv` in gate-predicate-evaluator.cts) so `sh -c` resolves
+ * `${PHASE_*}` itself. The subprocess otherwise inherits the process env and
+ * is killed (SIGTERM) on timeout.
  *
- * `timedOut` is derived from the kill signal: spawnSync sets `signal: 'SIGTERM'`
- * when the `timeout` fires, distinct from a normal non-zero exit code. A command
- * that self-terminates with SIGTERM is indistinguishable at this seam and is
- * reported as a timeout — either way the gate blocks (non-zero), so the outcome
- * is fail-closed and correct. See ADR-2008.
+ * `timedOut` is derived from `isSpawnTimeout` (shell-command-projection.cts),
+ * which checks `error.code === 'ETIMEDOUT'` — the flag Node sets on the
+ * `spawnSync` result specifically when ITS OWN `timeout` option fires, not
+ * from the kill signal. A command that self-terminates with SIGTERM (without
+ * Node's timeout ever firing) is therefore correctly reported as a plain
+ * non-zero/signal exit, not a timeout; either way the gate still blocks
+ * (non-zero), so the outcome is fail-closed and correct. See ADR-2008.
  */
 function buildPredicateDeps() {
   return {
-    runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number }): {
+    runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number; env: Record<string, string> }): {
       exitCode: number | null;
       stdout: string;
       stderr: string;
       signal: NodeJS.Signals | null;
       timedOut: boolean;
     } {
-      const r = execTool('sh', ['-c', opts.command], { cwd: opts.cwd, timeout: opts.timeoutMs });
+      const r = execTool('sh', ['-c', opts.command], { cwd: opts.cwd, timeout: opts.timeoutMs, env: opts.env });
       return {
         exitCode: r.exitCode,
         stdout: r.stdout,
@@ -1345,8 +1349,8 @@ function parsePredicateFlags(args: string[]): Record<string, string> {
  *     [--phase-dir <dir>] [--phase-number <n>] [--phase-req-ids <ids>] --raw
  *
  * The subprocess runs at the runtime project root (the `cwd` passed to this
- * router), inheriting the process env. Interpolation placeholders
- * ${PHASE_NUMBER}/${PHASE_DIR}/${PHASE_REQ_IDS} are substituted from the flags.
+ * router), inheriting the process env plus the `${PHASE_*}` flags (see
+ * `buildPredicateDeps` above for how).
  */
 function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): void {
   const flags = parsePredicateFlags(args);
@@ -1362,10 +1366,27 @@ function cmdCheckPredicate(projectDir: string, args: string[], raw: boolean): vo
     error('predicate --predicate value must be valid JSON', ERROR_REASON.USAGE);
     return;
   }
+  // SECURITY (path confinement, #4354): `findPhaseArtifact` below confines
+  // only the artifact SUFFIX under phaseDir, never phaseDir itself, so a
+  // raw `--phase-dir` could source a BLOCKING gate's `block:false` verdict
+  // from outside the project. Confine it here — cmdCheckPredicate is the
+  // ONLY caller of evaluatePredicate — and forward the realpath-canonical
+  // form. Blank is NOT an error: it's the workflow's "no phase context"
+  // shape, which the evaluator already falls back on.
+  const rawPhaseDir = (flags['phase-dir'] ?? '').trim();
+  let phaseDir: string | undefined;
+  if (rawPhaseDir.length > 0) {
+    const confined = validatePath(rawPhaseDir, projectDir, { allowAbsolute: true });
+    if (!confined.safe) {
+      error(`predicate --phase-dir must resolve inside the project: ${confined.error}`, ERROR_REASON.USAGE);
+      return;
+    }
+    phaseDir = confined.resolved;
+  }
   const ctx = {
     cwd: projectDir,
     phaseNumber: flags['phase-number'],
-    phaseDir: flags['phase-dir'],
+    phaseDir,
     phaseReqIds: flags['phase-req-ids'],
   };
   let result;

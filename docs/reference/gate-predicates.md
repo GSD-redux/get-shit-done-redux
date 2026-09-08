@@ -42,7 +42,8 @@ contract documented in ADR-0894 (capability declaration format) and the
    ```bash
    gsd_run check predicate --predicate '<predicate JSON>' [--phase-dir …] [--phase-number …] [--phase-req-ids …] --raw
    ```
-3. `check-command-router.cts:cmdCheckPredicate` parses the predicate, builds the
+3. `check-command-router.cts:cmdCheckPredicate` parses the predicate, confines
+   `--phase-dir` to the project (see **Path confinement** below), builds the
    production subprocess binding, and calls
    `gate-predicate-evaluator.cjs:evaluatePredicate`, which dispatches by
    `predicate.kind`.
@@ -55,6 +56,33 @@ contract documented in ADR-0894 (capability declaration format) and the
      malformed predicate / unknown kind), route per `onError` (`halt` or `skip`).
    - **Step 2** — if the command succeeded, a `blocking: true` gate halts on
      `block: true`; an advisory gate shows `message` and continues.
+
+## Path confinement
+
+`--phase-dir` is the only directory path supplied to predicate evaluation, and
+both built-in kinds read it: `artifact-frontmatter-equals` searches it for the
+artifact, and `command-exit-zero` exposes it as `${PHASE_DIR}` (see
+**Interpolation** below). It is therefore resolved against the project root
+and rejected if it escapes:
+
+- A relative value resolves against the project root, never the process cwd.
+- The value is canonicalized with `realpath`, so a symlink whose target lands
+  outside the project is rejected along with a plain out-of-project path.
+- Rejection is a **check-command failure** (non-zero exit), which the two-step
+  contract routes per `onError` — never a `block: false` verdict sourced from
+  outside the project.
+- A blank value stays the "no phase context" shape: the evaluator treats it as
+  absent and falls back to the project root.
+
+The predicate's own `artifact` suffix is confined under the resolved phase
+directory separately, so neither the root nor the leaf can traverse out.
+
+Confinement is a PATH check only — it guarantees the resolved directory sits
+inside the project, not that its text is safe to hand to a shell. A confined
+value can still contain shell metacharacters (e.g. a not-yet-created leaf
+segment, which confinement accepts without touching the filesystem). The
+`command-exit-zero` kind's `${PHASE_DIR}` interpolation handles that
+separately — see **Interpolation** below.
 
 ## Built-in kinds
 
@@ -70,21 +98,37 @@ contract.
 | `command` | string | yes | — | The shell command. Non-empty, ≤ 4096 chars |
 | `timeout` | number | no | `30` | Positive finite number, seconds |
 
-**Interpolation.** Before execution, three placeholders are substituted from
-the gate context; all others are left untouched for `sh` to interpret:
+**Interpolation.** Three placeholders resolve from the gate context; all
+others are left untouched for `sh` to interpret against its own env:
 
 | Placeholder | Source | Workflow flag |
 |---|---|---|
 | `${PHASE_NUMBER}` | the active phase number | `--phase-number` |
-| `${PHASE_DIR}` | the active phase directory | `--phase-dir` |
+| `${PHASE_DIR}` | the active phase directory, confined to the project (see **Path confinement**) | `--phase-dir` |
 | `${PHASE_REQ_IDS}` | the phase's requirement ids | `--phase-req-ids` |
 
-An undefined placeholder interpolates to the empty string.
+These are exported as real environment variables on the `sh -c` subprocess —
+never textually substituted into the command string — so `sh`'s own `${VAR}`
+expansion resolves them as inert data. A value containing shell
+metacharacters (`$()`, backticks, `;`, `|`) therefore cannot inject into the
+command, even though `--phase-dir` is otherwise arbitrary path text. An
+undefined placeholder resolves to the empty string.
 
-**Sandbox.** cwd = project root; env = inherited from the GSD process; killed
-(SIGTERM) on timeout. The command runs as the user, on the user's machine —
-there is no sandbox boundary vs. the user's own shell. See ADR-2008 "Trust
-model".
+**Quote it with double quotes**, e.g. `"${PHASE_DIR}"` (every example above
+does). Single quotes suppress ALL shell parameter expansion (standard POSIX
+`sh` behavior, not specific to this evaluator) — `'${PHASE_DIR}'` stays the
+literal text `${PHASE_DIR}`, which never matches a real path, so `test -f
+'${PHASE_DIR}/x'` always fails (`block: true`). **In a NEGATED command this
+fails OPEN, not closed**: `! test -f '${PHASE_DIR}/x'` always exits 0
+(`block: false`), since the always-failing `test` always negates to success —
+silently skipping the check it declares. This is an authoring mistake in the
+capability's own trusted command, not an attacker-reachable path (ADR-2008
+"Trust model"), but it fails in the dangerous direction, so double-quote it.
+
+**Sandbox.** cwd = project root; env = inherited from the GSD process plus
+the three `PHASE_*` vars above; killed (SIGTERM) on timeout. The command runs
+as the user, on the user's machine — there is no sandbox boundary vs. the
+user's own shell. See ADR-2008 "Trust model".
 
 **Result mapping.**
 

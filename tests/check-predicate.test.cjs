@@ -26,32 +26,38 @@ describe('buildPredicateDeps — real bounded sh -c subprocess', () => {
   const cwd = process.cwd();
 
   test('`true` => exitCode 0, not timed out', () => {
-    const r = deps.runBoundedShell({ command: 'true', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'true', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 0);
     assert.equal(r.timedOut, false);
   });
 
   test('`false` => exitCode 1, not timed out', () => {
-    const r = deps.runBoundedShell({ command: 'false', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'false', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 1);
     assert.equal(r.timedOut, false);
   });
 
   test('`exit 3` => exitCode 3', () => {
-    const r = deps.runBoundedShell({ command: 'exit 3', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'exit 3', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 3);
   });
 
   test('stderr is captured from the subprocess', () => {
-    const r = deps.runBoundedShell({ command: 'echo oops >&2; exit 4', cwd, timeoutMs: 5000 });
+    const r = deps.runBoundedShell({ command: 'echo oops >&2; exit 4', cwd, timeoutMs: 5000, env: {} });
     assert.equal(r.exitCode, 4);
     assert.match(r.stderr, /oops/);
   });
 
   test('timeout kills the subprocess (SIGTERM => timedOut:true)', () => {
-    const r = deps.runBoundedShell({ command: 'sleep 1', cwd, timeoutMs: 100 });
+    const r = deps.runBoundedShell({ command: 'sleep 1', cwd, timeoutMs: 100, env: {} });
     assert.equal(r.timedOut, true);
     assert.equal(r.signal, 'SIGTERM');
+  });
+
+  test('a supplied env var reaches the real child process', () => {
+    const r = deps.runBoundedShell({ command: 'echo "$FOO"', cwd, timeoutMs: 5000, env: { FOO: 'bar123' } });
+    assert.equal(r.exitCode, 0);
+    assert.match(r.stdout, /bar123/);
   });
 });
 
@@ -151,5 +157,189 @@ describe('partitionPredicateArgs (#4130 follow-up)', () => {
     const { flags, positionals } = partitionPredicateArgs(['p1', '--context', 'a', 'p2', '--context', 'b', 'p3']);
     assert.equal(flags.context, 'b');
     assert.deepEqual(positionals, ['p1', 'p2', 'p3']);
+  });
+});
+
+// ─── #4354: --phase-dir confinement (the flag → ctx seam) ─────────────────────
+
+/**
+ * DEFECT (#4354): `cmdCheckPredicate` used `--phase-dir` verbatim, so a
+ * BLOCKING gate could source `block:false` from outside the project. These
+ * drive the real CLI, not the pure evaluator — only the CLI wrapper knows
+ * the project root to confine against.
+ */
+describe('check predicate — --phase-dir project confinement (#4354)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { runGsdTools, createTempDir, cleanup } = require('./helpers.cjs');
+
+  const FRONTMATTER = '---\nstatus: complete\n---\n# Summary\n';
+
+  const ARTIFACT_PREDICATE = JSON.stringify({
+    kind: 'artifact-frontmatter-equals',
+    artifact: 'SUMMARY.md',
+    field: 'status',
+    equals: 'complete',
+  });
+  // Passes iff ${PHASE_DIR} resolves to a directory holding the outside artifact.
+  const COMMAND_PREDICATE = JSON.stringify({
+    kind: 'command-exit-zero',
+    command: 'test -f "${PHASE_DIR}/01-SUMMARY.md"',
+  });
+
+  /**
+   * A project whose in-project phase dir AND an unrelated outside dir both hold
+   * an artifact satisfying the predicate. Only the artifact's LOCATION differs
+   * between the passing case and the must-not-pass cases.
+   */
+  function makeFixture(t) {
+    const project = createTempDir('pred-4354-proj-');
+    const outside = createTempDir('pred-4354-out-');
+    t.after(() => { cleanup(project); cleanup(outside); });
+    const inside = path.join(project, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(inside, { recursive: true });
+    fs.writeFileSync(path.join(inside, '01-SUMMARY.md'), FRONTMATTER, 'utf8');
+    fs.writeFileSync(path.join(outside, '01-SUMMARY.md'), FRONTMATTER, 'utf8');
+    return { project, outside, inside };
+  }
+
+  function runPredicate(fx, phaseDir, predicateJson) {
+    return runGsdTools(
+      ['check', 'predicate',
+        '--predicate', predicateJson || ARTIFACT_PREDICATE,
+        '--phase-dir', phaseDir,
+        '--cwd', fx.project,
+        '--raw'],
+      fx.project,
+    );
+  }
+
+  /** Non-zero exit is the fail-closed shape: a step-1 command failure, routed per onError. */
+  function assertRejected(result, label) {
+    assert.strictEqual(
+      result.success, false,
+      `${label}: an out-of-project --phase-dir must fail the check COMMAND, not return a verdict. stdout: ${result.output}`,
+    );
+    assert.match(result.error, /--phase-dir must resolve inside the project/,
+      `${label}: the error must name the offending flag and the confinement rule`);
+  }
+
+  test('[negative] an unrelated outside directory cannot satisfy the gate', (t) => {
+    const fx = makeFixture(t);
+    assertRejected(runPredicate(fx, fx.outside), 'absolute outside dir');
+  });
+
+  test('[negative] a symlink inside the project resolving outside cannot satisfy the gate', (t) => {
+    const fx = makeFixture(t);
+    const link = path.join(fx.project, '.planning', 'phases', 'escape');
+    try {
+      fs.symlinkSync(fx.outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (e && ['EPERM', 'EACCES', 'ENOTSUP'].includes(e.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw e;
+    }
+    assertRejected(runPredicate(fx, link), 'in-project symlink to outside');
+  });
+
+  test('[negative] a bare relative traversal string cannot escape the project (no absolute path or symlink involved)', (t) => {
+    const fx = makeFixture(t);
+    // The most textbook escape shape for #4354, per the maintainer review: a
+    // plain `../../..` string, never resolved through path.isAbsolute or a
+    // symlink. validatePath must reject it via the same startsWith(project)
+    // check the other confinement tests exercise, not a special-cased path.
+    const traversal = path.relative(fx.project, fx.outside);
+    assertRejected(runPredicate(fx, traversal), 'bare relative traversal');
+  });
+
+  test('[happy] an in-project phase dir still resolves its artifact and passes', (t) => {
+    const fx = makeFixture(t);
+    const result = runPredicate(fx, fx.inside);
+    assert.strictEqual(result.success, true, `in-project --phase-dir must still be accepted; stderr: ${result.error}`);
+    const verdict = JSON.parse(result.output);
+    assert.strictEqual(verdict.block, false);
+    assert.strictEqual(verdict.details.match, true);
+  });
+
+  test('[happy] a project-relative in-project phase dir resolves against the project root', (t) => {
+    const fx = makeFixture(t);
+    const result = runPredicate(fx, path.join('.planning', 'phases', '01-demo'));
+    assert.strictEqual(result.success, true, `relative --phase-dir must be accepted; stderr: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).block, false);
+  });
+
+  test('[happy] ${PHASE_DIR} interpolation still reaches an in-project phase dir', (t) => {
+    const fx = makeFixture(t);
+    const result = runPredicate(fx, fx.inside, COMMAND_PREDICATE);
+    assert.strictEqual(result.success, true, `in-project command predicate must run; stderr: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).block, false);
+  });
+
+  /**
+   * A confined phase-dir can still contain shell metacharacters (residual
+   * finding on #4414's review). The leaf below never needs to exist on
+   * disk — `validatePath`'s ancestor-walk fallback confines it anyway.
+   */
+  test('[security] $() and backtick command substitution in --phase-dir cannot inject through the documented "${PHASE_DIR}" (double-quoted) pattern', (t) => {
+    const fx = makeFixture(t);
+    // Inside double quotes, sh still expands $()/backtick command substitution
+    // (only word-splitting and globbing are suppressed) — this is the exact
+    // vector #4414's adversarial review flagged, and the pattern every
+    // doc/fixture example authors are told to use.
+    const evilLeaf = '$(touch INJECTED_A)`touch INJECTED_B`';
+    const evilPhaseDir = path.join(fx.project, '.planning', 'phases', evilLeaf);
+    const predicate = JSON.stringify({ kind: 'command-exit-zero', command: 'test -d "${PHASE_DIR}"' });
+
+    const result = runPredicate(fx, evilPhaseDir, predicate);
+
+    for (const marker of ['INJECTED_A', 'INJECTED_B']) {
+      assert.strictEqual(
+        fs.existsSync(path.join(fx.project, marker)), false,
+        `--phase-dir metacharacters must never execute as code (found ${marker})`,
+      );
+    }
+    assert.strictEqual(result.success, true, `a confined-but-nonexistent phase dir must still run the check command; stderr: ${result.error}`);
+    assert.strictEqual(
+      JSON.parse(result.output).block, true,
+      'the literal metacharacter-laden path does not exist on disk, so the check fails closed',
+    );
+  });
+
+  test('[security] ;, |, $() and backtick in --phase-dir cannot inject even through an UNQUOTED ${PHASE_DIR}', (t) => {
+    const fx = makeFixture(t);
+    // Unquoted is the maximally permissive case: sh applies word-splitting and
+    // pathname expansion to the EXPANDED value, but — per POSIX — never
+    // re-scans it for `;`/`|`/quote/command-substitution syntax. A prior
+    // version of this test used a double-quoted template, under which `;` and
+    // `|` are already inert LITERAL characters regardless of the fix (they
+    // only become command separators when unquoted) — so it never actually
+    // exercised those two metacharacters. This unquoted template does.
+    const evilLeaf = '$(touch INJECTED_A)`touch INJECTED_B`;touch INJECTED_C|touch INJECTED_D';
+    const evilPhaseDir = path.join(fx.project, '.planning', 'phases', evilLeaf);
+    const predicate = JSON.stringify({ kind: 'command-exit-zero', command: 'test -e ${PHASE_DIR}' });
+
+    const result = runPredicate(fx, evilPhaseDir, predicate);
+
+    for (const marker of ['INJECTED_A', 'INJECTED_B', 'INJECTED_C', 'INJECTED_D']) {
+      assert.strictEqual(
+        fs.existsSync(path.join(fx.project, marker)), false,
+        `--phase-dir metacharacters must never execute as code (found ${marker})`,
+      );
+    }
+    assert.strictEqual(result.success, true, `a confined-but-nonexistent phase dir must still run the check command; stderr: ${result.error}`);
+  });
+
+  test('[bva:empty] a blank --phase-dir stays the "no phase context" fallback, not an error', (t) => {
+    const fx = makeFixture(t);
+    // The evaluator treats a blank phaseDir as absent and falls back to the
+    // project root; confinement must not turn that into a hard command failure.
+    // The project root holds no SUMMARY.md, so the expected verdict is block:true.
+    const result = runPredicate(fx, '');
+    assert.strictEqual(result.success, true, `blank --phase-dir must not fail the command; stderr: ${result.error}`);
+    const verdict = JSON.parse(result.output);
+    assert.strictEqual(verdict.block, true);
+    assert.strictEqual(verdict.details.artifactNotFound, true);
   });
 });
