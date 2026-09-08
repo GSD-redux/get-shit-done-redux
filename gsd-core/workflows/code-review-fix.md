@@ -258,10 +258,11 @@ if [ "$AUTO_MODE" = "true" ]; then
   # Total fix passes = MAX_ITERATIONS. Loop uses -lt (not -le) intentionally.
   ITERATION=1
   MAX_ITERATIONS=3
-  # #3190: track whether the loop converged (re-review came back clean) vs
-  # degraded (hit the cap). Convergence determines whether the .iterN.md backups
-  # are spent scratch (cleaned below) or retained for post-mortem analysis.
-  CONVERGED=false
+  # #3190's convergence-vs-degradation distinction still governs whether the .iterN.md backups are
+  # spent scratch or a post-mortem trail — but the removal moved to `cleanup_iteration_backups`,
+  # after `record_disposition` has read them, so nothing in THIS loop consumes the flag any more.
+  # It is re-derived there from the final REVIEW.md's status, which is exactly the condition the
+  # `break` below fires on. A variable set here and read nowhere would just be a decoy.
 
   while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     ITERATION=$((ITERATION + 1))
@@ -321,7 +322,8 @@ ${AGENT_SKILLS_REVIEWER}")
     " 2>/dev/null)
     
     if [ "$NEW_STATUS" = "clean" ]; then
-      CONVERGED=true
+      # Convergence: the re-review came back clean. This leaves REVIEW.md at `status: clean`, which
+      # is what `cleanup_iteration_backups` re-derives the decision from.
       echo ""
       echo "✓ All issues resolved after iteration ${ITERATION}."
       break
@@ -355,28 +357,44 @@ ${AGENT_SKILLS_FIXER}")
     fi
   done
   
-  # After loop completes
+  # After loop completes. The iteration COUNTER alone does not distinguish degradation from success:
+  # a loop that converges on the final iteration exits with ITERATION == MAX_ITERATIONS and printed
+  # "Reached maximum iterations. Remaining issues documented in REVIEW-FIX.md" over a run in which
+  # every finding was fixed — telling the operator the opposite of what happened, on the one path
+  # where the cap and convergence coincide. Convergence is re-derived from the review the loop left
+  # behind, the same signal cleanup_iteration_backups reads, so the two cannot disagree.
   if [ $ITERATION -ge $MAX_ITERATIONS ]; then
-    echo ""
-    echo "⚠ Reached maximum iterations (${MAX_ITERATIONS}). Remaining issues documented in REVIEW-FIX.md."
+    LOOP_END_STATUS=$(REVIEW_PATH="${REVIEW_PATH}" node -e "
+      const fs = require('fs');
+      try {
+        const content = fs.readFileSync(process.env.REVIEW_PATH, 'utf-8');
+        const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
+        console.log(match && /status:\s*(\S+)/.test(match[1]) ? match[1].match(/status:\s*(\S+)/)[1] : 'unknown');
+      } catch (e) { console.log('unknown'); }
+    " 2>/dev/null)
+    if [ "$LOOP_END_STATUS" = "clean" ]; then
+      # SILENT on convergence, deliberately. The loop's own break already printed "All issues
+      # resolved after iteration N" on its way out, and reaching the cap does not make that less
+      # true — adding a second success line here printed both, which is noise the first cut shipped.
+      # What this branch exists for is to NOT print the degradation warning; saying nothing is the
+      # whole behaviour.
+      :
+    else
+      echo ""
+      echo "⚠ Reached maximum iterations (${MAX_ITERATIONS}). Remaining issues documented in REVIEW-FIX.md."
+    fi
   fi
 
-  # #3190: on convergence the .iterN.md backups are spent scratch — their
-  # stated purpose is post-mortem analysis "if iterations degrade", and
-  # convergence means no degradation. Remove them so the phase directory is
-  # clean (no dirty REVIEW.md or backup files after the run). They are RETAINED
-  # when the loop degraded (hit MAX_ITERATIONS / fixer failure) so the
-  # post-mortem trail survives. Backup CREATION (cp … .iterN.md) is unchanged.
-  if [ "$CONVERGED" = "true" ]; then
-    rm -f "${REVIEW_PATH%.md}.iter"*.md "${FIX_REPORT_PATH%.md}.iter"*.md 2>/dev/null || true
-  fi
+  # #3190's cleanup of the .iterN.md backups now runs in `cleanup_iteration_backups`, AFTER
+  # `record_disposition` — see that step for why. Removing them here deleted the only record of
+  # what the earlier iterations fixed before anything had read it.
 fi
 ```
 
 Key design decisions for --auto (addresses ALL review HIGH concerns):
 1. **Re-review scope**: Uses REVIEW_FILES_ARRAY from original REVIEW.md frontmatter, falling back to full phase scope. Scope is NOT lost between iterations. Uses portable while-read loop (bash 3.2+ compatible, handles spaces in paths).
 2. **Artifact semantics**: REVIEW.md is overwritten by each re-review (latest review state). REVIEW-FIX.md is overwritten by each fixer iteration (latest fix state with iteration count). There is ONE final version of each artifact, not per-iteration copies.
-   Backup files (.iterN.md) preserve history for post-mortem analysis if iterations degrade. On successful convergence (#3190) the backups are spent scratch and removed; on degradation (hit MAX_ITERATIONS / fixer failure) they are retained for post-mortem.
+   Backup files (.iterN.md) preserve history for post-mortem analysis if iterations degrade. On successful convergence (#3190) the backups are spent scratch and removed; on degradation (hit MAX_ITERATIONS / fixer failure) they are retained for post-mortem. The removal happens in `cleanup_iteration_backups`, after `record_disposition` has read them — they are the only surviving record of what an earlier iteration fixed, since this artifact keeps one final version rather than per-iteration copies.
 3. **Commit timing**: Fix commits happen per-finding inside the agent. REVIEW-FIX.md is NOT committed until step 7 (after ALL iterations complete). Only ONE docs commit, not one per iteration. In --auto that single commit also stages the converged REVIEW.md alongside REVIEW-FIX.md (#3190), so the two committed artifacts agree — the initial code-review commit held iteration-1 REVIEW.md content, and the --auto re-review loop overwrote it each iteration.
 </step>
 
@@ -424,6 +442,73 @@ fi
 ```
 
 This commit happens ONCE at the end of the workflow, after all iterations (if --auto) complete. Not per-iteration.
+</step>
+
+<step name="record_disposition">
+**Reconcile the per-finding disposition ledger, now that REVIEW-FIX.md exists.** Read and execute
+`gsd-core/workflows/execute-phase/steps/code-review-disposition.md`. It consumes `PHASE_DIR` and
+`PHASE_NUMBER` and derives everything else, and it is advisory throughout: it never blocks.
+
+This is the step's second and final call site, and without it REQ-REVIEW-10 is unreachable in every
+shipped path. `execute-phase.md`'s `code_review_gate` runs the same step immediately after review,
+where `<NN>-REVIEW-FIX.md` cannot yet exist — the gate invokes review with neither `--fix` nor
+`--auto` — so every row it writes is `open` by construction. The reconciliation logic that turns
+those rows into `fixed` / `skipped` is reachable only once a fix report is on disk, which is here.
+Wired anywhere earlier and it reads a report that has not been written; wired into `code-review.md`
+instead, it is unreachable — that workflow delegates through `code-review/steps/dispatch-fix.md`,
+which exits the workflow after invoking this one, so there is no point in it that is after
+REVIEW-FIX.md exists. Placing it here also covers a direct invocation of this workflow, which a
+wiring in `code-review.md` would miss.
+
+Placed AFTER `commit_fix_report` deliberately: the fix report must be on disk and committed before
+the ledger claims anything about it, and the step's own reconciliation reads
+`${PHASE_DIR}/${PADDED_PHASE}-REVIEW-FIX.md` directly.
+
+Safe to run twice. The step is idempotent — a re-render that changes nothing reports `unchanged` and
+rewrites no file — so a phase that reaches the gate and then a fix run ends with one ledger reflecting
+both, not two competing ones.
+</step>
+
+<step name="cleanup_iteration_backups">
+Only runs if AUTO_MODE is true. If AUTO_MODE is false, skip this step entirely.
+
+**Removes the `.iterN.md` scratch — deliberately AFTER `record_disposition`, not at the end of the
+loop.** #3190's rule is unchanged: on convergence the backups are spent scratch and go; on degradation
+they are retained for post-mortem. What changed is the timing, and it was load-bearing. This workflow
+keeps ONE final version of `REVIEW.md` and `REVIEW-FIX.md` rather than per-iteration copies, so the
+backups are the only surviving record of what an earlier iteration fixed — and the re-review drops a
+finding once it is fixed, so the final review does not carry it either. Deleting them inside the loop
+meant the disposition ledger reached a converged `--auto` run with every early fix already erased, and
+recorded those findings as `open (not in the current review)`: indistinguishable from never triaged,
+which is the one distinction #3829 exists to make.
+
+Convergence is re-derived here rather than carried. Shell state does not survive the loop's fence, so
+a flag set there would be gone by this step — and once nothing in the loop consumed it, keeping it
+would have left a variable set in one place and read in none. The loop breaks on exactly one
+condition, a re-review returning clean, and that leaves `REVIEW.md` at `status: clean`: the final
+review's status IS the converged case. Hitting `MAX_ITERATIONS` leaves the last re-review non-clean,
+and the backups are kept.
+
+```bash
+if [ "$AUTO_MODE" = "true" ]; then
+  FINAL_STATUS=$(REVIEW_PATH="${REVIEW_PATH}" node -e "
+    const fs = require('fs');
+    try {
+      const content = fs.readFileSync(process.env.REVIEW_PATH, 'utf-8');
+      const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
+      console.log(match && /status:\s*(\S+)/.test(match[1]) ? match[1].match(/status:\s*(\S+)/)[1] : 'unknown');
+    } catch (e) { console.log('unknown'); }
+  " 2>/dev/null)
+  # Anything but a proven-clean final review RETAINS the backups. An unreadable or unparseable
+  # review is not evidence of convergence, and retaining costs a few scratch files where deleting
+  # costs the post-mortem trail the retention rule exists for.
+  if [ "$FINAL_STATUS" = "clean" ]; then
+    rm -f "${REVIEW_PATH%.md}.iter"*.md "${FIX_REPORT_PATH%.md}.iter"*.md 2>/dev/null || true
+  else
+    echo "Iteration backups retained (final review status: ${FINAL_STATUS}) — post-mortem trail."
+  fi
+fi
+```
 </step>
 
 <step name="present_results">

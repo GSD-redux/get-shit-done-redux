@@ -1023,5 +1023,20 @@
     "file": "gsd-core/workflows/verify-work/steps/mvp-uat-framing.md",
     "code": "2086",
     "message": "Double quote to prevent globbing and word splitting."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/code-review-disposition.md",
+    "code": "2317",
+    "message": "Command appears to be unreachable. Check usage (or ignore if invoked indirectly)."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/code-review-disposition.md",
+    "code": "2317",
+    "message": "Command appears to be unreachable. Check usage (or ignore if invoked indirectly)."
+  },
+  {
+    "file": "gsd-core/workflows/execute-phase/steps/code-review-disposition.md",
+    "code": "2317",
+    "message": "Command appears to be unreachable. Check usage (or ignore if invoked indirectly)."
   }
 ]

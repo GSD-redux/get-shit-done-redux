@@ -362,6 +362,36 @@ describe('the committed docs/features/ corpus', () => {
     assert.equal(new Set(anchors).size, anchors.length);
   });
 
+  test('no fragment declares the same REQ id twice', () => {
+    // WITHIN a fragment, never across the corpus. Two different features legitimately
+    // both carry REQ-REVIEW-01..07 — the cross-AI review feature and the code-review
+    // pipeline — so a corpus-wide uniqueness check would be wrong on the committed tree
+    // and would have to be weakened the day it first ran. A requirement list belongs to
+    // its feature; that is the scope of the identifier.
+    //
+    // WHY THIS EXISTS (#3829). The failure is a MERGE, not an edit. Two PRs open at once
+    // each append "the next" REQ number to the same list; whichever lands second is
+    // rebased onto a list that already used it. git merges them as different lines of one
+    // file and reports nothing, and neither PR's diff shows a collision — each is correct
+    // against the tree it was written on. Found exactly that way: #3661 took
+    // REQ-REVIEW-08 while #3861 also claimed it, and reverting that renumber CONSISTENTLY
+    // (fragment plus the regenerated projection) left `gen-features --check`, `lint:ci`
+    // and the pipeline suite all green with two REQ-REVIEW-08 entries standing.
+    //
+    // Nothing else in the repo reads REQ ids, so this is the only place the duplicate can
+    // be caught. No fragment carries one today.
+    const offenders = [];
+    for (const f of corpus.fragments) {
+      const ids = [...String(f.body).matchAll(/^-\s+(REQ-[A-Z0-9-]*\d)\s*:/gm)].map((m) => m[1]);
+      const seen = new Set();
+      for (const id of ids) {
+        if (seen.has(id)) offenders.push(`${f.file} declares ${id} more than once`);
+        seen.add(id);
+      }
+    }
+    assert.deepEqual(offenders, []);
+  });
+
   test('groups are ordered by their lowest-ordered member', () => {
     const orders = corpus.groups.map((g) => g.order);
     assert.deepEqual([...orders].sort((a, b) => a - b), orders);

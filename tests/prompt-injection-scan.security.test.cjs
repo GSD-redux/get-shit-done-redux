@@ -100,6 +100,24 @@ const SIZE_ONLY_WORKFLOWS = new Set([
   // injection scanned. Splitting it per the progressive-disclosure pattern is the real
   // fix and is worth its own change.
   'gsd-core/workflows/quick.md',
+  // ~52K after #3829's disposition ledger. Same shape as the two above: this file sat at 44,466
+  // chars on next — 89% of the 50,000-char prompt-stuffing threshold — so the feature approved on
+  // the issue could not land in it without tripping this. The round's committed peak was 59,246
+  // chars; it was cut back to ~52K before this entry was added.
+  //
+  // The overshoot is ~2.3K, and this comment is deliberately precise about that because two earlier
+  // versions of it were not. The first claimed the added CODE alone exceeded the line (it does not).
+  // The second claimed fitting under the threshold would need "essentially all remaining
+  // explanation" removed — also false: the gap is ~2.3K against several times that in
+  // round-attributed in-fence commentary, so it is reachable by cutting a fraction of it. The
+  // honest trade is therefore a JUDGEMENT, not an impossibility: the commentary documents logic
+  // that five review passes found defects in, and this file's house style is heavy in-fence
+  // documentation, so the maintainers may reasonably prefer the cut to the exemption. Measure with
+  // the scanner's own normalization (CRLF→LF, `src/security.cts`) — byte counts read ~57 high here.
+  // Size-only: still fully injection scanned, exactly like the two above.
+  // Splitting it per the progressive-disclosure pattern is the real fix and is worth its own change
+  // — it is already a step file extracted from execute-phase.md for that same reason.
+  'gsd-core/workflows/execute-phase/steps/code-review-disposition.md',
 ]);
 
 // ─── Scanner ────────────────────────────────────────────────────────────────
