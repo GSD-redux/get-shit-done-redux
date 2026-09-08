@@ -8184,3 +8184,199 @@ describe('#607 cleanupLegacyGsdCc: exported helper unit tests', () => {
 });
   });
 }
+
+// ---------------------------------------------------------------------------
+// #4377 — --relative-includes: a local install must not bake the checkout path
+// ---------------------------------------------------------------------------
+//
+// The unit arms in tests/install-runtime-artifacts.test.cjs pin
+// _computePathPrefix itself. This is the end-to-end proof: the prefix has to
+// travel from the CLI flag, through the install engine, through the rewrite
+// pass, and land in the bytes on disk. A pure-function test alone would pass
+// happily while any one of those five seams kept computing the absolute form.
+describe('#4377: --relative-includes emits project-relative @ includes for a local install', () => {
+  // `before`/`after` are not in this file's tail scope (the earlier folds each
+  // bring their own); pull them from node:test directly rather than relying on
+  // whatever binding happens to be visible here.
+  const { before: beforeAll, after: afterAll } = require('node:test');
+  const { spawnSync } = require('node:child_process');
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const installPath = path.join(__dirname, '..', 'bin', 'install.js');
+
+  // Two independent reasons the raw temp root does not appear in emitted
+  // content, both of which would make the negative arms pass VACUOUSLY —
+  // "nothing references the checkout" is trivially true when the string being
+  // searched for cannot occur:
+  //
+  //   1. The emitted prefix is POSIX-normalized by design, because it is
+  //      substituted into markdown @-references, which use forward slashes
+  //      universally; a backslash there would leak into shipped content
+  //      (#1615). On Windows the roots arrive as `D:\a\...`.
+  //   2. On macOS `os.tmpdir()` yields `/var/folders/...`, but `/var` is a
+  //      symlink to `/private/var`, and the installer resolves it — so the
+  //      emitted content carries `/private/var/folders/...` while
+  //      `fs.mkdtempSync` handed us the unresolved spelling.
+  //
+  // Every comparison therefore goes through both spellings.
+  const toPosix = (p2) => p2.replace(/\\/g, '/');
+  //
+  // LONGEST FIRST, and that ordering is load-bearing. `/var/folders/…/X` is a
+  // SUBSTRING of `/private/var/folders/…/X`, so stripping the short spelling
+  // first matches inside the long one and leaves the `/private` prefix glued
+  // to what followed it: `@/private/var/…/X/.claude/gsd-core/…` normalizes to
+  // `@/private.claude/gsd-core/…`, a string that appears in neither install.
+  // Removing the long form first consumes the whole occurrence, and the short
+  // form then has nothing left to match.
+  const rootSpellings = (root) => {
+    const forms = new Set([toPosix(root)]);
+    try { forms.add(toPosix(fs.realpathSync(root))); } catch { /* root already gone */ }
+    return [...forms].sort((a, b) => b.length - a.length);
+  };
+  const mentionsRoot = (content, root) => rootSpellings(root).some((r) => content.includes(r));
+
+  // Self-contained runner: the file's other runInstall helpers live inside
+  // folded blocks and are not in scope here. #3156's sandboxed HOME still
+  // applies — the installer writes <home>/.gsd/defaults.json via os.homedir()
+  // directly, which no env scrub reaches.
+  const install = (cwd, args) => {
+    const env = installSpawnEnv();
+    delete env.GSD_TEST_MODE;
+    // The relative-includes opt-in is dual-sourced (flag OR env), so an
+    // ambient GSD_RELATIVE_INCLUDES would silently opt the CONTROL arm in and
+    // make this suite prove nothing. Scrub it and let the flag speak.
+    delete env.GSD_RELATIVE_INCLUDES;
+    const r = spawnSync(process.execPath, [installPath, ...args], {
+      cwd, env, encoding: 'utf-8', timeout: 180000,
+    });
+    assert.equal(r.status, 0, `install ${args.join(' ')} failed: ${r.stderr || r.stdout}`);
+  };
+
+  let absDir;
+  let relDir;
+
+  beforeAll(() => {
+    absDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4377-abs-'));
+    relDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4377-rel-'));
+    install(absDir, ['--claude', '--local', '--no-sdk']);
+    install(relDir, ['--claude', '--local', '--no-sdk', '--relative-includes']);
+  });
+
+  afterAll(() => {
+    cleanup(absDir);
+    cleanup(relDir);
+  });
+
+  // Walk the WHOLE installed tree, not just commands/. The issue measured 145
+  // affected files across commands, workflows and references on a real repo —
+  // a commands-only assertion would have called this fixed while 124 workflow
+  // and reference files still carried the baked path.
+  const allBodies = (root) => {
+    const base = path.join(root, '.claude');
+    const out = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.isFile()) continue;
+        out.push({ rel: path.relative(base, full), content: fs.readFileSync(full, 'utf-8') });
+      }
+    };
+    if (fs.existsSync(base)) walk(base);
+    return out;
+  };
+
+  test('the default install still bakes the absolute checkout path (unchanged behavior)', () => {
+    // The control. Without it, a change that broke the absolute form entirely
+    // would satisfy every assertion below and look like a fix.
+    const carriers = allBodies(absDir).filter((f) => mentionsRoot(f.content, absDir));
+    assert.ok(
+      carriers.length > 0,
+      '#4377 is opt-in: the default local install must keep emitting absolute includes',
+    );
+  });
+
+  test('with the flag, NOTHING in the installed tree references the checkout it came from', () => {
+    const offenders = allBodies(relDir).filter((f) => mentionsRoot(f.content, relDir)).map((f) => f.rel);
+    assert.deepEqual(offenders, [], 'no installed file may reference the checkout it was installed from');
+  });
+
+  test('with the flag, the includes are project-relative and still resolve to gsd-core', () => {
+    // Not merely "absent" — an implementation that stripped the prefix would
+    // pass the arm above while shipping includes that point nowhere.
+    const withRelative = allBodies(relDir).filter((f) => f.content.includes('@.claude/gsd-core/'));
+    assert.ok(withRelative.length > 0, 'expected @.claude/gsd-core/ includes in the relative install');
+  });
+
+  test('the launcher shim keeps ABSOLUTE shell defaults even with the flag', () => {
+    // The one place a relative prefix would make things worse. The runtime
+    // launcher probes gsd-tools through `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`;
+    // that is a shell word expansion, not an @ include, and a bare `.claude`
+    // there resolves against the shell's cwd rather than the project. Trading
+    // an include that points at the wrong checkout for a path that points at
+    // nothing would not be a fix.
+    const carriers = allBodies(relDir).filter((f) => f.content.includes('CLAUDE_CONFIG_DIR:-'));
+    assert.ok(carriers.length > 0, 'expected the launcher snippet in the installed tree');
+    const offenders = carriers
+      .filter((f) => !/CLAUDE_CONFIG_DIR:-\$HOME\/\.claude\}/.test(f.content))
+      .map((f) => f.rel);
+    assert.deepEqual(offenders, [], 'the launcher fallback must stay $HOME-absolute');
+  });
+
+  test('no masking sentinel survives into the installed tree', () => {
+    // The shell-default guard masks with a literal token before rewriting and
+    // restores after. A restore that missed would ship that token as content.
+    // gsd-core/bin/lib/ carries the implementation itself, so exclude it.
+    const leaked = allBodies(relDir)
+      .filter((f) => !f.rel.startsWith(path.join('gsd-core', 'bin', 'lib')))
+      .filter((f) => f.content.includes('@@GSD4377:'))
+      .map((f) => f.rel);
+    assert.deepEqual(leaked, [], 'the shell-default mask must be fully restored');
+  });
+
+  test('the two installs differ ONLY where the flag is meant to change things', () => {
+    // The strongest arm. Normalize the absolute install into what the relative
+    // one should be — undo the two deliberate differences — and the trees must
+    // then be byte-identical. Anything ELSE the flag touched surfaces here
+    // instead of going unnoticed.
+    const abs = allBodies(absDir);
+    const rel = new Map(allBodies(relDir).map((f) => [f.rel, f.content]));
+    assert.ok(abs.length > 0, 'the control install must produce files');
+    const mismatched = [];
+    for (const { rel: name, content } of abs) {
+      if (!rel.has(name)) { mismatched.push(`${name} (missing from relative install)`); continue; }
+      // Both manifests record per-file absolute paths, which legitimately
+      // differ between two different install roots.
+      if (name === 'gsd-file-manifest.json' || name === 'gsd-install-state.json') continue;
+      let normalized = content;
+      for (const absRoot of rootSpellings(absDir)) {
+        normalized = normalized
+          // (1) shell defaults: the absolute install rewrote them to its own
+          //     root; the relative install left them at $HOME.
+          .split(`:-${absRoot}/.claude}`).join(':-$HOME/.claude}')
+          // (2) the include prefix itself, both the slash form and the bare
+          //     trailing form the word-boundary passes emit.
+          .split(`${absRoot}/.claude/`).join('.claude/')
+          .split(`${absRoot}/.claude`).join('.claude');
+      }
+      if (normalized !== rel.get(name)) mismatched.push({ name, normalized, actual: rel.get(name) });
+    }
+    // Report the FIRST divergence as text, not just a list of filenames. A
+    // bare file list says a difference exists somewhere in 236 files and
+    // leaves the reader to guess which bytes — and on a platform I cannot
+    // reproduce locally, guessing is what turns one CI round-trip into four.
+    const detail = mismatched.length === 0 ? '' : (() => {
+      const { name, normalized, actual } = mismatched[0];
+      let at = 0;
+      while (at < normalized.length && at < actual.length && normalized[at] === actual[at]) at += 1;
+      const from = Math.max(0, at - 60);
+      return `\nfirst divergence in ${name} at offset ${at}:\n`
+        + `  absolute(normalized): ${JSON.stringify(normalized.slice(from, at + 120))}\n`
+        + `  relative(actual):     ${JSON.stringify(actual.slice(from, at + 120))}\n`
+        + `(${mismatched.length} file(s) differ: ${mismatched.slice(0, 8).map((m) => m.name).join(', ')}${mismatched.length > 8 ? ', …' : ''})`;
+    })();
+    assert.deepEqual(
+      mismatched.map((m) => m.name), [],
+      `the flag must change the include prefix, and nothing beyond it${detail}`,
+    );
+  });
+});

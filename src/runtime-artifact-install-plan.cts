@@ -18,6 +18,8 @@ const path = _require('node:path') as typeof import('node:path');
 // (see the module-level doc comment on `isGlobalScope` for why the
 // projection is centralized rather than eliminated).
 import { isGlobalScope, type InstallScope } from './install-scope.cjs';
+// #4377: the runtime's own localConfigDir, for the project-relative include style.
+import { getDirName } from './runtime-name-policy.cjs';
 
 type ArtifactKindName = 'commands' | 'agents' | 'skills' | 'kimi-agents';
 
@@ -78,6 +80,14 @@ interface ComputePathPrefixOpts {
   isWindowsHost: boolean;
   resolvedTarget: string;
   homeDir: string;
+  /** #4377: the runtime's `localConfigDir`, used only when the project-relative
+   *  include style is opted in on a local install. Optional — an omitted value
+   *  falls back to the absolute prefix, which is the pre-#4377 behavior. */
+  localDirName?: string;
+  /** #4377: explicit opt-in override. Defaults to `GSD_RELATIVE_INCLUDES === '1'`
+   *  inside `_computePathPrefix`; present here so tests can drive both arms
+   *  without mutating the environment. */
+  projectRelative?: boolean;
 }
 
 interface RuntimeArtifactConversionExports {
@@ -202,7 +212,9 @@ function createRuntimeArtifactInstallPlan(args: CreateRuntimeArtifactInstallPlan
   const isGlobal = isGlobalScope(scope);
   const isOpencode = layout.runtime === 'opencode';
   const isWindowsHost = (platform ?? process.platform) === 'win32';
-  const pathPrefix = conversionExports._computePathPrefix({ isGlobal, isOpencode, isWindowsHost, resolvedTarget, homeDir });
+  // #4377: descriptor-derived local dir name, so an opted-in local install
+  // emits a project-relative prefix instead of this checkout's absolute path.
+  const pathPrefix = conversionExports._computePathPrefix({ isGlobal, isOpencode, isWindowsHost, resolvedTarget, homeDir, localDirName: getDirName(layout.runtime) });
   const attribution = resolveAttribution ? resolveAttribution(layout.runtime) : undefined;
   // #2875 Part 2 (row I1): layout.configDir IS the install root the inline
   // agent loop called `targetDir` — same value, same resolution.
