@@ -964,6 +964,134 @@ describe('config-set <key> null — unset/clear (#2046)', () => {
   });
 });
 
+// ─── config-set --dry-run (#4444) ────────────────────────────────────────────
+
+describe('config-set --dry-run (#4444)', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('config-set --dry-run does not write to config.json (first call, key absent)', () => {
+    const result = runGsdTools('config-set model_profile quality --dry-run', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.dry_run, true);
+
+    const configPath = path.join(tmpDir, '.planning', 'config.json');
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(config, 'model_profile'),
+        false,
+        'model_profile must not be written to config.json by a --dry-run call'
+      );
+    }
+  });
+
+  test('config-set --dry-run does not persist across repeated dry-run calls (repro: previousValue must not reflect a prior dry run)', () => {
+    const first = runGsdTools('config-set review.timeouts.antigravity 1 --dry-run', tmpDir);
+    assert.ok(first.success, `Command failed: ${first.error}`);
+    const firstOutput = JSON.parse(first.output);
+    assert.strictEqual(firstOutput.dry_run, true);
+    assert.strictEqual(firstOutput.previousValue, undefined);
+
+    const second = runGsdTools('config-set review.timeouts.antigravity 3600 --dry-run', tmpDir);
+    assert.ok(second.success, `Command failed: ${second.error}`);
+    const secondOutput = JSON.parse(second.output);
+    assert.strictEqual(secondOutput.dry_run, true);
+    // The reported bug: this used to be 1 (the first "dry run"'s value),
+    // proving it was actually persisted to disk.
+    assert.strictEqual(
+      secondOutput.previousValue,
+      undefined,
+      'a second --dry-run call must not see a value the first --dry-run "wrote"'
+    );
+  });
+
+  test('config-set: a real write after dry-run calls sees the pre-dry-run value, not a dry-run leak', () => {
+    const seed = runGsdTools('config-set review.timeouts.antigravity 10', tmpDir);
+    assert.ok(seed.success, `seed failed: ${seed.error}`);
+
+    const dryRun = runGsdTools('config-set review.timeouts.antigravity 9999 --dry-run', tmpDir);
+    assert.ok(dryRun.success, `Command failed: ${dryRun.error}`);
+    assert.strictEqual(JSON.parse(dryRun.output).dry_run, true);
+
+    // The dry-run must not have changed the on-disk value.
+    assert.strictEqual(readConfig(tmpDir).review.timeouts.antigravity, 10);
+
+    const real = runGsdTools('config-set review.timeouts.antigravity 20', tmpDir);
+    assert.ok(real.success, `Command failed: ${real.error}`);
+    assert.strictEqual(
+      JSON.parse(real.output).previousValue,
+      10,
+      'the real write must see the seeded value (10), not the dry-run value (9999)'
+    );
+    assert.strictEqual(readConfig(tmpDir).review.timeouts.antigravity, 20);
+  });
+
+  test('config-set --dry-run correctly previews the current value without mutating it', () => {
+    const seed = runGsdTools('config-set model_profile quality', tmpDir);
+    assert.ok(seed.success, `seed failed: ${seed.error}`);
+
+    const dryRun = runGsdTools('config-set model_profile speed --dry-run', tmpDir);
+    assert.ok(dryRun.success, `Command failed: ${dryRun.error}`);
+    const output = JSON.parse(dryRun.output);
+    assert.strictEqual(output.dry_run, true);
+    assert.strictEqual(output.previousValue, 'quality');
+    assert.strictEqual(output.value, 'speed');
+
+    // Unchanged on disk.
+    assert.strictEqual(readConfig(tmpDir).model_profile, 'quality');
+  });
+
+  test('config-set --dry-run still validates: an invalid value is still rejected, not silently previewed', () => {
+    const result = runGsdTools('config-set context badvalue --dry-run', tmpDir);
+    assert.strictEqual(result.success, false, 'an invalid enum value must still be rejected under --dry-run');
+    assert.match(result.error, /Invalid context value/i);
+
+    // Nothing written.
+    const configPath = path.join(tmpDir, '.planning', 'config.json');
+    if (fs.existsSync(configPath)) {
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(JSON.parse(fs.readFileSync(configPath, 'utf-8')), 'context'),
+        false
+      );
+    }
+  });
+
+  test('config-set --dry-run masks secret values in the preview exactly like the real write does', () => {
+    const seed = runGsdTools('config-set brave_search sk-test-original', tmpDir);
+    assert.ok(seed.success, `seed failed: ${seed.error}`);
+
+    const dryRun = runGsdTools('config-set brave_search sk-test-newvalue --dry-run', tmpDir);
+    assert.ok(dryRun.success, `Command failed: ${dryRun.error}`);
+    const output = JSON.parse(dryRun.output);
+    assert.strictEqual(output.dry_run, true);
+    assert.strictEqual(output.masked, true);
+    assert.doesNotMatch(JSON.stringify(output), /sk-test-newvalue/, 'the new secret value must not appear in plaintext');
+    assert.doesNotMatch(JSON.stringify(output), /sk-test-original/, 'the previous secret value must not appear in plaintext');
+
+    // Unchanged on disk.
+    assert.strictEqual(readConfig(tmpDir).brave_search, 'sk-test-original');
+  });
+
+  test('config-set <key> null --dry-run does not unset (dry-run covers the unset branch too)', () => {
+    const seed = runGsdTools('config-set review.models.gemini foo', tmpDir);
+    assert.ok(seed.success, `seed failed: ${seed.error}`);
+
+    const dryRun = runGsdTools('config-set review.models.gemini null --dry-run', tmpDir);
+    assert.ok(dryRun.success, `Command failed: ${dryRun.error}`);
+    const output = JSON.parse(dryRun.output);
+    assert.strictEqual(output.dry_run, true);
+    assert.strictEqual(output.would_unset, true);
+
+    // Still present on disk — the dry-run must not have unset it.
+    assert.strictEqual(readConfig(tmpDir).review.models.gemini, 'foo');
+  });
+});
+
 // ─── config-set (research_before_questions and discuss_mode) ──────────────────
 
 describe('config-set research_before_questions and discuss_mode', () => {
