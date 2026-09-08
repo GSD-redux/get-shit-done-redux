@@ -950,15 +950,40 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   function routeCommit({ args, cwd, raw, error }) {
     const amend = args.includes('--amend');
           const noVerify = args.includes('--no-verify');
-          const filesIndex = args.indexOf('--files');
+          // #4208: `--files` and `--files-removed` are two path lists, each
+          // running from its flag to the NEXT LIST FLAG. A boolean flag
+          // inside a list (`--files a --amend b`) is skipped, not a
+          // terminator: that is what the previous slice-to-end collection
+          // did (it filtered `--` tokens and kept everything else), and a
+          // list that stopped at any `--` token silently dropped `b`
+          // (review of #4253). The previous form could not carry a second
+          // list flag at all, which is the only thing that changed.
+          // A REPEATED list flag (`--files a --files b`) merges, as the old
+          // slice-to-end parse merged it: every occurrence contributes its
+          // run, and none of them ends another's silently.
+          const LIST_FLAGS = new Set(['--files', '--files-removed']);
+          const collectList = (flag) => {
+            const values = [];
+            args.forEach((a, i) => {
+              if (a !== flag) return;
+              for (const b of args.slice(i + 1)) {
+                if (LIST_FLAGS.has(b)) break;
+                if (b.startsWith('--')) continue;
+                values.push(b);
+              }
+            });
+            return values;
+          };
+          const firstListFlag = args.findIndex((a, i) => i > 0 && LIST_FLAGS.has(a));
           // Collect all positional args between command name and first flag,
           // then join them — handles both quoted ("multi word msg") and
           // unquoted (multi word msg) invocations from different shells
-          const endIndex = filesIndex !== -1 ? filesIndex : args.length;
+          const endIndex = firstListFlag !== -1 ? firstListFlag : args.length;
           const messageArgs = args.slice(1, endIndex).filter(a => !a.startsWith('--'));
           const message = messageArgs.join(' ') || undefined;
-          const files = filesIndex !== -1 ? args.slice(filesIndex + 1).filter(a => !a.startsWith('--')) : [];
-          commands.cmdCommit(cwd, message, files, raw, amend, noVerify);
+          const files = collectList('--files');
+          const filesRemoved = collectList('--files-removed');
+          commands.cmdCommit(cwd, message, files, raw, amend, noVerify, filesRemoved);
   }
 
   function routeCheckCommit({ args, cwd, raw, error }) {

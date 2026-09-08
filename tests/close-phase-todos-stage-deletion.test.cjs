@@ -11,7 +11,7 @@ const path = require('node:path');
 const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
 
 describe('#2415: close_phase_todos must stage the pending/ deletion alongside completed/', () => {
-  test('the close_phase_todos commit --files list includes .planning/todos/pending/', () => {
+  test('close_phase_todos stages the completed/ destination and the pending/ deletion (via --files-removed since #4208)', () => {
     const content = fs.readFileSync(EXECUTE_PHASE, 'utf8');
 
     // Isolate the close_phase_todos step body so we don't match unrelated --files lists
@@ -22,19 +22,30 @@ describe('#2415: close_phase_todos must stage the pending/ deletion alongside co
     assert.ok(stepEnd > stepStart, 'close_phase_todos step must be properly closed');
     const stepBody = content.slice(stepStart, stepEnd);
 
-    // The commit must include BOTH the destination (completed/) AND the source (pending/)
-    // — git add of pending/ stages the deletion of each moved file. Without pending/ in
-    // the list, only the new completed/ copy gets committed and the moved-away file
-    // persists as an unstaged deletion in git status until some later broad git add -A
-    // happens to catch it (#2415).
+    // The commit must reach BOTH the destination (completed/) AND the source-side
+    // deletion (pending/). Without the source side, only the new completed/ copy gets
+    // committed and the moved-away file persists as an unstaged deletion in git status
+    // until some later broad git add -A happens to catch it (#2415).
+    //
+    // #4208 changed the MECHANISM, not that guarantee. The step used to pass the two
+    // directories to --files, which also committed any unrelated todo a concurrent
+    // session had dropped into pending/ or completed/ mid-close. It now names each
+    // moved todo: destinations via the ADDED array under --files, and the source-side
+    // deletions via the REMOVED array under --files-removed (--files alone cannot
+    // record a deletion — a missing --files entry is skipped, never staged, per #2014).
     const gsdRunCommit = /gsd_run\s+query\s+commit\b[^\n]*--files\s+([^\n]+)/;
     const match = stepBody.match(gsdRunCommit);
     assert.ok(match, `close_phase_todos step must contain a gsd_run query commit ... --files invocation. Step body:\n${stepBody}`);
     const filesList = match[1];
 
-    assert.match(filesList, /\.planning\/todos\/completed/, 'commit --files must include .planning/todos/completed/ (destination of the move)');
-    assert.match(filesList, /\.planning\/todos\/pending/, 'commit --files must include .planning/todos/pending/ so the moved-away file is staged as a deletion (#2415)');
+    assert.match(filesList, /"\$\{ADDED\[@\]\}"/, 'commit --files must carry the ADDED array (destinations of the move)');
+    assert.match(filesList, /--files-removed\s+"\$\{REMOVED\[@\]\}"/, 'the moved-away file must be staged as a deletion via --files-removed (#2415, #4208)');
     assert.match(filesList, /\.planning\/STATE\.md/, 'commit --files must still include .planning/STATE.md (the step also updates state)');
+
+    // The arrays are only worth asserting if they are built from the right two dirs:
+    // ADDED from completed/ (destination), REMOVED from pending/ (source).
+    assert.match(stepBody, /ADDED\+=\("\$COMPLETED_DIR\/\$f"\)/, 'ADDED must be built from $COMPLETED_DIR — the destination of the move');
+    assert.match(stepBody, /REMOVED\+=\("\$PENDING_DIR\/\$f"\)/, 'REMOVED must be built from $PENDING_DIR — the source whose deletion #2415 requires');
   });
 
   test('close_phase_todos uses plain mv (not git mv) so untracked todos and non-git .planning dirs still work', () => {

@@ -1583,7 +1583,7 @@ const COMMIT_DOCS_SKIP_REASON: Record<Exclude<CommitDocsSource, 'default'>, stri
   gitignore: 'skipped_gitignored',
 };
 
-function cmdCommit(cwd: string, message: string | undefined, files: string[] | undefined, raw: boolean, amend: boolean, noVerify: boolean): void {
+function cmdCommit(cwd: string, message: string | undefined, files: string[] | undefined, raw: boolean, amend: boolean, noVerify: boolean, filesRemoved?: string[]): void {
   if (!message && !amend) {
     error('commit message required');
   }
@@ -1716,8 +1716,12 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   }
 
   // Stage files
-  const explicitFiles = files && files.length > 0;
-  const filesToStage = explicitFiles ? files : ['.planning/'];
+  // #4208: `--files-removed` is a declared scope in its own right — a caller
+  // that names only removals must not fall through to the unscoped
+  // `.planning/` sweep, which would commit everything under it.
+  const removedDeclared = filesRemoved ?? [];
+  const explicitFiles = (files && files.length > 0) || removedDeclared.length > 0;
+  const filesToStage = explicitFiles ? (files ?? []) : ['.planning/'];
   const stagedPaths: string[] = [];
   // #2608: a `git add` that fails must abort the commit, not be skipped.
   // #2523 stopped a failed path entering the commit pathspec, but skipping it
@@ -1730,9 +1734,13 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   // Paths already in the index BEFORE this call. On a staging failure the
   // rollback below unstages only what THIS call added — unstaging a path the
   // caller had staged themselves would destroy their work.
+  // `-z`: without it `core.quotePath` renders a non-ASCII name as
+  // `"caf\303\251.md"`, which never equals the raw path in `stagedPaths`, so
+  // the rollback below would treat a caller-pre-staged `café.md` as this
+  // call's own and unstage it (#4208 review, driven).
   const preStaged = new Set(
-    execGit(['diff', '--cached', '--name-only'], { cwd })
-      .stdout.split('\n').map(s => s.trim()).filter(Boolean),
+    execGit(['diff', '--cached', '--name-only', '-z'], { cwd })
+      .stdout.split('\0').filter(Boolean),
   );
   for (const file of filesToStage) {
     const fullPath = path.resolve(cwd, file);
@@ -1777,6 +1785,275 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     }
   }
 
+  // #4208: caller-declared removals. The #2014 guard above skips a missing
+  // `--files` entry because the filesystem cannot tell "moved away" from "not
+  // written yet" — only the caller can. `--files-removed` is where the caller
+  // says it: every tracked path it names that is absent from disk is staged as
+  // a deletion and joins the commit pathspec, so a move is recorded at file
+  // granularity without a directory entry that also sweeps in whatever else
+  // happens to sit in that directory (a concurrent session's uncommitted todo,
+  // in the motivating execute-phase sweep). `--files` keeps its skip-if-missing
+  // contract untouched: the two lists are disjoint by construction and only the
+  // caller populates the second.
+  //
+  // An entry may name a file or a directory. `git ls-files` resolves both the
+  // same way — a file matches itself, a directory its tracked descendants —
+  // and the subsequent absent-from-disk filter is what makes the directory
+  // form precise: a tracked file that is still present is NOT a removal and is
+  // never touched, and an untracked file under the directory is invisible to
+  // `ls-files` in the first place. So `--files-removed .planning/phases/`
+  // after an archival `mv` stages exactly the moved-away tracked files.
+  //
+  // A FILE entry that is still present on disk contradicts the declaration
+  // and fails closed as a staging failure rather than being reinterpreted:
+  // staging a deletion of a present file would commit a removal git then
+  // reports as untracked — #2014's failure from the other side. A path that
+  // was never tracked is a no-op (a todo created and moved within the same
+  // phase has nothing to remove) rather than an error.
+  //
+  // `-z` keeps `core.quotePath` from octal-escaping non-ASCII names — the
+  // same trap the assume-unchanged probe below documents for `ls-files -v`.
+  //
+  // Presence is `lstat`, never `stat` / `existsSync`: both of those FOLLOW a
+  // symlink, so a tracked link whose target is gone reads as absent, gets its
+  // index entry removed, and the worktree still holds the link — the commit
+  // then finds no difference against HEAD, reports `nothing_to_commit`, and
+  // leaves the deletion staged (driven at review). To git a symlink is a
+  // tracked path in its own right; presence means the link, not its target.
+  //
+  // "Tracked" is the index UNION HEAD. The index alone misses a deletion the
+  // caller already staged (`git rm` before this call): the entry is gone from
+  // the index, so `ls-files` never lists it, it never reaches the pathspec,
+  // and a removal-only call reports `nothing_to_commit` with the deletion
+  // still staged (driven at review). HEAD still has it, and `rm --cached
+  // --ignore-unmatch` on an already-removed entry is a no-op, so the union
+  // costs nothing on the ordinary path. On an unborn HEAD the union is
+  // index-only, and an absent index-only path is unstaged but never joins the
+  // pathspec: a root commit has no parent to delete it from, and naming it
+  // makes `git commit` refuse with "pathspec did not match" (driven).
+  //
+  // Only ENOENT / ENOTDIR establish absence. Any other `lstat` error (EPERM,
+  // EIO) is not "the caller removed this" and fails closed as a staging
+  // failure rather than staging a deletion of a path that may well exist.
+  //
+  // And absence alone does not establish REMOVAL (#4208 review). Some index
+  // entries are absent from the worktree BY DESIGN, and `lstat` cannot tell
+  // them from a path the caller moved away: a submodule gitlink (mode
+  // `160000`) whose directory was deleted by hand — `git ls-files` lists it
+  // like any file, and `rm --cached` would detach the submodule with no
+  // `.gitmodules` cleanup; a `--skip-worktree` path, which a cone-mode sparse
+  // checkout never materialises at all, so a directory entry over a
+  // sparse-excluded tree would drop that whole tree from the index; an
+  // `--assume-unchanged` path, whose worktree state git itself does not
+  // consult; an unmerged entry. So the index listing carries each entry's
+  // `ls-files -v` tag, mode and stage alongside the path, and only a plain
+  // cached (`H`), stage-0, non-gitlink entry is a removal candidate. Every
+  // other state is "not this call's removal to make": under a directory
+  // entry it is left alone, exactly like a present file; named directly it
+  // contradicts the declaration and fails closed, naming the state. The
+  // domain this enumeration covers is what `ls-files -v -s` can emit for an
+  // index entry — tags `H`/`S`/`M`/`h` (the `R`/`C`/`K`/`?` letters belong to
+  // the `-d`/`-m`/`-k`/`-o` listing modes, never a bare `-s`), modes
+  // `100644`/`100755`/`120000` (a symlink is a candidate; presence is the
+  // link) /`160000`, and `040000` only under `--sparse`, which is not passed.
+  // The same `-v` read the assume-unchanged probe below performs for the
+  // ADDITION side, applied here to the removal side.
+  type IndexEntry = { tag: string; mode: string; sha: string; stage: string };
+  // The empty blob under SHA-1 and SHA-256 object formats — intent-to-add's tell.
+  const EMPTY_BLOBS = new Set(['e69de29bb2d1d6434b8b29ae775ad8c2e48c5391', '473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813']);
+  const notARemoval = (e: IndexEntry): string | null => {
+    if (e.mode === '160000') return 'a submodule gitlink, not a file';
+    if (e.tag === 'S') return 'skip-worktree (sparse-checkout): absent by checkout, not removed';
+    if (e.tag === 'h') return 'assume-unchanged: git does not consult its worktree state';
+    if (e.stage !== '0') return 'an unmerged index entry';
+    if (e.tag !== 'H') return `index state '${e.tag}'`;
+    return null;
+  };
+  const lstatState = (p: string): 'present' | 'absent' | NodeJS.ErrnoException => {
+    try {
+      fs.lstatSync(p);
+      return 'present';
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      return err.code === 'ENOENT' || err.code === 'ENOTDIR' ? 'absent' : err;
+    }
+  };
+  // `rev-parse -q --verify HEAD` exits 1 both for an unborn HEAD and for a
+  // spawn timeout (`execGit` collapses one to `exitCode: 1`). Only a probe that
+  // actually answered may downgrade the union to index-only; an unanswered one
+  // fails closed, because silently dropping the HEAD half re-opens the
+  // pre-staged-deletion omission this union exists to close.
+  let headExists = false;
+  let headProbeFailure: { error: string; timed_out: boolean } | null = null;
+  if (removedDeclared.length > 0) {
+    const headProbe = execGit(['rev-parse', '-q', '--verify', 'HEAD'], { cwd });
+    if (headProbe.exitCode === 0) {
+      headExists = true;
+    } else if (isSpawnTimeout(headProbe) || headProbe.error !== null) {
+      headProbeFailure = { error: headProbe.stderr || headProbe.stdout || 'HEAD probe failed', timed_out: isSpawnTimeout(headProbe) };
+    }
+  }
+  // Every index entry this call removes, recorded BEFORE the `rm --cached`
+  // so the rollback below can put it back exactly — mode and blob — with
+  // `update-index --cacheinfo`. `git reset -- <path>` cannot do that: it
+  // restores from HEAD, which does not exist on an unborn branch (so a root
+  // commit's failed call used to leave every earlier removal unstaged, in
+  // violation of the only-what-THIS-call-staged invariant above) and which
+  // is not what the index held when the caller had pre-staged a modified
+  // blob at that path. Recording the entry answers both without putting the
+  // path on the commit pathspec, where an unborn HEAD makes `git commit`
+  // refuse it (driven; see the union note above).
+  const removedEntries: Array<{ path: string; mode: string; sha: string }> = [];
+  for (const entry of removedDeclared) {
+    if (headProbeFailure !== null) {
+      stagingFailures.push({ file: entry, ...headProbeFailure });
+      continue;
+    }
+    // `-v -s`: tag, mode, blob, stage and path per record — see notARemoval.
+    const listed = execGit(['ls-files', '-v', '-s', '-z', '--', entry], { cwd });
+    if (listed.exitCode !== 0) {
+      stagingFailures.push({
+        file: entry,
+        error: listed.stderr || listed.stdout,
+        timed_out: isSpawnTimeout(listed),
+      });
+      continue;
+    }
+    const indexed = new Map<string, IndexEntry>();
+    let unparseable: string | null = null;
+    for (const rec of listed.stdout.split('\0').filter(Boolean)) {
+      const m = /^(\S) (\d{6}) ([0-9a-f]+) ([0-3])\t([\s\S]+)$/.exec(rec);
+      if (m === null) { unparseable = rec; break; }
+      indexed.set(m[5], { tag: m[1], mode: m[2], sha: m[3], stage: m[4] });
+    }
+    if (unparseable !== null) {
+      // A record this code cannot read is not a path it may remove.
+      stagingFailures.push({ file: entry, error: `unparseable ls-files record: ${unparseable}`, timed_out: false });
+      continue;
+    }
+    const tracked = new Set(indexed.keys());
+    // Does the entry name THIS tracked path itself (the caller declared a
+    // FILE removed) or a directory above it? Decided on RESOLVED paths, never
+    // on the strings: `ls-files` prints cwd-relative paths, and a caller may
+    // pass an absolute path, `./x`, a trailing slash, or run under `--cwd`,
+    // any of which fails a string compare and would silently take the
+    // directory polarity — a directly named gitlink then SKIPS instead of
+    // refusing (found by the round's review, driven with an absolute path).
+    const entryAbs = path.resolve(cwd, entry);
+    const entryRel = path.relative(cwd, entryAbs).split(path.sep).join('/');
+    // Canonical form: realpath of the longest EXISTING prefix, with the absent
+    // tail re-appended. The declared path is usually absent (that is the
+    // point), and `process.cwd()` returns the real path where the caller may
+    // hold a symlinked spelling — macOS `/var` → `/private/var` is the live
+    // instance (CI, this PR's own test) — so a resolve-only compare still
+    // took the directory polarity there.
+    const canon = (p: string): string => {
+      let cur = path.resolve(cwd, p); const tail: string[] = [];
+      for (;;) {
+        try { return path.join(fs.realpathSync.native(cur), ...tail); } catch { /* absent: climb */ }
+        const parent = path.dirname(cur);
+        if (parent === cur) return path.join(cur, ...tail);
+        tail.unshift(path.basename(cur)); cur = parent;
+      }
+    };
+    const namesItself = (p: string): boolean => p === entryRel || path.resolve(cwd, p) === entryAbs || canon(p) === canon(entry);
+    const inHeadPaths = new Set<string>();
+    if (headExists) {
+      const inHead = execGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', entry], { cwd });
+      if (inHead.exitCode !== 0) {
+        stagingFailures.push({
+          file: entry,
+          error: inHead.stderr || inHead.stdout,
+          timed_out: isSpawnTimeout(inHead),
+        });
+        continue;
+      }
+      for (const p of inHead.stdout.split('\0').filter(Boolean)) { tracked.add(p); inHeadPaths.add(p); }
+    }
+    if (tracked.size === 0) continue;
+    const entryState = lstatState(path.resolve(cwd, entry));
+    if (entryState !== 'present' && entryState !== 'absent') {
+      stagingFailures.push({ file: entry, error: `lstat ${entryState.code ?? ''}: ${entryState.message}`, timed_out: false });
+      continue;
+    }
+    let entryIsDirectory = false;
+    if (entryState === 'present') {
+      try { entryIsDirectory = fs.lstatSync(path.resolve(cwd, entry)).isDirectory(); } catch { /* raced away: treat as a present non-directory below */ }
+    }
+    if (entryState === 'present' && !entryIsDirectory) {
+      // A present non-directory entry (a file, or ANY symlink — a link to a
+      // directory is still one tracked path) contradicts the declaration.
+      stagingFailures.push({
+        file: entry,
+        error: `declared in --files-removed but still present on disk: ${entry}`,
+        timed_out: false,
+      });
+      continue;
+    }
+    for (const trackedPath of tracked) {
+      const indexEntry = indexed.get(trackedPath);
+      let reason = indexEntry === undefined ? null : notARemoval(indexEntry);
+      // Intent-to-add (`git add -N`) renders as a plain `H 100644 <empty
+      // blob> 0` — the flag is not in the listing — yet nothing tracked exists
+      // to remove, and a rollback via `--cacheinfo` cannot restore the flag.
+      // It is the one state whose blob is the empty blob, whose path is not in
+      // HEAD, and which `diff --cached` treats as absent from the index; an
+      // ordinary staged empty file shows there as added. Three probes, on the
+      // rare empty-blob path only.
+      if (reason === null && indexEntry !== undefined && EMPTY_BLOBS.has(indexEntry.sha) && !inHeadPaths.has(trackedPath)) {
+        const cached = execGit(['diff', '--cached', '--name-only', '-z', '--', trackedPath], { cwd });
+        if (cached.exitCode === 0 && cached.stdout.split('\0').filter(Boolean).length === 0) reason = 'an intent-to-add entry (git add -N), not tracked content';
+      }
+      if (reason !== null) {
+        if (namesItself(trackedPath)) {
+          stagingFailures.push({
+            file: entry,
+            error: `declared in --files-removed but is ${reason}: ${trackedPath}`,
+            timed_out: false,
+          });
+        }
+        continue;
+      }
+      const state = lstatState(path.resolve(cwd, trackedPath));
+      if (state === 'present') continue;
+      if (state !== 'absent') {
+        stagingFailures.push({ file: trackedPath, error: `lstat ${state.code ?? ''}: ${state.message}`, timed_out: false });
+        continue;
+      }
+      // A HEAD-only path (the caller already `git rm`'d it) has no index entry
+      // to record or restore; the `rm` below is then a no-op.
+      if (indexEntry !== undefined) removedEntries.push({ path: trackedPath, mode: indexEntry.mode, sha: indexEntry.sha });
+      // `--ignore-unmatch` makes "no such index entry" a success, so a non-zero
+      // exit is a real I/O failure — same reading as the default-mode branch.
+      const rmResult = execGit(['rm', '--cached', '--ignore-unmatch', '--', trackedPath], { cwd });
+      if (rmResult.exitCode === 0) {
+        // Re-check AFTER the index mutation. The absence test and the `rm` are
+        // not atomic, and the scoped `git commit -- <paths>` below reads the
+        // WORKTREE, so a path recreated in between would be committed as its
+        // new content under a message that declared it removed. A reappearance
+        // is a contradiction like any other: staging failure, and the rollback
+        // restores the recorded entry. Narrows the window; does not close it.
+        if (lstatState(path.resolve(cwd, trackedPath)) !== 'absent') {
+          stagingFailures.push({
+            file: trackedPath,
+            error: `declared in --files-removed but reappeared on disk: ${trackedPath}`,
+            timed_out: false,
+          });
+          continue;
+        }
+        // Unborn HEAD: nothing to delete FROM, so the path is unstaged only and
+        // never joins the pathspec; its rollback is the recorded entry above.
+        if (headExists) stagedPaths.push(trackedPath);
+      } else {
+        stagingFailures.push({
+          file: trackedPath,
+          error: rmResult.stderr || rmResult.stdout,
+          timed_out: isSpawnTimeout(rmResult),
+        });
+      }
+    }
+  }
+
   // #2608: fail closed before `git commit` runs. Checked ahead of the
   // nothing_to_commit branch below so a run where EVERY path failed to stage
   // reports the staging cause rather than "nothing to commit", and ahead of the
@@ -1791,9 +2068,17 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     // best-effort: if the index is unwritable — the very failure being reported
     // — the reset cannot succeed either, and the staging error is still what
     // gets returned.
-    const toUnstage = stagedPaths.filter(p => !preStaged.has(p));
+    const removedPaths = new Set(removedEntries.map(e => e.path));
+    const toUnstage = stagedPaths.filter(p => !preStaged.has(p) && !removedPaths.has(p));
     if (toUnstage.length > 0) {
       execGit(['reset', '-q', '--', ...toUnstage], { cwd });
+    }
+    // Removals are restored from the recorded entries, never via `reset`
+    // (no HEAD to reset to on an unborn branch; not the pre-staged blob when
+    // the caller had one) — and unconditionally, since a removal this call
+    // performed is this call's to undo whether or not the path was pre-staged.
+    if (removedEntries.length > 0) {
+      execGit(['update-index', '--add', ...removedEntries.flatMap(e => ['--cacheinfo', `${e.mode},${e.sha},${e.path}`])], { cwd });
     }
     const first = stagingFailures[0];
     const result = {
