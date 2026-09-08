@@ -103,13 +103,29 @@ describe('getGlobalConfigDir — all runtimes default paths', () => {
     return [...envs, ...skillsEnvs];
   });
   const ENV_KEYS = [...new Set([..._registryEnvKeys, 'GROK_AGENTS_HOME', 'XDG_CONFIG_HOME'])];
+  // #4312: captured before beforeEach pins HOME, so the guard below can assert
+  // the pin is actually in effect rather than trusting that it is.
+  const REAL_HOME_AT_LOAD = os.homedir();
   let savedEnv = {};
+  // #4312: clearing the env is only half of it. antigravity resolves through an
+  // fs probe (~/.gemini/antigravity{,-ide,-cli}), so on a machine that has
+  // antigravity-ide or antigravity-cli installed this row asserted the default
+  // and got the probe hit — red from a clean clone, with no env var involved.
+  // HOME is therefore pinned to an EMPTY fixture, which is the state a
+  // "home-relative default" describes. os.homedir() reads $HOME on POSIX and
+  // %USERPROFILE% on Windows; both are set so the pin holds on either.
+  let fixtureHome = null;
 
   beforeEach(() => {
     for (const key of ENV_KEYS) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
+    savedEnv.HOME = process.env.HOME;
+    savedEnv.USERPROFILE = process.env.USERPROFILE;
+    fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4312-home-'));
+    process.env.HOME = fixtureHome;
+    process.env.USERPROFILE = fixtureHome;
   });
 
   afterEach(() => {
@@ -117,6 +133,11 @@ describe('getGlobalConfigDir — all runtimes default paths', () => {
       if (savedEnv[key] !== undefined) process.env[key] = savedEnv[key];
       else delete process.env[key];
     }
+    for (const key of ['HOME', 'USERPROFILE']) {
+      if (savedEnv[key] !== undefined) process.env[key] = savedEnv[key];
+      else delete process.env[key];
+    }
+    if (fixtureHome) { cleanup(fixtureHome); fixtureHome = null; }
   });
 
   for (const runtime of allRuntimes.filter(runtime => runtime !== 'kimi')) {
@@ -125,6 +146,17 @@ describe('getGlobalConfigDir — all runtimes default paths', () => {
       assert.strictEqual(getGlobalConfigDir(runtime), expected);
     });
   }
+
+  // #4312 regression guard, deterministic on CI: the rows above are hermetic
+  // only while the pin is in effect. Asserting the pin fails on EVERY machine
+  // if someone drops it, rather than only on one that has an antigravity-cli
+  // install — the conditionality that let the original defect survive.
+  test('#4312: the rows above run against a pinned, empty fixture home', () => {
+    assert.notStrictEqual(os.homedir(), REAL_HOME_AT_LOAD,
+      "os.homedir() must follow the pinned fixture, not the developer's real home");
+    assert.deepEqual(fs.readdirSync(os.homedir()), [],
+      'a home-relative DEFAULT is what resolution returns with no probe candidate present');
+  });
 });
 
 describe('getGlobalConfigDir/getConfigDirFromHome — antigravity 2.x layout detection', () => {
@@ -6611,6 +6643,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+// #4312: these cases assert os.homedir()-derived skills roots while spawning a
+// child that inherits process.env, so an exported CLAUDE_CONFIG_DIR moved the
+// child's answer and reddened the suite. TEST_ENV_BASE blanks the registry-derived
+// config-location vars for the child; the product's honouring of them is correct
+// and untouched.
+const { TEST_ENV_BASE, scrubConfigLocationEnv } = require('./helpers.cjs');
 const os = require('node:os');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
@@ -6646,7 +6684,7 @@ describe('install.js --skills-root', () => {
   for (const { runtime, expected } of CASES) {
     test(`resolves correct skills root for ${runtime}`, () => {
       const result = runNode([INSTALL_JS, '--skills-root', runtime], {
-        env: { ...process.env, GSD_TEST_MODE: undefined }, // ensure not in test mode
+        env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: undefined }, // ensure not in test mode
         timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
       });
       // Strip trailing newline
@@ -6688,7 +6726,7 @@ describe('#3024: gsd-tools query skills-root', () => {
   for (const { runtime, expected } of CASES) {
     test(`resolves correct skills root for ${runtime}`, () => {
       const result = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
-        env: { ...process.env, GSD_TEST_MODE: '1' },
+        env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
       });
       assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
       assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
@@ -6699,7 +6737,7 @@ describe('#3024: gsd-tools query skills-root', () => {
 
   test('errors when runtime arg is missing', () => {
     const result = runNode([TOOLS_PATH, 'query', 'skills-root'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'Should exit with error when runtime arg is missing');
@@ -6707,7 +6745,7 @@ describe('#3024: gsd-tools query skills-root', () => {
 
   test('non-raw form: query skills-root claude parses as JSON with expected skills_root', () => {
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
@@ -6723,7 +6761,7 @@ describe('#3024: gsd-tools query skills-root', () => {
   test('defect B: unknown runtime does not silently resolve to claude skills root', () => {
     const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'bogus-runtime', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'Unknown runtime must exit non-zero');
@@ -6735,7 +6773,7 @@ describe('#3024: gsd-tools query skills-root', () => {
 
   test('empty runtime arg exits non-zero', () => {
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', '', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'Empty runtime must exit non-zero');
@@ -6743,7 +6781,7 @@ describe('#3024: gsd-tools query skills-root', () => {
 
   test('whitespace-only runtime arg exits non-zero', () => {
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', '   ', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'Whitespace-only runtime must exit non-zero');
@@ -6751,7 +6789,7 @@ describe('#3024: gsd-tools query skills-root', () => {
 
   test('HOSTILE: path-traversal runtime arg exits non-zero and emits no path', () => {
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', '../../etc', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'Path-traversal runtime must exit non-zero');
@@ -6765,7 +6803,7 @@ describe('#3024: gsd-tools query skills-root', () => {
   // shell-injection safety, because no shell is ever invoked.
   test('HOSTILE: shell-metacharacter runtime arg exits non-zero with no output', () => {
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude; rm -rf /', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'Shell-metacharacter runtime must exit non-zero');
@@ -6791,10 +6829,10 @@ describe('#3024: gsd-tools query skills-root', () => {
     for (const runtime of [...runtimeIds, ...HOSTILE_RUNTIME_IDS]) {
       const isHostile = HOSTILE_RUNTIME_IDS.includes(runtime);
       const toolsResult = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
-        env: { ...process.env, GSD_TEST_MODE: '1' },
+        env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
       });
       const installResult = runNode([INSTALL_JS, '--skills-root', runtime], {
-        env: { ...process.env, GSD_TEST_MODE: undefined },
+        env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: undefined },
       });
       assert.equal(toolsResult.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(toolsResult)}`);
       assert.equal(installResult.outcome, OUTCOME.EXITED, `install.js did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(installResult)}`);
@@ -6828,7 +6866,7 @@ describe('#3024: gsd-tools query skills-root', () => {
   test('HOSTILE: install.js --skills-root __proto__ does not silently resolve to claude skills root', () => {
     const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
     const result = runNode([INSTALL_JS, '--skills-root', '__proto__'], {
-      env: { ...process.env, GSD_TEST_MODE: undefined },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: undefined },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `install.js did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, '__proto__ runtime must exit non-zero');
@@ -6850,7 +6888,7 @@ describe('#3024: gsd-tools query skills-root', () => {
     const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
     const grokSkillsRoot = path.join(os.homedir(), '.agents', 'skills');
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'grok', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1', GROK_AGENTS_HOME: undefined },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1', GROK_AGENTS_HOME: undefined },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.strictEqual(result.exitCode, 0, `grok must be accepted; gsd-tools exited ${result.exitCode}: ${result.stderr}`);
@@ -6873,7 +6911,7 @@ describe('#3024: gsd-tools query skills-root', () => {
   test("gemini: rejected — because its bare resolution is claude's fallback, not because it is merely unregistered", () => {
     const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
     const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'gemini', '--raw'], {
-      env: { ...process.env, GSD_TEST_MODE: '1' },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_TEST_MODE: '1' },
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
     assert.notStrictEqual(result.exitCode, 0, 'gemini must be rejected by isRegisteredRuntimeId');
@@ -6882,11 +6920,21 @@ describe('#3024: gsd-tools query skills-root', () => {
     // Prove the reason: gemini's underlying (ungated) resolution IS claude's
     // wrong-runtime fallback — unlike grok's, which resolves to a real,
     // distinct path (see the sibling grok test above).
-    const { getGlobalSkillsBase } = require('../gsd-core/bin/lib/runtime-homes.cjs');
-    assert.strictEqual(
-      getGlobalSkillsBase('gemini'), claudeSkillsRoot,
-      "gemini's bare resolution must be claude's fallback path — this is the wrong-runtime bug that justifies keeping gemini rejected"
-    );
+    //
+    // #4312/#2665: this call runs IN-PROCESS, so the child scrub above cannot
+    // reach it — an ambient CLAUDE_CONFIG_DIR beats the home-derived fallback
+    // and the assertion compared a home path against the contributor's config
+    // dir. scrubConfigLocationEnv() is the in-process half of the same idiom.
+    const restoreEnv = scrubConfigLocationEnv();
+    try {
+      const { getGlobalSkillsBase } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+      assert.strictEqual(
+        getGlobalSkillsBase('gemini'), claudeSkillsRoot,
+        "gemini's bare resolution must be claude's fallback path — this is the wrong-runtime bug that justifies keeping gemini rejected"
+      );
+    } finally {
+      restoreEnv();
+    }
   });
 });
 
