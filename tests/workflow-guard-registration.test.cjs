@@ -112,8 +112,14 @@ describe('workflow-guard hook registration (#1767)', () => {
       workflowGuardSection,
       'install.js must have a push block for workflow-guard with a console.log confirmation'
     );
+    // #4332: the Claude-vocabulary literal is still the source of truth; it now
+    // passes through toolMatcher(), which is the identity for every runtime
+    // except Antigravity, where each token is translated into that host's own
+    // vocabulary (Bash -> run_command). "Registered for Bash" is preserved in
+    // both dialects — an UNtranslated matcher is what left the guard dormant
+    // there.
     assert.ok(
-      workflowGuardSection[0].includes("const workflowGuardMatcher = 'Bash|Edit|Write|MultiEdit'") &&
+      workflowGuardSection[0].includes("const workflowGuardMatcher = toolMatcher('Bash|Edit|Write|MultiEdit')") &&
         workflowGuardSection[0].includes('matcher: workflowGuardMatcher'),
       'workflow guard must be registered for Bash so worktree-agent git safety checks can run'
     );
