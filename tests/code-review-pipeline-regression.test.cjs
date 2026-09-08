@@ -30,12 +30,61 @@ const { runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS, GIT_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'code-review.md');
 const PRE_PASS_STEP_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'code-review', 'steps', 'structural-pre-pass.md');
 const FIXER_PATH = path.join(ROOT, 'agents', 'gsd-code-fixer.md');
 const REVIEWER_PATH = path.join(ROOT, 'agents', 'gsd-code-reviewer.md');
+
+// ---------------------------------------------------------------------------
+// #4259: the T6 docs-parity site scan, hoisted out of the assertion so it can
+// be driven directly by the negative controls below.
+//
+// The scan is `$`-anchored with `[^\n]*` on both sides of `--grep=`, so it only
+// ever matched when `git log` and `--grep=` sat on the SAME physical line. A
+// shell line-continuation made a semantically identical derivation invisible:
+// zero hits, and T6 passed. Both generations of the assertion were defeated by
+// it — the current anti-revert ban let a wrapped site through outright, and at
+// v1.12.0 a wrapped site was silently exempted from the pattern-conformance
+// checks written to catch the macOS `\b`-no-op class, so it could have carried
+// exactly the malformed pattern T6 exists to reject. That is not a hypothetical
+// shape: wrapping is the natural way to write a `git log` carrying a long ERE,
+// and a real candidate implementation for #3926 did it, passed T6, and was
+// caught only by later manual review.
+//
+// Folding continuations BEFORE matching is the repair, rather than widening the
+// regex in place: the assertion's message and its `PHASE_SCOPE_NUM` filter both
+// assume one site is one string, and a `[\s\S]*?` would happily run the scan
+// across unrelated statements. The fold corrects the input, so everything built
+// on the scan is fixed at once.
+//
+// A newline is continued only when its immediately preceding run contains an
+// ODD number of backslashes: one is consumed by the continuation and every
+// preceding pair represents literal backslashes. An even run ends the shell
+// statement normally. `[ \t]*` deliberately cannot swallow a blank line.
+const foldShellContinuations = (src) => src.replace(
+  /(^|[^\\])((?:\\\\)*)\\\n[ \t]*/gm,
+  (_match, prefix, literalPairs) => `${prefix}${literalPairs} `,
+);
+
+const GREP_SITE_RE = /^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm;
+
+const findGrepSites = (src) => {
+  const lines = splitLines(src);
+  return scanFencedBlocks(lines).flatMap((block) => {
+    if (block.closeLineIdx === -1) return [];
+    const language = block.infoString.trim().toLowerCase();
+    if (language !== 'bash' && language !== 'sh') return [];
+    const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+    return Array.from(
+      foldShellContinuations(body).matchAll(GREP_SITE_RE),
+      (match) => match[0],
+    );
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Pure-function implementation of the compute_file_scope Node script body.
@@ -1073,6 +1122,106 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
   // both files must use the SAME phase-directory anchor — and no message-grep
   // derivation may return (a subject carries no milestone bound; that class
   // failed five times: #2989/#3191/#3503/#3995).
+  // #4259: the T6 scan drives itself off the live workflow files, which are
+  // clean — so its matching branch is exercised only by whatever those files
+  // happen to contain, and the hole it had was invisible for exactly that
+  // reason. These fixtures drive findGrepSites directly, in both directions.
+  test('#4259 T6 site scan sees a backslash-continued derivation, and still ignores what it should', () => {
+    const sameLine = [
+      '```bash',
+      'PHASE_START=$(git log --extended-regexp --grep="^(feat|fix)\\(phase-${PHASE_SCOPE_NUM}" --format="%H")',
+      '```',
+    ].join('\n');
+
+    // Semantically identical to the row above. The only difference is two
+    // continued physical lines, and that used to be enough to vanish.
+    const continued = [
+      '```bash',
+      'PHASE_START=$(git log \\',
+      '  --extended-regexp \\',
+      '  --grep="^(feat|fix)\\(phase-${PHASE_SCOPE_NUM}" --format="%H")',
+      '```',
+    ].join('\n');
+
+    assert.equal(findGrepSites(sameLine).length, 1, 'the same-line form must stay caught');
+    assert.equal(findGrepSites(continued).length, 1, 'the continued form must now be caught (#4259)');
+
+    // The filter T6 actually asserts on has to see the marker too. Before the
+    // fold this failed twice over: the scan returned nothing, AND
+    // PHASE_SCOPE_NUM sat on a different physical line from the one the scan
+    // would have captured, so even a matching scan would have filtered it out.
+    for (const src of [sameLine, continued]) {
+      assert.equal(
+        findGrepSites(src).filter((l) => l.includes('PHASE_SCOPE_NUM')).length,
+        1,
+        'the captured site must carry the marker T6 filters on',
+      );
+    }
+
+    // Negative control that DOES exercise the fold: a continued, non-phase
+    // grep site remains a site, but must not become a phase-scope finding.
+    const benign = [
+      '```bash',
+      'RELEASE_NOTES=$(git log \\',
+      '  --grep="^chore" --format="%s")',
+      '```',
+    ].join('\n');
+    assert.equal(
+      findGrepSites(benign).filter((l) => l.includes('PHASE_SCOPE_NUM') || /phase-\)?\(/.test(l)).length,
+      0,
+      'a non-phase-scope --grep must stay clean',
+    );
+
+    // A wrapped git-log assignment that merely sits near a --grep string must
+    // not be glued into one logical line with it. This exercises the fold and
+    // still contains every keyword the site regex looks for.
+    const unrelated = [
+      '```bash',
+      'SOME_VAR=$(git log \\',
+      '  --format="%H")',
+      'echo "--grep=$SOME_VAR"',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(findGrepSites(unrelated), [], 'a wrapped unrelated assignment must not glue into a hit');
+
+    // A continuation must not reach across a blank line — the reason this
+    // folds [ \t]* rather than \s* after the newline.
+    const acrossBlank = [
+      '```bash',
+      'SOME_VAR=$(git log \\',
+      '',
+      'FOO=--grep=x',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(findGrepSites(acrossBlank), [], 'the fold must stop at a blank line');
+
+    // Two trailing backslashes represent one literal backslash followed by a
+    // real newline. Folding this would invent a site the shell does not have.
+    const evenBackslashes = [
+      '```bash',
+      'PHASE_START=$(git log \\\\',
+      '  --grep="phase-${PHASE_SCOPE_NUM}")',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(
+      findGrepSites(evenBackslashes),
+      [],
+      'an even trailing-backslash run is not a shell continuation',
+    );
+  });
+
+  test('#4259 T6 site scan reports nothing on the live workflow files', () => {
+    // The adoption check: only shell code fences are scanned, so markdown hard
+    // breaks and examples in other languages cannot be folded into fake shell
+    // sites. Distinct from T6 itself, this asserts the live scan is quiet.
+    for (const src of [
+      readFileNormalized(WORKFLOW_PATH),
+      readFileNormalized(PRE_PASS_STEP_PATH).replace(/\\"/g, '"'),
+    ]) {
+      assert.deepStrictEqual(findGrepSites(src), []);
+    }
+  });
+
   test('T6 docs-parity: all diff-base derivations use the identical phase-directory anchor; no --grep site remains', () => {
     const sources = [
       readFileNormalized(WORKFLOW_PATH),
@@ -1086,9 +1235,9 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
     }
     const grepSites = [];
     for (const src of sources) {
-      for (const m of src.matchAll(/^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm)) {
-        grepSites.push(m[0]);
-      }
+      // #4259: findGrepSites folds backslash continuations first, so a wrapped
+      // assignment presents as one logical line and cannot slip the scan.
+      grepSites.push(...findGrepSites(src));
     }
     assert.deepStrictEqual(
       grepSites.filter((l) => l.includes('PHASE_SCOPE_NUM') || /phase-\)?\(/.test(l)),
