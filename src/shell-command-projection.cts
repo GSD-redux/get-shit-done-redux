@@ -249,6 +249,7 @@ const MANAGED_HOOK_COMMAND_BASENAMES_BY_SURFACE: Record<string, Set<string>> = {
     'gsd-session-state.sh',
     'gsd-validate-commit.sh',
     'gsd-phase-boundary.sh',
+    'gsd-graphify-update.sh',
     // #3662: same three guards as MANAGED_HOOK_BASENAMES_BY_SURFACE above —
     // their absence here meant isManagedHookCommand never recognized them, so
     // the settings.json→settings.local.json migration filter (and uninstall

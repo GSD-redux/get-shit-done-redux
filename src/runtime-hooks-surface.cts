@@ -56,6 +56,7 @@ const {
   shellHookOmitsBashRunner,
   escapeTomlDoubleQuotedString,
   escapePosixDoubleQuoted,
+  resolveExecutableBinary,
 } = shellCmdProjection as {
   isManagedHookBasename: (scriptPath: string, opts?: { surface?: string }) => boolean;
   isManagedHookCommand: (cmd: string | null | undefined, opts?: { surface?: string; includeLegacyAliases?: boolean; configDir?: string }) => boolean;
@@ -66,6 +67,7 @@ const {
   shellHookOmitsBashRunner: (opts: { platform: string; runtime: string; isShellHook: boolean }) => boolean;
   escapeTomlDoubleQuotedString: (value: unknown) => string;
   escapePosixDoubleQuoted: (value: unknown) => string;
+  resolveExecutableBinary: (name: string, opts?: { platform?: string; requireExecutable?: boolean }) => string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -642,7 +644,7 @@ interface BashRunnerOpts {
   existsSync?: (p: string) => boolean;
 }
 
-function resolveBashRunner(opts?: BashRunnerOpts): string | null {
+function resolveBashExecutable(opts?: BashRunnerOpts): string | null {
   const platform = (opts && opts.platform) || process.platform;
   if (platform !== 'win32') return 'bash';
 
@@ -658,11 +660,17 @@ function resolveBashRunner(opts?: BashRunnerOpts): string | null {
   }
 
   for (const candidate of candidates) {
-    if (candidate && exists(candidate)) {
-      return JSON.stringify(shellCmdProjection.posixNormalize(candidate));
-    }
+    if (candidate && exists(candidate)) return shellCmdProjection.posixNormalize(candidate);
   }
   return null;
+}
+
+function resolveBashRunner(opts?: BashRunnerOpts): string | null {
+  const executable = resolveBashExecutable(opts);
+  if (executable === null) return null;
+  return ((opts && opts.platform) || process.platform) === 'win32'
+    ? JSON.stringify(executable)
+    : executable;
 }
 
 // ---------------------------------------------------------------------------
@@ -929,6 +937,7 @@ interface ReconcileResult {
   changed: boolean;
   wrote: boolean;
   path: string;
+  configuredEntrypoints?: ConfiguredEntrypoint[];
 }
 
 /**
@@ -1117,14 +1126,17 @@ interface ShimIR {
   render: { cmd: () => string };
 }
 
+function parseAbsoluteRunnerToken(absoluteRunnerToken: string): string {
+  try {
+    return JSON.parse(absoluteRunnerToken) as string;
+  } catch {
+    return absoluteRunnerToken;
+  }
+}
+
 function buildCodexHookWindowsShimIR(scriptAbsPath: string, absoluteRunnerToken: string | null): ShimIR | null {
   if (!absoluteRunnerToken) return null;
-  let interpreter: string;
-  try {
-    interpreter = JSON.parse(absoluteRunnerToken) as string;
-  } catch {
-    interpreter = absoluteRunnerToken;
-  }
+  const interpreter = parseAbsoluteRunnerToken(absoluteRunnerToken);
   const targetAbs = shellCmdProjection.posixNormalize(scriptAbsPath);
   const scriptQuoted = JSON.stringify(targetAbs);
   const cmdPath = scriptAbsPath.replace(/\.js$/, '.cmd');
@@ -1159,8 +1171,9 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
 
   const scriptPath = shellCmdProjection.posixNormalize(path.resolve(targetDir, 'hooks', 'gsd-check-update.js'));
   const cmdShimPath = scriptPath.replace(/\.js$/, '.cmd');
-
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
   let managedCommand: string | undefined;
+
   if (platform === 'win32') {
     const shimIR = buildCodexHookWindowsShimIR(scriptPath, absoluteRunner);
     if (!shimIR) return { changed: false, wrote: false, path: hooksJsonPath };
@@ -1176,6 +1189,10 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
       return { changed: false, wrote: false, path: hooksJsonPath };
     }
     managedCommand = shimIR.hookCommand;
+    configuredEntrypoints.push(
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath: shimIR.cmdPath, platform, selfExecutable: true },
+      { runtime: 'codex', configPath: hooksJsonPath, scriptPath, interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)], platform },
+    );
   } else {
     managedCommand = projectManagedHookCommand({
       absoluteRunner,
@@ -1183,15 +1200,23 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
       runtime: 'codex',
       platform,
     }) ?? undefined;
+    if (managedCommand) {
+      configuredEntrypoints.push({
+        runtime: 'codex',
+        configPath: hooksJsonPath,
+        scriptPath,
+        interpreterCandidates: [parseAbsoluteRunnerToken(absoluteRunner)],
+        platform,
+      });
+    }
   }
 
   if (!managedCommand) return { changed: false, wrote: false, path: hooksJsonPath };
-
   const commandWindows = platform === 'win32'
     ? JSON.stringify(shellCmdProjection.posixNormalize(cmdShimPath))
     : undefined;
-
-  return reconcileCodexHooksJsonSessionStart(targetDir, { managedCommand, commandWindows });
+  const result = reconcileCodexHooksJsonSessionStart(targetDir, { managedCommand, commandWindows });
+  return { ...result, configuredEntrypoints };
 }
 
 // ---------------------------------------------------------------------------
@@ -1397,7 +1422,77 @@ interface BuildHookCommandOpts {
   runtime?: string;
   hookShell?: string;
   env?: NodeJS.ProcessEnv;
+  execPath?: string;
   existsSync?: (p: string) => boolean;
+  configPath?: string;
+  configuredEntrypoints?: ConfiguredEntrypoint[];
+}
+
+function configuredEntrypointsForHook(
+  configDir: string,
+  hookName: string,
+  opts: BuildHookCommandOpts,
+): ConfiguredEntrypoint[] {
+  const platform = opts.platform || process.platform;
+  const runtime = opts.runtime || 'generic';
+  const configPath = opts.configPath || configDir;
+  const target: ConfiguredEntrypoint = {
+    runtime,
+    configPath,
+    scriptPath: path.join(configDir, 'hooks', hookName),
+    platform,
+  };
+  const isShellHook = hookName.endsWith('.sh');
+
+  if (shellHookOmitsBashRunner({ platform, runtime, isShellHook })) return [{ ...target, selfExecutable: true }];
+
+  const bash = resolveBashExecutable(opts);
+  if (isShellHook) {
+    // An unresolved bash must still surface as an interpreterCandidates entry
+    // (the literal token, same as the portableHooks runner below) so
+    // validateConfiguredEntrypoints reports 'unresolved-interpreter' instead
+    // of silently skipping the check because the field is absent.
+    return [{ ...target, interpreterCandidates: [bash === null ? 'bash' : bash] }];
+  }
+
+  // #4249: check the SAME stable alias buildNodeRunnerChainToken bakes as its
+  // first candidate (normalizeNodePath rewrites a version-manager shim like
+  // fnm/nvm/mise/volta into its persistent path), not the raw, currently-
+  // running process.execPath — which always trivially resolves regardless of
+  // whether the alias actually baked into the persisted command still does.
+  const nodeCandidates = [
+    normalizeNodePath(opts.execPath || process.execPath, opts),
+    'node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  if (!opts.portableHooks) {
+    return [{ ...target, interpreterCandidates: nodeCandidates }];
+  }
+
+  const runner: ConfiguredEntrypoint = {
+    runtime,
+    configPath,
+    scriptPath: path.join(configDir, 'hooks', NODE_RUNNER_RESOLVER_HOOK),
+    interpreterCandidates: bash === null ? ['bash'] : [bash],
+    platform,
+  };
+  return [runner, { ...target, interpreterCandidates: nodeCandidates }];
+}
+
+function recordConfiguredHookCommand(
+  command: string | null,
+  configDir: string,
+  hookName: string,
+  opts: BuildHookCommandOpts,
+): string | null {
+  if (command && opts.configuredEntrypoints) {
+    opts.configuredEntrypoints.push(
+      ...configuredEntrypointsForHook(configDir, hookName, opts).map(entry => ({ ...entry, command })),
+    );
+  }
+  return command;
 }
 
 function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookCommandOpts): string | null {
@@ -1406,6 +1501,8 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
   const runtime = opts.runtime || 'generic';
   const hookShell = opts.hookShell;
   const isShellHook = hookName.endsWith('.sh');
+  const track = (command: string | null): string | null =>
+    recordConfiguredHookCommand(command, configDir, hookName, opts);
 
   if (shellHookOmitsBashRunner({ platform, runtime, isShellHook })) {
     if (opts.portableHooks) {
@@ -1413,9 +1510,9 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
         configDir,
         homeDir: os.homedir(),
       });
-      return JSON.stringify(`${portableBaseDir}/hooks/${hookName}`);
+      return track(JSON.stringify(`${portableBaseDir}/hooks/${hookName}`));
     }
-    return JSON.stringify(shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName);
+    return track(JSON.stringify(shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName));
   }
 
   // .sh hooks keep the pre-#3662 shape everywhere: the bash runner resolves
@@ -1430,23 +1527,23 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
         configDir,
         homeDir: os.homedir(),
       });
-      return projectManagedHookCommand({
+      return track(projectManagedHookCommand({
         absoluteRunner: runner,
         scriptPath: `${portableBaseDir}/hooks/${hookName}`,
         runtime: opts.runtime || 'generic',
         platform,
         hookShell,
-      });
+      }));
     }
 
     const hooksPath = shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName;
-    return projectManagedHookCommand({
+    return track(projectManagedHookCommand({
       absoluteRunner: runner,
       scriptPath: hooksPath,
       runtime,
       platform,
       hookShell,
-    });
+    }));
   }
 
   // JS hooks (#3662): the node runner is resolved at hook-fire time, never
@@ -1470,7 +1567,7 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
     // Absolute Git-Bash discovery on win32 when available (#580); `bash` on
     // PATH otherwise — the same assumption .sh hooks already make.
     const resolverRunner = resolveBashRunner(opts) || 'bash';
-    return shellCmdProjection.projectShellCommandText({
+    return track(shellCmdProjection.projectShellCommandText({
       runnerToken: resolverRunner,
       argTokens: [
         JSON.stringify(`${portableBaseDir}/hooks/${NODE_RUNNER_RESOLVER_HOOK}`),
@@ -1480,19 +1577,19 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
       runtime,
       platform,
       hookShell,
-    });
+    }));
   }
 
   const chainRunner = buildNodeRunnerChainToken(opts);
   if (chainRunner === null) return null;
   const hooksPath = shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName;
-  return shellCmdProjection.projectShellCommandText({
+  return track(shellCmdProjection.projectShellCommandText({
     runnerToken: chainRunner,
     argTokens: [JSON.stringify(hooksPath)],
     runtime,
     platform,
     hookShell,
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1600,8 +1697,9 @@ function mergeGsdAgentsMd(filePath: string, gsdContent: string): void {
 // writeClineArtifacts
 // ---------------------------------------------------------------------------
 
-function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): string[] {
+function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): { written: string[]; configuredEntrypoints: ConfiguredEntrypoint[] } {
   const written: string[] = [];
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
   const clinerulesDir = path.join(targetDir, '.clinerules');
 
   try {
@@ -1626,6 +1724,20 @@ function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): strin
   try { fs.chmodSync(hookPath, 0o755); } catch { /* Windows: hooks unsupported anyway */ }
   written.push('.clinerules/hooks/PreToolUse');
   console.log(`  ${green}✓${reset} Wrote .clinerules/hooks/PreToolUse`);
+  // #4249 (CodeRabbit): Cline invokes this file directly via its own
+  // `#!/usr/bin/env node` shebang — a hybrid case. The script itself still
+  // needs the execute bit (selfExecutable), but unlike GSD's other JS hooks
+  // (which bake an absolute, install-time-resolved node path specifically to
+  // avoid this) its interpreter is looked up on PATH by `env` at hook-fire
+  // time, so `node` must also resolve or the hook can never run.
+  configuredEntrypoints.push({
+    runtime: 'cline',
+    configPath: hookPath,
+    scriptPath: hookPath,
+    interpreterCandidates: ['node'],
+    selfExecutable: true,
+    platform: process.platform,
+  });
 
   if (isGlobalInstall) {
     try {
@@ -1637,7 +1749,7 @@ function writeClineArtifacts(targetDir: string, isGlobalInstall: boolean): strin
     }
   }
 
-  return written;
+  return { written, configuredEntrypoints };
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,7 +1968,7 @@ function stageTransitiveHookLibs(opts: {
   return staged;
 }
 
-function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursorHooksJsonOpts): { hooksJsonPath: string; changed: boolean } {
+function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursorHooksJsonOpts): { hooksJsonPath: string; changed: boolean; configuredEntrypoints: ConfiguredEntrypoint[] } {
   opts = opts || {};
   const hooksDir = path.join(targetDir, 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
@@ -1915,7 +2027,13 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
     ensureCommonJsMarker(hooksDir);
   }
 
-  const hookOpts: BuildHookCommandOpts = { runtime: 'cursor', platform: opts.platform || process.platform };
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
+  const hookOpts: BuildHookCommandOpts = {
+    runtime: 'cursor',
+    platform: opts.platform || process.platform,
+    configPath: path.join(targetDir, 'hooks.json'),
+    configuredEntrypoints,
+  };
   const commands: Record<string, string | null> = {};
   for (const ev of events) {
     const script = CURSOR_EVENT_SCRIPT_MAP[ev];
@@ -1929,7 +2047,7 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
 
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
   const result = reconcileCursorHooksJson(hooksJsonPath, managedEntries);
-  return { hooksJsonPath, changed: result.changed };
+  return { hooksJsonPath, changed: result.changed, configuredEntrypoints };
 }
 
 function removeCursorHooksJson(targetDir: string): { changed: boolean } {
@@ -2102,7 +2220,7 @@ interface WriteWindsurfHooksJsonOpts {
  * @param opts      - `{ platform? }`
  * @returns `{ hooksJsonPath, changed }`
  */
-function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWindsurfHooksJsonOpts): { hooksJsonPath: string; changed: boolean } {
+function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWindsurfHooksJsonOpts): { hooksJsonPath: string; changed: boolean; configuredEntrypoints: ConfiguredEntrypoint[] } {
   opts = opts || {};
   const hooksDir = path.join(targetDir, 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
@@ -2154,7 +2272,13 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
     ensureCommonJsMarker(hooksDir);
   }
 
-  const hookOpts: BuildHookCommandOpts = { runtime: 'windsurf', platform: opts.platform || process.platform };
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
+  const hookOpts: BuildHookCommandOpts = {
+    runtime: 'windsurf',
+    platform: opts.platform || process.platform,
+    configPath: path.join(targetDir, 'hooks.json'),
+    configuredEntrypoints,
+  };
   const commands: Record<string, string | null> = {};
   for (const ev of WINDSURF_HOOK_EVENTS) {
     const script = WINDSURF_EVENT_SCRIPT_MAP[ev];
@@ -2169,7 +2293,7 @@ function writeWindsurfHooksJson(targetDir: string, src: string, opts?: WriteWind
 
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
   const result = reconcileWindsurfHooksJson(hooksJsonPath, managedEntries);
-  return { hooksJsonPath, changed: result.changed };
+  return { hooksJsonPath, changed: result.changed, configuredEntrypoints };
 }
 
 /**
@@ -3150,30 +3274,38 @@ function writeKimiHooksToml(
   configPath: string,
   targetDir: string,
   opts: { hookOpts: BuildHookCommandOpts },
-): { changed: boolean; path: string; entryCount: number } {
+): { changed: boolean; path: string; entryCount: number; configuredEntrypoints: ConfiguredEntrypoint[] } {
+  const configuredEntrypoints: ConfiguredEntrypoint[] = [];
+  const trackedOpts = {
+    hookOpts: {
+      ...opts.hookOpts,
+      configPath,
+      configuredEntrypoints,
+    },
+  };
   const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   const stripped = stripKimiHooksTomlBlock(existing) ?? '';
-  const block = buildKimiHooksTomlBlock(targetDir, opts);
+  const block = buildKimiHooksTomlBlock(targetDir, trackedOpts);
   const entryCount = block ? (block.match(/\[\[hooks\]\]/g) || []).length : 0;
 
   if (!block) {
-    if (stripped === existing) return { changed: false, path: configPath, entryCount: 0 };
+    if (stripped === existing) return { changed: false, path: configPath, entryCount: 0, configuredEntrypoints };
     if (stripped.trim() === '') {
       if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
     } else {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       atomicWriteFileSync(configPath, stripped, 'utf8');
     }
-    return { changed: true, path: configPath, entryCount: 0 };
+    return { changed: true, path: configPath, entryCount: 0, configuredEntrypoints };
   }
 
   const separator = stripped.trim() === '' ? '' : (stripped.endsWith('\n') ? '\n' : '\n\n');
   const next = stripped.trim() === '' ? `${block}\n` : `${stripped}${separator}${block}\n`;
-  if (next === existing) return { changed: false, path: configPath, entryCount };
+  if (next === existing) return { changed: false, path: configPath, entryCount, configuredEntrypoints };
 
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   atomicWriteFileSync(configPath, next, 'utf8');
-  return { changed: true, path: configPath, entryCount };
+  return { changed: true, path: configPath, entryCount, configuredEntrypoints };
 }
 
 /**
@@ -3218,6 +3350,101 @@ function referencesHook(h: Record<string, unknown>, hookName: string): boolean {
   return (typeof cmd === 'string' && cmd.includes(hookName)) ||
     (Array.isArray(args) && args.some(a => typeof a === 'string' && a.includes(hookName))) ||
     (typeof url === 'string' && url.includes(hookName));
+}
+
+type ConfiguredEntrypointFailureReason = 'missing' | 'unreadable' | 'wrong-file-type' | 'unresolved-interpreter' | 'not-executable';
+
+interface ConfiguredEntrypoint {
+  runtime: string;
+  configPath: string;
+  scriptPath: string;
+  interpreterCandidates?: string[];
+  // #4249 (CodeRabbit): true when the OS execs scriptPath directly (via a
+  // shebang, or Windows' own .cmd extension dispatch) — orthogonal to
+  // interpreterCandidates, which every producer that needs both sets
+  // alongside this rather than relying on their absence. Most self-executable
+  // entries have no candidates (a Windows-Claude .sh hook, Codex's .cmd shim);
+  // Cline's `#!/usr/bin/env node` is a hybrid needing both: the execute bit
+  // AND `node` resolving on PATH.
+  selfExecutable?: boolean;
+  platform?: string;
+  command?: string;
+}
+
+interface ConfiguredEntrypointInvalid {
+  runtime: string;
+  configPath: string;
+  role: 'script' | 'interpreter';
+  path: string;
+  reason: ConfiguredEntrypointFailureReason;
+}
+
+type ConfiguredEntrypointValidationResult =
+  | { ok: true; checked: number }
+  | { ok: false; checked: number; invalid: ConfiguredEntrypointInvalid[] };
+
+function validateConfiguredEntrypoints(
+  entries: ConfiguredEntrypoint[],
+  deps: { statSync?: typeof fs.statSync; accessSync?: typeof fs.accessSync; resolveExecutableBinary?: typeof resolveExecutableBinary } = {},
+): ConfiguredEntrypointValidationResult {
+  const statSync = deps.statSync ?? fs.statSync;
+  const accessSync = deps.accessSync ?? fs.accessSync;
+  const resolve = deps.resolveExecutableBinary ?? resolveExecutableBinary;
+  const invalid: ConfiguredEntrypointInvalid[] = [];
+  for (const entry of entries) {
+    let scriptOk = false;
+    try {
+      scriptOk = statSync(entry.scriptPath).isFile();
+      if (!scriptOk) {
+        invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'wrong-file-type' });
+      } else {
+        // #4249: statSync only needs search permission on the parent dirs, so
+        // it succeeds even for a chmod-000 file — the EACCES catch below
+        // never fires for that case. Read permission on the file itself must
+        // be checked explicitly: an interpreter opens the script directly,
+        // and even a self-executable shebang script is opened and read by
+        // its kernel-invoked interpreter, not just exec'd — X_OK alone does
+        // not prove it's readable.
+        try {
+          accessSync(entry.scriptPath, fs.constants.R_OK);
+        } catch {
+          scriptOk = false;
+          invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'unreadable' });
+        }
+      }
+    } catch (statErr) {
+      // #4249 Nit: EACCES means a parent directory couldn't be searched —
+      // a real (if rare) permission problem, distinct from ENOENT's "missing".
+      // EPERM: Windows' equivalent permission-denied code for a directory a
+      // parent path couldn't be traversed into.
+      const code = (statErr as NodeJS.ErrnoException)?.code;
+      const reason = code === 'EACCES' || code === 'EPERM' ? 'unreadable' : 'missing';
+      invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason });
+    }
+    // #4249: selfExecutable is the sole source of truth for whether the OS
+    // execs scriptPath directly via its own shebang (set explicitly by every
+    // producer that needs it — a Windows-Claude .sh hook, Codex's Windows
+    // .cmd shim, Cline's hybrid `env node` hook — rather than inferred from
+    // the absence of interpreterCandidates, which Cline's hybrid case also
+    // carries). Skip on win32 like resolveExecutableBinary's own X_OK
+    // carve-out does: POSIX mode bits don't mean executable on Windows, and a
+    // real accessSync(X_OK) there would fail a .cmd shim under a test that
+    // simulates win32 on a POSIX runner (Node's own no-op only protects an
+    // actual Windows machine). Cline is the only producer where this runs.
+    if (scriptOk && entry.selfExecutable && (entry.platform ?? process.platform) !== 'win32') {
+      try {
+        accessSync(entry.scriptPath, fs.constants.X_OK);
+      } catch {
+        invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'script', path: entry.scriptPath, reason: 'not-executable' });
+      }
+    }
+    if (entry.interpreterCandidates && !entry.interpreterCandidates.some(candidate =>
+      resolve(candidate, { platform: entry.platform, requireExecutable: true }) !== null,
+    )) {
+      invalid.push({ runtime: entry.runtime, configPath: entry.configPath, role: 'interpreter', path: entry.interpreterCandidates.join(' | '), reason: 'unresolved-interpreter' });
+    }
+  }
+  return invalid.length === 0 ? { ok: true, checked: entries.length } : { ok: false, checked: entries.length, invalid };
 }
 
 // ---------------------------------------------------------------------------
@@ -3295,7 +3522,9 @@ export = {
   // Shared
   stageTransitiveHookLibs,
   buildHookCommand,
+  recordConfiguredHookCommand,
   applySettingsJsonHooks,
+  validateConfiguredEntrypoints,
   referencesHook,
   rewriteLegacyManagedNodeHookCommands,
   reconcileManagedShellHookCommands,

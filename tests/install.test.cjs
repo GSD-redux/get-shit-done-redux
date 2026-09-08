@@ -549,13 +549,16 @@ describe('install/uninstall — trae (nested skills/gsd-<router>/skills/<stem>/ 
     const result = install(false, 'trae');
     const targetDir = path.join(tmpDir, '.trae');
 
-    assert.deepStrictEqual(result, {
+    assert.equal(typeof result.rollbackInstallerMigrations, 'function');
+    const { rollbackInstallerMigrations: _rollbackInstallerMigrations, ...resultWithoutRollback } = result;
+    assert.deepStrictEqual(resultWithoutRollback, {
       settingsPath: null,
       settings: null,
       statuslineCommand: null,
       updateBannerCommand: null,
       runtime: 'trae',
       configDir: fs.realpathSync(targetDir),
+      configuredEntrypoints: [],
     });
 
     // trae nests: skills/gsd-<router>/skills/<stem>/SKILL.md

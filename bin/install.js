@@ -10780,6 +10780,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 
   // Track installation failures
   const failures = [];
+  const configuredEntrypoints = [];
   let installerMigrationResult = null;
   const rollbackInstallerMigrations = () => {
     if (!installerMigrationResult || typeof installerMigrationResult.rollback !== 'function') return;
@@ -10798,6 +10799,84 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     pathPrefix,
     isGlobal,
   });
+
+  // #4249 CR — the #3245 snapshot below covers config.toml, hooks.json,
+  // skills/gsd-*, agents/gsd-* and gsd-core/VERSION, but the install overwrites
+  // every OTHER GSD-owned file too (hooks/, gsd-core/CHANGELOG.md, scripts/,
+  // gsd-core/.gsd-runtime, the manifest itself) before the entrypoint-validation
+  // gate runs, so a validation failure left the new payload on top of the
+  // restored old config. The previous install's manifest already records what
+  // GSD owns — snapshot exactly that set, not a second hand-written list.
+  //
+  // Captured BEFORE runInstallerMigrations: a migrated file's pre-migration
+  // bytes are what a rollback must land.
+  //
+  // Not gated on install mode — a core/--minimal Codex install writes the same
+  // tree, and restoreCodexSnapshot is reachable there too (#2695).
+  const codexPreInstallManagedFiles = new Map();
+  // Every path the PRIOR manifest claimed, readable or not. The removal pass
+  // tests membership HERE, not in the content map: a file that existed but
+  // could not be read is still pre-existing, and deleting it is data loss.
+  const codexPreInstallManagedPaths = new Set();
+  let codexPreInstallManifestBytes = null;
+  // Only a manifest this install actually parsed proves what predates it.
+  // Absent, unreadable or malformed all leave the prior set UNKNOWN, and the
+  // removal pass must then not run: on a first install GSD may have overwritten
+  // a user file at a tracked path, and removing it is worse than leaving a
+  // payload the next install replaces anyway.
+  let codexManagedSnapshotUsable = false;
+  if (_hostBehaviors(runtime).tomlConfigInstall) {
+    try {
+      codexPreInstallManifestBytes = fs.readFileSync(path.join(targetDir, MANIFEST_NAME));
+      const preManifest = JSON.parse(codexPreInstallManifestBytes.toString('utf8'));
+      for (const relPath of Object.keys((preManifest && preManifest.files) || {})) {
+        // Confine to targetDir: a hand-edited manifest must not turn rollback
+        // into an arbitrary-path write.
+        const resolved = resolveInstallRelativePath(targetDir, relPath);
+        if (!resolved) continue;
+        codexPreInstallManagedPaths.add(resolved.relPath);
+        try { codexPreInstallManagedFiles.set(resolved.relPath, fs.readFileSync(resolved.fullPath)); }
+        catch (_) { /* listed but absent or unreadable — nothing to restore */ }
+      }
+      codexManagedSnapshotUsable = true;
+    } catch (_) {
+      // No prior manifest, or a corrupt one. Deliberately not fatal: a corrupt
+      // manifest must stay repairable by reinstalling over it.
+      codexPreInstallManagedFiles.clear();
+      codexPreInstallManagedPaths.clear();
+      codexPreInstallManifestBytes = null;
+    }
+  }
+
+  /**
+   * Restore every manifest-tracked GSD file to its pre-install bytes and remove
+   * the ones only THIS install introduced. Shared by both Codex rollback
+   * closures; idempotent; no-op for every other runtime.
+   */
+  const restoreManagedFileSnapshot = () => {
+    if (!codexManagedSnapshotUsable) return;
+    for (const [relPath, bytes] of codexPreInstallManagedFiles) {
+      const resolved = resolveInstallRelativePath(targetDir, relPath);
+      if (!resolved) continue;
+      try {
+        fs.mkdirSync(path.dirname(resolved.fullPath), { recursive: true });
+        fs.writeFileSync(resolved.fullPath, bytes);
+      } catch (_) { /* best-effort restore — surface the original error */ }
+    }
+    const postManifestPath = path.join(targetDir, MANIFEST_NAME);
+    let postManifest = null;
+    try { postManifest = JSON.parse(fs.readFileSync(postManifestPath, 'utf8')); }
+    catch (_) { /* not written yet, or unreadable — nothing new to remove */ }
+    for (const relPath of Object.keys((postManifest && postManifest.files) || {})) {
+      const resolved = resolveInstallRelativePath(targetDir, relPath);
+      if (!resolved || codexPreInstallManagedPaths.has(resolved.relPath)) continue;
+      // rmSync leaves the emptied directory behind on purpose: the next install
+      // writes into it, and pruning dirs risks removing user content beside it.
+      try { fs.rmSync(resolved.fullPath, { force: true }); } catch (_) { /* best-effort */ }
+    }
+    // Usable implies a parsed prior manifest, so these bytes always exist.
+    try { fs.writeFileSync(postManifestPath, codexPreInstallManifestBytes); } catch (_) { /* best-effort */ }
+  };
 
   // Run manifest-backed cleanup migrations before package materialization.
   installerMigrationResult = runInstallerMigrations({ configDir: targetDir });
@@ -10832,7 +10911,11 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // Map<filename, Buffer> — content snapshot of each pre-existing gsd-* agent file.
   const codexPreInstallAgentContents = new Map();
   let codexPreInstallVersionBytes = null;
-  if (_hostBehaviors(runtime).tomlConfigInstall && !isMinimalMode(_effectiveInstallMode)) {
+  // #4249 CR: not gated on install mode. restoreCodexSnapshot is reachable for
+  // a core/--minimal install too (#2695), and its pass-2 sweeps remove every
+  // gsd-* skill dir / agent file the snapshot does not claim — so an empty
+  // minimal-mode snapshot deleted the whole surface with nothing to restore.
+  if (_hostBehaviors(runtime).tomlConfigInstall) {
     const _preSkillsDir = _resolveSkillsRootDir(runtime, targetDir, _installScopeId);
     if (fs.existsSync(_preSkillsDir)) {
       for (const entry of fs.readdirSync(_preSkillsDir, { withFileTypes: true })) {
@@ -10888,6 +10971,9 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // handles config.toml, which is not yet touched at this point in the pipeline.
   const _codexPreConfigRollback = !_hostBehaviors(runtime).tomlConfigInstall || isMinimalMode(_effectiveInstallMode) ? null : () => {
     rollbackInstallerMigrations();
+    // #4249 CR: every manifest-tracked GSD file first, so the per-surface
+    // restores below refine an already-pre-install tree rather than a mixed one.
+    restoreManagedFileSnapshot();
     // skills/gsd-* — pass 1: restore snapshot entries (may be absent if deleted mid-install).
     const _earlySkillsDir = _resolveSkillsRootDir(runtime, targetDir, _installScopeId);
     for (const skillName of codexPreInstallSkillNames) {
@@ -12146,6 +12232,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // default to empty Set / null). Does NOT touch non-gsd-* user content.
     const restoreCodexSnapshot = () => {
       rollbackInstallerMigrations();
+      // 0. every manifest-tracked GSD file (#4249 CR) — hooks/, gsd-core/,
+      // scripts/, the manifest itself. Runs first so the per-surface restores
+      // below refine an already-pre-install tree rather than a mixed one.
+      restoreManagedFileSnapshot();
       // 1. config.toml
       if (codexConfigPreInstallSnapshot !== null) {
         try { fs.writeFileSync(codexConfigPathPreInstall, codexConfigPreInstallSnapshot); }
@@ -12517,6 +12607,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
             absoluteRunner: codexNodeRunner,
             platform: process.platform,
           });
+          configuredEntrypoints.push(...(hookWrite.configuredEntrypoints || []));
           if (hookWrite.wrote) {
             console.log(`  ${green}✓${reset} Configured Codex hooks (SessionStart via hooks.json)`);
           } else {
@@ -12596,7 +12687,14 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     }
 
     persistActiveProfileMarker();
-    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
+    // #4249: expose restoreCodexSnapshot (#3245), not the narrower
+    // rollbackInstallerMigrations it wraps, as this result's rollback. A
+    // configured-entrypoint validation failure discovered later (outside this
+    // function, after Codex's own hooks.json/config.toml write already
+    // succeeded) previously reverted only installer migrations here, leaving
+    // the just-written config.toml/hooks.json broken on disk despite Codex
+    // already owning a full pre-install snapshot/restore for exactly this.
+    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir, configuredEntrypoints, rollbackInstallerMigrations: restoreCodexSnapshot };
   }
 
   if (plan.installSurface === 'copilot-instructions') {
@@ -12649,7 +12747,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // The re-run is retained for parity with the settings.json install path.
     writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
     persistActiveProfileMarker();
-    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
+    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir, configuredEntrypoints: cursorHookResult.configuredEntrypoints, rollbackInstallerMigrations };
   }
 
   if (plan.installSurface === 'profile-marker-only') {
@@ -12705,6 +12803,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const kimiHookOpts = { portableHooks: hasPortableHooks, runtime };
       const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
       const kimiHooksResult = writeKimiHooksToml(kimiHooksTomlPath, kimiHooksRoot, { hookOpts: kimiHookOpts });
+      configuredEntrypoints.push(...kimiHooksResult.configuredEntrypoints);
       if (kimiHooksResult.changed) {
         console.log(`  ${green}✓${reset} Configured ${kimiHooksResult.entryCount} GSD hook(s) in ${kimiHooksTomlPath}`);
       }
@@ -12761,6 +12860,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const windsurfHookResult = writeWindsurfHooksJson(targetDir, src, {
         platform: process.platform,
       });
+      configuredEntrypoints.push(...windsurfHookResult.configuredEntrypoints);
       if (windsurfHookResult.changed) {
         console.log(`  ${green}✓${reset} Configured Windsurf lifecycle hooks (pre_write_code, pre_run_command)`);
       } else {
@@ -12776,19 +12876,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     }
 
     persistActiveProfileMarker();
-    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
+    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir, configuredEntrypoints, rollbackInstallerMigrations };
   }
 
   if (plan.installSurface === 'cline-rules') {
     // Cline uses the `.clinerules/` directory form (issue #787): GSD rules live
     // at .clinerules/gsd.md and a PreToolUse lifecycle hook at
     // .clinerules/hooks/PreToolUse. Global installs also get ~/.agents/AGENTS.md.
-    writeClineArtifacts(targetDir, isGlobal);
+    const clineArtifacts = writeClineArtifacts(targetDir, isGlobal);
     // Re-run the manifest pass: these artifacts are written *after* the earlier
     // writeManifest() call, so a second pass is needed to hash-track them.
     writeManifest(targetDir, runtime, { mode: _effectiveInstallMode, scope: _installScopeId });
     persistActiveProfileMarker();
-    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
+    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir, configuredEntrypoints: clineArtifacts.configuredEntrypoints, rollbackInstallerMigrations };
   }
 
   // Configure statusline and hooks in settings.json (or settings.local.json for local Claude installs).
@@ -12936,7 +13036,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // runtime's hostBehaviors instead of a hardcoded `runtime === 'antigravity'`
   // check inside projectLocalHookPrefix.
   const localPrefix = projectLocalHookPrefix({ runtime, dirName, hookPathStyle: _hostBehaviors(runtime).hookPathStyle });
-  const hookOpts = { portableHooks: hasPortableHooks, runtime };
+  const settingsEntrypoints = [];
+  const hookOpts = {
+    portableHooks: hasPortableHooks,
+    runtime,
+    configPath: settingsPath,
+    // #4249: track unconditionally. Gating on `plan.hooksSurface ===
+    // 'settings-json'` made tracking depend on an unasserted
+    // installSurface/hooksSurface coupling — a descriptor that broke it would
+    // silently drop this runtime out of validation. Everything recorded here
+    // lands in settings.json by construction, and the registered-command
+    // filter below already discards entries no hook actually references.
+    configuredEntrypoints: settingsEntrypoints,
+  };
   // #2979: local-install hook commands also use a runner GUI/minimal-PATH
   // runtimes can resolve. Bare `node` fails when the host launches the
   // runtime with a stripped PATH (Finder/Antigravity/etc) — #3662 replaces
@@ -12950,19 +13062,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // `node` command that recreates the #2979 failure.
   const localCmd = (hookFile) => localNodeRunner === null
     ? null
-    : projectShellCommandText({
+    : hooksSurface.recordConfiguredHookCommand(projectShellCommandText({
       runnerToken: localNodeRunner,
       argTokens: [`${localPrefix}/hooks/${hookFile}`],
       runtime,
       platform: process.platform,
-    });
-  const localShellCmd = (hookFile) => buildLocalShellHookCommand({
+    }), targetDir, hookFile, hookOpts);
+  const localShellCmd = (hookFile) => hooksSurface.recordConfiguredHookCommand(buildLocalShellHookCommand({
     localPrefix,
     hookFile,
     bashRunner: localBashRunner,
     runtime,
     platform: process.platform,
-  });
+  }), targetDir, hookFile, hookOpts);
   const statuslineCommand = isGlobal
     ? buildHookCommand(targetDir, 'gsd-statusline.js', hookOpts)
     : localCmd('gsd-statusline.js');
@@ -13032,6 +13144,31 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       ? buildHookCommand(targetDir, 'gsd-update-banner.js', hookOpts)
       : localCmd('gsd-update-banner.js'));
 
+  const registeredHookCommands = Object.values(settings.hooks || {})
+    .flatMap(groups => Array.isArray(groups) ? groups : [])
+    .flatMap(group => Array.isArray(group && group.hooks) ? group.hooks : [])
+    .map(hook => hook && hook.command)
+    .filter(command => typeof command === 'string');
+  // #4249: match by the managed script's `/hooks/<basename>` path segment, not
+  // by exact command-string equality. The blocking-guard hooks above register
+  // only-if-absent, so a hook already present from a prior install keeps its
+  // OLD command untouched — but `track()` always records the FRESHLY computed
+  // command for it, which never equals what's actually persisted. Matching on
+  // the segment (present in the persisted command either way, since every
+  // entry.scriptPath is <configDir>/hooks/<name> by construction) keeps an
+  // already-registered, still-active hook in the validated set instead of
+  // silently dropping it (#4154 Blocker) — anchored on `/hooks/` rather than a
+  // bare basename so an unrelated user command that merely mentions the same
+  // filename can't false-positive into GSD's validated set.
+  configuredEntrypoints.push(
+    ...settingsEntrypoints.filter(entry => {
+      const hooksSegment = '/hooks/' + path.basename(entry.scriptPath);
+      return registeredHookCommands.some(command => command.includes(hooksSegment));
+    }),
+  );
+  const statuslineEntrypoints = settingsEntrypoints.filter(entry => entry.command === statuslineCommand);
+  const updateBannerEntrypoints = settingsEntrypoints.filter(entry => entry.command === updateBannerCommand);
+
   // #683: Set worktree.baseRef:"head" in settings.local.json for local Claude installs.
   // Both fresh and upgrade paths apply only when worktrees are enabled for the project.
   // Never applies to global installs, non-Claude runtimes, or when the user already
@@ -13100,15 +13237,45 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     settings,
     statuslineCommand,
     updateBannerCommand,
+    statuslineEntrypoints,
+    updateBannerEntrypoints,
     runtime,
     configDir: targetDir,
     rollbackInstallerMigrations,
+    configuredEntrypoints,
   };
 }
 
 /**
  * Apply statusline config, then print completion message
  */
+function assertConfiguredEntrypoints(entries) {
+  // #4249: some writers push the same (configPath, scriptPath) pair more than
+  // once (e.g. Kimi's context-monitor hook registered under several events,
+  // or the portable resolver script shared by every portable JS hook) — keep
+  // one so a broken entry is reported once, not once per duplicate.
+  const seen = new Set();
+  const deduped = (entries || []).filter((entry) => {
+    const key = `${entry.configPath} ${entry.scriptPath}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const validation = hooksSurface.validateConfiguredEntrypoints(deduped);
+  if (validation.ok) return;
+
+  const error = new Error(
+    `Configured entrypoint validation failed: ${validation.invalid.map(({ role, path: invalidPath, reason }) => `${role} ${invalidPath} (${reason})`).join(', ')}`,
+  );
+  error.configuredEntrypointValidation = validation;
+  throw error;
+}
+
+// #4249: `bannerOpts.configuredEntrypoints` is the ONLY source assertConfiguredEntrypoints
+// checks below — a caller that omits it (or calls finishInstall directly instead of
+// through installAllRuntimes) gets zero entrypoint validation, silently. installAllRuntimes
+// always passes the full set (per-runtime entries plus statusline/updateBanner); any other
+// caller must do the same for this gate to mean anything.
 function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallStatusline, runtime = DEFAULT_RUNTIME, isGlobal = true, configDir = null, bannerOpts = {}) {
   // #2093: isKilo dropped — the Kilo permissions-writer call below is gated
   // on plan.finishPermissionWriter === 'kilo' (descriptor-driven), not this flag.
@@ -13121,6 +13288,16 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
   // #2100: isWindsurf dropped — unused in this function.
   const { isOpencode, isCodex, isCursor, isAugment, isQwen, isHermes, isCline } = runtimeFlags(runtime);
   const plan = resolveInstallPlan(runtime);
+
+  // #4249 Major: validate BEFORE this function's own settings.json write (and
+  // before writeNonClaudeDefaults) instead of after. Cursor/Windsurf/Kimi/Cline
+  // already persisted their config inside install() by this point, with no
+  // rollback path covering those writes; Codex also persists inside install()
+  // but its rollback binds to a full pre-install snapshot restore, so it IS
+  // covered (see docs/how-to/update-gsd.md). For the settings-json surface
+  // this ordering means a failing validation never reaches this function's
+  // own write at all.
+  assertConfiguredEntrypoints(bannerOpts.configuredEntrypoints);
 
   if (shouldInstallStatusline && plan.writesSharedSettings && !_hostBehaviors(runtime).skipSettingsUi) {
     if (!isGlobal && !forceStatusline) {
@@ -14050,6 +14227,19 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
 
   const finalize = (shouldInstallStatusline, shouldInstallBanner) => {
     try {
+      const selectedConfiguredEntrypoints = (result) => {
+        if (!result || result.skipped) return [];
+        const useStatusline = statuslineRuntimes.includes(result.runtime)
+          && shouldInstallStatusline
+          && (isGlobal || forceStatusline);
+        return [
+          ...(result.configuredEntrypoints || []),
+          ...(useStatusline ? (result.statuslineEntrypoints || []) : []),
+          ...(shouldInstallBanner ? (result.updateBannerEntrypoints || []) : []),
+        ];
+      };
+      assertConfiguredEntrypoints(results.flatMap(selectedConfiguredEntrypoints));
+
       const printSummaries = () => {
         for (const result of results) {
           if (result && result.skipped) continue;
@@ -14063,7 +14253,11 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
             result.runtime,
             isGlobal,
             result.configDir,
-            { shouldInstallBanner: !!shouldInstallBanner, bannerCommand: result.updateBannerCommand }
+            {
+              shouldInstallBanner: !!shouldInstallBanner,
+              bannerCommand: result.updateBannerCommand,
+              configuredEntrypoints: selectedConfiguredEntrypoints(result),
+            }
           );
         }
       };
