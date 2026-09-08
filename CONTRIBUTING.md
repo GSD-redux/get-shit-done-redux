@@ -1110,6 +1110,27 @@ explanation holds, and only you can say which. There is no "which source owns th
 question underneath it, because there is no shared file for two sources to own — to change
 an acknowledgment, amend the commit carrying it.
 
+**Splitting a workflow file into a spine + `detail/*.md` parts (ADR-4139, `workflow.compact_content`)**
+follows the same trailer idiom for one more case. See `docs/PARTITION-RULES.md` for the
+full rule set — the short version: a split moves text, it never restates it, so there is
+no drift-parity check to satisfy, only a guard (`tests/compact-content-partition-guard.test.cjs`)
+that a moved sentence stay moved and a protected sentence never move at all. When the guard
+reports an ordinary (non-protected) line that moved from a spine into its own detail part
+without a declaration, add:
+
+```
+Boundary-Move-Declared: gsd-core/workflows/plan-phase.md — condensed the filesystem-fallback banner into one summary paragraph
+```
+
+Same range (`git log $(git merge-base <base> HEAD)..HEAD`), same fail-closed behavior on an
+uncomputable range, same silent dedupe of identical declarations across a rebase, same hard
+error on two conflicting reasons for the same spine — it is a second key space alongside
+`Emitted-Drift-Ack-Hash`/`-Growth` above, not a different mechanism. Content on the
+protected-content list (guardrails, output-format contracts, few-shot examples the
+workflow's own steps depend on, security language, machine-parsed structural headings) has
+no trailer escape hatch: it may not leave the spine, moved or not, and the guard fails
+regardless of what the trailer says.
+
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
 the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the

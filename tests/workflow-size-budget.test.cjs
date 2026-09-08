@@ -187,6 +187,71 @@ describe('SIZE: workflow tier hard caps (issue #1074)', () => {
   // extract rather than tier in — a disclosed, deliberate simplification.
 });
 
+describe('SIZE: detail/ subtree is excluded from tier classification (#4403, ADR-4139 §6)', () => {
+  // ADR-4139 §6 (the `NEW_FILE_CAP` row): a spine's `<workflow>/detail/<part>.md`
+  // files are governed SOLELY by the hard, non-waivable NEW_FILE_CAP (32768 bytes,
+  // exported from tests/helpers/emitted-diff.cjs) -- NEVER by the XL/LARGE/DEFAULT
+  // tier caps above, because NEW_FILE_CAP carries no per-tier escape hatch the way
+  // the old pre-#2724 per-file baseline did.
+  //
+  // This already holds TRUE BY CONSTRUCTION: measureWorkflows() / listWorkflowStems()
+  // (scripts/workflow-size.cjs) do a plain, non-recursive fs.readdirSync() over the
+  // top-level workflows directory, so a `detail/` subdirectory (like the
+  // modes/steps/templates subdirectories before it) is never walked and never
+  // contributes a key to SIZES or a stem to ALL_WORKFLOWS -- it is never a candidate
+  // for capFor()/XL_CAP/LARGE_CAP/DEFAULT_CAP at all. These tests make that explicit
+  // rather than true-by-omission, and lock it as a regression guard: a future switch
+  // to a recursive scan must not start tier-classifying detail files.
+  test('measureWorkflows()/listWorkflowStems() do not recurse into any <workflow>/detail/ subdirectory', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-size-detail-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'sample.md'), 'top-level spine\n');
+      const detailDir = path.join(dir, 'sample', 'detail');
+      fs.mkdirSync(detailDir, { recursive: true });
+      fs.writeFileSync(path.join(detailDir, 'part.md'), 'detail part\n');
+
+      const sizes = measureWorkflows(dir);
+      assert.deepEqual(
+        Object.keys(sizes), ['sample.md'],
+        'measureWorkflows() must only key the top-level spine, never a nested detail/ file'
+      );
+
+      const stems = listWorkflowStems(dir);
+      assert.deepEqual(
+        stems, ['sample'],
+        'listWorkflowStems() must not surface a stem for anything under detail/'
+      );
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('a near-NEW_FILE_CAP-sized detail/ file is excluded from SIZES and never tier-classified', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-size-detail-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'sample.md'), 'top-level spine\n');
+      const detailDir = path.join(dir, 'sample', 'detail');
+      fs.mkdirSync(detailDir, { recursive: true });
+      // Sized just under the NEW_FILE_CAP anchor (32768 bytes,
+      // tests/helpers/emitted-diff.cjs) -- the cap this file is ACTUALLY governed
+      // by -- and comfortably below every tier cap in this file (DEFAULT_CAP alone
+      // is 40960), so a regression that started tier-classifying it would still
+      // pass on size and only be caught by the key-shape assertion below.
+      const largeBody = 'x'.repeat(32760);
+      fs.writeFileSync(path.join(detailDir, 'large-part.md'), largeBody);
+
+      const sizes = measureWorkflows(dir);
+      assert.deepEqual(
+        Object.keys(sizes), ['sample.md'],
+        'a large detail/ file must not appear in SIZES -- it is governed solely by ' +
+        'NEW_FILE_CAP (tests/helpers/emitted-diff.cjs), never by XL/LARGE/DEFAULT tiering'
+      );
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
 // A prior "SIZE: per-file workflow baseline (issue #1074)" describe block lived here,
 // asserting every workflow file's exact byte count against the committed
 // `tests/workflow-size-baseline.json` snapshot. #2724 (ADR-2719 Phase 4) deletes that

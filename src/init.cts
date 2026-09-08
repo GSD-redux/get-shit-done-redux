@@ -104,6 +104,7 @@ const {
   planningPaths,
   planningDir,
   planningRoot,
+  todosDir,
   listAvailableWorkstreams,
   peekActiveWorkstream,
   diagnoseUnresolvedActiveWorkstream,
@@ -2307,8 +2308,24 @@ function pendingTodoLinkTarget(todo: Record<string, unknown>, projectRoot: strin
   return rel;
 }
 
+/**
+ * #4439: the stored `created:` frontmatter (and the JSON `todos[].created`
+ * field it round-trips through) is always a full ISO-8601 timestamp, by
+ * design — this is the display-only seam that reformats it to the
+ * date-only `[date]` bullet documented in docs/reference/state-md.md and
+ * docs/COMMANDS.md. A value that doesn't start with a well-formed
+ * `YYYY-MM-DD` (the 'unknown' fallback, or any other non-conforming
+ * string) passes through unchanged rather than being mangled.
+ */
+function pendingTodoDateOnly(value: string): string {
+  const match = value.match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : value;
+}
+
 function renderPendingTodoBullet(todo: Record<string, unknown>, projectRoot?: string): string {
-  const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
+  const date = pendingTodoDateOnly(
+    sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown')),
+  );
   let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
   let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
   // Strip trailing "." so the fixed "Needs ....` template below never
@@ -2356,7 +2373,13 @@ function renderPendingTodoBullet(todo: Record<string, unknown>, projectRoot?: st
 function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void {
   const config = loadConfig(cwd);
 
-  const pendingDir = path.join(planningDir(cwd), 'todos', 'pending');
+  // #4256: todos are root-scoped shared state (migrateToWorkstreams keeps
+  // them at .planning/todos/ and every workflow writer writes that literal
+  // path), so this read resolves via todosDir(cwd) — NOT planningDir(cwd),
+  // which would look in .planning/workstreams/<ws>/todos/ under a workstream
+  // (a directory nothing creates) and report existing todos as absent.
+  const todosRoot = todosDir(cwd);
+  const pendingDir = path.join(todosRoot, 'pending');
   let count = 0;
   const todos: Record<string, unknown>[] = [];
   // #2618: distinct from "genuinely zero pending todos" — false only when
@@ -2412,7 +2435,7 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
           title: titleMatch ? titleMatch[1].trim() : 'Untitled',
           area: todoArea,
           // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
-          path: toPosixPath(path.join(planningDir(cwd), 'todos', 'pending', file)),
+          path: toPosixPath(path.join(pendingDir, file)),
           ...(severityMatch ? { severity: severityMatch[1].trim() } : {}),
           ...(needs ? { needs } : {}),
         });
@@ -2438,12 +2461,15 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
     area_filter: area || null,
 
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
-    pending_dir: toPosixPath(path.join(planningDir(cwd), 'todos', 'pending')),
-    completed_dir: toPosixPath(path.join(planningDir(cwd), 'todos', 'completed')),
+    // #4256: both dir fields probe the ROOT todos tree via todosDir(cwd).
+    pending_dir: toPosixPath(pendingDir),
+    completed_dir: toPosixPath(path.join(todosRoot, 'completed')),
 
+    // planning_exists intentionally stays workstream/project-scoped — it
+    // answers "does the ACTIVE planning dir exist", not a todos question.
     planning_exists: fs.existsSync(planningDir(cwd)),
-    todos_dir_exists: fs.existsSync(path.join(planningDir(cwd), 'todos')),
-    pending_dir_exists: fs.existsSync(path.join(planningDir(cwd), 'todos', 'pending')),
+    todos_dir_exists: fs.existsSync(todosRoot),
+    pending_dir_exists: fs.existsSync(pendingDir),
 
     // #2618: see PENDING_TODO_BULLET_MAX_CHARS comment / design doc. Consumed
     // by add-todo.md / check-todos.md's update_state step; omitted entirely

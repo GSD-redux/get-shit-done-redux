@@ -309,20 +309,33 @@ grep -r "$hook_name()" src/ --include="*.tsx" --include="*.ts" | grep -v "$hook_
 # .env file exists
 [ -f ".env" ] || [ -f ".env.local" ]
 
-# Required variable is defined
-grep -E "^$VAR_NAME=" .env .env.local 2>/dev/null
+# Required variable is defined (in the environment: dotenv/direnv/the framework has loaded it)
+printenv "$VAR_NAME" >/dev/null
 ```
 
 **Substantive check:**
 ```bash
-# Variable has actual value (not placeholder)
-grep -E "^$VAR_NAME=.+" .env .env.local 2>/dev/null | grep -v "your-.*-here|xxx|placeholder|TODO" -i
+# Variable has an actual value (not a placeholder) -- tests the shape, never prints the value;
+# exit 0 = real value, exit 1 = missing or placeholder (case-insensitive)
+v=$(printenv "$VAR_NAME"); case "$(printf %s "$v" | tr '[:upper:]' '[:lower:]')" in
+  ""|*your-*-here*|*xxx*|*placeholder*|*todo*) exit 1;;
+esac
 
 # Value looks valid for type:
 # - URLs should start with http
 # - Keys should be long enough
 # - Booleans should be true/false
 ```
+
+When the variable is not present in the agent's own environment (a framework that loads
+`.env.local` itself at runtime does not export it to the shell that runs these checks),
+ask the user to confirm it is set rather than reading `.env` directly. Variable NAMES can
+still be checked against `.env.example`, which the secret-read guard exempts from its
+protected-file patterns.
+
+One guard-matching note worth knowing when auditing docs for `.env` mentions: the guard
+treats a grep PATTERN whose last path segment is a secret file name as a file operand, so
+`grep -n "\.env" file.md` is denied while `grep -n "\.env\b" file.md` is allowed.
 
 **Stub patterns specific to env:**
 ```bash

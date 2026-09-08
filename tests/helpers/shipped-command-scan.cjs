@@ -146,8 +146,17 @@ const tokenize = (str) => {
     // Redirections: the operator and its target are consumed by the shell,
     // not passed as arguments. A glued all-digit word is an IO number
     // (`2>&1`) and belongs to the redirection, not to argv.
+    //
+    // #4276: POSIX recognizes an IO number only when the digit run is
+    // UNQUOTED, so the test has to read the quoting and not just the
+    // characters. `cur` has already lost that distinction — `"2"` and `2`
+    // reach here identically — and `curMask` is where it survives ('0' marks
+    // a bare character). Without the mask conjunct a correct
+    // `--files "2">out` had its value eaten as an IO number and scored as an
+    // unscoped invocation: a false positive on documentation that was right.
     if (ch === '>' || ch === '<') {
-      if (started && /^[0-9]+$/.test(cur)) { cur = ''; curMask = ''; started = false; } else { flush(i); }
+      const bareDigitRun = /^[0-9]+$/.test(cur) && /^0+$/.test(curMask);
+      if (started && bareDigitRun) { cur = ''; curMask = ''; started = false; } else { flush(i); }
       let j = i + 1;
       if (str[j] === ch) j += 1;                                   // >> / <<
       if (str[j] === '&') j += 1;                                  // >& (2>&1)
