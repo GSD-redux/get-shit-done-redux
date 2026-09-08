@@ -27,7 +27,8 @@
    # Between-wave base re-check (#1369, #3659): after wave N merges and tracking commits,
    # HEAD has advanced. Re-asserting worktree.baseRef:"head" is deliberately NOT done here —
    # the runtime harness does not read project-settings baseRef (#48), so in
-   # harness-worktree mode the setting cannot influence the fork base. The safety re-check
+   # harness-worktree mode a project-layer setting cannot influence the fork base (a
+   # user/global-layer "head" is honored and suppresses the re-check itself, #4090). The safety re-check
    # below compares HEAD against the REAL fork base and degrades the remaining waves
    # whenever they diverge, avoiding the base-mismatch FATAL in executor agents.
    if [ "$ISOLATION" = "harness-worktree" ] && [ "$USE_WORKTREES" != "false" ]; then

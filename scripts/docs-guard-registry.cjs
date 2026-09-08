@@ -387,6 +387,11 @@ const DOCS_GUARD_TESTS = {
   'tests/verifier-coincidental-reliance.test.cjs': ['docs/AGENTS.md'],
   'tests/verify.test.cjs': ['docs/reference/plan-md.md'],
   'tests/workflow-fragments.test.cjs': ['docs/reference/workflow-fragments.md'],
+  // #4090: pins the `baseref-head` row of the `reason`-value reference table to
+  // both suppress paths the evaluator has (orchestrator mode from any layer, and
+  // the user/global layer in harness mode) — the row the round-1 review found
+  // describing only the first.
+  'tests/worktree-base-ref.test.cjs': ['docs/CLI-TOOLS.md'],
 };
 
 /**

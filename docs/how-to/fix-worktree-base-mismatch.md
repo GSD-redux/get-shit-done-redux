@@ -16,8 +16,9 @@ When you run `/gsd-execute-phase` or `/gsd-quick` on a branch that is ahead of t
 ⚠ Worktree base mismatch: HEAD (abc12345) differs from origin/HEAD (def67890).
 Running this phase sequentially on the main working tree. Parallel worktrees
 return once HEAD is merged/pushed so origin/HEAD matches it.
-(worktree.baseRef:"head" applies only where GSD itself creates the worktree —
-the runtime harness does not read it; #48, #3659.)
+(worktree.baseRef:"head" applies where GSD itself creates the worktree, or when
+set in the user/global settings layer — the runtime harness does not read it
+from project settings; #48, #3659, #4090.)
 ```
 
 The phase or quick task runs to completion sequentially; nothing is blocked. This is the runtime mitigation (`/gsd-execute-phase`: #683/#1369; `/gsd-quick`: #1941).
@@ -57,10 +58,14 @@ Use this option when:
 **What this setting can and cannot do (#48, #3659):** on runtimes whose own harness creates isolated
 worktrees (Claude Code's `Agent(isolation="worktree")`), the harness forks from the repository
 default branch and **does not read project-settings `baseRef`** — verified 5/5 in #48; tracked
-upstream at claude-code#44965/#43535. On those runtimes, setting `baseRef:"head"` does **not**
-restore parallel worktrees on a diverged branch, and since #3659 it no longer silences the
+upstream at claude-code#44965/#43535. On those runtimes, a **project-settings** `baseRef:"head"` does
+**not** restore parallel worktrees on a diverged branch, and since #3659 it no longer silences the
 pre-dispatch check: GSD compares `HEAD` against the real fork base and auto-degrades to sequential
-execution before dispatch instead of letting every executor die at the exit-42 guard.
+execution before dispatch instead of letting every executor die at the exit-42 guard. The
+**user/global** layer (`/config`) is different: it is the layer the harness's own worktree creation
+reads (#1013), so a `"head"` set there is honored on harness-isolated runtimes too, and since #4090
+the pre-dispatch check keeps the layer and treats a user/global `"head"` as honored (reason
+`baseref-head`) rather than misreporting it as ignored.
 
 The setting **is** honored where GSD itself runs `git worktree add <path> <start-point>` — the
 orchestrator-managed isolation used on runtimes with a headless exec surface (Codex, OpenCode,

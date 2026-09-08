@@ -30,10 +30,12 @@
    this check and may re-enable worktree isolation once `origin/HEAD` matches HEAD again
    (e.g. via `git fetch` or a push that advances it).
 
-   **Why `worktree.baseRef:"head"` does not avoid this degrade (#48, #3659):** the runtime
-   harness does not read project-settings `baseRef` — an isolated dispatch always forks from
-   `origin/HEAD` regardless of the setting, so the check compares against the real fork base
-   and degrades whenever HEAD has diverged. Parallel worktrees return once HEAD is
-   merged/pushed so `origin/HEAD` matches it. The setting still restores parallel execution
-   on runtimes where GSD itself creates the worktrees (orchestrator-managed isolation:
-   Codex, OpenCode, Kimi, Kimi Code). See #683 for the base-ref configuration detail.
+   **Why a project-settings `worktree.baseRef:"head"` does not avoid this degrade (#48, #3659):**
+   the runtime harness does not read project-settings `baseRef` — an isolated dispatch forks
+   from `origin/HEAD` regardless of a project-layer setting, so the check compares against the
+   real fork base and degrades whenever HEAD has diverged. Parallel worktrees return once HEAD
+   is merged/pushed so `origin/HEAD` matches it. The setting still restores parallel execution
+   where it is honored: on runtimes where GSD itself creates the worktrees (orchestrator-managed
+   isolation: Codex, OpenCode, Kimi, Kimi Code), and on harness-isolated runtimes when it is set
+   in the **user/global** settings layer (`/config`; #1013, #4090) — the layer the harness's own
+   worktree creation reads. See #683 for the base-ref configuration detail.

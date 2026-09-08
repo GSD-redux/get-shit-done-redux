@@ -157,7 +157,7 @@ For systematic diagnosis of what went wrong, see [Debug a failed execution](debu
 
 This happens when your current branch is ahead of the repository's default branch (for example, an unmerged milestone or feature branch). Claude Code forks executor worktrees from `origin/HEAD`, not your `HEAD`, so plan files that exist only on your branch are absent inside the worktree.
 
-Since the fix landed, GSD automatically degrades to sequential execution on the main working tree and prints a one-line warning — the phase will complete without any action from you. To restore parallel execution permanently, run:
+Since the fix landed, GSD automatically degrades to sequential execution on the main working tree and prints a one-line warning — the phase will complete without any action from you. To restore parallel execution permanently, set `worktree.baseRef:"head"` where the worktree creator will read it. On Claude Code (harness-created worktrees) that is the **user/global** settings layer — `/config` — because the harness does not read project-settings `baseRef` (#48, #4090). On runtimes where GSD itself creates the worktrees, the project-local file suffices:
 
 ```bash
 node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" worktree set-baseref
@@ -417,7 +417,7 @@ Also audit which MCP servers are enabled. Every enabled MCP server injects its t
 | Update broke local changes | `/gsd-update --reapply` |
 | Want session summary | `/gsd-pause-work --report` |
 | Parallel execution build errors | Update GSD or set `parallelization.enabled: false` |
-| Worktree base mismatch / exit 42 | Auto-degraded to sequential (no action needed); run `worktree set-baseref` to restore parallelism |
+| Worktree base mismatch / exit 42 | Auto-degraded to sequential (no action needed); set `worktree.baseRef:"head"` in user/global settings (`/config`) on Claude Code, or run `worktree set-baseref` on orchestrator-worktree runtimes, to restore parallelism |
 
 ---
 

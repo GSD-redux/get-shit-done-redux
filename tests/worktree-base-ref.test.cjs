@@ -18,6 +18,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const MODULE_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-base-ref.cjs'
@@ -28,6 +29,7 @@ const {
   readBaseRefFromSettings,
   applyWorktreeBaseRef,
   resolveEffectiveBaseRef,
+  resolveEffectiveBaseRefWithLayer,
   evaluateWorktreeBaseDegrade,
   cmdWorktreeBaseCheck,
   cmdWorktreeSetBaseRef,
@@ -348,6 +350,92 @@ describe('evaluateWorktreeBaseDegrade', () => {
     assert.ok(result.message !== null, 'divergence under head must carry the explanatory message');
     assert.ok(result.message.includes('#48'), 'message must cite the verified harness limitation');
     assert.ok(result.message.includes('sequentially'), 'message must state the sequential fallback');
+    // #4090: the limitation is scoped to project settings, and the message
+    // must say so — an unqualified "does not honor it" sent operators to push
+    // hundreds of commits to restore a parallelism a user/global head had not
+    // lost.
+    assert.ok(result.message.includes('project settings'), 'message must scope the limitation to project settings (#4090)');
+    assert.ok(result.message.includes('user/global'), 'message must name the user/global layer as the remedy (#4090)');
+  });
+
+  // ─── #4090: the layer that supplied 'head' decides the harness-mode verdict ─
+
+  test('effectiveBaseRef="head" + layer "user" + harness mode (default) + diverged HEAD → no degrade, reason baseref-head, execGit never called (#4090)', () => {
+    // #48 verified the harness ignores PROJECT-settings baseRef; the user/global
+    // layer is the one #1013/#1038 added because the harness reads it. A head
+    // from that layer keeps the suppress in harness mode.
+    let called = false;
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: () => { called = true; return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null }; },
+      effectiveBaseRef: 'head',
+      effectiveBaseRefLayer: 'user',
+    });
+    assert.strictEqual(result.shouldDegrade, false,
+      'a user/global-layer head must not be classified as harness-ignored (#4090)');
+    assert.strictEqual(result.reason, 'baseref-head');
+    assert.strictEqual(result.message, null);
+    assert.strictEqual(called, false, 'honored head: nothing to compare');
+  });
+
+  test('effectiveBaseRef="head" + layer "user" + explicit harness-worktree mode → no degrade (#4090)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeDivergedExecGit('1234abcd1234abcd1234abcd1234abcd1234abcd', '5678efab5678efab5678efab5678efab5678efab'),
+      effectiveBaseRef: 'head',
+      effectiveBaseRefLayer: 'user',
+      isolationMode: 'harness-worktree',
+    });
+    assert.strictEqual(result.shouldDegrade, false);
+    assert.strictEqual(result.reason, 'baseref-head');
+  });
+
+  for (const layer of ['project-local', 'project-shared']) {
+    test(`effectiveBaseRef="head" + layer "${layer}" + harness mode + diverged → degrade, reason baseref-head-ignored-by-harness — the #48-verified case, unchanged (#4090)`, () => {
+      const HEAD_SHA = 'a1a1a1a1223344a1a1a1a1a1223344a1a1a1a1a1';
+      const FORK_SHA = 'b2b2b2b2223344b2b2b2b2b2223344b2b2b2b2b2';
+      const result = evaluateWorktreeBaseDegrade({
+        execGit: makeDivergedExecGit(HEAD_SHA, FORK_SHA),
+        effectiveBaseRef: 'head',
+        effectiveBaseRefLayer: layer,
+      });
+      assert.strictEqual(result.shouldDegrade, true,
+        `a ${layer} head must still fall through to the comparison in harness mode (#48/#3659)`);
+      assert.strictEqual(result.reason, 'baseref-head-ignored-by-harness');
+      assert.strictEqual(result.headSha, HEAD_SHA);
+      assert.strictEqual(result.forkSha, FORK_SHA);
+    });
+  }
+
+  test('effectiveBaseRef="head" + layer null (provenance unknown) + harness mode + diverged → degrade: unknown provenance reads as project (#4090)', () => {
+    // The conservative default: a caller that resolved the value without its
+    // layer gets the pre-#4090 verdict, so no existing caller changes behavior.
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeDivergedExecGit('c3c3c3c3223344c3c3c3c3c3223344c3c3c3c3c3', 'd4d4d4d4223344d4d4d4d4d4223344d4d4d4d4d4'),
+      effectiveBaseRef: 'head',
+      effectiveBaseRefLayer: null,
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'baseref-head-ignored-by-harness');
+  });
+
+  test('effectiveBaseRef="fresh" + layer "user" + harness mode + diverged → degrade, reason head-diverged-from-fork: the layer is consulted only for "head" (#4090)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeDivergedExecGit('e5e5e5e5223344e5e5e5e5e5223344e5e5e5e5e5', 'f6f6f6f6223344f6f6f6f6f6223344f6f6f6f6f6'),
+      effectiveBaseRef: 'fresh',
+      effectiveBaseRefLayer: 'user',
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'head-diverged-from-fork');
+  });
+
+  test('effectiveBaseRef="head" + layer "project-local" + orchestrator mode → no degrade: orchestrator honors head from any layer (#3659, #4090)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: () => { throw new Error('must not be called'); },
+      effectiveBaseRef: 'head',
+      effectiveBaseRefLayer: 'project-local',
+      isolationMode: 'orchestrator-worktree',
+    });
+    assert.strictEqual(result.shouldDegrade, false);
+    assert.strictEqual(result.reason, 'baseref-head');
   });
 
   test('git rev-parse HEAD fails → no degrade, reason no-head', () => {
@@ -518,9 +606,11 @@ describe('evaluateWorktreeBaseDegrade', () => {
     assert.strictEqual(result.forkRef, 'origin/HEAD');
     assert.strictEqual(result.forkSha, FORK_SHA);
     // Verify message contains the short SHAs and the corrected remediation
-    // (#3659: the old text advised setting baseRef:"head", which the harness
-    // does not read).
-    const expectedMsg = `⚠ Worktree base mismatch: HEAD (${HEAD_SHA.slice(0, 8)}) differs from origin/HEAD (${FORK_SHA.slice(0, 8)}). Running this phase sequentially on the main working tree. Parallel worktrees return once HEAD is merged/pushed so origin/HEAD matches it. (worktree.baseRef:"head" applies only where GSD itself creates the worktree — the runtime harness does not read it; #48, #3659.)`;
+    // (#3659: the old text advised setting baseRef:"head" unconditionally;
+    // #4090: the harness does not read it from PROJECT settings — the
+    // user/global layer is the one it does read, so the parenthetical names
+    // both places the setting applies).
+    const expectedMsg = `⚠ Worktree base mismatch: HEAD (${HEAD_SHA.slice(0, 8)}) differs from origin/HEAD (${FORK_SHA.slice(0, 8)}). Running this phase sequentially on the main working tree. Parallel worktrees return once HEAD is merged/pushed so origin/HEAD matches it. (worktree.baseRef:"head" applies where GSD itself creates the worktree, or when set in the user/global settings layer — the runtime harness does not read it from project settings; #48, #3659, #4090.)`;
     assert.strictEqual(result.message, expectedMsg);
   });
 
@@ -1118,6 +1208,59 @@ describe('resolveEffectiveBaseRef — user/global layer (#1013)', () => {
   });
 });
 
+// ─── resolveEffectiveBaseRefWithLayer — layer provenance (#4090) ─────────────
+
+describe('resolveEffectiveBaseRefWithLayer — layer provenance (#4090)', () => {
+  function makeReadFile(files) {
+    return (p) => (Object.prototype.hasOwnProperty.call(files, p) ? files[p] : null);
+  }
+
+  const USER_CLAUDE_DIR = '/home/user/.claude';
+  const claudeDir = '/repo/.claude';
+  const HEAD = JSON.stringify({ worktree: { baseRef: 'head' } });
+  const FRESH = JSON.stringify({ worktree: { baseRef: 'fresh' } });
+
+  test('project local supplies the value → layer "project-local"', () => {
+    const deps = { readFile: makeReadFile({
+      [path.join(claudeDir, 'settings.local.json')]: FRESH,
+      [path.join(claudeDir, 'settings.json')]: HEAD,
+      [path.join(USER_CLAUDE_DIR, 'settings.json')]: HEAD,
+    }) };
+    assert.deepStrictEqual(resolveEffectiveBaseRefWithLayer(claudeDir, deps, USER_CLAUDE_DIR), { value: 'fresh', layer: 'project-local' });
+  });
+
+  test('project shared supplies the value (no local) → layer "project-shared"', () => {
+    const deps = { readFile: makeReadFile({
+      [path.join(claudeDir, 'settings.json')]: HEAD,
+      [path.join(USER_CLAUDE_DIR, 'settings.json')]: FRESH,
+    }) };
+    assert.deepStrictEqual(resolveEffectiveBaseRefWithLayer(claudeDir, deps, USER_CLAUDE_DIR), { value: 'head', layer: 'project-shared' });
+  });
+
+  test('user/global supplies the value (both project files absent) → layer "user"', () => {
+    const deps = { readFile: makeReadFile({
+      [path.join(USER_CLAUDE_DIR, 'settings.json')]: HEAD,
+    }) };
+    assert.deepStrictEqual(resolveEffectiveBaseRefWithLayer(claudeDir, deps, USER_CLAUDE_DIR), { value: 'head', layer: 'user' });
+  });
+
+  test('no layer supplies a value → null', () => {
+    assert.strictEqual(resolveEffectiveBaseRefWithLayer(claudeDir, { readFile: () => null }, USER_CLAUDE_DIR), null);
+  });
+
+  test('userClaudeDir === claudeDir → the shared file is the PROJECT layer, never "user"', () => {
+    const sameDir = '/home/.claude';
+    const deps = { readFile: makeReadFile({ [path.join(sameDir, 'settings.json')]: HEAD }) };
+    assert.deepStrictEqual(resolveEffectiveBaseRefWithLayer(sameDir, deps, sameDir), { value: 'head', layer: 'project-shared' });
+  });
+
+  test('resolveEffectiveBaseRef is the value-only view of the same cascade', () => {
+    const deps = { readFile: makeReadFile({ [path.join(USER_CLAUDE_DIR, 'settings.json')]: HEAD }) };
+    assert.strictEqual(resolveEffectiveBaseRef(claudeDir, deps, USER_CLAUDE_DIR), 'head');
+    assert.strictEqual(resolveEffectiveBaseRef(claudeDir, { readFile: () => null }, USER_CLAUDE_DIR), null);
+  });
+});
+
 // ─── cmdWorktreeBaseCheck — user/global cascade (#1013 KEY REGRESSION) ───────
 
 describe('cmdWorktreeBaseCheck — user/global cascade (#1013)', () => {
@@ -1169,11 +1312,18 @@ describe('cmdWorktreeBaseCheck — user/global cascade (#1013)', () => {
     assert.strictEqual(result.reason, 'baseref-head');
   });
 
-  test('user/global head + phase lane + default (harness) mode → shouldDegrade:true (#3659)', () => {
-    // The mirror of the KEY REGRESSION row: in harness mode the setting cannot
-    // suppress anything (#48), so the same lane degrades.
+  test('user/global head + phase lane + default (harness) mode → shouldDegrade:false, reason baseref-head (#4090)', () => {
+    // Until #4090 this row pinned the OPPOSITE verdict (shouldDegrade:true,
+    // fork-ref-unknown) on the strength of #48 — but #48's finding is scoped
+    // to PROJECT-settings baseRef, and the user/global layer is the one #1013
+    // named as where the harness's own worktree creation reads the setting.
+    // #3659 keyed the harness-mode gate on the bare value and discarded the
+    // layer, which made #1038's Layer-3 fix inert for its own motivating
+    // case: the KEY REGRESSION row above passed only because it pinned
+    // --mode orchestrator-worktree. This is that case in the DEFAULT mode.
+    let gitCalled = false;
     const deps = {
-      execGit: makePhaseLaneExecGit(HEAD_SHA),
+      execGit: (...a) => { gitCalled = true; return makePhaseLaneExecGit(HEAD_SHA)(...a); },
       readFile: (p) => {
         if (p === path.join(claudeDir, 'settings.local.json')) return null;
         if (p === path.join(claudeDir, 'settings.json')) return null;
@@ -1186,8 +1336,45 @@ describe('cmdWorktreeBaseCheck — user/global cascade (#1013)', () => {
       userClaudeDir: USER_CLAUDE_DIR,
     };
     const result = cmdWorktreeBaseCheck(cwd, [], deps);
+    assert.strictEqual(result.shouldDegrade, false,
+      'harness mode: a user/global-layer head is the layer the harness reads (#1013) and must keep the suppress (#4090)');
+    assert.strictEqual(result.reason, 'baseref-head');
+    assert.strictEqual(gitCalled, false, 'a honored head never reaches the git comparison');
+  });
+
+  test('user/global head + project-shared head + default (harness) mode → still degrades: project layer wins the cascade and is the #48-verified case (#4090)', () => {
+    // Precedence guard: the fix keys on the layer that SUPPLIED the value, and
+    // a project layer shadows the user/global one — so the mere presence of a
+    // user/global head must not launder a project-layer head into a suppress.
+    const deps = {
+      execGit: makePhaseLaneExecGit(HEAD_SHA),
+      readFile: (p) => {
+        if (p === path.join(claudeDir, 'settings.local.json')) return null;
+        if (p === path.join(claudeDir, 'settings.json')) return JSON.stringify({ worktree: { baseRef: 'head' } });
+        if (p === path.join(USER_CLAUDE_DIR, 'settings.json')) return JSON.stringify({ worktree: { baseRef: 'head' } });
+        return null;
+      },
+      write: () => {},
+      userClaudeDir: USER_CLAUDE_DIR,
+    };
+    const result = cmdWorktreeBaseCheck(cwd, [], deps);
     assert.strictEqual(result.shouldDegrade, true,
-      'harness mode: head must not suppress the lane degrade (#3659)');
+      'a project-layer head in harness mode must still fall through to the comparison (#48/#3659)');
+    assert.strictEqual(result.reason, 'fork-ref-unknown');
+  });
+
+  test('user/global "fresh" + default (harness) mode → still compares: the layer only matters for "head" (#4090)', () => {
+    const deps = {
+      execGit: makePhaseLaneExecGit(HEAD_SHA),
+      readFile: (p) => {
+        if (p === path.join(USER_CLAUDE_DIR, 'settings.json')) return JSON.stringify({ worktree: { baseRef: 'fresh' } });
+        return null;
+      },
+      write: () => {},
+      userClaudeDir: USER_CLAUDE_DIR,
+    };
+    const result = cmdWorktreeBaseCheck(cwd, [], deps);
+    assert.strictEqual(result.shouldDegrade, true);
     assert.strictEqual(result.reason, 'fork-ref-unknown');
   });
 
@@ -1401,3 +1588,38 @@ describe('execute-plan Pattern A: pre-dispatch worktree base-check (#2649)', () 
 
   });
 }
+
+// ─── #4090: the docs reason table must name BOTH baseref-head paths ─────────
+//
+// Round-1 review finding on PR #4233: the `baseref-head` row of the
+// `reason`-value reference table in docs/CLI-TOOLS.md described only the
+// `--mode orchestrator-worktree` path, while evaluateWorktreeBaseDegrade also
+// suppresses on a user/global-layer `"head"` in the default harness-worktree
+// mode. The prose above the table and the sibling
+// `baseref-head-ignored-by-harness` row were both re-scoped for #4090; this
+// row was missed, so a reader consulting only the table — its purpose — would
+// conclude `baseref-head` cannot occur outside orchestrator mode.
+//
+// Asserts the two DISJUNCTS the mechanism actually has, by token rather than
+// by wording, so the guard survives a rewrite of the row but not a dropped
+// path.
+describe('docs/CLI-TOOLS.md reason table — baseref-head names both suppress paths (#4090)', () => {
+  const CLI_TOOLS_DOC = path.join(__dirname, '..', 'docs', 'CLI-TOOLS.md');
+
+  function reasonRow(reason) {
+    const doc = fs.readFileSync(CLI_TOOLS_DOC, 'utf8');
+    const rows = splitLines(doc).filter((line) => line.startsWith(`| \`${reason}\` |`));
+    assert.strictEqual(rows.length, 1, `expected exactly one \`${reason}\` row in the reason table`);
+    return rows[0];
+  }
+
+  test('the baseref-head row names the orchestrator-worktree path (#3659)', () => {
+    assert.match(reasonRow('baseref-head'), /orchestrator-worktree/);
+  });
+
+  test('the baseref-head row names the user/global layer honored in harness mode (#4090)', () => {
+    const row = reasonRow('baseref-head');
+    assert.match(row, /user\/global/, 'the row must state that a user/global-layer "head" also yields baseref-head');
+    assert.match(row, /harness-worktree/, 'the row must state that this path applies in harness-worktree (default) mode');
+  });
+});
