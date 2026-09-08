@@ -2865,3 +2865,60 @@ describe('analyzeChunkEvents (#3889)', () => {
     assert.strictEqual(result.sawAnyEvent, false);
   });
 });
+
+// ─── partitionIsolatedFiles (#4497 codex-config.test.cjs chunk isolation) ───
+//
+// 2026-09-07: codex-config.test.cjs (weight 17.87, genuinely measured — see
+// scripts/run-tests.cjs's ISOLATED_HEAVY_FILES comment) is pulled out of the
+// weight-balanced packing pool and given its own dedicated chunk, on every
+// platform, so no future single-file addition can reshuffle a companion into
+// its chunk and retrigger the per-chunk timeout two prior incidents already
+// hit. These tests pin partitionIsolatedFiles directly — the pure split, not
+// the chunk-execution loop around it.
+const { ISOLATED_HEAVY_FILES, partitionIsolatedFiles } = require('../scripts/run-tests.cjs');
+
+describe('partitionIsolatedFiles (#4497 codex-config.test.cjs chunk isolation)', () => {
+  test('an isolated-heavy file is split out, in its own bucket, everything else stays packable', () => {
+    const files = [
+      '/repo/tests/a.test.cjs',
+      '/repo/tests/codex-config.test.cjs',
+      '/repo/tests/b.test.cjs',
+    ];
+    const { isolated, packable } = partitionIsolatedFiles(files);
+    assert.deepStrictEqual(isolated, ['/repo/tests/codex-config.test.cjs']);
+    assert.deepStrictEqual(packable, ['/repo/tests/a.test.cjs', '/repo/tests/b.test.cjs']);
+  });
+
+  test('matches by BASENAME, so it isolates regardless of platform path separator or directory prefix', () => {
+    const files = [
+      'C:\\repo\\tests\\codex-config.test.cjs',
+      '/repo/tests/subdir/codex-config.test.cjs',
+      'codex-config.test.cjs',
+    ];
+    const { isolated, packable } = partitionIsolatedFiles(files);
+    assert.deepStrictEqual(isolated, files, 'every path ending in the isolated basename must be isolated, regardless of prefix/separator');
+    assert.deepStrictEqual(packable, []);
+  });
+
+  test('a file with a similar but not exactly matching name is NOT isolated (exact basename match only)', () => {
+    const files = ['/repo/tests/codex-config-extra.test.cjs', '/repo/tests/my-codex-config.test.cjs'];
+    const { isolated, packable } = partitionIsolatedFiles(files);
+    assert.deepStrictEqual(isolated, []);
+    assert.deepStrictEqual(packable, files);
+  });
+
+  test('no isolated-heavy files present: everything is packable, order preserved', () => {
+    const files = ['/repo/tests/z.test.cjs', '/repo/tests/a.test.cjs'];
+    const { isolated, packable } = partitionIsolatedFiles(files);
+    assert.deepStrictEqual(isolated, []);
+    assert.deepStrictEqual(packable, files);
+  });
+
+  test('an empty file list produces two empty buckets', () => {
+    assert.deepStrictEqual(partitionIsolatedFiles([]), { isolated: [], packable: [] });
+  });
+
+  test('ISOLATED_HEAVY_FILES currently names exactly codex-config.test.cjs (documents the set the fix scoped to)', () => {
+    assert.deepStrictEqual([...ISOLATED_HEAVY_FILES], ['codex-config.test.cjs']);
+  });
+});

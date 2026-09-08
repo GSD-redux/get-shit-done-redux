@@ -213,6 +213,7 @@
       "autonomous-ui-design-contract.md",
       "checkpoints.md",
       "common-bug-patterns.md",
+      "compact-content-gate.md",
       "context-budget.md",
       "continuation-format.md",
       "debugger-bug-taxonomy.md",
@@ -628,6 +629,7 @@
       "execute-phase/steps/protected-branch.md",
       "execute-phase/steps/regression-gate-run.md",
       "execute-phase/steps/regression-gate.md",
+      "execute-phase/steps/sequential-root-pin.md",
       "execute-phase/steps/tdd-applicability-resolution.md",
       "execute-phase/steps/wave-post-gate-hooks.md",
       "execute-phase/steps/worktree-recovery-policy.md",
@@ -668,6 +670,13 @@
       "update/steps/channel-banner.md",
       "verify-work/steps/automated-ui-verification.md",
       "verify-work/steps/mvp-uat-framing.md"
+    ],
+    "workflow_detail": [
+      "plan-phase/detail/elaboration.md"
+    ],
+    "workflow_templates": [
+      "discuss-phase/templates/context.md",
+      "discuss-phase/templates/discussion-log.md"
     ]
   }
 }

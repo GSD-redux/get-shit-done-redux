@@ -273,19 +273,21 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 
 ### Workflow Sub-Files
 
-A workflow may own two kinds of sub-file. Both live under `gsd-core/workflows/<workflow>/` and
-neither is separately invocable — the parent workflow reaches them.
+A workflow may own four kinds of sub-file. All live under `gsd-core/workflows/<workflow>/` and
+none is separately invocable — the parent workflow reaches them.
 
 | Subdirectory | What it holds | Manifest family | Roster |
 |---|---|---|---|
 | `<workflow>/steps/*.md` | Gated section bodies extracted by the fragment model (ADR-1671, epic #1671 Phases 6.1–6.3). The parent carries a `section_manifest`-gated stub; `gsd-core/workflows/section-manifest.json` names which step a given invocation reads. | `workflow_steps` | See `docs/INVENTORY-MANIFEST.json` for the authoritative per-file list |
 | `<workflow>/modes/*.md` | Progressive-disclosure mode files (#717). The parent dispatches to exactly one; `discuss-phase/modes/` is the canonical example. | `workflow_modes` | `discuss-phase`, `help` |
+| `<workflow>/detail/*.md` | Elaboration content deferred from a workflow spine, read at runtime only when `workflow.compact_content` is `false` (ADR-4139; epic #4139 Phase 2 #4402 established the first example, Phase 3 #4403 added the CI guard). | `workflow_detail` | `plan-phase` |
+| `<workflow>/templates/*.md` | Fill-in template bodies the parent workflow renders at runtime; also referenced as a `FRAGMENT_DIRS` entry in `scripts/lint-response-language-coverage.cjs`. | `workflow_templates` | `discuss-phase` |
 
-Both families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because two
-workflows may each own a step of the same name — `families.workflows` uses bare basenames and
+All four families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because
+two workflows may each own a step of the same name — `families.workflows` uses bare basenames and
 cannot represent these without collision.
 
-**Adding a step or mode file requires no hand-written row here.** Run
+**Adding a step, mode, detail, or template file requires no hand-written row here.** Run
 `node scripts/gen-inventory-manifest.cjs --write` (after `build:lib`) and the manifest picks it up;
 `tests/inventory-manifest-sync.test.cjs` fails if you forget. The per-file roster deliberately lives
 in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 60 rows that must be
@@ -367,7 +369,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `worktree-branch-check.md` | Canonical spawn-time worktree HEAD/base guard (worktree_branch_check): verify-only and fail-closed — per-agent-branch assertion, protected-ref refusal (#2924), and an exact-base assertion that halts with `exit 42` on mismatch so the orchestrator (worktree lifecycle owner) performs recovery (#48). Embedded into worktree sub-agent prompts at dispatch. |
 | `runtime-aware-dispatch.md` | Runtime-aware subagent dispatch protocol (#2508 Phase 4 Option A): before any `Agent(subagent_type="gsd-*")` call, resolve the type via `gsd_run query resolve-dispatch-type --requested <name> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the name is returned unchanged; on built-in-only runtimes (kimi-code) it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. Documents why a PreToolUse-remap hook (the epic's original Option B) is infeasible — Kimi Code's hook API supports only allow/deny, not tool_input rewriting. |
 | `dispatch-isolation-gate.md` | Canonical gate deciding whether a dispatch site may run an agent isolated (#2584/#2652): resolves `ISOLATION` from the negotiated `dispatch.isolation` capability — never from a runtime id — fails closed to `none`, resolves the host's declared `harnessFlag` instead of hardcoding Claude Code's `isolation="worktree"` literal, and degrades single-agent sites to sequential on `orchestrator-worktree` hosts. Read by `quick.md`, `diagnose-issues.md`, and `execute-plan.md`. |
-| `worktree-path-safety.md` | Worktree guard suite: HEAD assertion, cwd-drift sentinel (step 0a, #3097), and absolute-path guard (step 0b, #3099) — loaded into executor spawn prompts via `<execution_context>`. |
+| `worktree-path-safety.md` | Executor path guards: supplied-root pin (step 0p, #4254 — every mode; execute-phase.md binds the orchestrator-validated root into sequential dispatches as `<project_root_pin>`), cwd-drift sentinel (step 0a, #3097), and absolute-path guard (step 0b, #3099) — loaded into executor spawn prompts via `<execution_context>`. |
 | `untrusted-input-boundary.md` | Shared prompt-injection boundary (#1577) `@`-included by the 10 research/doc-ingest agents (`gsd-project-researcher`, `gsd-phase-researcher`, `gsd-ui-researcher`, `gsd-assumptions-analyzer`, `gsd-advisor-researcher`, `gsd-doc-classifier`, `gsd-doc-synthesizer`, `gsd-research-synthesizer`, `gsd-ai-researcher`, `gsd-domain-researcher`): treat fetched/read text as data-not-instructions, self-scan before use (PromptArmor 2507.15219), task-anchor (2504.20472), and fence quoted text with a fresh random delimiter per wrap (PPA 2506.05739). Prompt-level defense-in-depth (2503.00061); the hook scanner is a separate pattern pre-filter. |
 | `artifact-types.md` | Planning artifact type definitions. |
 | `phase-argument-parsing.md` | Phase argument parsing conventions. |
@@ -387,6 +389,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under TDD mode — pre-task failing-test verification, end-of-phase blocking review. |
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
 | `verify-mvp-mode.md` | UAT framing rules for MVP-mode phases — user-flow-first ordering, deferred technical checks, user-story-format guard. |
+| `compact-content-gate.md` | Shared compact-content gate (ADR-4139 Decision 3/4) — the `workflow.compact_content` check and detail-file resolution rule every compact-split workflow spine references, stated once. |
 
 ### Sketch References
 

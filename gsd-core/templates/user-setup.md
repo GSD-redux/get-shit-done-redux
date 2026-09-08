@@ -171,9 +171,6 @@ Use the webhook signing secret from CLI output (starts with `whsec_`).
 After completing setup:
 
 ```bash
-# Check env vars are set
-grep STRIPE .env.local
-
 # Verify build passes
 npm run build
 
@@ -232,9 +229,6 @@ Complete these items for Supabase Auth to function.
 After completing setup:
 
 ```bash
-# Check env vars
-grep SUPABASE .env.local
-
 # Verify connection (run in project directory)
 npx supabase status
 ```
@@ -285,9 +279,6 @@ Complete these items for SendGrid email to function.
 After completing setup:
 
 ```bash
-# Check env var
-grep SENDGRID .env.local
-
 # Test email sending (replace with your test email)
 curl -X POST http://localhost:3000/api/test-email \
   -H "Content-Type: application/json" \

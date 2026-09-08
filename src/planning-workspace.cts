@@ -125,9 +125,26 @@ const PLANNING_LOCK_RETRY_ERRNOS = new Set([
 // compatible with the structural type the store expects.
 type WorkstreamAdapterOpts = Record<string, unknown>;
 
+/**
+ * #4257: the ONE owner of the env workstream discriminator `planningDir`
+ * itself applies when handed no `ws` argument. `planningPaths(cwd)` — and
+ * therefore every workstream-scoped `PlanningSnapshot` read — resolves its
+ * base through exactly this read, and the CLI bootstrap has already folded
+ * the stored active-workstream pointer into the env by the time any
+ * diagnostic runs (`resolveActiveWorkstream` → `applyResolvedWorkstreamEnv`,
+ * `active-workstream-store.cjs`). Exposed so a consumer that needs to NAME
+ * the scope those reads used (W002's warning message, via the snapshot's
+ * `workstream` field) derives it from the same resolution point instead of
+ * growing a second env read site that can drift (the #612 PR-2
+ * two-readers-two-bases lesson).
+ */
+function resolveEnvWorkstream(): string | null {
+  return process.env['GSD_WORKSTREAM'] ?? null;
+}
+
 function planningDir(cwd: string, ws?: string | null, project?: string | null): string {
   if (project === undefined) project = process.env['GSD_PROJECT'] ?? null;
-  if (ws === undefined) ws = process.env['GSD_WORKSTREAM'] ?? null;
+  if (ws === undefined) ws = resolveEnvWorkstream();
 
   // Reject path separators and traversal components in project/workstream names
   const BAD_SEGMENT = /[/\\]|\.\./;
@@ -667,6 +684,7 @@ export = {
   createMemoryPointerAdapter,
   planningDir,
   planningRoot,
+  resolveEnvWorkstream,
   resolvePhaseIdConvention,
   listAvailableWorkstreams,
   planningPaths,
