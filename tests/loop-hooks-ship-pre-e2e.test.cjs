@@ -26,7 +26,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, installSpawnEnv } = require('./helpers.cjs');
 
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -41,20 +41,23 @@ const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
 /**
  * Run gsd-tools synchronously via spawnSync. Returns { status, stdout, stderr }.
  * Does NOT throw on non-zero exit — callers must assert status themselves.
+ *
+ * #4291: uses helpers.cjs's installSpawnEnv() rather than a hand-rolled env,
+ * because it sandboxes HOME (so capability-loader's overlayRoots, which
+ * falls back to os.homedir(), never reaches the real machine) AND clears
+ * the full config-location env list, not just three session-identity keys.
+ * Without it, a capability genuinely installed on the host running the
+ * suite (e.g. beads, markdown-linting) leaked into the ship:pre registry
+ * and inflated the exact-count assertions below. opts.env is spread last so
+ * the two deliberate overlay-fixture call sites below (GSD_HOME: fixture.home)
+ * still opt in to a specific third-party capability root.
  */
 function runTools(args, opts = {}) {
   const result = spawnSync(process.execPath, [GSD_TOOLS, ...args], {
     encoding: 'utf8',
     timeout: 60000,
     cwd: opts.cwd || process.cwd(),
-    env: {
-      ...process.env,
-      // Clear ambient session vars that can redirect config paths
-      GSD_SESSION_KEY: '',
-      CODEX_THREAD_ID: '',
-      CLAUDE_SESSION_ID: '',
-      ...opts.env,
-    },
+    env: installSpawnEnv(opts.env),
   });
   return result;
 }
