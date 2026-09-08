@@ -1240,7 +1240,13 @@ const EXPECTED_RUNTIME_PROBES = {
   hermes:      '.hermes}/gsd-core/bin/',
   cursor:      '.cursor}/gsd-core/bin/',
   codex:       '.codex}/gsd-core/bin/',
-  gemini:      '.gemini}/gsd-core/bin/',
+  // #4347: `gemini` is deliberately absent. The runtime was removed in #1928
+  // and the JS resolver is tested to ignore GEMINI_CONFIG_DIR
+  // (declarative-reference-antigravity.test.cjs), but this list pinned the
+  // shell arm in place — which is how the two resolvers stayed divergent
+  // through every later edit. `grok` below stays: it has no registry entry
+  // either, but LEGACY_NON_REGISTRY_RUNTIME_IDS declares it and
+  // getGlobalConfigDir() carries a real ~/.agents branch for it.
   copilot:     '.copilot}/gsd-core/bin/',
   windsurf:    '.codeium/windsurf}/gsd-core/bin/',
   augment:     '.augment}/gsd-core/bin/',

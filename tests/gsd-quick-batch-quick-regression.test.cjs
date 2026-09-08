@@ -48,6 +48,14 @@ function editsBeyondSharedDirective(base, file) {
     if (!/^[+-]/.test(line) || line.startsWith('+++') || line.startsWith('---')) return false;
     const body = line.slice(1).trim();
     if (body === '' || body === INLINE_RESPONSE_LANGUAGE_DIRECTIVE) return false;
+    // #4347: the canonical gsd_run preamble is the same generated line in every
+    // workflow — scripts/sync-runtime-launcher.cjs rewrites all of them at once.
+    // A resolver re-sync therefore touches quick.md AND the quick-batch surface
+    // for a reason that has nothing to do with the #3676 phase, which is the
+    // exact false positive the #2529 note above describes, arriving through a
+    // second door. Judged the same way: a generated shared line is not phase
+    // work. Edit the snippet and re-run `npm run sync:launcher` to change it.
+    if (body.startsWith('_GSD_SHIM_NAME="gsd-tools.cjs"')) return false;
     return !importsDirectiveReference(body);
   });
 }
