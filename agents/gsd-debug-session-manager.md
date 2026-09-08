@@ -93,12 +93,15 @@ goal: {goal}
 </mode>
 ```
 
+> **Foreground, blocking spawn — #4395.** This call MUST carry `run_in_background: false` — Claude Code backgrounds subagents by default, and only that flag makes the spawn wait for `gsd-debugger` to actually finish before Step 3 inspects its return. Without it, this agent can reach Step 3/Step 4 while its own spawned `gsd-debugger` is still running detached: the manager then returns a summary with no real completion behind it, the orchestrator's `#2257` auto-resume correctly re-spawns a fresh session manager per `debug.md`, and that spawns a SECOND `gsd-debugger` racing the still-live first one on the same debug file — the same blocking requirement `#2196` already established one level up, for the orchestrator's own spawn of this agent.
+
 ```
 Agent(
   prompt=filled_prompt,
   subagent_type="gsd-debugger",
   model="{debugger_model}",
-  description="Debug {slug}"
+  description="Debug {slug}",
+  run_in_background=false
 )
 ```
 
@@ -389,6 +392,7 @@ If the session was abandoned by user choice, return (terminal — user stopped):
 <success_criteria>
 - [ ] Debug file read as first action
 - [ ] Debugger model resolved before every spawn
+- [ ] gsd-debugger spawned with `run_in_background: false` (#4395) — never left running detached across a Step 4 return
 - [ ] Each spawned agent gets fresh context via file path (not inlined content)
 - [ ] User responses wrapped in DATA_START/DATA_END before passing to continuation agents
 - [ ] Specialist dispatch executed when specialist_dispatch_enabled and hint maps to a skill
