@@ -627,19 +627,36 @@ function _unsetNestedValue(
  * Does not call `output()`, so can be used as one step in a command without triggering `exit(0)` in
  * the happy path. But note that `error()` will still `exit(1)` out of the process.
  */
+/**
+ * Loads `.planning/config.json` as a plain object, or `{}` if the file does
+ * not exist. A parse failure calls `error()` (process-exiting) rather than
+ * throwing, matching every caller's existing behavior.
+ *
+ * Single source for this load+parse step — `setConfigValue`,
+ * `unsetConfigValue`, `setConfigValues`, `previewConfigValue`, and
+ * `previewUnsetConfigValue` all delegate here instead of each repeating the
+ * same try/catch (CLAUDE.md's "Generative Fix Divergence" known-defect
+ * pattern: independently-guessed copies of the same logic can silently
+ * drift apart).
+ */
+function loadConfigJson(cwd: string): Record<string, unknown> {
+  const configPath = path.join(planningDir(cwd), 'config.json');
+  let config: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    }
+  } catch (err) {
+    error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
+  }
+  return config;
+}
+
 function unsetConfigValue(cwd: string, keyPath: string): UnsetConfigValueResult {
   const configPath = path.join(planningDir(cwd), 'config.json');
 
   return withPlanningLock(cwd, () => {
-    // Load existing config or start with empty object
-    let config: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      }
-    } catch (err) {
-      error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-    }
+    const config = loadConfigJson(cwd);
 
     const { previousValue, existed } = _unsetNestedValue(config, keyPath);
 
@@ -664,15 +681,7 @@ function setConfigValue(cwd: string, keyPath: string, parsedValue: unknown): Set
   const configPath = path.join(planningDir(cwd), 'config.json');
 
   return withPlanningLock(cwd, () => {
-    // Load existing config or start with empty object
-    let config: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      }
-    } catch (err) {
-      error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-    }
+    const config = loadConfigJson(cwd);
 
     const previousValue = _setNestedValue(config, keyPath, parsedValue);
 
@@ -684,6 +693,31 @@ function setConfigValue(cwd: string, keyPath: string, parsedValue: unknown): Set
       error('Failed to write config.json: ' + (err as Error).message);
     }
   }) as SetConfigValueResult;
+}
+
+/**
+ * #4444: read-only preview counterpart to `setConfigValue` — loads config
+ * exactly like the real setter and reuses `_setNestedValue` (the SAME
+ * traversal/creation logic, including its prototype-pollution guards) on a
+ * throwaway in-memory copy that is NEVER written back to disk. This is what
+ * makes the dry-run preview provably identical to what the real write would
+ * compute, rather than a second, hand-maintained traversal that could drift
+ * from the real one.
+ */
+function previewConfigValue(cwd: string, keyPath: string, parsedValue: unknown): { key: string; value: unknown; previousValue: unknown } {
+  const config = loadConfigJson(cwd);
+  const previousValue = _setNestedValue(config, keyPath, parsedValue);
+  return { key: keyPath, value: parsedValue, previousValue };
+}
+
+/**
+ * #4444: read-only preview counterpart to `unsetConfigValue` — same pattern
+ * as `previewConfigValue`, reusing `_unsetNestedValue` on a throwaway copy.
+ */
+function previewUnsetConfigValue(cwd: string, keyPath: string): { key: string; value: null; previousValue: unknown; existed: boolean } {
+  const config = loadConfigJson(cwd);
+  const { previousValue, existed } = _unsetNestedValue(config, keyPath);
+  return { key: keyPath, value: null, previousValue, existed };
 }
 
 /**
@@ -707,15 +741,7 @@ function setConfigValues(
   const configPath = path.join(planningDir(cwd), 'config.json');
 
   return withPlanningLock(cwd, () => {
-    // Load existing config or start with empty object
-    let config: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      }
-    } catch (err) {
-      error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
-    }
+    const config = loadConfigJson(cwd);
 
     const results: SetConfigValueResult[] = [];
     for (const entry of entries) {
@@ -757,7 +783,12 @@ function assertEnumValue(parsedValue: unknown, rawVal: string, allowed: readonly
  * Note that this exits the process (via `output()`) even in the happy path; use `setConfigValue()`
  * directly if you need to avoid this.
  */
-function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | undefined, raw: boolean): void {
+interface ConfigSetOptions {
+  dryRun?: boolean;
+}
+
+function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | undefined, raw: boolean, options: ConfigSetOptions = {}): void {
+  const dryRun = options.dryRun === true;
   if (!keyPath) {
     error('Usage: config-set <key.path> <value>', ERROR_REASON.USAGE);
   }
@@ -805,6 +836,18 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
   // present, truthy-adjacent value that consumers must special-case — worst for
   // secret keys where a leftover value can be passed as a real credential.
   if (parsedValue === null) {
+    if (dryRun) {
+      const preview = previewUnsetConfigValue(cwd, kp);
+      if (isSecretKey(kp)) {
+        const maskedPrev = preview.previousValue === undefined
+          ? undefined
+          : maskSecret(preview.previousValue as Parameters<typeof maskSecret>[0]);
+        output({ dry_run: true, would_unset: true, key: kp, value: null, previousValue: maskedPrev, masked: true }, raw, `${kp} unset (dry run)`);
+        return;
+      }
+      output({ dry_run: true, would_unset: true, key: kp, value: null, previousValue: preview.previousValue }, raw, `${kp} unset (dry run)`);
+      return;
+    }
     const unsetResult = unsetConfigValue(cwd, kp);
     if (isSecretKey(kp)) {
       const maskedPrev = unsetResult.previousValue === undefined
@@ -1012,6 +1055,20 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
         error(`Invalid reviewer_instances.${instanceName}.${field} '${val}'. Must be a string.`);
       }
     }
+  }
+
+  if (dryRun) {
+    const preview = previewConfigValue(cwd, kp, parsedValue);
+    if (isSecretKey(kp)) {
+      const masked = maskSecret(parsedValue as Parameters<typeof maskSecret>[0]);
+      const maskedPrev = preview.previousValue === undefined
+        ? undefined
+        : maskSecret(preview.previousValue as Parameters<typeof maskSecret>[0]);
+      output({ dry_run: true, would_update: true, key: kp, value: masked, previousValue: maskedPrev, masked: true }, raw, `${kp}=${masked} (dry run)`);
+      return;
+    }
+    output({ dry_run: true, would_update: true, key: kp, value: parsedValue, previousValue: preview.previousValue }, raw, `${kp}=${String(parsedValue)} (dry run)`);
+    return;
   }
 
   const setConfigValueResult = setConfigValue(cwd, kp, parsedValue);

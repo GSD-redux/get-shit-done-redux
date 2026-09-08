@@ -784,7 +784,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       error,
       output: output,
     });
-    if (!handled) config.cmdConfigSet(cwd, args[1], args[2], raw);
+    if (!handled) config.cmdConfigSet(cwd, args[1], args[2], raw, { dryRun: args.includes('--dry-run') });
   }
 
   function routeConfigSetModelProfile({ args, cwd, raw }) {
