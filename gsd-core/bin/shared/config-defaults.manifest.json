@@ -38,6 +38,7 @@
     "ui_phase": true,
     "ui_safety_gate": true,
     "text_mode": false,
+    "compact_content": false,
     "research_before_questions": false,
     "discuss_mode": "discuss",
     "skip_discuss": false,

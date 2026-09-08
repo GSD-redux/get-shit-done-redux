@@ -1921,6 +1921,18 @@ function cmdStateResolveBlocker(cwd: string, text: string, raw: boolean): void {
 }
 
 function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, raw: boolean): void {
+  // #4186: a bare invocation is a usage error, not a heartbeat write. The
+  // pre-#4186 handler accepted zero arguments and still refreshed
+  // `Last session` / `Last Date` / `last_updated` — a caller probing the
+  // command's signature (the way other subcommands encourage) silently
+  // mutated STATE.md. Mirrors `state update`'s required-arg guard
+  // (cmdStateUpdate: `error('field and value required for state update')`),
+  // including its ordering: validation precedes the STATE.md existence
+  // check. Either flag suffices — `--resume-file` alone carries an explicit
+  // value the handler must persist.
+  if (!options.stopped_at && (options.resume_file === undefined || options.resume_file === null)) {
+    error('stopped-at or resume-file required for state record-session');
+  }
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
@@ -3147,19 +3159,19 @@ function buildStateFrontmatter(
   }
 
   let normalizedStatus = normalizeStateStatus(status, pausedAt);
-  // #3578: normalizeStateStatus matches 'complete' as a case-insensitive
-  // SUBSTRING, so the phase-completion prose cmdStateCompletePhase writes to
-  // the body (`Phase ${N} complete`) collapses to the milestone-level
-  // 'completed' status even when other phases remain open. Phase-level
-  // prose must never decide milestone-level status — completedPhases /
-  // totalPhases / diskScope, already derived above from a disk scan, are
-  // the authority on whether the MILESTONE is actually done. Only override
-  // when: (a) normalizeStateStatus actually landed on 'completed'; (b) the
-  // raw prose is UNAMBIGUOUSLY phase-completion prose — the anchored
-  // pattern below deliberately excludes "All phases complete" (no `\S+`
-  // phase token) and milestone-close prose like "v1.0 milestone complete"
-  // (no leading "phase"); and (c) the counters are trustworthy (a COMPLETE
-  // disk scope, both counts are finite numbers, and a positive
+  // #3578: the declared status vocabulary (#4186) recognizes
+  // `Phase ${N} complete` (state.cts's own phase-completion write) and maps
+  // it to `completed`, so the phase-completion prose still collapses to the
+  // milestone-level status even when other phases remain open — this guard
+  // demotes it back. Phase-level prose must never decide milestone-level
+  // status — completedPhases / totalPhases / diskScope, already derived above
+  // from a disk scan, are the authority on whether the MILESTONE is actually
+  // done. Only override when: (a) normalizeStateStatus actually landed on
+  // 'completed'; (b) the raw prose is UNAMBIGUOUSLY phase-completion prose —
+  // the anchored pattern below deliberately excludes "All phases complete"
+  // (no `\S+` phase token) and milestone-close prose like "v1.0 milestone
+  // complete" (no leading "phase"); and (c) the counters are trustworthy (a
+  // COMPLETE disk scope, both counts are finite numbers, and a positive
   // denominator) and affirmatively disagree with 'completed'. In every
   // other case normalizedStatus is left exactly as normalizeStateStatus
   // returned it.

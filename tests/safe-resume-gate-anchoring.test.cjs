@@ -78,12 +78,19 @@ describe('#4003 — safe_resume_gate commit-scope greps', () => {
   });
 
   test('completion spot-check uses the anchored scope and keeps its time bound', () => {
+    // #4217 moved the completion spot-check probes (with the whole reconciliation
+    // policy, both arms) into execute-phase/steps/completion-reconciliation.md —
+    // "extract, not bump" against the frozen host ceiling. The anchoring contract
+    // travels with them: negative shape against the host, positives against the
+    // fragment that now owns the probes.
     const w = fs.readFileSync(WORKFLOW, 'utf8');
-    assert.ok(!w.includes('--grep="{phase_number}-{plan_padded}"'),
+    const frag = fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows',
+      'execute-phase', 'steps', 'completion-reconciliation.md'), 'utf8');
+    assert.ok(!w.includes('--grep="{phase_number}-{plan_padded}"') && !frag.includes('--grep="{phase_number}-{plan_padded}"'),
       'the raw padded placeholder substring grep must not remain');
-    assert.ok(w.includes('SPOT_PHASE_N=$((10#{phase_number}))') && w.includes('SPOT_PLAN_N=$((10#{plan_padded}))'),
+    assert.ok(frag.includes('SPOT_PHASE_N=$((10#{phase_number}))') && frag.includes('SPOT_PLAN_N=$((10#{plan_padded}))'),
       'the spot-check derives zero-stripped components');
-    assert.ok(w.includes('--since="1 hour ago"'), 'the spot-check keeps its temporal bound');
+    assert.ok(frag.includes('--since="1 hour ago"'), 'the spot-check keeps its temporal bound');
   });
 
   test('the gate pipeline separates same-scope commits across a milestone tag (behavioral)', (t) => {

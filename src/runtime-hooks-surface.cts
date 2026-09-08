@@ -512,11 +512,19 @@ function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
   // survives the upgrade. Derive <prefix> from the path itself (more reliable
   // than HOMEBREW_PREFIX env — the path IS the install location) so every layout
   // is covered by one branch instead of one per known prefix (#2185).
+  //
+  // #4137: rewrite only when the symlink exists; otherwise fall through to the
+  // raw execPath, exactly like the mise and volta branches. A keg-only/versioned
+  // formula (node@24 installed but never `brew link`ed) has no <prefix>/bin/node
+  // at all, so the unconditional rewrite handed every managed hook a path that
+  // fails at invocation — a rewrite must never turn a working keg path into an
+  // immediately broken one.
   const homebrewMatch = normalizedForMatch.match(
     /^(.+)\/Cellar\/node(@\d+)?\/[^/]+\/bin\/node(\.exe)?$/i,
   );
   if (homebrewMatch) {
-    return `${homebrewMatch[1]}/bin/node${homebrewMatch[3] || ''}`;
+    const homebrewStable = `${homebrewMatch[1]}/bin/node${homebrewMatch[3] || ''}`;
+    if (existsSync(homebrewStable)) return homebrewStable;
   }
 
   // mise pins a concrete node version at <data>/installs/node/<ver>/bin/node

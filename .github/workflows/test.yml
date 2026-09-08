@@ -45,6 +45,72 @@ jobs:
       contents: read
       pull-requests: read
 
+  # #4422: three unrelated PRs merged on top of an already-broken `next` on
+  # 2026-09-06 before anyone noticed — nothing checked the base branch's OWN
+  # health before letting a PR land on it. This job queries the GitHub API for
+  # the base branch's last push-triggered Tests run and blocks the merge if it
+  # is red, with a `fix-next` label escape hatch for the PR that is itself the
+  # fix-forward. See scripts/ci-next-health.cjs's header for the full risk-
+  # asymmetry reasoning (it deliberately does NOT fail open on a definite red
+  # signal, unlike the mergeability preflight above).
+  #
+  # No `if:` guard, for the same reason `preflight` has none: a SKIPPED
+  # dependency skips its dependents exactly like a failed one, so guarding this
+  # job would skip `required-tests` on every push/workflow_dispatch run too.
+  # scripts/ci-next-health.cjs itself no-ops (zero API calls, exit 0) on any
+  # event other than pull_request/merge_group.
+  #
+  # `next-health` is likewise deliberately NOT gated behind `preflight`, same
+  # rationale as `changes` above: it is a ~2-minute, compute-free API read that
+  # runs in parallel with the preflight job, and serializing it behind
+  # `preflight` would add latency to every healthy PR for no saving.
+  next-health:
+    name: Base branch health
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the next-health script from the base branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Same rationale as pr-mergeable-preflight.yml's checkout: pinned to
+          # the BASE sha so the script that decides the gate comes from a
+          # trusted commit, never PR-supplied code. Empty on a non-pull_request
+          # event (e.g. merge_group), where actions/checkout falls back to the
+          # triggering ref — fine, since the script no-ops before reading
+          # anything on those events too.
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts
+          persist-credentials: false
+
+      - name: Check base branch health
+        id: check
+        env:
+          # Every value arrives through env. CONTRIBUTING.md forbids `${{ }}`
+          # inside a `run:` block.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: |
+          # Bootstrap arm, mirroring pr-mergeable-preflight.yml's: the checkout
+          # above is of the BASE sha, so this step runs the script as it exists
+          # on the base branch — which means it is absent on the PR that
+          # INTRODUCES it, and on any PR branched from a base predating it.
+          # Absent is not "red": it is one more thing we cannot determine, so
+          # it takes the same fail-open path as any other unresolved read.
+          # Self-healing — once the script is on the base branch this arm never
+          # fires again.
+          if [ ! -f scripts/ci-next-health.cjs ]; then
+            echo "::warning::scripts/ci-next-health.cjs is not present at the base sha; skipping the base-branch health gate (fail-open). Expected on the PR that introduces it, or on a branch whose base predates it."
+            echo "verdict=INDETERMINATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/ci-next-health.cjs
+
   changes:
     name: Detect test scope
     runs-on: ubuntu-latest
@@ -857,6 +923,7 @@ jobs:
     name: Required tests
     needs:
       - preflight
+      - next-health
       - changes
       - lint-tests
       - test
@@ -871,6 +938,7 @@ jobs:
       - name: Summarize required test gate
         env:
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          NEXT_HEALTH_RESULT: ${{ needs.next-health.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
           PRODUCT_CHANGED: ${{ needs.changes.outputs.product_changed }}
           CHANGES_RESULT: ${{ needs.changes.result }}
@@ -883,6 +951,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "preflight=$PREFLIGHT_RESULT"
+          echo "next-health=$NEXT_HEALTH_RESULT"
           echo "code_changed=$CODE_CHANGED"
           echo "product_changed=$PRODUCT_CHANGED"
           echo "changes=$CHANGES_RESULT"
@@ -907,6 +976,14 @@ jobs:
 
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "::error::test scope detection did not pass"
+            exit 1
+          fi
+
+          # #4422: applies UNCONDITIONALLY, not nested inside the
+          # PRODUCT_CHANGED/CODE_CHANGED branches below — a red base branch
+          # must block every PR, including doc-only ones.
+          if [ "$NEXT_HEALTH_RESULT" != "success" ]; then
+            echo "::error::the base branch's own last Tests run is red — see the 'Base branch health' job above for the failing run. Wait for a fix-forward merge, or if this PR IS the fix, ask a maintainer to apply the 'fix-next' label to override."
             exit 1
           fi
 

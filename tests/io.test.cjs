@@ -16,7 +16,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
-const { captureFdSync } = require('./helpers.cjs');
+const { captureFdSync, suppressFdAsync } = require('./helpers.cjs');
 
 const io = require('../gsd-core/bin/lib/io.cjs');
 const {
@@ -717,7 +717,7 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
     test(`v1: ERROR_REASON.${key} (${reasonValue}) exits 1`, () => {
       resolveContractVersion({ argv: ['node', 'x'], env: {} }); // v1
       assert.throws(
-        () => io.error('msg', reasonValue),
+        () => captureFdSync(2, () => { io.error('msg', reasonValue); }),
         (err) => err instanceof ExitError && err.code === 1,
         `ERROR_REASON.${key} must exit 1 under v1`,
       );
@@ -727,7 +727,7 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
       resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
       const expected = expectedErrorCode3912(reasonValue, 'v2');
       assert.throws(
-        () => io.error('msg', reasonValue),
+        () => captureFdSync(2, () => { io.error('msg', reasonValue); }),
         (err) => err instanceof ExitError && err.code === expected,
         `ERROR_REASON.${key} under v2 must exit ${expected}`,
       );
@@ -738,7 +738,7 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
   test('A2: error() with no reason argument exits 1 under v1 (defaults to UNKNOWN)', () => {
     resolveContractVersion({ argv: ['node', 'x'], env: {} });
     assert.throws(
-      () => io.error('no reason given'),
+      () => captureFdSync(2, () => { io.error('no reason given'); }),
       (err) => err instanceof ExitError && err.code === 1,
     );
   });
@@ -746,7 +746,7 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
   test('A2: error() with no reason argument stays FAIL (exit 1) under v2 too — UNKNOWN is not a specific outcome', () => {
     resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
     assert.throws(
-      () => io.error('no reason given'),
+      () => captureFdSync(2, () => { io.error('no reason given'); }),
       (err) => err instanceof ExitError && err.code === 1,
     );
   });
@@ -756,7 +756,7 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
     resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
     for (const key of ['SDK_MISSING_ARG', 'SDK_UNKNOWN_COMMAND', 'USAGE']) {
       assert.throws(
-        () => io.error('msg', io.ERROR_REASON[key]),
+        () => captureFdSync(2, () => { io.error('msg', io.ERROR_REASON[key]); }),
         (err) => err instanceof ExitError && err.code === 64,
         `${key} must project to 64 under v2`,
       );
@@ -768,10 +768,14 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
   test('B5 (anti-vacuity): v1 and v2 differ for at least one reason', () => {
     resolveContractVersion({ argv: ['node', 'x'], env: {} });
     let v1Code;
-    try { io.error('msg', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { v1Code = e.code; }
+    captureFdSync(2, () => {
+      try { io.error('msg', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { v1Code = e.code; }
+    });
     resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
     let v2Code;
-    try { io.error('msg', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { v2Code = e.code; }
+    captureFdSync(2, () => {
+      try { io.error('msg', io.ERROR_REASON.SDK_MISSING_ARG); } catch (e) { v2Code = e.code; }
+    });
     assert.equal(v1Code, 1);
     assert.equal(v2Code, 64);
     assert.notEqual(v1Code, v2Code, 'v1 and v2 must differ for at least one reason, or the declaration is decorative');
@@ -990,11 +994,22 @@ describe('review fix: pending-outcome cell lifetime (last-write-wins, cleared on
     try {
       // First invocation declares DEGRADED via a payload-carried error and
       // returns nothing — runMain projects it to 80 under v2.
-      runMain(() => {
-        io.output({ found: false, error: 'not found' }, false);
-        return undefined;
+      //
+      // runMain() defers main() via Promise.resolve().then(...), so the
+      // actual fs.writeSync(1, ...) fires in a later microtask, not
+      // synchronously inside this call. suppressFdAsync (not captureFdAsync)
+      // keeps fs.writeSync patched across that await AND prevents the
+      // deferred write from ever reaching the real fd 1 — this exact window
+      // races node:test's own fd-1 IPC protocol under
+      // --test-isolation=process and forwarding (as captureFdAsync does) was
+      // empirically confirmed to still corrupt it (#4448).
+      await suppressFdAsync(1, async () => {
+        runMain(() => {
+          io.output({ found: false, error: 'not found' }, false);
+          return undefined;
+        });
+        await waitForRunMain();
       });
-      await waitForRunMain();
       assert.strictEqual(process.exitCode, 80, 'first runMain should have projected the DEGRADED cell to 80');
 
       // Second, unrelated invocation in the SAME process declares nothing
@@ -1002,8 +1017,10 @@ describe('review fix: pending-outcome cell lifetime (last-write-wins, cleared on
       // runMain, so this would inherit the first call's stale DEGRADED and
       // also exit 80 — the exact bug the reviewers found.
       process.exitCode = undefined;
-      runMain(() => undefined);
-      await waitForRunMain();
+      await suppressFdAsync(1, async () => {
+        runMain(() => undefined);
+        await waitForRunMain();
+      });
       assert.strictEqual(
         process.exitCode,
         undefined,
@@ -1018,12 +1035,14 @@ describe('review fix: pending-outcome cell lifetime (last-write-wins, cleared on
     resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
     const savedExitCode = process.exitCode;
     try {
-      runMain(() => {
-        io.output({ found: false, error: 'not found' }, false);
-        io.output({ ok: true }, false);
-        return undefined;
+      await suppressFdAsync(1, async () => {
+        runMain(() => {
+          io.output({ found: false, error: 'not found' }, false);
+          io.output({ ok: true }, false);
+          return undefined;
+        });
+        await waitForRunMain();
       });
-      await waitForRunMain();
       assert.strictEqual(
         process.exitCode,
         undefined,
@@ -1038,13 +1057,29 @@ describe('review fix: pending-outcome cell lifetime (last-write-wins, cleared on
     resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
     const savedExitCode = process.exitCode;
     try {
-      runMain(() => {
-        io.output({ error: 'x' }, false);
-        return undefined;
+      const captured = await suppressFdAsync(1, async () => {
+        runMain(() => {
+          io.output({ error: 'x' }, false);
+          return undefined;
+        });
+        await waitForRunMain();
       });
-      await waitForRunMain();
       assert.strictEqual(process.exitCode, 80);
       assert.strictEqual(getPendingOutcome(), undefined, 'the cell must be cleared once runMain has consumed it');
+      // Load-bearing check on the wrap itself, not just the outcome it
+      // guards: proves suppressFdAsync actually intercepted the deferred
+      // bytes runMain wrote (rather than the patch having been restored
+      // before the deferred write ran, which would silently capture an
+      // empty string — verified as the failure mode of a naive
+      // captureFdSync wrap during development of this fix). These bytes
+      // never reached the real fd 1 by design (#4448) — only the in-memory
+      // recording is asserted on here.
+      const parsedCaptured = JSON.parse(captured);
+      assert.strictEqual(
+        parsedCaptured.error,
+        'x',
+        `expected suppressFdAsync to intercept the output({error}) JSON bytes for fd 1; got: ${JSON.stringify(captured)}`,
+      );
     } finally {
       process.exitCode = savedExitCode;
     }

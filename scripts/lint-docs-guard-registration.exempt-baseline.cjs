@@ -46,6 +46,7 @@ const DOCS_GUARD_EXEMPT_BASELINE = [
   'codebuddy-upgrades.test.cjs',
   'commands.test.cjs',
   'commit-docs-bypass.test.cjs',
+  'compact-content-partition-guard.test.cjs',
   'complexity-trigger.test.cjs',
   'concurrency-safety.test.cjs',
   'cursor-imperative-reference.test.cjs',
@@ -135,6 +136,10 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'commit-docs-bypass.test.cjs': [
     'docs/40-design.md', 'docs/CONFIGURATION.md', 'docs/readme.md', 'docs/tracked-var-mentioning',
   ],
+  // #4403: cites docs/PARTITION-RULES.md as a "see" pointer in the module docstring
+  // describing the operational spec this guard implements; the file never reads that
+  // (or any) docs/ file.
+  'compact-content-partition-guard.test.cjs': ['docs/PARTITION-RULES.md'],
   'complexity-trigger.test.cjs': ['docs/readme.md'],
   // #3884: cites docs/CLI-TOOLS.md:736 in an explanatory comment describing
   // the real `frontmatter get <file> [--field key]` CLI shape; the file
@@ -191,7 +196,9 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'runtime-name-policy.test.cjs': ['docs/customize/skills'],
   'security-prompt-injection.security.test.cjs': ['docs/notes.md'],
   'shipped-reference-cites.test.cjs': [],
-  'state.test.cjs': ['docs/CONFIGURATION.md', 'docs/reference/state-md.md'],
+  // #4186: the record-session usage-contract test cites the documented
+  // signature in docs/CLI-TOOLS.md in its explanatory comment.
+  'state.test.cjs': ['docs/CLI-TOOLS.md', 'docs/CONFIGURATION.md', 'docs/reference/state-md.md'],
   'worktree-safety.test.cjs': ['docs/SUMMARY.md'],
 };
 

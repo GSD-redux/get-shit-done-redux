@@ -22,10 +22,10 @@
  * `cli_modules`, `hooks`. `docs/INVENTORY.md:7` says the file "enumerates every
  * shipped surface across all six families", and each has its own `##` section.
  *
- * OUT: the two NESTED families — `workflow_steps`, `workflow_modes`.
- * `docs/INVENTORY.md` §"Workflow Sub-Files" is an explicit shipped decision that
- * these carry no hand-written per-file rows: "Adding a step or mode file requires no
- * hand-written row here … The per-file roster deliberately lives in
+ * OUT: the four NESTED families — `workflow_steps`, `workflow_modes`, `workflow_detail`,
+ * `workflow_templates`. `docs/INVENTORY.md` §"Workflow Sub-Files" is an explicit shipped
+ * decision that these carry no hand-written per-file rows: "Adding a step, mode, detail,
+ * or template file requires no hand-written row here … The per-file roster deliberately lives in
  * `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 60
  * rows that must be hand-maintained in lockstep with a generated artifact is the
  * drift this file exists to catch." Demanding rows there would override that
@@ -59,7 +59,7 @@
 
 /**
  * Manifest family name → the level-2 heading in `docs/INVENTORY.md` that rosters it.
- * The two nested families are absent BY DESIGN (see above).
+ * The four nested families are absent BY DESIGN (see above).
  */
 const ROSTER_SECTIONS = Object.freeze({
   agents: 'Agents',

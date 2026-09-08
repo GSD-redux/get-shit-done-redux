@@ -224,7 +224,7 @@ Updated after each plan completion.
 
 **Decisions** — a summary of recent decisions affecting current work (full log lives in `PROJECT.md`). Added via `gsd-tools state add-decision`.
 
-**Pending Todos** — count and reference to `.planning/todos/pending/`. Captured via `/gsd-capture`.
+**Pending Todos** — one bullet per pending todo (`- [date] [area] title — [todo file](repo-relative path) — Needs ...`, capped at 240 characters; repo-relative link keeps the cap independent of checkout path length). Captured via `/gsd-capture`.
 
 **Blockers/Concerns** — issues affecting future work, prefixed with the originating phase. Added via `gsd-tools state add-blocker`; resolved via `gsd-tools state resolve-blocker`.
 
