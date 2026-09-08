@@ -651,10 +651,10 @@ gsd_run query commit "chore: add project config" --files .planning/config.json
 
 **Detect multi-repo workspace:**
 
-Check for directories with their own `.git` folders (separate repos within the workspace):
+Check for directories with their own `.git` entry (a directory for clones or a file for linked worktrees):
 
 ```bash
-find . -maxdepth 1 -type d -not -name ".*" -not -name "node_modules" -exec test -d "{}/.git" \; -print
+find . -maxdepth 1 -type d -not -name ".*" -not -name "node_modules" -exec test -e "{}/.git" \; -print
 ```
 
 **If sub-repos found:**
