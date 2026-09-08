@@ -18,6 +18,7 @@ const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 
 const CONFIG_CJS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'config.cjs');
 const SHIP_MD_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
+const CODE_REVIEW_COMMAND_MD_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'code-review.md');
 const CONFIG_TEMPLATE_PATH = path.join(__dirname, '..', 'gsd-core', 'templates', 'config.json');
 
 describe('code_review_command config key', () => {
@@ -141,5 +142,30 @@ describe('ship workflow code_review_command integration', () => {
       shipContent.includes('AskUserQuestion') || shipContent.includes('Skip review'),
       'ship.md must still offer the existing manual review flow after external review'
     );
+  });
+});
+
+describe('#4209 optional source-reviewer flags (commands/gsd/code-review.md)', () => {
+  const commandContent = fs.readFileSync(CODE_REVIEW_COMMAND_MD_PATH, 'utf-8');
+
+  test('code-review.md command references the canonical reviewer-lane roster, not a static flag list', () => {
+    assert.ok(
+      commandContent.includes('review-lane flags'),
+      'commands/gsd/code-review.md must derive optional reviewer-lane flags from `gsd_run review-lane flags` (DOCS-03), not a hand-maintained list'
+    );
+  });
+
+  test('code-review.md command documents that reviewer-lane findings are corroborating evidence only', () => {
+    assert.ok(
+      /gsd-code-reviewer/.test(commandContent) &&
+        (commandContent.includes('internal') || commandContent.includes('verifies')),
+      'commands/gsd/code-review.md must document that the internal gsd-code-reviewer agent alone verifies and writes REVIEW.md (CONS-01..03)'
+    );
+  });
+
+  test('code-review.md command preserves --fix/--depth/--files flags unchanged (COMP-01 doc parity)', () => {
+    assert.ok(commandContent.includes('--depth='), 'must retain --depth flag docs');
+    assert.ok(commandContent.includes('--files'), 'must retain --files flag docs');
+    assert.ok(commandContent.includes('--fix'), 'must retain --fix flag docs');
   });
 });

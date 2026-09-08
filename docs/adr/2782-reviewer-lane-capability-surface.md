@@ -878,3 +878,43 @@ reviewer is "one manifest … no core patch", and `CONTEXT.md`, `gsd-core/workfl
 runtime, until #3062, built `laneBySlug` solely from the first-party table and rejected every slug
 absent from it. Four documents on one side, the runtime on the other. #3062 resolved it in the
 documents' favour, which is what makes the disclosure above mandatory rather than defensive.
+
+### 2026-09-07 — a new consumer axis: the `supportsReviewerLanes` capability-step trait (#4209)
+
+Every decision above (D1–D9, and every dated entry so far) governs the `role: "reviewer"` capability
+body — the shape of a *lane declaration* — and its one consumer, `/gsd:review`. #4209 adds a second,
+unrelated consumer: `/gsd:code-review`, which does not want a second internal review pipeline, only
+the existing `resolveLanePlan`/`runner.runLane` machinery reused to *corroborate* its own single
+internal reviewer with external source-review evidence. That consumer is not a `role: "reviewer"`
+capability at all — it is an ordinary `role: "feature"` capability's `steps[]` entry (the
+`capability-manifest.md` axis this ADR's own scope note, Context (b), names as structurally distinct
+from the runtime/reviewer body and explicitly out of this ADR's reach). This entry records that
+extension, since it is additive to the reviewer-lane surface without being expressible inside D1–D9.
+
+**What was added.** A `step` entry in a `role: "feature"` capability's `steps[]` array (per
+`capability-manifest.md`'s existing `steps` table) may carry an optional `supportsReviewerLanes: true`
+field alongside its required `point`/`ref`/`produces`/`consumes`/`onError`. Validated in
+`capability-validator.cjs` (must be the literal boolean `true`; any other type fails validation;
+`false`/omitted are inert — no key on the projected `ActiveHook`). Projected through
+`loop-resolver.cts`'s `resolveLoopHooks`/`resolveActiveHooksForPoint` onto the step's `ActiveHook` as
+`supportsReviewerLanes: true`. A workflow step whose `ActiveHook` carries the trait may call the new,
+capability-neutral interpreter `dispatchReviewerLanes` (`src/reviewer-step-dispatch.cts`), which reuses
+`resolveReviewerSelection` and `resolveLanePlan`/`runner.runLane` — the SAME D1–D9-governed
+plan/invoke machinery this ADR already specifies — rather than reimplementing dispatch. No new
+invocation mechanism was created; only a new, generic activation seam for the existing one.
+
+**Why this is additive, not a reversal.** No D1–D9 decision changes. The `reviewer` capability body,
+its ten decisions, `resolveLanePlan`, and `runner.runLane` are consumed exactly as specified;
+`/gsd:review` itself is untouched. What is new is a second *caller* of that machinery, reached through
+a different capability axis than this ADR covers, and a trust boundary this ADR never needed: a
+`role: "feature"` step's dispatch target now receives lane output as evidence to independently
+re-verify, not as a second output schema — enforced by `dispatchReviewerLanes`'s fail-closed request
+validation (path traversal, absolute paths, symlink escape, missing/invalid provenance, budget
+overflow) and by `gsd-code-reviewer`'s untrusted-evidence consolidation contract, neither of which
+`/gsd:review`'s existing consumer needed since it already fully owns its own output contract.
+
+**Scope this does not touch.** `steps`/`gates`/`contributions` as a capability axis are governed by
+[ADR-857](857-capability-system.md) (Loop Extension Points) and [ADR-894](894-capability-declaration-format.md)
+(declaration format), both already `Amended by` this ADR for the `reviewer` axis — this entry does not
+add a new `Amends` relationship to either, since `supportsReviewerLanes` is one optional field on an
+already-`Amends`-covered `steps[]` entry, not a new axis of its own.

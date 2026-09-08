@@ -520,6 +520,12 @@ The review step slots in after execution and before UAT:
 /gsd-execute-phase N  ->  /gsd-code-review N  ->  /gsd-code-review N --fix  ->  /gsd-verify-work N
 ```
 
+**Optional external source-review lanes (#4209):** `/gsd-code-review` accepts the same reviewer-lane flags as `/gsd-review` (run `gsd_run review-lane flags` to list the flags your installation's roster declares, e.g. `--codex`, `--agy`). Adding one asks that lane to independently review the *same* file scope alongside the internal `gsd-code-reviewer` agent; its findings are unverified corroborating evidence that `gsd-code-reviewer` re-checks against the actual source before writing anything to `REVIEW.md` — there is still exactly one `REVIEW.md`. No reviewer-lane flag is the default and reviews with only the internal agent, unchanged from before #4209. This is separate from `/gsd-review`, which reviews `PLAN.md` files *before* execution, not source code — see [Set up cross-AI review](how-to/set-up-cross-ai-review.md).
+
+```bash
+/gsd-code-review 3 --codex       # Corroborate the internal review with the codex reviewer lane
+```
+
 ---
 
 ## Coverage-Aware UAT Routing

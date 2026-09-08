@@ -1729,10 +1729,13 @@ Review source files changed during a phase for bugs, security vulnerabilities, a
 | `--fix` | No | Auto-fix issues after review — reads REVIEW.md, spawns fixer agent, commits each fix atomically |
 | `--fix --all` | No | Include Info findings in fix scope (default: Critical + Warning only) |
 | `--fix --auto` | No | Fix + re-review iteration loop, capped at 3 iterations |
+| *(reviewer-lane flag)* | No | Any flag `gsd_run review-lane flags` reports for the installed roster (e.g. `--codex`, `--agy`) — see below |
 
 **Prerequisites:** Phase has been executed and has SUMMARY.md or git history
 **Produces:** `{phase}-REVIEW.md` with severity-classified findings; `{phase}-REVIEW-FIX.md` when `--fix` is used
-**Spawns:** `gsd-code-reviewer` agent; `gsd-code-fixer` agent (with `--fix`)
+**Spawns:** `gsd-code-reviewer` agent; `gsd-code-fixer` agent (with `--fix`); requested external reviewer lane(s) (#4209 — see below)
+
+**Optional external reviewer lanes (#4209):** Pass one or more reviewer-lane flags — any flag the roster declares (run `gsd_run review-lane flags` to list them for your installation, e.g. `--codex`, `--agy`) — to have that lane independently review the same already-resolved file scope alongside the internal `gsd-code-reviewer` agent. The prompt sent to each lane carries only the repository root, canonical file paths, review depth, and base SHA — never source file contents — under four fixed prohibitions: no source mutation, no test execution, no background processes, no polling. An external lane's findings are corroborating evidence only: `gsd-code-reviewer` independently re-verifies every claim against the actual source before writing it to `REVIEW.md`, so there is exactly one `REVIEW.md` schema regardless of how many lanes ran. An explicitly requested lane that is unavailable or fails is reported as a warning — it never falls back to a raw provider CLI call. Omitting every reviewer-lane flag (the default) reviews with only the internal agent, unchanged from before #4209. This is distinct from `/gsd-review`, which reviews `PLAN.md` files before execution — see [Set up cross-AI review](how-to/set-up-cross-ai-review.md).
 
 **Optional structural pre-pass:** Set `code_quality.fallow.enabled` to `true` to run fallow before the agent review. GSD writes `{phase}/FALLOW.json` and embeds a `Structural Findings (fallow)` section in `REVIEW.md`. Configure scope and profile with `code_quality.fallow.scope` and `code_quality.fallow.profile`.
 
@@ -1743,6 +1746,7 @@ Review source files changed during a phase for bugs, security vulnerabilities, a
 /gsd-code-review 3 --fix                    # Review then fix Critical + Warning findings
 /gsd-code-review 3 --fix --all             # Review then fix all findings including Info
 /gsd-code-review 3 --fix --auto            # Review, fix, and re-review until clean (max 3 iterations)
+/gsd-code-review 3 --codex                 # Corroborate the internal review with the codex reviewer lane
 ```
 
 ---

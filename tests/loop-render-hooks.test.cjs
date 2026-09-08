@@ -494,10 +494,55 @@ describe('#3661: code-review capability.json + generated registry (matrix Sectio
     assert.ok(wavePostStep, 'execute:wave:post.steps must contain a code-review step. Got: ' + JSON.stringify(wavePostSteps));
   });
 
+  test('F5: realRegistryProjectsSupportsReviewerLanesOnCodeReviewActiveHook', () => {
+    const result = resolveLoopHooks({ point: 'execute:post', registry: realRegistry, config: { workflow: { code_review: true } } });
+    const hook = result.activeHooks.find((h) => h.capId === 'code-review' && h.ref && h.ref.skill === 'code-review');
+    assert.ok(hook, 'Expected an active code-review hook at execute:post. Got: ' + JSON.stringify(result.activeHooks));
+    assert.strictEqual(hook.supportsReviewerLanes, true, 'Expected the real code-review active hook to carry supportsReviewerLanes: true');
+  });
+
   // F4-F7 (CLI-behavioral: gsd_run loop render-hooks / config-set through the real
   // subprocess, against a temp git project) live in tests/code-review.test.cjs's
   // 'CR-CONFIG: config key registration' describe block, alongside the sibling
   // workflow.code_review / workflow.code_review_depth CLI round-trip tests.
+
+});
+
+// ─── #4209 DISP-02: step.supportsReviewerLanes projection (provider-neutral) ──
+
+describe('#4209 DISP-02: step.supportsReviewerLanes projection (provider-neutral)', () => {
+  test('projects literal true onto the active hook for a synthetic non-code-review step', () => {
+    const registry = makeRegistry({
+      point: 'execute:post',
+      steps: [{ capId: 'synthetic-reviewer-cap', point: 'execute:post', ref: { skill: 'synthetic-skill' }, supportsReviewerLanes: true }],
+    });
+    const result = resolveLoopHooks({ point: 'execute:post', registry, config: {} });
+    const hook = result.activeHooks.find((h) => h.capId === 'synthetic-reviewer-cap');
+    assert.ok(hook, 'Expected the synthetic step to be active');
+    assert.strictEqual(hook.supportsReviewerLanes, true);
+  });
+
+  test('omitted supportsReviewerLanes is inert (field absent on active hook)', () => {
+    const registry = makeRegistry({
+      point: 'execute:post',
+      steps: [{ capId: 'synthetic-reviewer-cap', point: 'execute:post', ref: { skill: 'synthetic-skill' } }],
+    });
+    const result = resolveLoopHooks({ point: 'execute:post', registry, config: {} });
+    const hook = result.activeHooks.find((h) => h.capId === 'synthetic-reviewer-cap');
+    assert.ok(hook, 'Expected the synthetic step to be active');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(hook, 'supportsReviewerLanes'), false, 'Expected no supportsReviewerLanes key when omitted');
+  });
+
+  test('literal false is inert (field absent on active hook, not carried as false)', () => {
+    const registry = makeRegistry({
+      point: 'execute:post',
+      steps: [{ capId: 'synthetic-reviewer-cap', point: 'execute:post', ref: { skill: 'synthetic-skill' }, supportsReviewerLanes: false }],
+    });
+    const result = resolveLoopHooks({ point: 'execute:post', registry, config: {} });
+    const hook = result.activeHooks.find((h) => h.capId === 'synthetic-reviewer-cap');
+    assert.ok(hook, 'Expected the synthetic step to be active');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(hook, 'supportsReviewerLanes'), false, 'Expected no supportsReviewerLanes key when false');
+  });
 });
 
 // ─── 4. Ordering tests ────────────────────────────────────────────────────────

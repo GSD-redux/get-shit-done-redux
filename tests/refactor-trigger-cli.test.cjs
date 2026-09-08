@@ -959,6 +959,7 @@ describe('refactor-trigger: loop wiring', () => {
       produces: ['REVIEW.md'],
       consumes: ['SUMMARY.md'],
       onError: 'skip',
+      supportsReviewerLanes: true,
     });
   });
 

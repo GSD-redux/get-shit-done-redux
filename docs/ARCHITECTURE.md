@@ -329,6 +329,10 @@ Command families declared by capabilities (`commands: [{ family, module, router 
 
 Both paths share the same guards: prototype-pollution-safe command keys, an own-property router check, and synchronous-only routers (an async router is a fail-fast error).
 
+### Reviewer-Lane Capability Trait (#4209, ADR-2782)
+
+`/gsd-code-review` optionally corroborates its internal review with external reviewer lanes (`--codex`, `--agy`, ...), gated by the reusable `supportsReviewerLanes` capability-step trait and dispatched through the single `dispatchReviewerLanes` interpreter — see `gsd-core/references/loop-hook-dispatch.md` for the trait and `src/reviewer-step-dispatch.cts` for the interpreter's fail-closed contract. `gsd-code-reviewer` is the sole consolidator: it independently re-verifies every external claim against the actual source before writing anything to `REVIEW.md`, so a lane's evidence is corroborating input, never a second output schema.
+
 ### Research Module (`src/research-{store,provider}.cts`, `src/package-legitimacy.cts`)
 
 The Research Module implements an **L2-hybrid seam**: code owns the cache, provider policy, and package legitimacy verdicts; MCP owns the actual network fetch.

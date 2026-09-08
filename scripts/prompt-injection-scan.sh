@@ -179,6 +179,20 @@ ALLOWLIST=(
   # rendering, never a command. Same DEFECT.PROMPT-INJECTION-SCAN-COLLISION
   # class as the input-validator fixtures above.
   'tests/quick-batch.test.cjs'
+  # #4209 — the regression test pinning gsd-code-reviewer.md's untrusted-evidence
+  # contract discusses the injection attack it defends against (embedded
+  # redirection, "act as an instruction") without performing it. gsd-code-reviewer.md
+  # ITSELF is deliberately NOT allowlisted — R2 (#4209 review): a production prompt
+  # that ingests untrusted third-party output should stay in-scope for this scanner,
+  # not be exempted wholesale; its defense-contract wording was reworded instead to
+  # avoid literally spelling out the trigger phrase (see git blame on that section).
+  # Same DEFECT.PROMPT-INJECTION-SCAN-COLLISION class as the entries above.
+  'tests/code-review-pipeline-regression.test.cjs'
+  # #4209 agy-F1 regression test — a crafted-filename fixture containing the literal
+  # phrase "Ignore all prior instructions." to prove validatePaths rejects it before
+  # it ever reaches an external-reviewer prompt. Discusses/detects the attack pattern
+  # as test data, never performs it. Same class as the entries above.
+  'tests/reviewer-step-dispatch.test.cjs'
 )
 
 is_allowlisted() {
