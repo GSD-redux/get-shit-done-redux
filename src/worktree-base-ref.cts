@@ -239,6 +239,44 @@ export function resolveEffectiveBaseRef(
 }
 
 /**
+ * The base-check evaluation for a project directory — exactly what
+ * `cmdWorktreeBaseCheck` computes, minus the stdout emit and the `--mode`
+ * argv parse (#4222). Resolves the effective baseRef from `<cwd>/.claude`
+ * settings (project local → project shared → user/global) and evaluates the
+ * #683 divergence against it.
+ *
+ * Extracted so `routeDispatchIsolation` (gsd-tools.cjs) can re-derive the
+ * base-check degrade in-process before it records the dispatch decision,
+ * the way it already re-derives the #3737 `use_worktrees` opt-out. The CLI
+ * subcommand and the resolver share this one derivation so the two can
+ * never disagree about what the fork base is.
+ *
+ * deps.userClaudeDir overrides the user/global config directory resolution
+ * (default: getGlobalConfigDir('claude'), which honours CLAUDE_CONFIG_DIR).
+ */
+export function evaluateWorktreeBaseDegradeForCwd(
+  cwd: string,
+  isolationMode: BaseCheckIsolationMode = 'harness-worktree',
+  deps?: { execGit?: ExecGitFn; readFile?: (p: string) => string | null; userClaudeDir?: string | null }
+): ReturnType<typeof evaluateWorktreeBaseDegrade> {
+  const claudeDir = path.join(cwd, '.claude');
+  const userClaudeDir = Object.prototype.hasOwnProperty.call(deps ?? {}, 'userClaudeDir')
+    ? (deps as { userClaudeDir?: string | null }).userClaudeDir
+    : getGlobalConfigDir('claude');
+  const effectiveBaseRef = resolveEffectiveBaseRef(
+    claudeDir,
+    deps?.readFile ? { readFile: deps.readFile } : undefined,
+    userClaudeDir
+  );
+  return evaluateWorktreeBaseDegrade({
+    cwd,
+    effectiveBaseRef,
+    execGit: deps?.execGit,
+    isolationMode,
+  });
+}
+
+/**
  * CLI command: check current worktree base-ref degradation status.
  *
  * Reads effective baseRef from <cwd>/.claude settings (3-layer cascade:
@@ -266,21 +304,7 @@ export function cmdWorktreeBaseCheck(
     }
     isolationMode = value;
   }
-  const claudeDir = path.join(cwd, '.claude');
-  const userClaudeDir = Object.prototype.hasOwnProperty.call(deps ?? {}, 'userClaudeDir')
-    ? (deps as { userClaudeDir?: string | null }).userClaudeDir
-    : getGlobalConfigDir('claude');
-  const effectiveBaseRef = resolveEffectiveBaseRef(
-    claudeDir,
-    deps?.readFile ? { readFile: deps.readFile } : undefined,
-    userClaudeDir
-  );
-  const result = evaluateWorktreeBaseDegrade({
-    cwd,
-    effectiveBaseRef,
-    execGit: deps?.execGit,
-    isolationMode,
-  });
+  const result = evaluateWorktreeBaseDegradeForCwd(cwd, isolationMode, deps);
   // Default emit goes through fs.writeSync(1, …), NOT process.stdout.write:
   // the CLI's --pick capture intercepts writeSync, and command substitution
   // is a pipe — via process.stdout.write a `$(gsd-tools … --pick x)` capture

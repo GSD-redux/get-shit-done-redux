@@ -71,10 +71,14 @@ fi
 # Re-resolve (and, as a side effect, re-persist) now that the base-check
 # auto-degrade above may have changed $ISOLATION since the first
 # `dispatch-isolation` call. `--force-isolation` pushes the FINAL,
-# shell-computed value (which the resolver itself cannot see — the #683
-# base-check degrade is decided here, not inside gsd-tools.cjs) through the
-# SAME single write path (`--force-isolation none` also clears the stored
-# harnessFlag, since none applies to sequential dispatch). The isolation
+# shell-computed value through the SAME single write path
+# (`--force-isolation none` also clears the stored harnessFlag, since none
+# applies to sequential dispatch). Since #4222 the resolver re-derives the
+# #683 base-check degrade itself for the RECORDED decision (as it already
+# did the project opt-out, #3737), so a later plain re-query no longer
+# overwrites this record with the host capability; this re-record stays
+# because it is the one write that carries the shell's FINAL value for every
+# degrade, including the ones the resolver cannot see. The isolation
 # guard hooks (hooks/gsd-agent-isolation-guard.js,
 # hooks/gsd-cursor-subagent-start.js) read this sentinel instead of
 # re-deriving a host CAPABILITY from the registry — the registry's

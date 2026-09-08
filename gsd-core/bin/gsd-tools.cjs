@@ -1800,6 +1800,28 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
   }
 
+  /**
+   * #4222 — re-derive the #683 worktree base-check degrade in-process, the
+   * same way `projectWorktreesOptedOut` re-derives the #3737 opt-out: the
+   * one evaluation `worktree base-check` (a sibling subcommand of this file)
+   * performs, reached through the shared `evaluateWorktreeBaseDegradeForCwd`
+   * so the resolver and the CLI subcommand can never disagree on the fork
+   * base. True only when the evaluation ran and said `shouldDegrade`; a
+   * mode this check does not apply to (`none`), an unbuilt runtime lib, or
+   * any thrown error degrades to false — "no degrade re-derived", which
+   * leaves the workflow's own shell-computed `--force-isolation none` as the
+   * record exactly as before this fix. Never throws.
+   */
+  function baseCheckDegrades(cwd, isolationMode) {
+    if (isolationMode !== 'harness-worktree' && isolationMode !== 'orchestrator-worktree') return false;
+    try {
+      const { evaluateWorktreeBaseDegradeForCwd } = require('./lib/worktree-base-ref.cjs');
+      return evaluateWorktreeBaseDegradeForCwd(cwd, isolationMode).shouldDegrade === true;
+    } catch {
+      return false;
+    }
+  }
+
   function routeDispatchIsolation({ args, cwd, raw, error }) {
     // #2584 Phase 3 (#2627): typed query exposing the negotiated
     // `dispatch.isolation` to the execute-phase wave scheduler, so the
@@ -1892,10 +1914,45 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       exec = null;
     }
 
+    // #4222: the #683 worktree base-check degrade is re-derived HERE for the
+    // RECORDED decision, the way #3737 re-derives the opt-out above. Pre-fix
+    // the degrade was decided only in workflow shell, after this resolve;
+    // the shell recorded it with `--force-isolation none`, and any later
+    // plain re-query (the orchestrator's own `--json` harnessFlag read, a
+    // subagent's gsd_run traffic, a wave transition) re-persisted the host
+    // capability over it — the guard then denied the sequential dispatch
+    // the degrade had mandated. Now every write goes through the same
+    // in-process evaluation the shell's `worktree base-check` runs, so a
+    // plain re-query re-derives `none` instead of overwriting it, and a
+    // fresh run on a repo whose HEAD matches its fork base still records the
+    // natural capability (nothing is sticky: the evaluation reads live git
+    // state on every call).
+    //
+    // Applied to the sentinel ONLY, deliberately NOT to stdout. The
+    // resolver's stdout is the host CAPABILITY the workflow's decision tree
+    // branches on, and every dispatch site fails closed on an unguarded
+    // `none` from it ("this runtime declares no executor-isolation
+    // primitive", exit 1 — executor-isolation-dispatch.md). Returning
+    // `none` here would turn every diverged-HEAD run into that FATAL. The
+    // shell keeps computing its own base-check for the same reasons it did
+    // before (the user-visible divergence message, `USE_WORKTREES`
+    // co-movement, the fail-closed guard's own inputs); what changes is that
+    // the persisted decision the guard reads no longer depends on the shell
+    // re-recording faster than the next plain call. Applied AFTER
+    // --force-isolation, mirroring #3737: the degrade wins over a force,
+    // because the harness would fork the worktree from the diverged base
+    // regardless of what the caller asked for.
+    let recordedIsolation = isolation;
+    let recordedHarnessFlag = harnessFlag;
+    if (recordedIsolation !== 'none' && baseCheckDegrades(cwd, recordedIsolation)) {
+      recordedIsolation = 'none';
+      recordedHarnessFlag = null;
+    }
+
     // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
     // Never allowed to affect this query's own stdout contract or throw.
     try {
-      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
+      writeDispatchIsolationSentinel(cwd, { isolation: recordedIsolation, harnessFlag: recordedHarnessFlag, phase: phaseArg, plan: planArg });
     } catch {
       // writeDispatchIsolationSentinel already swallows its own errors into
       // a { recorded: false } result; this catch is defense in depth only.

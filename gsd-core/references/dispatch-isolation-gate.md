@@ -51,9 +51,11 @@ if [ "$ISOLATION" = "none" ] && [ "$USE_WORKTREES" != "false" ]; then
   exit 1
 fi
 
-# Re-record: the opt-out above is decided in shell, where the resolver cannot see
-# it, so the sentinel still asserts the naturally-resolved mode. See "Re-record
-# after every degrade" below — this is the first of the mandatory calls.
+# Re-record: the resolver re-derives the opt-out (#3737) and the base-check (#4222)
+# for the decision it records, so the sentinel already carries the opt-out decided
+# above; this call still pushes the shell's FINAL value through the same write path.
+# See "Re-record after every degrade" below — this is the first of the mandatory
+# calls, and the orchestrator-worktree fallback further down has its own.
 gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null 2>&1 || true
 ```
 
@@ -108,8 +110,10 @@ dispatch.** This is not optional bookkeeping — it is what keeps the dispatch l
 (`.gsd/dispatch-isolation-sentinel.json`) as an unconditional side effect, and the shipped
 `PreToolUse` isolation guards read that sentinel at the instant of the dispatch call
 (`hooks/gsd-agent-isolation-guard.js`, `hooks/gsd-cursor-subagent-start.js`, shared reader
-`hooks/lib/isolation-sentinel.js`, #3045). Every degrade in this file is decided **in shell**,
-where the resolver cannot see it. Degrade without re-recording and the sentinel still asserts
+`hooks/lib/isolation-sentinel.js`, #3045). The resolver re-derives two of these degrades itself
+for the decision it records — the project opt-out (#3737) and the `worktree.base-check` divergence
+(#4222) — but every other degrade in this file is decided **in shell**, where the resolver cannot
+see it. Degrade without re-recording and the sentinel still asserts
 `harness-worktree` while the dispatch correctly omits the harness flag — the guard reads that
 as a dropped isolation flag and **denies the dispatch with exit 2**. The task does not run
 unisolated; it does not run at all.
